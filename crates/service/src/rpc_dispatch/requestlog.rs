@@ -1,10 +1,11 @@
 use codexmanager_core::rpc::types::{
-    GatewayErrorLogListParams, JsonRpcRequest, JsonRpcResponse, RequestLogListParams,
+    DailyUsageStatsParams, GatewayErrorLogListParams, JsonRpcRequest, JsonRpcResponse,
+    RequestLogListParams,
 };
 
 use crate::{
-    requestlog_clear, requestlog_error_list, requestlog_list, requestlog_summary,
-    requestlog_today_summary,
+    requestlog_account_daily_usage, requestlog_aggregate_api_daily_usage, requestlog_clear,
+    requestlog_error_list, requestlog_list, requestlog_summary, requestlog_today_summary,
 };
 
 /// 函数 `try_handle`
@@ -65,6 +66,32 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             super::value_or_error(requestlog_today_summary::read_requestlog_today_summary(
                 day_start_ts,
                 day_end_ts,
+            ))
+        }
+        "requestlog/account_daily_usage" => {
+            let params = req
+                .params
+                .clone()
+                .map(serde_json::from_value::<DailyUsageStatsParams>)
+                .transpose()
+                .map(|params| params.unwrap_or_default())
+                .map_err(|err| format!("invalid requestlog/account_daily_usage params: {err}"));
+            super::value_or_error(
+                params.and_then(requestlog_account_daily_usage::read_account_daily_usage_stats),
+            )
+        }
+        "requestlog/aggregate_api_daily_usage" => {
+            let params = req
+                .params
+                .clone()
+                .map(serde_json::from_value::<DailyUsageStatsParams>)
+                .transpose()
+                .map(|params| params.unwrap_or_default())
+                .map_err(|err| {
+                    format!("invalid requestlog/aggregate_api_daily_usage params: {err}")
+                });
+            super::value_or_error(params.and_then(
+                requestlog_aggregate_api_daily_usage::read_aggregate_api_daily_usage_stats,
             ))
         }
         _ => return None,

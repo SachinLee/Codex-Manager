@@ -71,7 +71,12 @@ import {
 } from "@/components/ui/tooltip";
 import { useI18n } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
-import type { Account } from "@/types";
+import {
+  formatCacheRateValue,
+  formatTokenAmount,
+  formatUsdAmount,
+} from "@/lib/utils/billing";
+import type { Account, AccountDailyUsageStat } from "@/types";
 import {
   type AccountEditorState,
   type AccountExportMode,
@@ -108,6 +113,7 @@ interface CleanupStatusOption {
 
 export interface AccountsPageViewProps {
   accounts: Account[];
+  accountDailyUsageById: Map<string, AccountDailyUsageStat>;
   planTypes: PlanTypeOption[];
   isLoading: boolean;
   isServiceReady: boolean;
@@ -211,6 +217,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
   const { t } = useI18n();
   const {
     accounts,
+    accountDailyUsageById,
     planTypes,
     isLoading,
     isServiceReady,
@@ -760,6 +767,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 <TableHead className="min-w-[250px] text-center">
                   {t("额度详情")}
                 </TableHead>
+                <TableHead className="w-[170px]">{t("今日使用")}</TableHead>
                 <TableHead className="w-[156px]">{t("顺序")}</TableHead>
                 <TableHead>{t("状态")}</TableHead>
                 <TableHead className="table-sticky-action-head w-[112px] text-center">
@@ -785,6 +793,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                       </div>
                     </TableCell>
                     <TableCell>
+                      <Skeleton className="h-8 w-32" />
+                    </TableCell>
+                    <TableCell>
                       <Skeleton className="h-4 w-10" />
                     </TableCell>
                     <TableCell>
@@ -797,7 +808,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 ))
               ) : visibleAccounts.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-48 text-center">
+                  <TableCell colSpan={7} className="h-48 text-center">
                     <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                       <Search className="h-8 w-8 opacity-20" />
                       <p>{t("未找到符合条件的账号")}</p>
@@ -835,6 +846,37 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                       </TableCell>
                       <TableCell>
                         <QuotaOverviewCell items={quotaItems} />
+                      </TableCell>
+                      <TableCell>
+                        {(() => {
+                          const usage = accountDailyUsageById.get(account.id);
+                          if (!usage || usage.requestCount <= 0) {
+                            return (
+                              <span className="text-xs text-muted-foreground">
+                                {t("今日无请求")}
+                              </span>
+                            );
+                          }
+                          return (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="grid max-w-[150px] cursor-help gap-0.5 text-left"
+                              >
+                                <span className="truncate text-xs font-semibold text-foreground">
+                                  {formatTokenAmount(usage.totalTokens)} tok
+                                </span>
+                                <span className="truncate text-[10px] text-muted-foreground">
+                                  {formatUsdAmount(usage.estimatedCostUsd)} · cache{" "}
+                                  {formatCacheRateValue(usage.cacheHitRate)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                                {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatTokenAmount(usage.cachedInputTokens)} / ${t("计费输入")} ${formatTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatTokenAmount(usage.reasoningOutputTokens)}`}
+                              </TooltipContent>
+                            </Tooltip>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">

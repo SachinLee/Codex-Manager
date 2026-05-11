@@ -80,6 +80,21 @@ export interface AggregateApiBalanceResult {
   latencyMs: number;
 }
 
+export interface AggregateApiDailyUsageStat {
+  aggregateApiId: string;
+  aggregateApiSupplierName: string | null;
+  aggregateApiUrl: string | null;
+  requestCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  billableInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningOutputTokens: number;
+  estimatedCostUsd: number;
+  cacheHitRate: number;
+}
+
 export interface ApiKeyUsageStat {
   keyId: string;
   totalTokens: number;

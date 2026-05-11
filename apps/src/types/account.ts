@@ -13,6 +13,19 @@ export interface AccountUsage {
   capturedAt: number | null;
 }
 
+export interface AccountDailyUsageStat {
+  accountId: string;
+  requestCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  billableInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningOutputTokens: number;
+  estimatedCostUsd: number;
+  cacheHitRate: number;
+}
+
 export interface Account {
   id: string;
   name: string;

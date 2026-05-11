@@ -51,14 +51,25 @@ import {
 } from "@/components/ui/tooltip";
 import { accountClient } from "@/lib/api/account-client";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
+import {
+  formatCacheRateValue,
+  formatTokenAmount,
+  formatUsdAmount,
+} from "@/lib/utils/billing";
 import { formatTsFromSeconds } from "@/lib/utils/usage";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
+import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
-import { AggregateApi, AggregateApiBalanceResult, AggregateApiSecretResult } from "@/types";
+import {
+  AggregateApi,
+  AggregateApiBalanceResult,
+  AggregateApiDailyUsageStat,
+  AggregateApiSecretResult,
+} from "@/types";
 
 type TranslateFn = (key: string, values?: Record<string, string | number>) => string;
 
@@ -119,9 +130,16 @@ function formatBalanceValue(value: number | null, unit: string | null) {
   return normalizedUnit ? `${formatted} ${normalizedUnit}` : formatted;
 }
 
+function buildAggregateApiDailyUsageMap(
+  items: AggregateApiDailyUsageStat[],
+): Map<string, AggregateApiDailyUsageStat> {
+  return new Map(items.map((item) => [item.aggregateApiId, item]));
+}
+
 export default function AggregateApiPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const localDayRange = useLocalDayRange();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
@@ -156,6 +174,28 @@ export default function AggregateApiPage() {
     enabled: isQueryEnabled,
     retry: 1,
   });
+
+  const { data: aggregateApiDailyUsage = [] } = useQuery({
+    queryKey: [
+      "requestlog",
+      "aggregate-api-daily-usage",
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      accountClient.listAggregateApiDailyUsageStats({
+        dayStartTs: localDayRange.dayStartTs,
+        dayEndTs: localDayRange.dayEndTs,
+      }),
+    enabled: isQueryEnabled,
+    retry: 1,
+    staleTime: 10_000,
+  });
+
+  const aggregateApiDailyUsageById = useMemo(
+    () => buildAggregateApiDailyUsageMap(aggregateApiDailyUsage),
+    [aggregateApiDailyUsage],
+  );
 
   usePageTransitionReady("/aggregate-api/", !isServiceReady || !isLoading);
 
@@ -288,6 +328,36 @@ export default function AggregateApiPage() {
           <RefreshCw className={querying ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
         </Button>
       </div>
+    );
+  };
+
+  const renderDailyUsage = (api: AggregateApi) => {
+    const usage = aggregateApiDailyUsageById.get(api.id);
+    if (!usage || usage.requestCount <= 0) {
+      return (
+        <span className="text-[11px] text-muted-foreground">
+          {t("今日无请求")}
+        </span>
+      );
+    }
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={<div />}
+          className="grid cursor-help gap-0.5 text-left"
+        >
+          <span className="truncate text-xs font-semibold text-foreground">
+            {formatTokenAmount(usage.totalTokens)} tok
+          </span>
+          <span className="truncate text-[10px] text-muted-foreground">
+            {formatUsdAmount(usage.estimatedCostUsd)} · cache{" "}
+            {formatCacheRateValue(usage.cacheHitRate)}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+          {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatTokenAmount(usage.cachedInputTokens)} / ${t("计费输入")} ${formatTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatTokenAmount(usage.reasoningOutputTokens)}`}
+        </TooltipContent>
+      </Tooltip>
     );
   };
 
@@ -745,6 +815,7 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[148px]">{t("密钥")}</TableHead>
                   <TableHead className="w-[64px] text-center">{t("顺序")}</TableHead>
                   <TableHead className="w-[86px] text-center">{t("费用倍率")}</TableHead>
+                  <TableHead className="w-[138px]">{t("今日使用")}</TableHead>
                   <TableHead className="w-[150px]">
                     <span className="inline-flex items-center gap-1.5">
                       <WalletCards className="h-3.5 w-3.5" />
@@ -775,6 +846,9 @@ export default function AggregateApiPage() {
                         <Skeleton className="mx-auto h-4 w-12" />
                       </TableCell>
                       <TableCell>
+                        <Skeleton className="h-7 w-24" />
+                      </TableCell>
+                      <TableCell>
                         <Skeleton className="mx-auto h-4 w-12" />
                       </TableCell>
                       <TableCell>
@@ -793,7 +867,7 @@ export default function AggregateApiPage() {
                   ))
                 ) : filteredAggregateApis.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-48 text-center">
+                    <TableCell colSpan={10} className="h-48 text-center">
                       <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                         <ShieldCheck className="h-8 w-8 opacity-20" />
                         <p>
@@ -955,6 +1029,9 @@ export default function AggregateApiPage() {
                         </TableCell>
                         <TableCell className="text-center font-mono text-xs text-muted-foreground">
                           x{Number(api.costMultiplier || 1).toFixed(2)}
+                        </TableCell>
+                        <TableCell className="overflow-hidden align-middle">
+                          {renderDailyUsage(api)}
                         </TableCell>
                         <TableCell className="overflow-hidden align-middle">
                           {renderBalance(api)}

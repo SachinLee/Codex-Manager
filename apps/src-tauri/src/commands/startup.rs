@@ -19,8 +19,14 @@ pub async fn service_startup_snapshot(
     app: tauri::AppHandle,
     addr: Option<String>,
     request_log_limit: Option<i64>,
+    day_start_ts: Option<i64>,
+    day_end_ts: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     apply_runtime_storage_env(&app);
-    let params = request_log_limit.map(|value| serde_json::json!({ "requestLogLimit": value }));
-    rpc_call_in_background("startup/snapshot", addr, params).await
+    let params = serde_json::json!({
+        "requestLogLimit": request_log_limit,
+        "dayStartTs": day_start_ts,
+        "dayEndTs": day_end_ts
+    });
+    rpc_call_in_background("startup/snapshot", addr, Some(params)).await
 }

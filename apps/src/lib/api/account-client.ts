@@ -1,8 +1,10 @@
 import { invoke, withAddr } from "./transport";
 import {
   normalizeAccountList,
+  normalizeAccountDailyUsageStats,
   normalizeAggregateApiBalanceResult,
   normalizeAggregateApiCreateResult,
+  normalizeAggregateApiDailyUsageStats,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
   normalizeAggregateApiTestResult,
@@ -40,10 +42,12 @@ import { serializeManagedModelForRpc } from "./model-catalog";
 import { unwrapUsageSnapshotPayload } from "./usage-response";
 import {
   AccountListResult,
+  AccountDailyUsageStat,
   AccountUsage,
   AggregateApi,
   AggregateApiBalanceResult,
   AggregateApiCreateResult,
+  AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -429,6 +433,16 @@ export const accountClient = {
     const result = await invoke<unknown>("service_usage_aggregate", withAddr());
     return normalizeUsageAggregateSummary(result);
   },
+  async listAccountDailyUsageStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<AccountDailyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_account_daily_usage",
+      withAddr(params)
+    );
+    return normalizeAccountDailyUsageStats(result);
+  },
 
   async startLogin(params: LoginStartPayload): Promise<LoginStartResult> {
     const result = await invoke<unknown>(
@@ -582,6 +596,16 @@ export const accountClient = {
       withAddr({ id: apiId })
     );
     return normalizeAggregateApiBalanceResult(result);
+  },
+  async listAggregateApiDailyUsageStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<AggregateApiDailyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_aggregate_api_daily_usage",
+      withAddr(params)
+    );
+    return normalizeAggregateApiDailyUsageStats(result);
   },
 
   async listApiKeys(): Promise<ApiKey[]> {

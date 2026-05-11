@@ -55,6 +55,7 @@ import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
+import { formatCacheRate, formatUsdAmount } from "@/lib/utils/billing";
 import { formatCompactNumber, formatTsFromSeconds } from "@/lib/utils/usage";
 import { cn } from "@/lib/utils";
 import {
@@ -322,34 +323,6 @@ function formatTableTokenAmount(value: number | null | undefined): string {
   }
   const normalized = Math.max(0, value);
   return Math.round(normalized).toLocaleString("zh-CN");
-}
-
-function formatUsdAmount(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "-";
-  }
-  const normalized = Math.max(0, value);
-  if (normalized === 0) return "$0.00";
-  if (normalized < 0.0001) return "<$0.0001";
-  if (normalized < 0.01) return `$${normalized.toFixed(4)}`;
-  return `$${normalized.toFixed(2)}`;
-}
-
-function formatCacheRate(
-  inputTokens: number | null | undefined,
-  cachedInputTokens: number | null | undefined,
-): string {
-  if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) {
-    return "-";
-  }
-  const input = Math.max(0, inputTokens);
-  if (input <= 0) return "-";
-  const cached =
-    typeof cachedInputTokens === "number" && Number.isFinite(cachedInputTokens)
-      ? Math.min(Math.max(0, cachedInputTokens), input)
-      : 0;
-  const rate = (cached / input) * 100;
-  return `${rate > 0 && rate < 10 ? rate.toFixed(1) : Math.round(rate).toString()}%`;
 }
 
 /**

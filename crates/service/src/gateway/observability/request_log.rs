@@ -382,6 +382,10 @@ pub(crate) fn write_request_log_with_attempts(
         .attempted_aggregate_api_ids
         .and_then(|items| items.first())
         .map(String::as_str);
+    let aggregate_api_id = trace_context
+        .attempted_aggregate_api_ids
+        .and_then(|items| items.last())
+        .map(String::as_str);
     let attempted_aggregate_api_ids_json = trace_context
         .attempted_aggregate_api_ids
         .filter(|items| !items.is_empty())
@@ -504,6 +508,11 @@ pub(crate) fn write_request_log_with_attempts(
             request_log_id: 0,
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
+            aggregate_api_id: aggregate_api_id.map(str::to_string),
+            aggregate_api_supplier_name: trace_context
+                .aggregate_api_supplier_name
+                .map(str::to_string),
+            aggregate_api_url: trace_context.aggregate_api_url.map(str::to_string),
             model: model.map(|v| v.to_string()),
             input_tokens,
             cached_input_tokens,

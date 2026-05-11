@@ -43,6 +43,7 @@ export default function AccountsPage() {
     useRuntimeCapabilities();
   const {
     accounts,
+    accountDailyUsageById,
     planTypes,
     isLoading,
     isServiceReady,
@@ -565,6 +566,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
   return (
     <AccountsPageView
       accounts={accounts}
+      accountDailyUsageById={accountDailyUsageById}
       planTypes={planTypes}
       isLoading={isLoading}
       isServiceReady={isServiceReady}

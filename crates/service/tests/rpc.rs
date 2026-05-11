@@ -2350,6 +2350,7 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
                 reasoning_output_tokens: Some(0),
                 estimated_cost_usd: Some(0.01),
                 created_at,
+                ..Default::default()
             })
             .expect("insert token stat");
     }
@@ -2531,6 +2532,126 @@ fn rpc_apikey_update_model_updates_name_with_chinese() {
     assert_eq!(
         updated.get("name").and_then(|value| value.as_str()),
         Some("中文名称")
+    );
+}
+
+#[test]
+fn rpc_requestlog_account_daily_usage_returns_camel_case_cache_stats() {
+    let ctx = RpcTestContext::new("rpc-account-daily-usage");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 9_001,
+            account_id: Some("acc-rpc".to_string()),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(100),
+            cached_input_tokens: Some(25),
+            output_tokens: Some(10),
+            total_tokens: Some(110),
+            reasoning_output_tokens: Some(3),
+            estimated_cost_usd: Some(0.12),
+            created_at: 1_100,
+            ..Default::default()
+        })
+        .expect("insert token stat");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let req = JsonRpcRequest {
+        id: 76.into(),
+        method: "requestlog/account_daily_usage".to_string(),
+        params: Some(serde_json::json!({
+            "dayStartTs": 1_000,
+            "dayEndTs": 2_000
+        })),
+        trace: None,
+    };
+    let json = serde_json::to_string(&req).expect("serialize account daily usage");
+    let resp = post_rpc(&server.addr, &json);
+    let item = resp
+        .get("result")
+        .and_then(|value| value.get("items"))
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .expect("first account usage item");
+    assert_eq!(
+        item.get("accountId").and_then(|value| value.as_str()),
+        Some("acc-rpc")
+    );
+    assert_eq!(
+        item.get("cachedInputTokens")
+            .and_then(|value| value.as_i64()),
+        Some(25)
+    );
+    assert_eq!(
+        item.get("billableInputTokens")
+            .and_then(|value| value.as_i64()),
+        Some(75)
+    );
+    assert_eq!(
+        item.get("cacheHitRate").and_then(|value| value.as_f64()),
+        Some(0.25)
+    );
+}
+
+#[test]
+fn rpc_requestlog_aggregate_api_daily_usage_returns_camel_case_cache_stats() {
+    let ctx = RpcTestContext::new("rpc-aggregate-api-daily-usage");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 9_101,
+            aggregate_api_id: Some("ag-rpc".to_string()),
+            aggregate_api_supplier_name: Some("RPC Supplier".to_string()),
+            aggregate_api_url: Some("https://rpc.example/v1".to_string()),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(80),
+            cached_input_tokens: Some(20),
+            output_tokens: Some(8),
+            total_tokens: None,
+            reasoning_output_tokens: Some(2),
+            estimated_cost_usd: Some(0.08),
+            created_at: 1_100,
+            ..Default::default()
+        })
+        .expect("insert token stat");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let req = JsonRpcRequest {
+        id: 77.into(),
+        method: "requestlog/aggregate_api_daily_usage".to_string(),
+        params: Some(serde_json::json!({
+            "dayStartTs": 1_000,
+            "dayEndTs": 2_000
+        })),
+        trace: None,
+    };
+    let json = serde_json::to_string(&req).expect("serialize aggregate api daily usage");
+    let resp = post_rpc(&server.addr, &json);
+    let item = resp
+        .get("result")
+        .and_then(|value| value.get("items"))
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .expect("first aggregate api usage item");
+    assert_eq!(
+        item.get("aggregateApiId").and_then(|value| value.as_str()),
+        Some("ag-rpc")
+    );
+    assert_eq!(
+        item.get("aggregateApiSupplierName")
+            .and_then(|value| value.as_str()),
+        Some("RPC Supplier")
+    );
+    assert_eq!(
+        item.get("billableInputTokens")
+            .and_then(|value| value.as_i64()),
+        Some(60)
+    );
+    assert_eq!(
+        item.get("cacheHitRate").and_then(|value| value.as_f64()),
+        Some(0.25)
     );
 }
 

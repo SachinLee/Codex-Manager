@@ -157,6 +157,9 @@ pub struct RequestTokenStat {
     pub request_log_id: i64,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub aggregate_api_id: Option<String>,
+    pub aggregate_api_supplier_name: Option<String>,
+    pub aggregate_api_url: Option<String>,
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
@@ -208,6 +211,36 @@ pub struct ApiKeyTokenUsageSummary {
     pub key_id: String,
     pub total_tokens: i64,
     pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountDailyUsageSummary {
+    pub account_id: String,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub billable_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub cache_hit_rate: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiDailyUsageSummary {
+    pub aggregate_api_id: String,
+    pub aggregate_api_supplier_name: Option<String>,
+    pub aggregate_api_url: Option<String>,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub billable_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub cache_hit_rate: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -680,6 +713,11 @@ impl Storage {
             "054_aggregate_api_cost_multiplier",
             include_str!("../../migrations/054_aggregate_api_cost_multiplier.sql"),
             |s| s.ensure_aggregate_apis_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "055_request_token_stats_aggregate_api",
+            include_str!("../../migrations/055_request_token_stats_aggregate_api.sql"),
+            |s| s.ensure_request_token_stats_table(),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;

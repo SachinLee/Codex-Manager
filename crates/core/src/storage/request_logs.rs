@@ -165,14 +165,17 @@ impl Storage {
         let token_stat_error = tx
             .execute(
                 "INSERT INTO request_token_stats (
-                    request_log_id, key_id, account_id, model,
+                    request_log_id, key_id, account_id, aggregate_api_id, aggregate_api_supplier_name, aggregate_api_url, model,
                     input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                     estimated_cost_usd, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 (
                     request_log_id,
                     &stat.key_id,
                     &stat.account_id,
+                    &stat.aggregate_api_id,
+                    &stat.aggregate_api_supplier_name,
+                    &stat.aggregate_api_url,
                     &stat.model,
                     stat.input_tokens,
                     stat.cached_input_tokens,

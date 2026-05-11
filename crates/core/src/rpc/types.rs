@@ -918,6 +918,64 @@ pub struct RequestLogTodaySummaryResult {
     pub estimated_cost: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DailyUsageStatsParams {
+    pub day_start_ts: Option<i64>,
+    pub day_end_ts: Option<i64>,
+}
+
+impl Default for DailyUsageStatsParams {
+    fn default() -> Self {
+        Self {
+            day_start_ts: None,
+            day_end_ts: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDailyUsageStatSummary {
+    pub account_id: String,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub billable_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub cache_hit_rate: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AccountDailyUsageStatsResult {
+    pub items: Vec<AccountDailyUsageStatSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiDailyUsageStatSummary {
+    pub aggregate_api_id: String,
+    pub aggregate_api_supplier_name: Option<String>,
+    pub aggregate_api_url: Option<String>,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub billable_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub cache_hit_rate: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggregateApiDailyUsageStatsResult {
+    pub items: Vec<AggregateApiDailyUsageStatSummary>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupSnapshotResult {

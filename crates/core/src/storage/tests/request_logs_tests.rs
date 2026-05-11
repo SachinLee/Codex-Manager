@@ -143,6 +143,7 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
         reasoning_output_tokens: Some(3),
         estimated_cost_usd: Some(0.123),
         created_at,
+        ..Default::default()
     };
 
     let (_request_log_id, token_err) = storage
@@ -242,6 +243,7 @@ fn token_stat_failure_still_commits_request_log() {
         reasoning_output_tokens: None,
         estimated_cost_usd: None,
         created_at,
+        ..Default::default()
     };
 
     let (_request_log_id, token_err) = storage
@@ -328,6 +330,7 @@ fn request_logs_support_backend_pagination_and_status_filters() {
                 reasoning_output_tokens: Some(0),
                 estimated_cost_usd: Some(0.01),
                 created_at,
+                ..Default::default()
             })
             .expect("insert token stat");
     }
@@ -410,6 +413,7 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
                 reasoning_output_tokens: Some(0),
                 estimated_cost_usd: Some(0.01),
                 created_at,
+                ..Default::default()
             })
             .expect("insert token stat");
     }
@@ -472,4 +476,316 @@ fn request_logs_support_time_range_filters() {
         .expect("summarize time range");
     assert_eq!(summary.count, 2);
     assert_eq!(summary.total_tokens, 20);
+}
+
+#[test]
+fn summarizes_daily_usage_by_account_from_token_stats() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    for (request_log_id, account_id, input, cached, output, total, cost, created_at) in [
+        (
+            1_i64,
+            Some("acc-a"),
+            Some(100_i64),
+            Some(40_i64),
+            Some(20_i64),
+            Some(120_i64),
+            Some(0.10_f64),
+            1_100_i64,
+        ),
+        (
+            2_i64,
+            Some("acc-a"),
+            Some(50_i64),
+            Some(10_i64),
+            Some(5_i64),
+            None,
+            Some(0.02_f64),
+            1_200_i64,
+        ),
+        (
+            3_i64,
+            Some("acc-b"),
+            Some(30_i64),
+            Some(0_i64),
+            Some(10_i64),
+            Some(40_i64),
+            Some(0.03_f64),
+            1_300_i64,
+        ),
+        (
+            4_i64,
+            Some("acc-a"),
+            Some(999_i64),
+            Some(0_i64),
+            Some(0_i64),
+            None,
+            Some(9.99),
+            2_500_i64,
+        ),
+        (
+            5_i64,
+            Some("  "),
+            Some(10_i64),
+            Some(5_i64),
+            Some(2_i64),
+            None,
+            Some(0.01),
+            1_400_i64,
+        ),
+    ] {
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                account_id: account_id.map(str::to_string),
+                model: Some("gpt-5".to_string()),
+                input_tokens: input,
+                cached_input_tokens: cached,
+                output_tokens: output,
+                total_tokens: total,
+                reasoning_output_tokens: Some(0),
+                estimated_cost_usd: cost,
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert token stat");
+    }
+
+    storage.clear_request_logs().expect("clear logs");
+
+    let summaries = storage
+        .summarize_request_token_stats_by_account_between(1_000, 2_000)
+        .expect("summarize account daily usage");
+    assert_eq!(summaries.len(), 2);
+
+    let first = &summaries[0];
+    assert_eq!(first.account_id, "acc-a");
+    assert_eq!(first.request_count, 2);
+    assert_eq!(first.input_tokens, 150);
+    assert_eq!(first.cached_input_tokens, 50);
+    assert_eq!(first.billable_input_tokens, 100);
+    assert_eq!(first.output_tokens, 25);
+    assert_eq!(first.total_tokens, 165);
+    assert!((first.estimated_cost_usd - 0.12).abs() < f64::EPSILON);
+    assert!((first.cache_hit_rate - (50.0 / 150.0)).abs() < f64::EPSILON);
+
+    let second = &summaries[1];
+    assert_eq!(second.account_id, "acc-b");
+    assert_eq!(second.request_count, 1);
+}
+
+#[test]
+fn summarizes_daily_usage_by_aggregate_api_from_token_stats() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    for (request_log_id, api_id, supplier, url, input, cached, output, total, cost, created_at) in [
+        (
+            11_i64,
+            Some("ag-a"),
+            Some("Supplier A"),
+            Some("https://a.example/v1"),
+            Some(100_i64),
+            Some(25_i64),
+            Some(15_i64),
+            Some(115_i64),
+            Some(0.11_f64),
+            1_100_i64,
+        ),
+        (
+            12_i64,
+            Some("ag-a"),
+            Some("Supplier A"),
+            Some("https://a.example/v1"),
+            Some(80_i64),
+            Some(20_i64),
+            Some(10_i64),
+            None,
+            Some(0.08_f64),
+            1_200_i64,
+        ),
+        (
+            13_i64,
+            Some("ag-b"),
+            Some("Supplier B"),
+            Some("https://b.example/v1"),
+            Some(50_i64),
+            Some(0_i64),
+            Some(5_i64),
+            Some(55_i64),
+            Some(0.05_f64),
+            1_300_i64,
+        ),
+        (
+            14_i64,
+            Some("ag-a"),
+            Some("Supplier A"),
+            Some("https://a.example/v1"),
+            Some(999_i64),
+            Some(0_i64),
+            Some(0_i64),
+            None,
+            Some(9.99),
+            2_500_i64,
+        ),
+        (
+            15_i64,
+            Some(""),
+            Some("Blank"),
+            Some("https://blank.example/v1"),
+            Some(10_i64),
+            Some(1_i64),
+            Some(1_i64),
+            None,
+            Some(0.01),
+            1_400_i64,
+        ),
+    ] {
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                aggregate_api_id: api_id.map(str::to_string),
+                aggregate_api_supplier_name: supplier.map(str::to_string),
+                aggregate_api_url: url.map(str::to_string),
+                model: Some("gpt-5".to_string()),
+                input_tokens: input,
+                cached_input_tokens: cached,
+                output_tokens: output,
+                total_tokens: total,
+                reasoning_output_tokens: Some(0),
+                estimated_cost_usd: cost,
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert token stat");
+    }
+
+    storage.clear_request_logs().expect("clear logs");
+
+    let summaries = storage
+        .summarize_request_token_stats_by_aggregate_api_between(1_000, 2_000)
+        .expect("summarize aggregate api daily usage");
+    assert_eq!(summaries.len(), 2);
+
+    let first = &summaries[0];
+    assert_eq!(first.aggregate_api_id, "ag-a");
+    assert_eq!(
+        first.aggregate_api_supplier_name.as_deref(),
+        Some("Supplier A")
+    );
+    assert_eq!(
+        first.aggregate_api_url.as_deref(),
+        Some("https://a.example/v1")
+    );
+    assert_eq!(first.request_count, 2);
+    assert_eq!(first.input_tokens, 180);
+    assert_eq!(first.cached_input_tokens, 45);
+    assert_eq!(first.billable_input_tokens, 135);
+    assert_eq!(first.output_tokens, 25);
+    assert_eq!(first.total_tokens, 185);
+    assert!((first.estimated_cost_usd - 0.19).abs() < f64::EPSILON);
+    assert!((first.cache_hit_rate - 0.25).abs() < f64::EPSILON);
+
+    let second = &summaries[1];
+    assert_eq!(second.aggregate_api_id, "ag-b");
+    assert_eq!(second.request_count, 1);
+}
+
+#[test]
+fn token_stats_aggregate_api_backfill_updates_existing_rows_to_final_attempt() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trc-ag-final".to_string()),
+            key_id: Some("gk-ag".to_string()),
+            account_id: Some("acc-ag".to_string()),
+            initial_aggregate_api_id: Some("ag-initial".to_string()),
+            attempted_aggregate_api_ids_json: Some(
+                r#"["ag-initial","ag-failover","ag-final"]"#.to_string(),
+            ),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            aggregate_api_supplier_name: Some("Supplier Final".to_string()),
+            aggregate_api_url: Some("https://final.example/v1".to_string()),
+            status_code: Some(200),
+            created_at: 1_100,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            aggregate_api_id: Some("ag-initial".to_string()),
+            input_tokens: Some(100),
+            cached_input_tokens: Some(20),
+            output_tokens: Some(10),
+            total_tokens: Some(110),
+            estimated_cost_usd: Some(0.10),
+            created_at: 1_100,
+            ..Default::default()
+        })
+        .expect("insert token stat");
+
+    storage
+        .ensure_request_token_stats_table()
+        .expect("ensure request token stats table");
+
+    let summaries = storage
+        .summarize_request_token_stats_by_aggregate_api_between(1_000, 2_000)
+        .expect("summarize aggregate api daily usage");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].aggregate_api_id, "ag-final");
+    assert_eq!(
+        summaries[0].aggregate_api_supplier_name.as_deref(),
+        Some("Supplier Final")
+    );
+    assert_eq!(
+        summaries[0].aggregate_api_url.as_deref(),
+        Some("https://final.example/v1")
+    );
+}
+
+#[test]
+fn token_stats_aggregate_api_backfill_falls_back_to_initial_when_attempts_invalid() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trc-ag-initial".to_string()),
+            key_id: Some("gk-ag".to_string()),
+            account_id: Some("acc-ag".to_string()),
+            initial_aggregate_api_id: Some("ag-initial".to_string()),
+            attempted_aggregate_api_ids_json: Some("not-json".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 1_200,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            input_tokens: Some(50),
+            output_tokens: Some(5),
+            total_tokens: Some(55),
+            estimated_cost_usd: Some(0.05),
+            created_at: 1_200,
+            ..Default::default()
+        })
+        .expect("insert token stat");
+
+    storage
+        .ensure_request_token_stats_table()
+        .expect("ensure request token stats table");
+
+    let summaries = storage
+        .summarize_request_token_stats_by_aggregate_api_between(1_000, 2_000)
+        .expect("summarize aggregate api daily usage");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].aggregate_api_id, "ag-initial");
 }

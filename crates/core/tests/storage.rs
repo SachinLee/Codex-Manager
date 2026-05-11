@@ -1117,6 +1117,7 @@ fn request_log_today_summary_reads_from_token_stats_table() {
             reasoning_output_tokens: Some(9),
             estimated_cost_usd: Some(0.33),
             created_at,
+            ..Default::default()
         })
         .expect("insert token stat");
 
@@ -1190,6 +1191,7 @@ fn insert_request_log_with_token_stat_writes_both_tables_in_one_call() {
                 reasoning_output_tokens: Some(1),
                 estimated_cost_usd: Some(0.01),
                 created_at,
+                ..Default::default()
             },
         )
         .expect("insert request log with token stat");
@@ -1273,6 +1275,7 @@ fn clear_request_logs_keeps_token_stats_for_usage_summary() {
             reasoning_output_tokens: Some(5),
             estimated_cost_usd: Some(0.12),
             created_at,
+            ..Default::default()
         })
         .expect("insert token stat");
 
@@ -1363,6 +1366,7 @@ fn request_token_stats_can_summarize_total_tokens_by_key() {
                 reasoning_output_tokens: Some(0),
                 estimated_cost_usd,
                 created_at,
+                ..Default::default()
             })
             .expect("insert token stat");
     }

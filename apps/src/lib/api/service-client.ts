@@ -14,6 +14,8 @@ import {
 } from "./gateway-settings";
 import {
   normalizeAppSettings,
+  normalizeAccountDailyUsageStats,
+  normalizeAggregateApiDailyUsageStats,
   normalizeBackgroundTasks,
   normalizeGatewayErrorLogListResult,
   normalizeRequestLogFilterSummary,
@@ -23,6 +25,8 @@ import {
 } from "./normalize";
 import {
   BackgroundTaskSettings,
+  AccountDailyUsageStat,
+  AggregateApiDailyUsageStat,
   GatewayErrorLogListResult,
   RequestLogFilterSummary,
   RequestLogListResult,
@@ -196,6 +200,26 @@ export const serviceClient = {
       withAddr(params)
     );
     return normalizeTodaySummary(result);
+  },
+  async listAccountDailyUsageStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<AccountDailyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_account_daily_usage",
+      withAddr(params)
+    );
+    return normalizeAccountDailyUsageStats(result);
+  },
+  async listAggregateApiDailyUsageStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<AggregateApiDailyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_aggregate_api_daily_usage",
+      withAddr(params)
+    );
+    return normalizeAggregateApiDailyUsageStats(result);
   },
 
   async getListenConfig(): Promise<ServiceListenConfig> {

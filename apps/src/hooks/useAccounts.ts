@@ -17,7 +17,12 @@ import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
-import { AccountListResult, AccountUsage, StartupSnapshot } from "@/types";
+import {
+  AccountDailyUsageStat,
+  AccountListResult,
+  AccountUsage,
+  StartupSnapshot,
+} from "@/types";
 
 type ImportByDirectoryResult = Awaited<ReturnType<typeof accountClient.importByDirectory>>;
 type ImportByFileResult = Awaited<ReturnType<typeof accountClient.importByFile>>;
@@ -146,6 +151,12 @@ function buildUsageListFingerprint(usages: AccountUsage[]): string {
     .join("|");
 }
 
+function buildAccountDailyUsageMap(
+  items: AccountDailyUsageStat[],
+): Map<string, AccountDailyUsageStat> {
+  return new Map(items.map((item) => [item.accountId, item]));
+}
+
 /**
  * 函数 `useAccounts`
  *
@@ -242,6 +253,23 @@ export function useAccounts() {
       previousData || (startupUsages.length > 0 ? startupUsages : undefined),
   });
 
+  const accountDailyUsageQuery = useQuery({
+    queryKey: [
+      "requestlog",
+      "account-daily-usage",
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      accountClient.listAccountDailyUsageStats({
+        dayStartTs: localDayRange.dayStartTs,
+        dayEndTs: localDayRange.dayEndTs,
+      }),
+    enabled: areAccountQueriesEnabled,
+    retry: 1,
+    staleTime: 10_000,
+  });
+
   const usageListFingerprint = useMemo(
     () => buildUsageListFingerprint(usagesQuery.data || []),
     [usagesQuery.data],
@@ -260,6 +288,9 @@ export function useAccounts() {
         queryClient.refetchQueries({ queryKey: ["accounts", "list"], type: "active" }),
         queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
         queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["requestlog", "account-daily-usage"],
+        }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
       ]);
     };
@@ -300,6 +331,9 @@ export function useAccounts() {
       queryClient.invalidateQueries({ queryKey: ["accounts", "list"] }),
       queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
       queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["requestlog", "account-daily-usage"],
+      }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
     ]);
   }, [
@@ -315,6 +349,11 @@ export function useAccounts() {
       usagesQuery.data || []
     );
   }, [accountsQuery.data?.items, usagesQuery.data]);
+
+  const accountDailyUsageById = useMemo(
+    () => buildAccountDailyUsageMap(accountDailyUsageQuery.data || []),
+    [accountDailyUsageQuery.data],
+  );
 
   const planTypes = useMemo(() => {
     const map = new Map<string, number>();
@@ -382,6 +421,9 @@ export function useAccounts() {
       queryClient.invalidateQueries({ queryKey: ["usage"] }),
       queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
       queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["requestlog", "account-daily-usage"],
+      }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
       queryClient.invalidateQueries({ queryKey: ["logs"] }),
     ]);
@@ -723,6 +765,7 @@ export function useAccounts() {
 
   return {
     accounts,
+    accountDailyUsageById,
     planTypes,
     total: accountsQuery.data?.total || accounts.length,
     isLoading:

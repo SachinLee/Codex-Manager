@@ -2,11 +2,13 @@
 
 import {
   Account,
+  AccountDailyUsageStat,
   AccountListResult,
   AccountUsage,
   AggregateApi,
   AggregateApiBalanceResult,
   AggregateApiCreateResult,
+  AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -361,6 +363,87 @@ export function normalizeTodaySummary(payload: unknown): RequestLogTodaySummary 
     ),
     estimatedCost: Math.max(0, toNullableNumber(source.estimatedCost) ?? 0),
   };
+}
+
+function normalizeDailyUsageBase(source: Record<string, unknown>) {
+  const inputTokens = asInteger(source.inputTokens ?? source.input_tokens, 0, 0);
+  const cachedInputTokens = asInteger(
+    source.cachedInputTokens ?? source.cached_input_tokens,
+    0,
+    0,
+  );
+  const billableInputTokens = asInteger(
+    source.billableInputTokens ?? source.billable_input_tokens,
+    Math.max(0, inputTokens - cachedInputTokens),
+    0,
+  );
+  return {
+    requestCount: asInteger(source.requestCount ?? source.request_count, 0, 0),
+    inputTokens,
+    cachedInputTokens,
+    billableInputTokens,
+    outputTokens: asInteger(source.outputTokens ?? source.output_tokens, 0, 0),
+    totalTokens: asInteger(source.totalTokens ?? source.total_tokens, 0, 0),
+    reasoningOutputTokens: asInteger(
+      source.reasoningOutputTokens ?? source.reasoning_output_tokens,
+      0,
+      0,
+    ),
+    estimatedCostUsd: Math.max(
+      0,
+      toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0,
+    ),
+    cacheHitRate: Math.min(
+      1,
+      Math.max(
+        0,
+        toNullableNumber(source.cacheHitRate ?? source.cache_hit_rate) ??
+          (inputTokens > 0 ? cachedInputTokens / inputTokens : 0),
+      ),
+    ),
+  };
+}
+
+export function normalizeAccountDailyUsageStats(
+  payload: unknown,
+): AccountDailyUsageStat[] {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload);
+  return items.reduce<AccountDailyUsageStat[]>((result, item) => {
+    const record = asObject(item);
+    const accountId = asString(record.accountId ?? record.account_id);
+    if (!accountId) return result;
+    result.push({
+      accountId,
+      ...normalizeDailyUsageBase(record),
+    });
+    return result;
+  }, []);
+}
+
+export function normalizeAggregateApiDailyUsageStats(
+  payload: unknown,
+): AggregateApiDailyUsageStat[] {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload);
+  return items.reduce<AggregateApiDailyUsageStat[]>((result, item) => {
+    const record = asObject(item);
+    const aggregateApiId = asString(
+      record.aggregateApiId ?? record.aggregate_api_id,
+    );
+    if (!aggregateApiId) return result;
+    result.push({
+      aggregateApiId,
+      aggregateApiSupplierName:
+        asString(
+          record.aggregateApiSupplierName ?? record.aggregate_api_supplier_name,
+        ) || null,
+      aggregateApiUrl:
+        asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
+      ...normalizeDailyUsageBase(record),
+    });
+    return result;
+  }, []);
 }
 
 /**

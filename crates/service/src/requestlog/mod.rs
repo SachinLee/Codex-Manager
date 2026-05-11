@@ -1,5 +1,11 @@
+#[path = "requestlog_account_daily_usage.rs"]
+pub(crate) mod account_daily_usage;
+#[path = "requestlog_aggregate_api_daily_usage.rs"]
+pub(crate) mod aggregate_api_daily_usage;
 #[path = "requestlog_clear.rs"]
 pub(crate) mod clear;
+#[path = "requestlog_day_range.rs"]
+pub(crate) mod day_range;
 #[path = "requestlog_error_list.rs"]
 pub(crate) mod error_list;
 #[path = "requestlog_list.rs"]
