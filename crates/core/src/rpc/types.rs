@@ -420,6 +420,7 @@ pub struct AggregateApiSummary {
     pub auth_params: Option<serde_json::Value>,
     pub action: Option<String>,
     pub model_override: Option<String>,
+    pub cost_multiplier: f64,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,

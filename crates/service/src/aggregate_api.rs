@@ -102,6 +102,19 @@ fn normalize_sort(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
 }
 
+fn normalize_cost_multiplier(value: Option<f64>) -> Result<f64, String> {
+    let Some(value) = value else {
+        return Ok(1.0);
+    };
+    if !value.is_finite() || value <= 0.0 {
+        return Err("aggregate api costMultiplier must be greater than 0".to_string());
+    }
+    if value > 100.0 {
+        return Err("aggregate api costMultiplier must be less than or equal to 100".to_string());
+    }
+    Ok(value)
+}
+
 fn normalize_status(value: Option<String>) -> Result<String, String> {
     match value {
         Some(raw) => {
@@ -276,9 +289,10 @@ mod tests {
 
     use super::{
         action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
-        extract_model_ids_from_models_response, normalize_action_override, normalize_provider_type,
-        normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint,
-        provider_default_url, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
+        extract_model_ids_from_models_response, normalize_action_override,
+        normalize_cost_multiplier, normalize_provider_type, normalize_provider_type_value,
+        probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
+        AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
         ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
@@ -293,6 +307,7 @@ mod tests {
             auth_params_json: None,
             action: action.map(str::to_string),
             model_override: None,
+            cost_multiplier: 1.0,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -313,6 +328,15 @@ mod tests {
     fn action_override_enabled_and_empty_preserves_empty_string() {
         let value = normalize_action_override(Some(true), Some("   ".to_string())).unwrap();
         assert_eq!(value, Some(Some(String::new())));
+    }
+
+    #[test]
+    fn cost_multiplier_defaults_to_one_and_rejects_invalid_values() {
+        assert_eq!(normalize_cost_multiplier(None).unwrap(), 1.0);
+        assert_eq!(normalize_cost_multiplier(Some(2.5)).unwrap(), 2.5);
+        assert!(normalize_cost_multiplier(Some(0.0)).is_err());
+        assert!(normalize_cost_multiplier(Some(101.0)).is_err());
+        assert!(normalize_cost_multiplier(Some(f64::INFINITY)).is_err());
     }
 
     #[test]
@@ -1459,6 +1483,7 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
             action: item.action,
             model_override: item.model_override,
+            cost_multiplier: item.cost_multiplier,
             status: item.status,
             created_at: item.created_at,
             updated_at: item.updated_at,
@@ -1492,6 +1517,7 @@ pub(crate) fn create_aggregate_api(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
+    cost_multiplier: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<AggregateApiCreateResult, String> {
@@ -1510,6 +1536,7 @@ pub(crate) fn create_aggregate_api(
     let normalized_action =
         normalize_action_override(action_custom_enabled, action)?.unwrap_or(None);
     let normalized_model_override = normalize_model_override(model_override)?;
+    let normalized_cost_multiplier = normalize_cost_multiplier(cost_multiplier)?;
     let normalized_secret = if normalized_auth_type == AGGREGATE_API_AUTH_APIKEY {
         normalize_secret(key).ok_or_else(|| "key is required".to_string())?
     } else {
@@ -1539,6 +1566,7 @@ pub(crate) fn create_aggregate_api(
             .unwrap_or(None),
         action: normalized_action,
         model_override: normalized_model_override,
+        cost_multiplier: normalized_cost_multiplier,
         status: "active".to_string(),
         created_at,
         updated_at: created_at,
@@ -1588,6 +1616,7 @@ pub(crate) fn update_aggregate_api(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
+    cost_multiplier: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<(), String> {
@@ -1676,6 +1705,12 @@ pub(crate) fn update_aggregate_api(
         let normalized = normalize_model_override(model_override)?;
         storage
             .update_aggregate_api_model_override(api_id, normalized.as_deref())
+            .map_err(|err| err.to_string())?;
+    }
+    if cost_multiplier.is_some() {
+        let normalized = normalize_cost_multiplier(cost_multiplier)?;
+        storage
+            .update_aggregate_api_cost_multiplier(api_id, normalized)
             .map_err(|err| err.to_string())?;
     }
 

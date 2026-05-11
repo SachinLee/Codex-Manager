@@ -243,6 +243,7 @@ pub struct AggregateApi {
     pub auth_params_json: Option<String>,
     pub action: Option<String>,
     pub model_override: Option<String>,
+    pub cost_multiplier: f64,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -673,6 +674,11 @@ impl Storage {
         self.apply_sql_or_compat_migration(
             "053_aggregate_api_model_override",
             include_str!("../../migrations/053_aggregate_api_model_override.sql"),
+            |s| s.ensure_aggregate_apis_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "054_aggregate_api_cost_multiplier",
+            include_str!("../../migrations/054_aggregate_api_cost_multiplier.sql"),
             |s| s.ensure_aggregate_apis_table(),
         )?;
         self.ensure_api_key_rotation_columns()?;

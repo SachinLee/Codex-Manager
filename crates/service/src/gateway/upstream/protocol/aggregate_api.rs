@@ -779,6 +779,7 @@ pub(in super::super) fn proxy_aggregate_request(
     let mut attempted_aggregate_api_ids = Vec::new();
     let mut last_attempt_url: Option<String> = None;
     let mut last_attempt_supplier_name: Option<String> = None;
+    let mut last_attempt_cost_multiplier: Option<f64> = None;
     let mut last_attempt_error: Option<String> = None;
     let mut last_failure_status = 502u16;
 
@@ -793,6 +794,7 @@ pub(in super::super) fn proxy_aggregate_request(
         else {
             last_attempt_url = Some(candidate_url.clone());
             last_attempt_supplier_name = candidate_supplier_name.clone();
+            last_attempt_cost_multiplier = Some(candidate.cost_multiplier);
             last_attempt_error = Some("aggregate api secret not found".to_string());
             last_failure_status = 403;
             continue;
@@ -804,6 +806,7 @@ pub(in super::super) fn proxy_aggregate_request(
             Err(err) => {
                 last_attempt_url = Some(candidate_url.clone());
                 last_attempt_supplier_name = candidate_supplier_name.clone();
+                last_attempt_cost_multiplier = Some(candidate.cost_multiplier);
                 last_attempt_error = Some(err);
                 last_failure_status = 502;
                 continue;
@@ -841,6 +844,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
                         aggregate_api_url: Some(candidate_url.as_str()),
                         attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+                        cost_multiplier: Some(candidate.cost_multiplier),
                         ..Default::default()
                     },
                     Some(key_id),
@@ -865,6 +869,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 Err(_) => {
                     last_attempt_url = Some(candidate_url.clone());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
+                    last_attempt_cost_multiplier = Some(candidate.cost_multiplier);
                     last_attempt_error = Some("invalid aggregate api url".to_string());
                     last_failure_status = 502;
                     break;
@@ -923,6 +928,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     let message = format!("aggregate api upstream error: {err}");
                     last_attempt_url = Some(url.as_str().to_string());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
+                    last_attempt_cost_multiplier = Some(candidate.cost_multiplier);
                     last_attempt_error = Some(message);
                     last_failure_status = 502;
                     if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
@@ -956,6 +962,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 );
                 last_attempt_url = Some(url.as_str().to_string());
                 last_attempt_supplier_name = candidate_supplier_name.clone();
+                last_attempt_cost_multiplier = Some(candidate.cost_multiplier);
                 last_attempt_error = Some(message);
                 last_failure_status = 502;
                 if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
@@ -1055,6 +1062,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
                     aggregate_api_url: Some(candidate_url.as_str()),
                     attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+                    cost_multiplier: Some(candidate.cost_multiplier),
                     ..Default::default()
                 },
                 Some(key_id),
@@ -1115,6 +1123,7 @@ pub(in super::super) fn proxy_aggregate_request(
             aggregate_api_supplier_name: last_attempt_supplier_name.as_deref(),
             aggregate_api_url: last_attempt_url.as_deref(),
             attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+            cost_multiplier: last_attempt_cost_multiplier,
             ..Default::default()
         },
         Some(key_id),
@@ -1160,6 +1169,7 @@ mod bridge_tests {
             auth_params_json: None,
             action: None,
             model_override: None,
+            cost_multiplier: 1.0,
             status: "active".to_string(),
             created_at: sort,
             updated_at: sort,
@@ -1331,6 +1341,7 @@ mod tests {
             auth_params_json: None,
             action: action.map(str::to_string),
             model_override: None,
+            cost_multiplier: 1.0,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -1414,6 +1425,7 @@ mod tests {
                     auth_params_json: None,
                     action: None,
                     model_override: None,
+                    cost_multiplier: 1.0,
                     status: "active".to_string(),
                     created_at: now,
                     updated_at: now,

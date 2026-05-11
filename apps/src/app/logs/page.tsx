@@ -324,6 +324,34 @@ function formatTableTokenAmount(value: number | null | undefined): string {
   return Math.round(normalized).toLocaleString("zh-CN");
 }
 
+function formatUsdAmount(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  const normalized = Math.max(0, value);
+  if (normalized === 0) return "$0.00";
+  if (normalized < 0.0001) return "<$0.0001";
+  if (normalized < 0.01) return `$${normalized.toFixed(4)}`;
+  return `$${normalized.toFixed(2)}`;
+}
+
+function formatCacheRate(
+  inputTokens: number | null | undefined,
+  cachedInputTokens: number | null | undefined,
+): string {
+  if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) {
+    return "-";
+  }
+  const input = Math.max(0, inputTokens);
+  if (input <= 0) return "-";
+  const cached =
+    typeof cachedInputTokens === "number" && Number.isFinite(cachedInputTokens)
+      ? Math.min(Math.max(0, cachedInputTokens), input)
+      : 0;
+  const rate = (cached / input) * 100;
+  return `${rate > 0 && rate < 10 ? rate.toFixed(1) : Math.round(rate).toString()}%`;
+}
+
 /**
  * 函数 `fallbackAccountNameFromId`
  *
@@ -1861,7 +1889,7 @@ function LogsPageContent() {
               </div>
             </CardHeader>
             <CardContent className="px-0">
-              <Table className="min-w-[1320px] table-fixed">
+              <Table className="min-w-[1540px] table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead className="h-12 w-[150px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
@@ -1884,6 +1912,12 @@ function LogsPageContent() {
                 </TableHead>
                 <TableHead className="w-[148px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("Token")}
+                </TableHead>
+                <TableHead className="w-[96px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  {t("缓存率")}
+                </TableHead>
+                <TableHead className="w-[112px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  {t("费用")}
                 </TableHead>
                 <TableHead className="w-[240px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("错误")}
@@ -1916,6 +1950,12 @@ function LogsPageContent() {
                       <Skeleton className="h-4 w-20" />
                     </TableCell>
                     <TableCell>
+                      <Skeleton className="h-4 w-12" />
+                    </TableCell>
+                    <TableCell>
+                      <Skeleton className="h-4 w-16" />
+                    </TableCell>
+                    <TableCell>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
                   </TableRow>
@@ -1923,7 +1963,7 @@ function LogsPageContent() {
               ) : logs.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={10}
                     className="h-52 px-4 text-center text-sm text-muted-foreground"
                   >
                     {!serviceStatus.connected
@@ -1980,6 +2020,12 @@ function LogsPageContent() {
                           {t("缓存")} {formatTableTokenAmount(log.cachedInputTokens)}
                         </span>
                       </div>
+                    </TableCell>
+                    <TableCell className="px-4 py-3 align-top font-mono text-xs text-muted-foreground">
+                      {formatCacheRate(log.inputTokens, log.cachedInputTokens)}
+                    </TableCell>
+                    <TableCell className="px-4 py-3 align-top font-mono text-xs text-foreground">
+                      {formatUsdAmount(log.estimatedCostUsd)}
                     </TableCell>
                     <TableCell className="px-4 py-3 text-left align-top">
                       <ErrorInfoCell error={log.error} />

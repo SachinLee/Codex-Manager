@@ -12,6 +12,7 @@ const AGGREGATE_API_SELECT_SQL: &str = "SELECT
     auth_params_json,
     action,
     model_override,
+    cost_multiplier,
     status,
     created_at,
     updated_at,
@@ -45,13 +46,14 @@ impl Storage {
                 auth_params_json,
                 action,
                 model_override,
+                cost_multiplier,
                 status,
                 created_at,
                 updated_at,
                 last_test_at,
                 last_test_status,
                 last_test_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             (
                 &api.id,
                 &api.provider_type,
@@ -62,6 +64,7 @@ impl Storage {
                 &api.auth_params_json,
                 &api.action,
                 &api.model_override,
+                api.cost_multiplier,
                 &api.status,
                 api.created_at,
                 api.updated_at,
@@ -258,6 +261,18 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_aggregate_api_cost_multiplier(
+        &self,
+        api_id: &str,
+        cost_multiplier: f64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE aggregate_apis SET cost_multiplier = ?1, updated_at = ?2 WHERE id = ?3",
+            (cost_multiplier, now_ts(), api_id),
+        )?;
+        Ok(())
+    }
+
     /// 函数 `delete_aggregate_api`
     ///
     /// 作者: gaohongshun
@@ -398,6 +413,7 @@ impl Storage {
                 auth_params_json TEXT,
                 action TEXT,
                 model_override TEXT,
+                cost_multiplier REAL NOT NULL DEFAULT 1.0,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -422,6 +438,11 @@ impl Storage {
         self.ensure_column("aggregate_apis", "auth_params_json", "TEXT")?;
         self.ensure_column("aggregate_apis", "action", "TEXT")?;
         self.ensure_column("aggregate_apis", "model_override", "TEXT")?;
+        self.ensure_column(
+            "aggregate_apis",
+            "cost_multiplier",
+            "REAL NOT NULL DEFAULT 1.0",
+        )?;
         self.conn.execute(
             "UPDATE aggregate_apis
              SET provider_type = COALESCE(NULLIF(TRIM(provider_type), ''), 'codex')
@@ -438,6 +459,12 @@ impl Storage {
             "UPDATE aggregate_apis
              SET sort = COALESCE(sort, 0)
              WHERE sort IS NULL",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE aggregate_apis
+             SET cost_multiplier = 1.0
+             WHERE cost_multiplier IS NULL OR cost_multiplier <= 0",
             [],
         )?;
         Ok(())
@@ -494,11 +521,75 @@ fn map_aggregate_api_row(row: &Row<'_>) -> Result<AggregateApi> {
         auth_params_json: row.get(6)?,
         action: row.get(7)?,
         model_override: row.get(8)?,
-        status: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        last_test_at: row.get(12)?,
-        last_test_status: row.get(13)?,
-        last_test_error: row.get(14)?,
+        cost_multiplier: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        last_test_at: row.get(13)?,
+        last_test_status: row.get(14)?,
+        last_test_error: row.get(15)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aggregate_api(id: &str, cost_multiplier: f64) -> AggregateApi {
+        let now = now_ts();
+        AggregateApi {
+            id: id.to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: Some("Provider".to_string()),
+            sort: 0,
+            url: "https://api.example.com/v1".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+        }
+    }
+
+    #[test]
+    fn aggregate_api_cost_multiplier_round_trips() {
+        let storage = Storage::open_in_memory().expect("open");
+        storage.init().expect("init");
+
+        storage
+            .insert_aggregate_api(&aggregate_api("agg-cost", 1.75))
+            .expect("insert aggregate api");
+
+        let loaded = storage
+            .find_aggregate_api_by_id("agg-cost")
+            .expect("load aggregate api")
+            .expect("aggregate api exists");
+
+        assert!((loaded.cost_multiplier - 1.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggregate_api_cost_multiplier_can_be_updated() {
+        let storage = Storage::open_in_memory().expect("open");
+        storage.init().expect("init");
+        storage
+            .insert_aggregate_api(&aggregate_api("agg-cost-update", 1.0))
+            .expect("insert aggregate api");
+
+        storage
+            .update_aggregate_api_cost_multiplier("agg-cost-update", 2.25)
+            .expect("update multiplier");
+        let loaded = storage
+            .find_aggregate_api_by_id("agg-cost-update")
+            .expect("load aggregate api")
+            .expect("aggregate api exists");
+
+        assert!((loaded.cost_multiplier - 2.25).abs() < f64::EPSILON);
+    }
 }

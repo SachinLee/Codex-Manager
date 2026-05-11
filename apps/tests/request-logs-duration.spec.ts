@@ -131,9 +131,10 @@ test("request logs display total duration and first-response latency", async ({
             duration_ms: 2345,
             first_response_ms: 340,
             input_tokens: 120,
-            cached_input_tokens: 0,
+            cached_input_tokens: 30,
             output_tokens: 34,
             total_tokens: 154,
+            estimated_cost_usd: 0.000432,
             created_at: 1770000000,
           },
         ],
@@ -150,7 +151,7 @@ test("request logs display total duration and first-response latency", async ({
         successCount: 1,
         errorCount: 0,
         totalTokens: 154,
-        totalCostUsd: 0,
+        totalCostUsd: 0.000432,
       });
       return;
     }
@@ -176,5 +177,9 @@ test("request logs display total duration and first-response latency", async ({
   await page.goto("/logs/");
 
   await expect(page.getByRole("columnheader", { name: "用时 / 首响" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "缓存率" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "费用" })).toBeVisible();
   await expect(page.getByText("2.3s/340ms")).toBeVisible();
+  await expect(page.getByText("25%")).toBeVisible();
+  await expect(page.getByText("$0.0004")).toBeVisible();
 });

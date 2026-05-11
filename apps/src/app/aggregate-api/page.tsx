@@ -652,6 +652,7 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[84px] text-center">{t("类型")}</TableHead>
                   <TableHead className="w-[148px]">{t("密钥")}</TableHead>
                   <TableHead className="w-[64px] text-center">{t("顺序")}</TableHead>
+                  <TableHead className="w-[86px] text-center">{t("费用倍率")}</TableHead>
                   <TableHead className="w-[130px]">{t("测试连通性")}</TableHead>
                   <TableHead className="w-[112px] text-right pr-4">{t("状态")}</TableHead>
                   <TableHead className="table-sticky-action-head w-[112px] text-center">
@@ -676,6 +677,9 @@ export default function AggregateApiPage() {
                         <Skeleton className="mx-auto h-4 w-12" />
                       </TableCell>
                       <TableCell>
+                        <Skeleton className="mx-auto h-4 w-12" />
+                      </TableCell>
+                      <TableCell>
                         <Skeleton className="h-6 w-20 rounded-full" />
                       </TableCell>
                       <TableCell>
@@ -688,7 +692,7 @@ export default function AggregateApiPage() {
                   ))
                 ) : filteredAggregateApis.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-48 text-center">
+                    <TableCell colSpan={8} className="h-48 text-center">
                       <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                         <ShieldCheck className="h-8 w-8 opacity-20" />
                         <p>
@@ -847,6 +851,9 @@ export default function AggregateApiPage() {
                         </TableCell>
                         <TableCell className="text-center font-mono text-xs text-muted-foreground">
                           {api.sort}
+                        </TableCell>
+                        <TableCell className="text-center font-mono text-xs text-muted-foreground">
+                          x{Number(api.costMultiplier || 1).toFixed(2)}
                         </TableCell>
                         <TableCell className="whitespace-nowrap align-middle">
                           <div className="flex flex-col items-start gap-1">

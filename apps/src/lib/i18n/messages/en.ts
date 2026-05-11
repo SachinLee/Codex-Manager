@@ -326,6 +326,8 @@ export const EN_MESSAGES: MessageCatalog = {
   累计Token: "Total Token",
   当前筛选结果中的总Token: "Total Token in the current filtered result",
   Token: "Token",
+  缓存率: "Cache rate",
+  费用: "Cost",
   总: "Total",
   输入: "Input",
   缓存: "Cached",
@@ -563,6 +565,15 @@ export const EN_MESSAGES: MessageCatalog = {
   "例如：官方中转、XX 供应商": "e.g. Official relay / XX supplier",
   "值越小越靠前，用于聚合 API 轮转优先级":
     "Smaller values are tried first for aggregate API rotation priority.",
+  费用倍率: "Cost multiplier",
+  "费用倍率必须大于 0 且不超过 100":
+    "Cost multiplier must be greater than 0 and no more than 100",
+  "最终费用 = 官方模型价格估算 × 费用倍率，留空按 1 计算。":
+    "Final cost = official model price estimate x cost multiplier. Empty uses 1.",
+  上游模型覆盖: "Upstream model override",
+  留空则使用请求中的模型: "Leave empty to use the request model",
+  "用于 API 转发服务要求固定模型名的场景；连接测试和真实转发都会使用该模型。":
+    "Use when an upstream forwarding service requires a fixed model name. Connection tests and real forwarding both use this model.",
   留空则保持原值: "Leave empty to keep the current value",
   位置: "Location",
   参数名: "Parameter name",

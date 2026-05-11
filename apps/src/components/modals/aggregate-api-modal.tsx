@@ -93,6 +93,7 @@ export function AggregateApiModal({
   const [actionCustomEnabled, setActionCustomEnabled] = useState(false);
   const [action, setAction] = useState("");
   const [modelOverride, setModelOverride] = useState("");
+  const [costMultiplierDraft, setCostMultiplierDraft] = useState("1");
   const [key, setKey] = useState("");
   const [generatedKey, setGeneratedKey] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -156,6 +157,7 @@ export function AggregateApiModal({
     setAction(nextAction);
     setActionCustomEnabled(aggregateApi?.action !== null && aggregateApi?.action !== undefined);
     setModelOverride(aggregateApi?.modelOverride || "");
+    setCostMultiplierDraft(String(aggregateApi?.costMultiplier ?? 1));
     setKey("");
     setUsername("");
     setPassword("");
@@ -200,6 +202,15 @@ export function AggregateApiModal({
     const parsedSort = Number(rawSort);
     if (!Number.isFinite(parsedSort)) {
       toast.error(t("顺序必须是数字"));
+      return;
+    }
+    const parsedCostMultiplier = Number(costMultiplierDraft.trim() || "1");
+    if (
+      !Number.isFinite(parsedCostMultiplier) ||
+      parsedCostMultiplier <= 0 ||
+      parsedCostMultiplier > 100
+    ) {
+      toast.error(t("费用倍率必须大于 0 且不超过 100"));
       return;
     }
     if (!aggregateApi?.id && !key.trim()) {
@@ -280,6 +291,7 @@ export function AggregateApiModal({
           actionCustomEnabled,
           action: actionCustomEnabled ? action.trim() : null,
           modelOverride: modelOverride.trim(),
+          costMultiplier: parsedCostMultiplier,
           username: authType === "userpass" ? username.trim() || null : null,
           password: authType === "userpass" ? password.trim() || null : null,
         });
@@ -305,6 +317,7 @@ export function AggregateApiModal({
         actionCustomEnabled,
         action: actionCustomEnabled ? action.trim() : null,
         modelOverride: modelOverride.trim(),
+        costMultiplier: parsedCostMultiplier,
         username: authType === "userpass" ? username.trim() : null,
         password: authType === "userpass" ? password.trim() : null,
       });
@@ -492,6 +505,25 @@ export function AggregateApiModal({
                 />
                 <p className="text-[11px] leading-4 text-muted-foreground">
                   {t("用于 API 转发服务要求固定模型名的场景；连接测试和真实转发都会使用该模型。")}
+                </p>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="aggregate-api-cost-multiplier">
+                  {t("费用倍率")}
+                </Label>
+                <Input
+                  id="aggregate-api-cost-multiplier"
+                  type="number"
+                  min={0.01}
+                  max={100}
+                  step={0.01}
+                  value={costMultiplierDraft}
+                  disabled={!isServiceReady}
+                  onChange={(event) => setCostMultiplierDraft(event.target.value)}
+                />
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {t("最终费用 = 官方模型价格估算 × 费用倍率，留空按 1 计算。")}
                 </p>
               </div>
 

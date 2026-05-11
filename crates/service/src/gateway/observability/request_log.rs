@@ -23,6 +23,7 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub aggregate_api_supplier_name: Option<&'a str>,
     pub aggregate_api_url: Option<&'a str>,
     pub attempted_aggregate_api_ids: Option<&'a [String]>,
+    pub cost_multiplier: Option<f64>,
 }
 
 const MODEL_PRICE_PER_1K_TOKENS: &[(&str, f64, f64, f64)] = &[
@@ -157,11 +158,28 @@ fn resolve_model_price_per_1k(
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 fn estimate_cost_usd(
     model: Option<&str>,
     input_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
     output_tokens: Option<i64>,
+) -> f64 {
+    estimate_cost_usd_with_multiplier(
+        model,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        None,
+    )
+}
+
+fn estimate_cost_usd_with_multiplier(
+    model: Option<&str>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cost_multiplier: Option<f64>,
 ) -> f64 {
     let normalized = model
         .map(str::trim)
@@ -180,9 +198,13 @@ fn estimate_cost_usd(
     let cached_in_tokens = (cached_input_tokens.unwrap_or(0).max(0) as f64).min(in_tokens_total);
     let billable_in_tokens = (in_tokens_total - cached_in_tokens).max(0.0);
     let out_tokens = output_tokens.unwrap_or(0).max(0) as f64;
-    (billable_in_tokens / 1000.0) * in_per_1k
+    let base_cost = (billable_in_tokens / 1000.0) * in_per_1k
         + (cached_in_tokens / 1000.0) * cached_in_per_1k
-        + (out_tokens / 1000.0) * out_per_1k
+        + (out_tokens / 1000.0) * out_per_1k;
+    let multiplier = cost_multiplier
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0);
+    base_cost * multiplier
 }
 
 /// 函数 `normalize_token`
@@ -372,8 +394,13 @@ pub(crate) fn write_request_log_with_attempts(
     let duration_ms = normalize_duration_ms(duration_ms);
     let first_response_ms = usage.first_response_ms.map(|value| value.max(0));
     let created_at = now_ts();
-    let estimated_cost_usd =
-        estimate_cost_usd(model, input_tokens, cached_input_tokens, output_tokens);
+    let estimated_cost_usd = estimate_cost_usd_with_multiplier(
+        model,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        trace_context.cost_multiplier,
+    );
     let request_type = trace_context
         .request_type
         .map(str::trim)

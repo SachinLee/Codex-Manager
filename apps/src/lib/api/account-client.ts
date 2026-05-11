@@ -134,6 +134,7 @@ interface AggregateApiPayload {
   actionCustomEnabled?: boolean | null;
   action?: string | null;
   modelOverride?: string | null;
+  costMultiplier?: number | null;
   username?: string | null;
   password?: string | null;
 }
@@ -519,6 +520,8 @@ export const accountClient = {
         action: params.action ?? null,
         modelOverride:
           typeof params.modelOverride === "string" ? params.modelOverride : null,
+        costMultiplier:
+          typeof params.costMultiplier === "number" ? params.costMultiplier : null,
         username: params.username || null,
         password: params.password || null,
       })
@@ -549,6 +552,8 @@ export const accountClient = {
         action: params.action ?? null,
         modelOverride:
           typeof params.modelOverride === "string" ? params.modelOverride : null,
+        costMultiplier:
+          typeof params.costMultiplier === "number" ? params.costMultiplier : null,
         username: params.username || null,
         password: params.password || null,
       })

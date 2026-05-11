@@ -102,6 +102,13 @@ pub(super) fn i64_param(req: &JsonRpcRequest, key: &str) -> Option<i64> {
         .and_then(|v| v.as_i64())
 }
 
+pub(super) fn f64_param(req: &JsonRpcRequest, key: &str) -> Option<f64> {
+    req.params
+        .as_ref()
+        .and_then(|v| v.get(key))
+        .and_then(|v| v.as_f64())
+}
+
 /// 函数 `bool_param`
 ///
 /// 作者: gaohongshun

@@ -1,4 +1,8 @@
-use super::{estimate_cost_usd, should_write_gateway_error_fallback};
+use super::{
+    estimate_cost_usd, estimate_cost_usd_with_multiplier, should_write_gateway_error_fallback,
+    write_request_log, RequestLogTraceContext, RequestLogUsage,
+};
+use codexmanager_core::storage::Storage;
 
 /// 函数 `assert_close`
 ///
@@ -79,6 +83,70 @@ fn estimate_cost_matches_openai_gpt54_and_mini_prices() {
     // => 0.00955
     let actual = estimate_cost_usd(Some("gpt-5.4"), Some(1000), Some(200), Some(500));
     assert_close(actual, 0.00955);
+}
+
+#[test]
+fn estimate_cost_applies_aggregate_api_multiplier() {
+    let base = estimate_cost_usd(Some("gpt-5.4-mini"), Some(1000), Some(200), Some(500));
+    let actual = estimate_cost_usd_with_multiplier(
+        Some("gpt-5.4-mini"),
+        Some(1000),
+        Some(200),
+        Some(500),
+        Some(2.5),
+    );
+
+    assert_close(actual, base * 2.5);
+}
+
+#[test]
+fn write_request_log_persists_cost_with_aggregate_api_multiplier() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let attempted_aggregate_api_ids = vec!["ag_cost_multiplier".to_string()];
+    let usage = RequestLogUsage {
+        input_tokens: Some(1000),
+        cached_input_tokens: Some(200),
+        output_tokens: Some(500),
+        total_tokens: Some(1500),
+        reasoning_output_tokens: None,
+        first_response_ms: Some(120),
+    };
+
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            aggregate_api_supplier_name: Some("upstream"),
+            aggregate_api_url: Some("https://upstream.example/v1"),
+            attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+            cost_multiplier: Some(2.5),
+            ..Default::default()
+        },
+        Some("gk_cost_multiplier"),
+        None,
+        "/v1/chat/completions",
+        "POST",
+        Some("gpt-5.4-mini"),
+        None,
+        Some("https://upstream.example/v1/chat/completions"),
+        Some(200),
+        usage,
+        None,
+        Some(250),
+    );
+
+    let logs = storage
+        .list_request_logs_paginated(None, None, None, None, 0, 10)
+        .expect("list request logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].initial_aggregate_api_id.as_deref(),
+        Some("ag_cost_multiplier")
+    );
+    assert_close(
+        logs[0].estimated_cost_usd.expect("estimated cost"),
+        0.0071625,
+    );
 }
 
 #[test]
