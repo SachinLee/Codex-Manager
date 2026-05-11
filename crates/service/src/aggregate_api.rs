@@ -303,9 +303,9 @@ mod tests {
         action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
         extract_model_ids_from_models_response, normalize_action_override,
         normalize_cost_multiplier, normalize_provider_type, normalize_provider_type_value,
-        parse_balance_snapshot, query_balance_path, probe_claude_endpoint, probe_codex_endpoint,
-        provider_default_url, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
-        ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
+        parse_balance_snapshot, query_balance_path, balance_query_paths, probe_claude_endpoint,
+        probe_codex_endpoint, provider_default_url, AGGREGATE_API_PROVIDER_CLAUDE,
+        AGGREGATE_API_PROVIDER_GEMINI, ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
     fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
@@ -509,6 +509,18 @@ mod tests {
         .expect("parse payload");
 
         assert_eq!(parse_balance_snapshot(&payload), None);
+    }
+
+    #[test]
+    fn balance_query_paths_try_newapi_fallbacks_for_unlabeled_apis() {
+        let mut api = aggregate_api_with_action(None);
+        api.supplier_name = Some("custom upstream".to_string());
+        api.url = "https://api.example.com/v1".to_string();
+
+        assert_eq!(
+            balance_query_paths(&api),
+            vec!["/user/balance", "/api/usage/token", "/api/user/self"]
+        );
     }
 
     #[test]
@@ -1049,9 +1061,9 @@ fn balance_query_paths(api: &AggregateApi) -> Vec<&'static str> {
     let text =
         format!("{} {}", api.supplier_name.as_deref().unwrap_or(""), api.url).to_ascii_lowercase();
     if text.contains("newapi") || text.contains("new-api") {
-        return vec!["/api/usage/token", "/api/user/self"];
+        return vec!["/api/usage/token", "/api/user/self", "/user/balance"];
     }
-    vec!["/user/balance"]
+    vec!["/user/balance", "/api/usage/token", "/api/user/self"]
 }
 
 fn query_balance_path(
