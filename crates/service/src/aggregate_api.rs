@@ -303,8 +303,8 @@ mod tests {
         action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
         extract_model_ids_from_models_response, normalize_action_override,
         normalize_cost_multiplier, normalize_provider_type, normalize_provider_type_value,
-        parse_balance_snapshot, probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
-        AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
+        parse_balance_snapshot, query_balance_path, probe_claude_endpoint, probe_codex_endpoint,
+        provider_default_url, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
         ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
@@ -493,6 +493,66 @@ mod tests {
         assert_eq!(balance.total, Some(3.0));
         assert_eq!(balance.unit.as_deref(), Some("USD"));
         assert_eq!(balance.plan_name.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn balance_parser_ignores_success_json_without_balance_signal() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "success": true,
+                "data": {
+                    "id": "user-1",
+                    "name": "Alice"
+                }
+            }"#,
+        )
+        .expect("parse payload");
+
+        assert_eq!(parse_balance_snapshot(&payload), None);
+    }
+
+    #[test]
+    fn balance_query_error_does_not_leak_query_secret_or_body() {
+        let server = Server::http("127.0.0.1:0").expect("start mock server");
+        let base_url = format!("http://{}", server.server_addr());
+        let (tx, rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive balance request")
+                .expect("balance request present");
+            tx.send(request.url().to_string())
+                .expect("send captured balance request");
+            request
+                .respond(
+                    Response::from_string(r#"{"error":"secret sk-balance-secret leaked"}"#)
+                        .with_status_code(StatusCode(401)),
+                )
+                .expect("respond balance request");
+        });
+
+        let mut api = aggregate_api_with_action(None);
+        api.url = base_url.clone();
+        api.auth_params_json = Some(
+            r#"{"location":"query","name":"api_key","headerValueFormat":"raw"}"#.to_string(),
+        );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build client");
+
+        let err = query_balance_path(&client, &api, "sk-balance-secret", "/user/balance")
+            .expect_err("balance request should fail");
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured request");
+        join.join().expect("join mock server");
+        assert!(captured.contains("api_key=sk-balance-secret"));
+        assert!(err.contains("/user/balance"));
+        assert!(!err.contains("sk-balance-secret"));
+        assert!(!err.contains("api_key="));
+        assert!(!err.contains("leaked"));
     }
 
     #[test]
@@ -921,6 +981,21 @@ fn parse_newapi_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
         });
     }
 
+    let has_balance_signal = [
+        "quota",
+        "remaining_quota",
+        "used_quota",
+        "total_quota",
+        "remaining",
+        "used",
+        "total",
+    ]
+    .iter()
+    .any(|key| data.get(*key).is_some());
+    if !has_balance_signal {
+        return None;
+    }
+
     let remaining = number_from_value(data.get("quota"))
         .map(|value| value / 500000.0)
         .or_else(|| number_from_value(data.get("remaining_quota")).map(|value| value / 500000.0))
@@ -990,7 +1065,17 @@ fn query_balance_path(
         .get(url.as_str())
         .header("accept", "application/json")
         .header("user-agent", "codex-manager/1.0");
-    let (request, updated_url) = apply_probe_auth(builder, url, api, secret)?;
+    let (request, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    let request = if updated_url != url {
+        let rebuilt = client
+            .get(updated_url.as_str())
+            .header("accept", "application/json")
+            .header("user-agent", "codex-manager/1.0");
+        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+        rebuilt
+    } else {
+        request
+    };
     let response = request
         .send()
         .map_err(|err| format!("balance request failed: {err}"))?;
@@ -999,9 +1084,8 @@ fn query_balance_path(
         .text()
         .map_err(|err| format!("read balance response failed: {err}"))?;
     if !(200..300).contains(&status) {
-        return Err(format!(
-            "balance endpoint {updated_url} returned HTTP {status}: {body}"
-        ));
+        let safe_url = normalize_probe_url(api.url.as_str(), path);
+        return Err(format!("balance endpoint {safe_url} returned HTTP {status}"));
     }
     let value: serde_json::Value = serde_json::from_str(body.as_str())
         .map_err(|err| format!("invalid balance JSON: {err}"))?;
