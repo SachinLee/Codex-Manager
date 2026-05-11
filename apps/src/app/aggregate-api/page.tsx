@@ -10,6 +10,7 @@ import {
   MoreVertical,
   Plus,
   RefreshCw,
+  WalletCards,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -57,7 +58,7 @@ import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivati
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
-import { AggregateApi, AggregateApiSecretResult } from "@/types";
+import { AggregateApi, AggregateApiBalanceResult, AggregateApiSecretResult } from "@/types";
 
 type TranslateFn = (key: string, values?: Record<string, string | number>) => string;
 
@@ -103,6 +104,21 @@ function getTestBadge(api: AggregateApi, t: TranslateFn) {
   return <Badge variant="secondary">{t("未测试")}</Badge>;
 }
 
+function formatBalanceValue(value: number | null, unit: string | null) {
+  if (value == null || !Number.isFinite(value)) return "--";
+  const normalizedUnit = (unit || "").trim();
+  const digits = ["USD", "CNY", "EUR", "JPY"].includes(normalizedUnit.toUpperCase())
+    ? 2
+    : Number.isInteger(value)
+      ? 0
+      : 2;
+  const formatted = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  }).format(value);
+  return normalizedUnit ? `${formatted} ${normalizedUnit}` : formatted;
+}
+
 export default function AggregateApiPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -123,6 +139,12 @@ export default function AggregateApiPage() {
   const [loadingSecretId, setLoadingSecretId] = useState<string | null>(null);
   const [testingApiId, setTestingApiId] = useState<string | null>(null);
   const [testingAll, setTestingAll] = useState(false);
+  const [balanceByApiId, setBalanceByApiId] = useState<
+    Record<string, AggregateApiBalanceResult>
+  >({});
+  const [queryingBalanceApiId, setQueryingBalanceApiId] = useState<string | null>(
+    null,
+  );
   const [togglingApiId, setTogglingApiId] = useState<string | null>(null);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, boolean>>(
     {},
@@ -223,6 +245,52 @@ export default function AggregateApiPage() {
     );
   };
 
+  const renderBalance = (api: AggregateApi) => {
+    const balance = balanceByApiId[api.id];
+    const querying = queryingBalanceApiId === api.id;
+    const content = !balance ? (
+      <span className="text-[11px] text-muted-foreground">{t("未查询")}</span>
+    ) : balance.ok ? (
+      <div className="grid gap-0.5">
+        <span className="text-xs font-semibold text-foreground">
+          {formatBalanceValue(balance.remaining, balance.unit)}
+        </span>
+        {balance.planName || balance.total != null || balance.used != null ? (
+          <span className="truncate text-[10px] text-muted-foreground">
+            {balance.planName ? `${balance.planName} · ` : ""}
+            {balance.used != null ? `${t("已用")} ${formatBalanceValue(balance.used, balance.unit)}` : ""}
+            {balance.total != null ? ` / ${formatBalanceValue(balance.total, balance.unit)}` : ""}
+          </span>
+        ) : null}
+      </div>
+    ) : (
+      <Tooltip>
+        <TooltipTrigger render={<span />} className="cursor-help text-[11px] text-red-500">
+          {t("查询失败")}
+        </TooltipTrigger>
+        <TooltipContent className="max-w-sm whitespace-pre-wrap break-words">
+          {balance.message || t("余额查询失败")}
+        </TooltipContent>
+      </Tooltip>
+    );
+
+    return (
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="min-w-0">{content}</div>
+        <Button
+          variant="outline"
+          size="icon"
+          className="h-7 w-7 shrink-0"
+          disabled={!isServiceReady || querying}
+          onClick={() => balanceMutation.mutate(api.id)}
+          title={t("刷新余额")}
+        >
+          <RefreshCw className={querying ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+        </Button>
+      </div>
+    );
+  };
+
   const testMutation = useMutation({
     mutationFn: (apiId: string) =>
       accountClient.testAggregateApiConnection(apiId),
@@ -282,6 +350,30 @@ export default function AggregateApiPage() {
     },
     onError: (error: unknown) => {
       toast.error(`${t("批量测试失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+
+  const balanceMutation = useMutation({
+    mutationFn: (apiId: string) => accountClient.queryAggregateApiBalance(apiId),
+    onMutate: async (apiId) => {
+      setQueryingBalanceApiId(apiId);
+    },
+    onSuccess: (result) => {
+      setBalanceByApiId((current) => ({
+        ...current,
+        [result.id]: result,
+      }));
+      if (result.ok) {
+        toast.success(t("余额已刷新"));
+        return;
+      }
+      toast.warning(result.message || t("余额查询失败"));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("余额查询失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    },
+    onSettled: (_result, _error, apiId) => {
+      setQueryingBalanceApiId((current) => (current === apiId ? null : current));
     },
   });
 
@@ -653,6 +745,12 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[148px]">{t("密钥")}</TableHead>
                   <TableHead className="w-[64px] text-center">{t("顺序")}</TableHead>
                   <TableHead className="w-[86px] text-center">{t("费用倍率")}</TableHead>
+                  <TableHead className="w-[150px]">
+                    <span className="inline-flex items-center gap-1.5">
+                      <WalletCards className="h-3.5 w-3.5" />
+                      {t("余额")}
+                    </span>
+                  </TableHead>
                   <TableHead className="w-[130px]">{t("测试连通性")}</TableHead>
                   <TableHead className="w-[112px] text-right pr-4">{t("状态")}</TableHead>
                   <TableHead className="table-sticky-action-head w-[112px] text-center">
@@ -680,6 +778,9 @@ export default function AggregateApiPage() {
                         <Skeleton className="mx-auto h-4 w-12" />
                       </TableCell>
                       <TableCell>
+                        <Skeleton className="h-6 w-24 rounded-full" />
+                      </TableCell>
+                      <TableCell>
                         <Skeleton className="h-6 w-20 rounded-full" />
                       </TableCell>
                       <TableCell>
@@ -692,7 +793,7 @@ export default function AggregateApiPage() {
                   ))
                 ) : filteredAggregateApis.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="h-48 text-center">
+                    <TableCell colSpan={9} className="h-48 text-center">
                       <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                         <ShieldCheck className="h-8 w-8 opacity-20" />
                         <p>
@@ -854,6 +955,9 @@ export default function AggregateApiPage() {
                         </TableCell>
                         <TableCell className="text-center font-mono text-xs text-muted-foreground">
                           x{Number(api.costMultiplier || 1).toFixed(2)}
+                        </TableCell>
+                        <TableCell className="overflow-hidden align-middle">
+                          {renderBalance(api)}
                         </TableCell>
                         <TableCell className="whitespace-nowrap align-middle">
                           <div className="flex flex-col items-start gap-1">

@@ -66,6 +66,20 @@ export interface AggregateApiTestResult {
   latencyMs: number;
 }
 
+export interface AggregateApiBalanceResult {
+  id: string;
+  ok: boolean;
+  provider: string;
+  remaining: number | null;
+  used: number | null;
+  total: number | null;
+  unit: string | null;
+  planName: string | null;
+  message: string | null;
+  queriedAt: number;
+  latencyMs: number;
+}
+
 export interface ApiKeyUsageStat {
   keyId: string;
   totalTokens: number;

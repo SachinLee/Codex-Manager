@@ -1,5 +1,6 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiCreateResult, AggregateApiSecretResult, AggregateApiSummary, AggregateApiTestResult,
+    AggregateApiBalanceResult, AggregateApiCreateResult, AggregateApiSecretResult,
+    AggregateApiSummary, AggregateApiTestResult,
 };
 use codexmanager_core::storage::{now_ts, AggregateApi};
 use reqwest::header::{HeaderName, HeaderValue};
@@ -20,6 +21,17 @@ pub(crate) const AGGREGATE_API_AUTH_USERPASS: &str = "userpass";
 const CLAUDE_DEFAULT_PROBE_MODEL: &str = "claude-haiku-4-5-20251001";
 const ALIBABA_CODING_PLAN_PROBE_MODEL: &str = "qwen3.5-plus";
 const MAX_DISCOVERED_CLAUDE_PROBE_MODELS: usize = 8;
+const DEFAULT_BALANCE_UNIT: &str = "USD";
+
+#[derive(Debug, Clone, PartialEq)]
+struct BalanceSnapshot {
+    remaining: Option<f64>,
+    used: Option<f64>,
+    total: Option<f64>,
+    unit: Option<String>,
+    plan_name: Option<String>,
+    message: Option<String>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,7 +303,7 @@ mod tests {
         action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
         extract_model_ids_from_models_response, normalize_action_override,
         normalize_cost_multiplier, normalize_provider_type, normalize_provider_type_value,
-        probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
+        parse_balance_snapshot, probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
         AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
         ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
@@ -439,6 +451,48 @@ mod tests {
                 "provider-model-c".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn balance_parser_accepts_deepseek_balance_shape() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "is_available": true,
+                "balance_infos": [
+                    { "total_balance": "12.50", "currency": "USD" }
+                ]
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot(&payload).expect("balance");
+
+        assert_eq!(balance.remaining, Some(12.5));
+        assert_eq!(balance.unit.as_deref(), Some("USD"));
+        assert_eq!(balance.message, None);
+    }
+
+    #[test]
+    fn balance_parser_accepts_newapi_quota_shape() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "success": true,
+                "data": {
+                    "group": "pro",
+                    "quota": 1000000,
+                    "used_quota": 500000
+                }
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot(&payload).expect("balance");
+
+        assert_eq!(balance.remaining, Some(2.0));
+        assert_eq!(balance.used, Some(1.0));
+        assert_eq!(balance.total, Some(3.0));
+        assert_eq!(balance.unit.as_deref(), Some("USD"));
+        assert_eq!(balance.plan_name.as_deref(), Some("pro"));
     }
 
     #[test]
@@ -794,6 +848,166 @@ fn apply_probe_auth(
         .header("x-api-key", secret.trim())
         .header("api-key", secret.trim());
     Ok((builder, url))
+}
+
+fn number_from_value(value: Option<&serde_json::Value>) -> Option<f64> {
+    match value {
+        Some(serde_json::Value::Number(number)) => number.as_f64(),
+        Some(serde_json::Value::String(raw)) => raw.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn string_from_value(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn parse_deepseek_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let is_valid = value
+        .get("is_available")
+        .or_else(|| value.get("is_active"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let first_balance = value
+        .get("balance_infos")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first());
+    let remaining = first_balance
+        .and_then(|item| number_from_value(item.get("total_balance")))
+        .or_else(|| number_from_value(value.get("balance")))
+        .or_else(|| number_from_value(value.pointer("/credits/balance")));
+    remaining?;
+    let unit = first_balance
+        .and_then(|item| string_from_value(item.get("currency")))
+        .or_else(|| string_from_value(value.get("currency")))
+        .or_else(|| Some(DEFAULT_BALANCE_UNIT.to_string()));
+    let message = if is_valid {
+        None
+    } else {
+        Some("balance api reported unavailable".to_string())
+    };
+
+    Some(BalanceSnapshot {
+        remaining,
+        used: None,
+        total: None,
+        unit,
+        plan_name: None,
+        message,
+    })
+}
+
+fn parse_newapi_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let data = value.get("data").unwrap_or(value);
+    let success = value
+        .get("success")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    if !success {
+        return Some(BalanceSnapshot {
+            remaining: None,
+            used: None,
+            total: None,
+            unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
+            plan_name: None,
+            message: string_from_value(value.get("message")).or_else(|| {
+                string_from_value(value.get("error"))
+                    .or_else(|| Some("balance query failed".to_string()))
+            }),
+        });
+    }
+
+    let remaining = number_from_value(data.get("quota"))
+        .map(|value| value / 500000.0)
+        .or_else(|| number_from_value(data.get("remaining_quota")).map(|value| value / 500000.0))
+        .or_else(|| number_from_value(data.get("remaining")));
+    let used = number_from_value(data.get("used_quota"))
+        .map(|value| value / 500000.0)
+        .or_else(|| number_from_value(data.get("used")));
+    let total = match (remaining, used) {
+        (Some(remaining), Some(used)) => Some(remaining + used),
+        _ => number_from_value(data.get("total_quota"))
+            .map(|value| value / 500000.0)
+            .or_else(|| number_from_value(data.get("total"))),
+    };
+
+    Some(BalanceSnapshot {
+        remaining,
+        used,
+        total,
+        unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
+        plan_name: string_from_value(data.get("group"))
+            .or_else(|| string_from_value(data.get("plan_name"))),
+        message: None,
+    })
+}
+
+fn parse_generic_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let remaining = number_from_value(value.get("balance"))
+        .or_else(|| number_from_value(value.get("remaining")))
+        .or_else(|| number_from_value(value.get("credit")))
+        .or_else(|| number_from_value(value.pointer("/credits/balance")));
+    remaining.map(|remaining| BalanceSnapshot {
+        remaining: Some(remaining),
+        used: number_from_value(value.get("used")),
+        total: number_from_value(value.get("total")),
+        unit: string_from_value(value.get("unit"))
+            .or_else(|| string_from_value(value.get("currency")))
+            .or_else(|| Some(DEFAULT_BALANCE_UNIT.to_string())),
+        plan_name: string_from_value(value.get("planName"))
+            .or_else(|| string_from_value(value.get("plan_name"))),
+        message: None,
+    })
+}
+
+fn parse_balance_snapshot(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    parse_deepseek_balance(value)
+        .or_else(|| parse_newapi_balance(value))
+        .or_else(|| parse_generic_balance(value))
+}
+
+fn balance_query_paths(api: &AggregateApi) -> Vec<&'static str> {
+    let text =
+        format!("{} {}", api.supplier_name.as_deref().unwrap_or(""), api.url).to_ascii_lowercase();
+    if text.contains("newapi") || text.contains("new-api") {
+        return vec!["/api/usage/token", "/api/user/self"];
+    }
+    vec!["/user/balance"]
+}
+
+fn query_balance_path(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    path: &str,
+) -> Result<(i64, BalanceSnapshot), String> {
+    let url = normalize_probe_url(api.url.as_str(), path);
+    let builder = client
+        .get(url.as_str())
+        .header("accept", "application/json")
+        .header("user-agent", "codex-manager/1.0");
+    let (request, updated_url) = apply_probe_auth(builder, url, api, secret)?;
+    let response = request
+        .send()
+        .map_err(|err| format!("balance request failed: {err}"))?;
+    let status = response.status().as_u16() as i64;
+    let body = response
+        .text()
+        .map_err(|err| format!("read balance response failed: {err}"))?;
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "balance endpoint {updated_url} returned HTTP {status}: {body}"
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_str(body.as_str())
+        .map_err(|err| format!("invalid balance JSON: {err}"))?;
+    let snapshot = parse_balance_snapshot(&value)
+        .ok_or_else(|| "balance response does not contain a supported balance shape".to_string())?;
+    Ok((status, snapshot))
 }
 
 /// 函数 `normalize_provider_type`
@@ -1866,6 +2080,65 @@ pub(crate) fn test_aggregate_api_connection(
         status_code,
         message,
         tested_at: now_ts(),
+        latency_ms: started_at.elapsed().as_millis() as i64,
+    })
+}
+
+pub(crate) fn query_aggregate_api_balance(
+    api_id: &str,
+) -> Result<AggregateApiBalanceResult, String> {
+    if api_id.is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let api = storage
+        .find_aggregate_api_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let secret = storage
+        .find_aggregate_api_secret_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api secret not found".to_string())?;
+
+    let client = gateway::fresh_upstream_client();
+    let started_at = Instant::now();
+    let provider = normalize_provider_type_value(api.provider_type.as_str());
+    let mut last_error = None;
+
+    for path in balance_query_paths(&api) {
+        match query_balance_path(&client, &api, &secret, path) {
+            Ok((_status, snapshot)) => {
+                return Ok(AggregateApiBalanceResult {
+                    id: api_id.to_string(),
+                    ok: snapshot.message.is_none(),
+                    provider,
+                    remaining: snapshot.remaining,
+                    used: snapshot.used,
+                    total: snapshot.total,
+                    unit: snapshot.unit,
+                    plan_name: snapshot.plan_name,
+                    message: snapshot.message,
+                    queried_at: now_ts(),
+                    latency_ms: started_at.elapsed().as_millis() as i64,
+                });
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    Ok(AggregateApiBalanceResult {
+        id: api_id.to_string(),
+        ok: false,
+        provider,
+        remaining: None,
+        used: None,
+        total: None,
+        unit: None,
+        plan_name: None,
+        message: last_error.or_else(|| Some("balance query failed".to_string())),
+        queried_at: now_ts(),
         latency_ms: started_at.elapsed().as_millis() as i64,
     })
 }

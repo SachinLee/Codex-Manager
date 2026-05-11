@@ -1,8 +1,8 @@
 use codexmanager_core::rpc::types::{AggregateApiListResult, JsonRpcRequest, JsonRpcResponse};
 
 use crate::{
-    create_aggregate_api, delete_aggregate_api, list_aggregate_apis, read_aggregate_api_secret,
-    test_aggregate_api_connection, update_aggregate_api,
+    create_aggregate_api, delete_aggregate_api, list_aggregate_apis, query_aggregate_api_balance,
+    read_aggregate_api_secret, test_aggregate_api_connection, update_aggregate_api,
 };
 
 /// 函数 `api_id_param`
@@ -123,6 +123,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "aggregateApi/testConnection" => {
             let api_id = api_id_param(req).unwrap_or("");
             super::value_or_error(test_aggregate_api_connection(api_id))
+        }
+        "aggregateApi/queryBalance" => {
+            let api_id = api_id_param(req).unwrap_or("");
+            super::value_or_error(query_aggregate_api_balance(api_id))
         }
         _ => return None,
     };

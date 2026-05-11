@@ -556,6 +556,22 @@ pub struct AggregateApiTestResult {
     pub latency_ms: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiBalanceResult {
+    pub id: String,
+    pub ok: bool,
+    pub provider: String,
+    pub remaining: Option<f64>,
+    pub used: Option<f64>,
+    pub total: Option<f64>,
+    pub unit: Option<String>,
+    pub plan_name: Option<String>,
+    pub message: Option<String>,
+    pub queried_at: i64,
+    pub latency_ms: i64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelsResponse {
     #[serde(default)]

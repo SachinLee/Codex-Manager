@@ -12,9 +12,7 @@ use crate::commands::shared::rpc_call_in_background;
 /// # 返回
 /// 返回函数执行结果
 #[tauri::command]
-pub async fn service_aggregate_api_list(
-    addr: Option<String>,
-) -> Result<serde_json::Value, String> {
+pub async fn service_aggregate_api_list(addr: Option<String>) -> Result<serde_json::Value, String> {
     rpc_call_in_background("aggregateApi/list", addr, None).await
 }
 
@@ -48,6 +46,7 @@ pub async fn service_aggregate_api_create(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
+    cost_multiplier: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -63,6 +62,7 @@ pub async fn service_aggregate_api_create(
         "actionCustomEnabled": action_custom_enabled,
         "action": action,
         "modelOverride": model_override,
+        "costMultiplier": cost_multiplier,
         "username": username,
         "password": password,
     });
@@ -102,6 +102,7 @@ pub async fn service_aggregate_api_update(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
+    cost_multiplier: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -119,6 +120,7 @@ pub async fn service_aggregate_api_update(
         "actionCustomEnabled": action_custom_enabled,
         "action": action,
         "modelOverride": model_override,
+        "costMultiplier": cost_multiplier,
         "username": username,
         "password": password,
     });
@@ -186,4 +188,13 @@ pub async fn service_aggregate_api_test_connection(
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({ "id": id });
     rpc_call_in_background("aggregateApi/testConnection", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_query_balance(
+    addr: Option<String>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "id": id });
+    rpc_call_in_background("aggregateApi/queryBalance", addr, Some(params)).await
 }

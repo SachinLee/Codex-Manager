@@ -5,6 +5,7 @@ import {
   AccountListResult,
   AccountUsage,
   AggregateApi,
+  AggregateApiBalanceResult,
   AggregateApiCreateResult,
   AggregateApiSecretResult,
   AggregateApiTestResult,
@@ -860,6 +861,23 @@ export function normalizeAggregateApiTestResult(payload: unknown): AggregateApiT
     statusCode: toNullableNumber(source.statusCode ?? source.status_code),
     message: asString(source.message) || null,
     testedAt: asInteger(source.testedAt ?? source.tested_at, 0, 0),
+    latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
+  };
+}
+
+export function normalizeAggregateApiBalanceResult(payload: unknown): AggregateApiBalanceResult {
+  const source = asObject(payload);
+  return {
+    id: asString(source.id),
+    ok: asBoolean(source.ok),
+    provider: asString(source.provider),
+    remaining: toNullableNumber(source.remaining),
+    used: toNullableNumber(source.used),
+    total: toNullableNumber(source.total),
+    unit: asString(source.unit) || null,
+    planName: asString(source.planName ?? source.plan_name) || null,
+    message: asString(source.message) || null,
+    queriedAt: asInteger(source.queriedAt ?? source.queried_at, 0, 0),
     latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
   };
 }

@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn candidate_skip_reason_for_proxy_allows_failover_when_head_account_is_inflight_limited() {
         let _guard = crate::gateway::acquire_account_inflight("acc-preferred");
-        let actual = candidate_skip_reason_for_proxy("acc-preferred", 0, 2, 1);
+        let actual = candidate_skip_reason_for_proxy("acc-preferred", 0, 2, 1, false);
         assert_eq!(actual, Some(CandidateSkipReason::Inflight));
     }
 }

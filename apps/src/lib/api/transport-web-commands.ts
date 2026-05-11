@@ -265,6 +265,9 @@ export function createWebCommandMap(
     service_aggregate_api_test_connection: {
       rpcMethod: "aggregateApi/testConnection",
     },
+    service_aggregate_api_query_balance: {
+      rpcMethod: "aggregateApi/queryBalance",
+    },
     service_login_start: {
       rpcMethod: "account/login/start",
       mapParams: (params) => ({

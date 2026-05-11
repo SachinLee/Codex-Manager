@@ -1,6 +1,7 @@
 import { invoke, withAddr } from "./transport";
 import {
   normalizeAccountList,
+  normalizeAggregateApiBalanceResult,
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
@@ -41,6 +42,7 @@ import {
   AccountListResult,
   AccountUsage,
   AggregateApi,
+  AggregateApiBalanceResult,
   AggregateApiCreateResult,
   AggregateApiSecretResult,
   AggregateApiTestResult,
@@ -573,6 +575,13 @@ export const accountClient = {
       withAddr({ id: apiId })
     );
     return normalizeAggregateApiTestResult(result);
+  },
+  async queryAggregateApiBalance(apiId: string): Promise<AggregateApiBalanceResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_query_balance",
+      withAddr({ id: apiId })
+    );
+    return normalizeAggregateApiBalanceResult(result);
   },
 
   async listApiKeys(): Promise<ApiKey[]> {
