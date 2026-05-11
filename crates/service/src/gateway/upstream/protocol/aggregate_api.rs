@@ -964,7 +964,11 @@ pub(in super::super) fn proxy_aggregate_request(
                 last_attempt_supplier_name = candidate_supplier_name.clone();
                 last_attempt_cost_multiplier = Some(candidate.cost_multiplier);
                 last_attempt_error = Some(message);
-                last_failure_status = 502;
+                last_failure_status = status_code;
+                // 额度耗尽或认证失败：无需重试当前 channel，立即切换到下一个
+                if matches!(status_code, 429 | 401 | 403) {
+                    break;
+                }
                 if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
                     continue;
                 }

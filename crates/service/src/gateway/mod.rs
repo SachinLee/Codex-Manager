@@ -221,8 +221,9 @@ pub(crate) fn record_http_queue_enqueue_failure() {
 #[cfg(test)]
 use cooldown::cooldown_reason_for_status;
 use cooldown::{
-    clear_account_cooldown, is_account_in_cooldown, mark_account_cooldown,
-    mark_account_cooldown_for_status, CooldownReason,
+    account_last_cooldown_reason, clear_account_cooldown, is_account_in_cooldown,
+    mark_account_cooldown, mark_account_cooldown_for_status, network_consecutive_failure_count,
+    reset_network_consecutive_failure, CooldownReason, BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP,
 };
 #[cfg(test)]
 pub(super) use failover::should_failover_after_refresh;

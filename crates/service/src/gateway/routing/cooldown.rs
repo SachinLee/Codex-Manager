@@ -16,12 +16,22 @@ const ACCOUNT_RATE_LIMIT_OFFENSE_FORGET_AFTER_SECS: i64 = 30 * 60;
 
 const ACCOUNT_COOLDOWN_CLEANUP_INTERVAL_SECS: i64 = 30;
 
+// 绑定账号连续网络失败超过此阈值后，升级为标准冷却跳过，避免持续轰炸不通的账号
+pub(super) const BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP: u32 = 3;
+// 超过此时间无新网络失败，则重置连续计数（认为网络已恢复）
+const NETWORK_CONSECUTIVE_FORGET_AFTER_SECS: i64 = 5 * 60;
+
 #[derive(Default)]
 struct AccountCooldownState {
     entries: HashMap<String, i64>,
     offense_counts: HashMap<String, u32>,
     offense_last_at: HashMap<String, i64>,
     last_cleanup_at: i64,
+    // Task 1: 记录每个账号最近一次冷却原因，供 bound 账号跳过决策使用
+    last_reason: HashMap<String, CooldownReason>,
+    // Task 6: 跨请求网络连续失败计数，防止持续中断时无效轰炸
+    network_consecutive_failures: HashMap<String, u32>,
+    network_last_failure_at: HashMap<String, i64>,
 }
 
 static ACCOUNT_COOLDOWN_UNTIL: OnceLock<Mutex<AccountCooldownState>> = OnceLock::new();
@@ -169,6 +179,53 @@ pub(super) fn cooldown_reason_for_status(status: u16) -> CooldownReason {
     }
 }
 
+/// 返回账号最近一次被标记冷却时的原因，用于 bound 账号的跳过决策。
+/// 若账号未曾被标记或冷却已过期清理，返回 None。
+pub(super) fn account_last_cooldown_reason(account_id: &str) -> Option<CooldownReason> {
+    let lock = ACCOUNT_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(AccountCooldownState::default()));
+    let state = crate::lock_utils::lock_recover(lock, "account_cooldown_until");
+    state.last_reason.get(account_id).copied()
+}
+
+/// 累积网络连续失败计数，超过遗忘窗口则先重置再累积。
+fn increment_network_consecutive_failure(
+    consecutive: &mut HashMap<String, u32>,
+    last_at: &mut HashMap<String, i64>,
+    account_id: &str,
+    now: i64,
+) {
+    if let Some(last) = last_at.get(account_id).copied() {
+        if now.saturating_sub(last) > NETWORK_CONSECUTIVE_FORGET_AFTER_SECS {
+            consecutive.remove(account_id);
+        }
+    }
+    let count = consecutive
+        .entry(account_id.to_string())
+        .and_modify(|c| *c = c.saturating_add(1))
+        .or_insert(1);
+    let _ = count;
+    last_at.insert(account_id.to_string(), now);
+}
+
+/// 返回账号当前跨请求的网络连续失败次数。
+pub(super) fn network_consecutive_failure_count(account_id: &str) -> u32 {
+    let lock = ACCOUNT_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(AccountCooldownState::default()));
+    let state = crate::lock_utils::lock_recover(lock, "account_cooldown_until");
+    state
+        .network_consecutive_failures
+        .get(account_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// 重试成功后重置网络连续失败计数，避免偶发抖动恢复后仍被误判为持续中断。
+pub(super) fn reset_network_consecutive_failure(account_id: &str) {
+    let lock = ACCOUNT_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(AccountCooldownState::default()));
+    let mut state = crate::lock_utils::lock_recover(lock, "account_cooldown_until");
+    state.network_consecutive_failures.remove(account_id);
+    state.network_last_failure_at.remove(account_id);
+}
+
 /// 函数 `is_account_in_cooldown`
 ///
 /// 作者: gaohongshun
@@ -221,15 +278,32 @@ pub(super) fn mark_account_cooldown(account_id: &str, reason: CooldownReason) {
             now,
         );
     // 中文注释：同账号短时间内可能触发不同失败类型；保留更晚的 until 可避免被较短冷却覆盖。
-    match state.entries.get_mut(account_id) {
+    // last_reason 仅在 entries 实际更新时同步，避免短冷却原因覆盖长冷却原因。
+    let entry_updated = match state.entries.get_mut(account_id) {
         Some(until) => {
             if cooldown_until > *until {
                 *until = cooldown_until;
+                true
+            } else {
+                false
             }
         }
         None => {
             state.entries.insert(account_id.to_string(), cooldown_until);
+            true
         }
+    };
+    if entry_updated {
+        state.last_reason.insert(account_id.to_string(), reason);
+    }
+    // Task 6: 网络失败时始终累积计数，无论冷却 entry 是否更新
+    if reason == CooldownReason::Network {
+        increment_network_consecutive_failure(
+            &mut state.network_consecutive_failures,
+            &mut state.network_last_failure_at,
+            account_id,
+            now,
+        );
     }
 }
 
@@ -264,6 +338,7 @@ pub(super) fn clear_account_cooldown(account_id: &str) {
     let mut guard = crate::lock_utils::lock_recover(lock, "account_cooldown_until");
     let state = &mut *guard;
     state.entries.remove(account_id);
+    state.last_reason.remove(account_id);
     decay_offense_count_for_success(
         &mut state.offense_counts,
         &mut state.offense_last_at,
@@ -290,7 +365,16 @@ fn maybe_cleanup_expired_cooldowns(state: &mut AccountCooldownState, now: i64) {
         return;
     }
     state.last_cleanup_at = now;
-    state.entries.retain(|_, until| *until > now);
+    let expired_accounts: Vec<String> = state
+        .entries
+        .iter()
+        .filter(|(_, until)| **until <= now)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for account_id in &expired_accounts {
+        state.entries.remove(account_id);
+        state.last_reason.remove(account_id);
+    }
     let mut stale_offenses = Vec::new();
     for (account_id, last) in state.offense_last_at.iter() {
         if now.saturating_sub(*last) > ACCOUNT_RATE_LIMIT_OFFENSE_FORGET_AFTER_SECS {
@@ -300,6 +384,17 @@ fn maybe_cleanup_expired_cooldowns(state: &mut AccountCooldownState, now: i64) {
     for account_id in stale_offenses {
         state.offense_last_at.remove(&account_id);
         state.offense_counts.remove(&account_id);
+    }
+    // Task 6: 清理已超过遗忘窗口的网络连续失败记录
+    let mut stale_network = Vec::new();
+    for (account_id, last) in state.network_last_failure_at.iter() {
+        if now.saturating_sub(*last) > NETWORK_CONSECUTIVE_FORGET_AFTER_SECS {
+            stale_network.push(account_id.clone());
+        }
+    }
+    for account_id in stale_network {
+        state.network_last_failure_at.remove(&account_id);
+        state.network_consecutive_failures.remove(&account_id);
     }
 }
 
@@ -321,6 +416,9 @@ pub(super) fn clear_runtime_state() {
     state.offense_counts.clear();
     state.offense_last_at.clear();
     state.last_cleanup_at = 0;
+    state.last_reason.clear();
+    state.network_consecutive_failures.clear();
+    state.network_last_failure_at.clear();
 }
 
 /// 函数 `clear_account_cooldown_for_tests`

@@ -99,12 +99,14 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         &self,
         account_id: &str,
         idx: usize,
+        is_bound_account: bool,
     ) -> Option<candidates::CandidateSkipReason> {
         candidates::candidate_skip_reason_for_proxy(
             account_id,
             idx,
             self.candidate_count,
             self.account_max_inflight,
+            is_bound_account,
         )
     }
 

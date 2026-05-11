@@ -96,6 +96,27 @@ pub(in super::super) fn allow_openai_fallback_for_account(
     matches!(plan.normalized.as_str(), "free" | "go" | "plus" | "pro")
 }
 
+/// 判断 bound 账号是否可以绕过冷却继续尝试。
+/// 只有在"偶发网络错误且未达到连续失败阈值"时才绕过；
+/// RateLimited / Challenge 以及连续失败超阈值时仍跳过。
+fn should_bypass_cooldown_for_bound_account(account_id: &str) -> bool {
+    use super::super::super::{
+        account_last_cooldown_reason, network_consecutive_failure_count, CooldownReason,
+        BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP,
+    };
+    match account_last_cooldown_reason(account_id) {
+        Some(CooldownReason::Network)
+        | Some(CooldownReason::Upstream5xx)
+        | Some(CooldownReason::Upstream4xx)
+        | Some(CooldownReason::Default) => {
+            // 连续失败未超阈值才放行
+            network_consecutive_failure_count(account_id) < BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP
+        }
+        // RateLimited / Challenge：不绕过，直接跳过
+        _ => false,
+    }
+}
+
 /// 函数 `candidate_skip_reason_for_proxy`
 ///
 /// 作者: gaohongshun
@@ -112,13 +133,18 @@ pub(in super::super) fn candidate_skip_reason_for_proxy(
     idx: usize,
     candidate_count: usize,
     account_max_inflight: usize,
+    is_bound_account: bool,
 ) -> Option<CandidateSkipReason> {
     let has_more_candidates = idx + 1 < candidate_count;
     if super::super::super::is_account_in_cooldown(account_id) && has_more_candidates {
-        super::super::super::record_gateway_candidate_skip(
-            super::super::super::GatewayCandidateSkipReason::Cooldown,
-        );
-        return Some(CandidateSkipReason::Cooldown);
+        if is_bound_account && should_bypass_cooldown_for_bound_account(account_id) {
+            // 偶发网络错误：绑定账号不跳过，保持会话连续性
+        } else {
+            super::super::super::record_gateway_candidate_skip(
+                super::super::super::GatewayCandidateSkipReason::Cooldown,
+            );
+            return Some(CandidateSkipReason::Cooldown);
+        }
     }
 
     if account_max_inflight > 0

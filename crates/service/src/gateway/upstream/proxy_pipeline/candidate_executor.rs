@@ -187,7 +187,7 @@ pub(in super::super) fn execute_candidate_sequence(
     let mut skipped_inflight = 0usize;
     let mut last_attempt_url = None;
     let mut last_attempt_error = None;
-    for (idx, (account, mut token)) in candidates.into_iter().enumerate() {
+    'candidates: for (idx, (account, mut token)) in candidates.into_iter().enumerate() {
         if deadline::is_expired(request_deadline) {
             let request = request
                 .take()
@@ -205,6 +205,12 @@ pub(in super::super) fn execute_candidate_sequence(
 
         let strip_session_affinity =
             state.strip_session_affinity(&account, idx, setup.anthropic_has_thread_anchor);
+        // 是否是绑定账号（首位候选且会话绑定已命中），用于冷却跳过及网络重试决策
+        let is_bound_account = idx == 0
+            && setup
+                .conversation_routing
+                .as_ref()
+                .is_some_and(|r| r.binding_selected);
         let attempt_thread = super::super::super::conversation_binding::resolve_attempt_thread(
             setup.conversation_routing.as_ref(),
             &account,
@@ -239,7 +245,7 @@ pub(in super::super) fn execute_candidate_sequence(
             attempt_prompt_cache_key,
         );
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
-        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx) {
+        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, is_bound_account) {
             context.log_candidate_skip(&account.id, idx, skip_reason);
             match skip_reason {
                 super::super::support::candidates::CandidateSkipReason::Cooldown => {
@@ -284,7 +290,7 @@ pub(in super::super) fn execute_candidate_sequence(
 
         let mut inflight_guard = Some(super::super::super::acquire_account_inflight(&account.id));
         let mut attempt_trace = CandidateAttemptTrace::default();
-        let decision = run_candidate_attempt(CandidateAttemptParams {
+        let first_decision = run_candidate_attempt(CandidateAttemptParams {
             storage,
             method,
             request_ctx,
@@ -304,6 +310,79 @@ pub(in super::super) fn execute_candidate_sequence(
             setup,
             trace: &mut attempt_trace,
         });
+
+        // 对 bound 账号的网络错误，在切换账号前原地重试，以保留会话上下文。
+        // 'resolve 块：成功时 break 出新 decision，重试耗尽时 continue 外层循环。
+        const MAX_BOUND_NETWORK_RETRIES: u32 = 2;
+        let decision = 'resolve: {
+            if let CandidateUpstreamDecision::Failover = &first_decision {
+                let is_network_failover = is_bound_account
+                    && super::super::super::account_last_cooldown_reason(&account.id)
+                        == Some(super::super::super::CooldownReason::Network);
+                if is_network_failover {
+                    for retry in 0..MAX_BOUND_NETWORK_RETRIES {
+                        let can_wait =
+                            super::super::support::backoff::sleep_with_exponential_jitter(
+                                std::time::Duration::from_millis(300),
+                                std::time::Duration::from_secs(2),
+                                retry,
+                                request_deadline,
+                            );
+                        if !can_wait || deadline::is_expired(request_deadline) {
+                            break;
+                        }
+                        super::super::super::clear_account_cooldown(&account.id);
+                        let request_ref = request
+                            .as_ref()
+                            .ok_or_else(|| "request already consumed".to_string())?;
+                        let retry_ctx = UpstreamRequestContext::from_request(
+                            request_ref,
+                            context.protocol_type(),
+                        );
+                        let mut retry_trace = CandidateAttemptTrace::default();
+                        let retry_decision = run_candidate_attempt(CandidateAttemptParams {
+                            storage,
+                            method,
+                            request_ctx: retry_ctx,
+                            incoming_headers: &attempt_headers,
+                            body: &body_for_attempt,
+                            upstream_is_stream,
+                            path,
+                            request_deadline,
+                            account: &account,
+                            token: &mut token,
+                            strip_session_affinity,
+                            debug,
+                            allow_openai_fallback: attempt_allow_openai_fallback,
+                            disable_challenge_stateless_retry,
+                            has_more_candidates: context.has_more_candidates(idx),
+                            context,
+                            setup,
+                            trace: &mut retry_trace,
+                        });
+                        attempt_trace = retry_trace;
+                        match retry_decision {
+                            CandidateUpstreamDecision::Failover => {
+                                // 本次重试仍是网络错误，继续下一轮
+                            }
+                            other => {
+                                // 重试成功，重置网络连续失败计数
+                                super::super::super::reset_network_consecutive_failure(&account.id);
+                                break 'resolve other;
+                            }
+                        }
+                    }
+                    // 所有重试耗尽，正常 failover 到下一候选
+                    record_failover_attempt(
+                        &mut attempt_trace,
+                        &mut last_attempt_url,
+                        &mut last_attempt_error,
+                    );
+                    continue 'candidates;
+                }
+            }
+            first_decision
+        };
 
         match decision {
             CandidateUpstreamDecision::Failover => {
