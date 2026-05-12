@@ -421,6 +421,7 @@ pub struct AggregateApiSummary {
     pub action: Option<String>,
     pub model_override: Option<String>,
     pub cost_multiplier: f64,
+    pub daily_spend_limit_usd: Option<f64>,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,

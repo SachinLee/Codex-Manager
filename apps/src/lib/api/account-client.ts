@@ -141,6 +141,7 @@ interface AggregateApiPayload {
   action?: string | null;
   modelOverride?: string | null;
   costMultiplier?: number | null;
+  dailySpendLimitUsd?: number | null;
   username?: string | null;
   password?: string | null;
 }
@@ -538,6 +539,10 @@ export const accountClient = {
           typeof params.modelOverride === "string" ? params.modelOverride : null,
         costMultiplier:
           typeof params.costMultiplier === "number" ? params.costMultiplier : null,
+        dailySpendLimitUsd:
+          typeof params.dailySpendLimitUsd === "number"
+            ? params.dailySpendLimitUsd
+            : null,
         username: params.username || null,
         password: params.password || null,
       })
@@ -570,6 +575,10 @@ export const accountClient = {
           typeof params.modelOverride === "string" ? params.modelOverride : null,
         costMultiplier:
           typeof params.costMultiplier === "number" ? params.costMultiplier : null,
+        dailySpendLimitUsd:
+          typeof params.dailySpendLimitUsd === "number"
+            ? params.dailySpendLimitUsd
+            : null,
         username: params.username || null,
         password: params.password || null,
       })

@@ -15,6 +15,8 @@ use crate::gateway::request_log::RequestLogUsage;
 use serde_json::Value;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
+pub(crate) const AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED: &str =
+    "aggregate_api_daily_spend_limit_exhausted";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -386,6 +388,45 @@ fn normalize_candidate_order(mut candidates: Vec<AggregateApi>) -> Vec<Aggregate
     candidates
 }
 
+fn aggregate_api_daily_spend_limit_reached(
+    storage: &Storage,
+    candidate: &AggregateApi,
+    day_start_ts: i64,
+    day_end_ts: i64,
+) -> Result<bool, String> {
+    let Some(limit) = candidate
+        .daily_spend_limit_usd
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return Ok(false);
+    };
+    let today_cost = storage
+        .aggregate_api_estimated_cost_between(candidate.id.as_str(), day_start_ts, day_end_ts)
+        .map_err(|err| format!("aggregate api daily spend check failed: {err}"))?;
+    Ok(today_cost >= limit)
+}
+
+fn filter_daily_spend_limited_candidates(
+    storage: &Storage,
+    candidates: Vec<AggregateApi>,
+) -> Result<(Vec<AggregateApi>, usize), String> {
+    if candidates.is_empty() {
+        return Ok((candidates, 0));
+    }
+    let (day_start_ts, day_end_ts) =
+        crate::requestlog::day_range::resolve_day_bounds_ts(None, None)?;
+    let mut skipped = 0usize;
+    let mut available = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if aggregate_api_daily_spend_limit_reached(storage, &candidate, day_start_ts, day_end_ts)? {
+            skipped += 1;
+        } else {
+            available.push(candidate);
+        }
+    }
+    Ok((available, skipped))
+}
+
 /// 函数 `apply_gateway_route_strategy_to_aggregate_candidates`
 ///
 /// 作者: gaohongshun
@@ -696,7 +737,16 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
         }
     }
 
+    let had_configured_candidates = !candidates.is_empty();
+    let (candidates, skipped_daily_limit) =
+        filter_daily_spend_limited_candidates(storage, candidates)?;
+
     if candidates.is_empty() {
+        if had_configured_candidates && skipped_daily_limit > 0 {
+            return Err(format!(
+                "{AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED} for provider {provider_type}"
+            ));
+        }
         Err(format!(
             "aggregate api not found for provider {provider_type}"
         ))
@@ -1174,6 +1224,7 @@ mod bridge_tests {
             action: None,
             model_override: None,
             cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: sort,
             updated_at: sort,
@@ -1321,7 +1372,7 @@ mod bridge_tests {
 
 #[cfg(test)]
 mod tests {
-    use codexmanager_core::storage::{now_ts, AggregateApi, Storage};
+    use codexmanager_core::storage::{now_ts, AggregateApi, RequestTokenStat, Storage};
 
     use super::{
         build_upstream_url, effective_action_path, resolve_aggregate_api_rotation_candidates,
@@ -1346,6 +1397,7 @@ mod tests {
             action: action.map(str::to_string),
             model_override: None,
             cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -1353,6 +1405,50 @@ mod tests {
             last_test_status: None,
             last_test_error: None,
         }
+    }
+
+    fn aggregate_api_with_daily_limit(id: &str, sort: i64, limit: Option<f64>) -> AggregateApi {
+        let now = now_ts();
+        AggregateApi {
+            id: id.to_string(),
+            provider_type: AGGREGATE_API_PROVIDER_CODEX.to_string(),
+            supplier_name: Some(id.to_string()),
+            sort,
+            url: format!("https://{id}.example.com"),
+            auth_type: AGGREGATE_API_AUTH_APIKEY.to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: limit,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+        }
+    }
+
+    fn insert_aggregate_api_cost(storage: &Storage, aggregate_api_id: &str, cost: f64) {
+        let request_log_id = storage
+            .insert_request_log(&codexmanager_core::storage::RequestLog {
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code: Some(200),
+                created_at: now_ts(),
+                ..Default::default()
+            })
+            .expect("insert request log");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                aggregate_api_id: Some(aggregate_api_id.to_string()),
+                estimated_cost_usd: Some(cost),
+                created_at: now_ts(),
+                ..Default::default()
+            })
+            .expect("insert request token stat");
     }
 
     #[test]
@@ -1430,6 +1526,7 @@ mod tests {
                     action: None,
                     model_override: None,
                     cost_multiplier: 1.0,
+                    daily_spend_limit_usd: None,
                     status: "active".to_string(),
                     created_at: now,
                     updated_at: now,
@@ -1447,6 +1544,74 @@ mod tests {
             .map(|item| item.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(candidate_ids, vec!["agg-gemini"]);
+    }
+
+    #[test]
+    fn aggregate_candidates_skip_apis_that_reached_daily_spend_limit() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let limited = aggregate_api_with_daily_limit("agg-limited", 0, Some(1.0));
+        let available = aggregate_api_with_daily_limit("agg-available", 1, Some(10.0));
+        storage
+            .insert_aggregate_api(&limited)
+            .expect("insert limited api");
+        storage
+            .insert_aggregate_api(&available)
+            .expect("insert available api");
+        insert_aggregate_api_cost(&storage, "agg-limited", 1.25);
+
+        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
+            .expect("resolve candidates");
+        let candidate_ids = candidates
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(candidate_ids, vec!["agg-available"]);
+    }
+
+    #[test]
+    fn preferred_aggregate_api_cannot_bypass_daily_spend_limit() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let limited = aggregate_api_with_daily_limit("agg-preferred-limited", 0, Some(1.0));
+        let available = aggregate_api_with_daily_limit("agg-available", 1, None);
+        storage
+            .insert_aggregate_api(&limited)
+            .expect("insert limited api");
+        storage
+            .insert_aggregate_api(&available)
+            .expect("insert available api");
+        insert_aggregate_api_cost(&storage, "agg-preferred-limited", 1.0);
+
+        let candidates = resolve_aggregate_api_rotation_candidates(
+            &storage,
+            "openai_compat",
+            Some("agg-preferred-limited"),
+        )
+        .expect("resolve candidates");
+        let candidate_ids = candidates
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(candidate_ids, vec!["agg-available"]);
+    }
+
+    #[test]
+    fn all_daily_limited_aggregate_candidates_return_fallback_signal() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let limited = aggregate_api_with_daily_limit("agg-limited", 0, Some(1.0));
+        storage
+            .insert_aggregate_api(&limited)
+            .expect("insert limited api");
+        insert_aggregate_api_cost(&storage, "agg-limited", 1.0);
+
+        let err = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
+            .expect_err("all candidates should be exhausted");
+
+        assert!(err.contains(super::AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED));
     }
 
     /// 函数 `final_error_promotes_success_status_to_bad_gateway`

@@ -53,7 +53,7 @@ import { accountClient } from "@/lib/api/account-client";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
 import {
   formatCacheRateValue,
-  formatTokenAmount,
+  formatMillionTokenAmount,
   formatUsdAmount,
 } from "@/lib/utils/billing";
 import { formatTsFromSeconds } from "@/lib/utils/usage";
@@ -333,7 +333,12 @@ export default function AggregateApiPage() {
 
   const renderDailyUsage = (api: AggregateApi) => {
     const usage = aggregateApiDailyUsageById.get(api.id);
-    if (!usage || usage.requestCount <= 0) {
+    const limit = api.dailySpendLimitUsd;
+    const cost = usage?.estimatedCostUsd ?? 0;
+    const hasLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0;
+    const reachedLimit = hasLimit && cost >= limit;
+    const ratio = hasLimit ? Math.min(1, Math.max(0, cost / limit)) : 0;
+    if ((!usage || usage.requestCount <= 0) && !hasLimit) {
       return (
         <span className="text-[11px] text-muted-foreground">
           {t("今日无请求")}
@@ -344,18 +349,46 @@ export default function AggregateApiPage() {
       <Tooltip>
         <TooltipTrigger
           render={<div />}
-          className="grid cursor-help gap-0.5 text-left"
+          className="grid cursor-help gap-1 text-left"
         >
-          <span className="truncate text-xs font-semibold text-foreground">
-            {formatTokenAmount(usage.totalTokens)} tok
+          <span
+            className={
+              reachedLimit
+                ? "truncate text-xs font-semibold text-amber-500"
+                : "truncate text-xs font-semibold text-foreground"
+            }
+          >
+            {usage && usage.requestCount > 0
+              ? `${formatMillionTokenAmount(usage.totalTokens)} tok`
+              : t("今日无请求")}
           </span>
           <span className="truncate text-[10px] text-muted-foreground">
-            {formatUsdAmount(usage.estimatedCostUsd)} · cache{" "}
-            {formatCacheRateValue(usage.cacheHitRate)}
+            {hasLimit
+              ? `${formatUsdAmount(cost)} / ${formatUsdAmount(limit)}`
+              : `${formatUsdAmount(cost)} · cache ${formatCacheRateValue(
+                  usage?.cacheHitRate ?? 0,
+                )}`}
           </span>
+          {hasLimit ? (
+            <span className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <span
+                className={
+                  reachedLimit
+                    ? "block h-full bg-amber-500"
+                    : "block h-full bg-primary"
+                }
+                style={{ width: `${Math.round(ratio * 100)}%` }}
+              />
+            </span>
+          ) : null}
+          {reachedLimit ? (
+            <span className="truncate text-[10px] text-amber-500">
+              {t("今日已达上限")}
+            </span>
+          ) : null}
         </TooltipTrigger>
         <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
-          {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatTokenAmount(usage.cachedInputTokens)} / ${t("计费输入")} ${formatTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatTokenAmount(usage.reasoningOutputTokens)}`}
+          {`${t("请求")} ${usage?.requestCount ?? 0}\n${t("今日费用")} ${formatUsdAmount(cost)}${hasLimit ? ` / ${formatUsdAmount(limit)}` : ""}\n${t("输入")} ${formatMillionTokenAmount(usage?.inputTokens ?? 0)} / ${t("缓存")} ${formatMillionTokenAmount(usage?.cachedInputTokens ?? 0)} / ${t("计费输入")} ${formatMillionTokenAmount(usage?.billableInputTokens ?? 0)}\n${t("输出")} ${formatMillionTokenAmount(usage?.outputTokens ?? 0)} / ${t("推理输出")} ${formatMillionTokenAmount(usage?.reasoningOutputTokens ?? 0)}`}
         </TooltipContent>
       </Tooltip>
     );
@@ -815,7 +848,7 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[148px]">{t("密钥")}</TableHead>
                   <TableHead className="w-[64px] text-center">{t("顺序")}</TableHead>
                   <TableHead className="w-[86px] text-center">{t("费用倍率")}</TableHead>
-                  <TableHead className="w-[138px]">{t("今日使用")}</TableHead>
+                  <TableHead className="w-[156px]">{t("今日使用")}</TableHead>
                   <TableHead className="w-[150px]">
                     <span className="inline-flex items-center gap-1.5">
                       <WalletCards className="h-3.5 w-3.5" />

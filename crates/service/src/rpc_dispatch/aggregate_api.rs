@@ -53,6 +53,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let action = super::string_param(req, "action");
             let model_override = super::string_param(req, "modelOverride");
             let cost_multiplier = super::f64_param(req, "costMultiplier");
+            let daily_spend_limit_usd = super::f64_param(req, "dailySpendLimitUsd");
             let username = super::string_param(req, "username");
             let password = super::string_param(req, "password");
             super::value_or_error(create_aggregate_api(
@@ -68,6 +69,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 action,
                 model_override,
                 cost_multiplier,
+                daily_spend_limit_usd,
                 username,
                 password,
             ))
@@ -91,6 +93,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let action = super::string_param(req, "action");
             let model_override = super::string_param(req, "modelOverride");
             let cost_multiplier = super::f64_param(req, "costMultiplier");
+            let daily_spend_limit_usd = super::f64_param(req, "dailySpendLimitUsd");
             let username = super::string_param(req, "username");
             let password = super::string_param(req, "password");
             super::ok_or_error(update_aggregate_api(
@@ -108,6 +111,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 action,
                 model_override,
                 cost_multiplier,
+                daily_spend_limit_usd,
                 username,
                 password,
             ))
@@ -301,7 +305,8 @@ mod tests {
                 "url": "https://upstream.example/v1",
                 "key": "sk-test",
                 "authType": "apikey",
-                "costMultiplier": 2.75
+                "costMultiplier": 2.75,
+                "dailySpendLimitUsd": 4.5
             }),
         ))
         .expect("create response");
@@ -325,6 +330,12 @@ mod tests {
                 .and_then(|value| value.as_f64())
                 .expect("cost multiplier"),
             2.75
+        );
+        assert_eq!(
+            item.get("dailySpendLimitUsd")
+                .and_then(|value| value.as_f64())
+                .expect("daily spend limit"),
+            4.5
         );
 
         let _ = std::fs::remove_file(db_path);

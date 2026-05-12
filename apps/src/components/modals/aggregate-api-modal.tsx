@@ -94,6 +94,7 @@ export function AggregateApiModal({
   const [action, setAction] = useState("");
   const [modelOverride, setModelOverride] = useState("");
   const [costMultiplierDraft, setCostMultiplierDraft] = useState("1");
+  const [dailySpendLimitDraft, setDailySpendLimitDraft] = useState("");
   const [key, setKey] = useState("");
   const [generatedKey, setGeneratedKey] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -158,6 +159,9 @@ export function AggregateApiModal({
     setActionCustomEnabled(aggregateApi?.action !== null && aggregateApi?.action !== undefined);
     setModelOverride(aggregateApi?.modelOverride || "");
     setCostMultiplierDraft(String(aggregateApi?.costMultiplier ?? 1));
+    setDailySpendLimitDraft(
+      aggregateApi?.dailySpendLimitUsd ? String(aggregateApi.dailySpendLimitUsd) : ""
+    );
     setKey("");
     setUsername("");
     setPassword("");
@@ -211,6 +215,18 @@ export function AggregateApiModal({
       parsedCostMultiplier > 100
     ) {
       toast.error(t("费用倍率必须大于 0 且不超过 100"));
+      return;
+    }
+    const rawDailySpendLimit = dailySpendLimitDraft.trim();
+    const parsedDailySpendLimit = rawDailySpendLimit
+      ? Number(rawDailySpendLimit)
+      : 0;
+    if (
+      !Number.isFinite(parsedDailySpendLimit) ||
+      parsedDailySpendLimit < 0 ||
+      parsedDailySpendLimit > 1_000_000
+    ) {
+      toast.error(t("每日消费上限必须大于等于 0 且不超过 1000000"));
       return;
     }
     if (!aggregateApi?.id && !key.trim()) {
@@ -292,6 +308,7 @@ export function AggregateApiModal({
           action: actionCustomEnabled ? action.trim() : null,
           modelOverride: modelOverride.trim(),
           costMultiplier: parsedCostMultiplier,
+          dailySpendLimitUsd: parsedDailySpendLimit,
           username: authType === "userpass" ? username.trim() || null : null,
           password: authType === "userpass" ? password.trim() || null : null,
         });
@@ -318,6 +335,7 @@ export function AggregateApiModal({
         action: actionCustomEnabled ? action.trim() : null,
         modelOverride: modelOverride.trim(),
         costMultiplier: parsedCostMultiplier,
+        dailySpendLimitUsd: parsedDailySpendLimit,
         username: authType === "userpass" ? username.trim() : null,
         password: authType === "userpass" ? password.trim() : null,
       });
@@ -524,6 +542,28 @@ export function AggregateApiModal({
                 />
                 <p className="text-[11px] leading-4 text-muted-foreground">
                   {t("最终费用 = 官方模型价格估算 × 费用倍率，留空按 1 计算。")}
+                </p>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="aggregate-api-daily-spend-limit">
+                  {t("每日消费上限")}
+                </Label>
+                <Input
+                  id="aggregate-api-daily-spend-limit"
+                  type="number"
+                  min={0}
+                  max={1000000}
+                  step={0.01}
+                  value={dailySpendLimitDraft}
+                  disabled={!isServiceReady}
+                  placeholder={t("留空或 0 表示不限额")}
+                  onChange={(event) =>
+                    setDailySpendLimitDraft(event.target.value)
+                  }
+                />
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {t("今日消费达到该 USD 金额后，此上游当天会自动跳过。")}
                 </p>
               </div>
 

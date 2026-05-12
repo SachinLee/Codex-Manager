@@ -1,4 +1,4 @@
-use rusqlite::{Result, Row};
+use rusqlite::{params, Result, Row};
 
 use super::{now_ts, AggregateApi, Storage};
 
@@ -13,6 +13,7 @@ const AGGREGATE_API_SELECT_SQL: &str = "SELECT
     action,
     model_override,
     cost_multiplier,
+    daily_spend_limit_usd,
     status,
     created_at,
     updated_at,
@@ -47,14 +48,15 @@ impl Storage {
                 action,
                 model_override,
                 cost_multiplier,
+                daily_spend_limit_usd,
                 status,
                 created_at,
                 updated_at,
                 last_test_at,
                 last_test_status,
                 last_test_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-            (
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            params![
                 &api.id,
                 &api.provider_type,
                 &api.supplier_name,
@@ -65,13 +67,14 @@ impl Storage {
                 &api.action,
                 &api.model_override,
                 api.cost_multiplier,
+                api.daily_spend_limit_usd,
                 &api.status,
                 api.created_at,
                 api.updated_at,
                 &api.last_test_at,
                 &api.last_test_status,
                 &api.last_test_error,
-            ),
+            ],
         )?;
         Ok(())
     }
@@ -273,6 +276,18 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_aggregate_api_daily_spend_limit_usd(
+        &self,
+        api_id: &str,
+        daily_spend_limit_usd: Option<f64>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE aggregate_apis SET daily_spend_limit_usd = ?1, updated_at = ?2 WHERE id = ?3",
+            (daily_spend_limit_usd, now_ts(), api_id),
+        )?;
+        Ok(())
+    }
+
     /// 函数 `delete_aggregate_api`
     ///
     /// 作者: gaohongshun
@@ -414,6 +429,7 @@ impl Storage {
                 action TEXT,
                 model_override TEXT,
                 cost_multiplier REAL NOT NULL DEFAULT 1.0,
+                daily_spend_limit_usd REAL,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -443,6 +459,7 @@ impl Storage {
             "cost_multiplier",
             "REAL NOT NULL DEFAULT 1.0",
         )?;
+        self.ensure_column("aggregate_apis", "daily_spend_limit_usd", "REAL")?;
         self.conn.execute(
             "UPDATE aggregate_apis
              SET provider_type = COALESCE(NULLIF(TRIM(provider_type), ''), 'codex')
@@ -465,6 +482,12 @@ impl Storage {
             "UPDATE aggregate_apis
              SET cost_multiplier = 1.0
              WHERE cost_multiplier IS NULL OR cost_multiplier <= 0",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE aggregate_apis
+             SET daily_spend_limit_usd = NULL
+             WHERE daily_spend_limit_usd IS NOT NULL AND daily_spend_limit_usd <= 0",
             [],
         )?;
         Ok(())
@@ -522,12 +545,13 @@ fn map_aggregate_api_row(row: &Row<'_>) -> Result<AggregateApi> {
         action: row.get(7)?,
         model_override: row.get(8)?,
         cost_multiplier: row.get(9)?,
-        status: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        last_test_at: row.get(13)?,
-        last_test_status: row.get(14)?,
-        last_test_error: row.get(15)?,
+        daily_spend_limit_usd: row.get(10)?,
+        status: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        last_test_at: row.get(14)?,
+        last_test_status: row.get(15)?,
+        last_test_error: row.get(16)?,
     })
 }
 
@@ -548,6 +572,7 @@ mod tests {
             action: None,
             model_override: None,
             cost_multiplier,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
@@ -591,5 +616,31 @@ mod tests {
             .expect("aggregate api exists");
 
         assert!((loaded.cost_multiplier - 2.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggregate_api_daily_spend_limit_round_trips_and_can_be_cleared() {
+        let storage = Storage::open_in_memory().expect("open");
+        storage.init().expect("init");
+        let mut api = aggregate_api("agg-daily-limit", 1.0);
+        api.daily_spend_limit_usd = Some(12.5);
+        storage
+            .insert_aggregate_api(&api)
+            .expect("insert aggregate api");
+
+        let loaded = storage
+            .find_aggregate_api_by_id("agg-daily-limit")
+            .expect("load aggregate api")
+            .expect("aggregate api exists");
+        assert_eq!(loaded.daily_spend_limit_usd, Some(12.5));
+
+        storage
+            .update_aggregate_api_daily_spend_limit_usd("agg-daily-limit", None)
+            .expect("clear daily limit");
+        let cleared = storage
+            .find_aggregate_api_by_id("agg-daily-limit")
+            .expect("reload aggregate api")
+            .expect("aggregate api exists");
+        assert_eq!(cleared.daily_spend_limit_usd, None);
     }
 }

@@ -861,6 +861,12 @@ export function normalizeAggregateApi(item: unknown): AggregateApi | null {
       0.01,
       toNullableNumber(source.costMultiplier ?? source.cost_multiplier) ?? 1
     ),
+    dailySpendLimitUsd: (() => {
+      const value = toNullableNumber(
+        source.dailySpendLimitUsd ?? source.daily_spend_limit_usd
+      );
+      return value != null && Number.isFinite(value) && value > 0 ? value : null;
+    })(),
     status: asString(source.status) || "active",
     createdAt: toNullableNumber(source.createdAt ?? source.created_at),
     updatedAt: toNullableNumber(source.updatedAt ?? source.updated_at),

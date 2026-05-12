@@ -265,6 +265,23 @@ impl Storage {
         Ok(items)
     }
 
+    pub fn aggregate_api_estimated_cost_between(
+        &self,
+        aggregate_api_id: &str,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<f64> {
+        self.conn.query_row(
+            "SELECT IFNULL(SUM(estimated_cost_usd), 0.0)
+             FROM request_token_stats
+             WHERE aggregate_api_id = ?1
+                AND created_at >= ?2
+                AND created_at < ?3",
+            (aggregate_api_id, start_ts, end_ts),
+            |row| row.get(0),
+        )
+    }
+
     /// 函数 `ensure_request_token_stats_table`
     ///
     /// 作者: gaohongshun

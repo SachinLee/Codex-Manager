@@ -145,6 +145,10 @@ fn resolve_aggregate_candidates_for_route(
     )
 }
 
+fn aggregate_route_should_fallback_to_accounts(error: &str) -> bool {
+    error.contains(super::protocol::aggregate_api::AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED)
+}
+
 fn hybrid_route_error_message(account_error: Option<&str>, aggregate_error: &str) -> String {
     match account_error.map(str::trim).filter(|value| !value.is_empty()) {
         Some(account_error) => crate::gateway::bilingual_error(
@@ -431,7 +435,7 @@ pub(in super::super) fn proxy_validated_request(
                     aggregate_api_candidates,
                 );
             }
-            Err(err) => {
+            Err(err) if !aggregate_route_should_fallback_to_accounts(err.as_str()) => {
                 return respond_aggregate_route_error(
                     request,
                     &storage,
@@ -446,6 +450,13 @@ pub(in super::super) fn proxy_validated_request(
                     reasoning_for_log.as_deref(),
                     started_at,
                     err,
+                );
+            }
+            Err(err) => {
+                log::info!(
+                    "event=aggregate_api_daily_limit_fallback trace_id={} reason={}",
+                    trace_id,
+                    err
                 );
             }
         }
@@ -686,9 +697,9 @@ pub(in super::super) fn proxy_validated_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        exhausted_gateway_error_for_log, hybrid_route_error_message, provider_upstream_hint,
-        request_deadline_for_path, resolve_upstream_is_stream,
-        respond_when_account_candidates_empty,
+        aggregate_route_should_fallback_to_accounts, exhausted_gateway_error_for_log,
+        hybrid_route_error_message, provider_upstream_hint, request_deadline_for_path,
+        resolve_upstream_is_stream, respond_when_account_candidates_empty,
         should_fallback_to_aggregate_after_account_exhaustion,
         should_try_provider_executor_aggregate_route,
     };
@@ -885,5 +896,15 @@ mod tests {
             provider_upstream_hint(GatewayUpstreamExecutorKind::CodexResponses),
             None
         );
+    }
+
+    #[test]
+    fn aggregate_daily_limit_errors_fallback_to_account_route() {
+        assert!(aggregate_route_should_fallback_to_accounts(
+            "aggregate_api_daily_spend_limit_exhausted for provider codex"
+        ));
+        assert!(!aggregate_route_should_fallback_to_accounts(
+            "aggregate api not found for provider codex"
+        ));
     }
 }

@@ -73,7 +73,7 @@ import { useI18n } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
 import {
   formatCacheRateValue,
-  formatTokenAmount,
+  formatMillionTokenAmount,
   formatUsdAmount,
 } from "@/lib/utils/billing";
 import type { Account, AccountDailyUsageStat } from "@/types";
@@ -864,7 +864,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                                 className="grid max-w-[150px] cursor-help gap-0.5 text-left"
                               >
                                 <span className="truncate text-xs font-semibold text-foreground">
-                                  {formatTokenAmount(usage.totalTokens)} tok
+                                  {formatMillionTokenAmount(usage.totalTokens)} tok
                                 </span>
                                 <span className="truncate text-[10px] text-muted-foreground">
                                   {formatUsdAmount(usage.estimatedCostUsd)} · cache{" "}
@@ -872,7 +872,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
-                                {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatTokenAmount(usage.cachedInputTokens)} / ${t("计费输入")} ${formatTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatTokenAmount(usage.reasoningOutputTokens)}`}
+                                {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatMillionTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(usage.cachedInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatMillionTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(usage.reasoningOutputTokens)}`}
                               </TooltipContent>
                             </Tooltip>
                           );

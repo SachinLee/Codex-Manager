@@ -277,6 +277,7 @@ pub struct AggregateApi {
     pub action: Option<String>,
     pub model_override: Option<String>,
     pub cost_multiplier: f64,
+    pub daily_spend_limit_usd: Option<f64>,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -718,6 +719,11 @@ impl Storage {
             "055_request_token_stats_aggregate_api",
             include_str!("../../migrations/055_request_token_stats_aggregate_api.sql"),
             |s| s.ensure_request_token_stats_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "056_aggregate_api_daily_spend_limit",
+            include_str!("../../migrations/056_aggregate_api_daily_spend_limit.sql"),
+            |s| s.ensure_aggregate_apis_table(),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;

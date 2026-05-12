@@ -36,6 +36,7 @@ export interface AggregateApi {
   action: string | null;
   modelOverride: string | null;
   costMultiplier: number;
+  dailySpendLimitUsd: number | null;
   status: string;
   createdAt: number | null;
   updatedAt: number | null;

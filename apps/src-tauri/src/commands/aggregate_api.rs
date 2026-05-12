@@ -47,6 +47,7 @@ pub async fn service_aggregate_api_create(
     action: Option<String>,
     model_override: Option<String>,
     cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -63,6 +64,7 @@ pub async fn service_aggregate_api_create(
         "action": action,
         "modelOverride": model_override,
         "costMultiplier": cost_multiplier,
+        "dailySpendLimitUsd": daily_spend_limit_usd,
         "username": username,
         "password": password,
     });
@@ -103,6 +105,7 @@ pub async fn service_aggregate_api_update(
     action: Option<String>,
     model_override: Option<String>,
     cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -121,6 +124,7 @@ pub async fn service_aggregate_api_update(
         "action": action,
         "modelOverride": model_override,
         "costMultiplier": cost_multiplier,
+        "dailySpendLimitUsd": daily_spend_limit_usd,
         "username": username,
         "password": password,
     });

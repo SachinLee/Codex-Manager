@@ -23,6 +23,16 @@ const ALIBABA_CODING_PLAN_PROBE_MODEL: &str = "qwen3.5-plus";
 const MAX_DISCOVERED_CLAUDE_PROBE_MODELS: usize = 8;
 const DEFAULT_BALANCE_UNIT: &str = "USD";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OfficialBalanceProvider {
+    DeepSeek,
+    StepFun,
+    SiliconFlowCn,
+    SiliconFlowGlobal,
+    OpenRouter,
+    Novita,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct BalanceSnapshot {
     remaining: Option<f64>,
@@ -125,6 +135,24 @@ fn normalize_cost_multiplier(value: Option<f64>) -> Result<f64, String> {
         return Err("aggregate api costMultiplier must be less than or equal to 100".to_string());
     }
     Ok(value)
+}
+
+fn normalize_daily_spend_limit_usd(value: Option<f64>) -> Result<Option<f64>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !value.is_finite() {
+        return Err("aggregate api dailySpendLimitUsd must be finite".to_string());
+    }
+    if value <= 0.0 {
+        return Ok(None);
+    }
+    if value > 1_000_000.0 {
+        return Err(
+            "aggregate api dailySpendLimitUsd must be less than or equal to 1000000".to_string(),
+        );
+    }
+    Ok(Some(value))
 }
 
 fn normalize_status(value: Option<String>) -> Result<String, String> {
@@ -300,11 +328,12 @@ mod tests {
     use tiny_http::{Response, Server, StatusCode};
 
     use super::{
-        action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
-        extract_model_ids_from_models_response, normalize_action_override,
-        normalize_cost_multiplier, normalize_provider_type, normalize_provider_type_value,
-        parse_balance_snapshot, query_balance_path, balance_query_paths, probe_claude_endpoint,
-        probe_codex_endpoint, provider_default_url, AGGREGATE_API_PROVIDER_CLAUDE,
+        action_path_or_default, balance_query_paths, build_codex_models_probe_url,
+        claude_probe_fallback_models_for_api, extract_model_ids_from_models_response,
+        normalize_action_override, normalize_cost_multiplier, normalize_daily_spend_limit_usd,
+        normalize_provider_type, normalize_provider_type_value, parse_balance_snapshot_with_provider,
+        probe_claude_endpoint, probe_codex_endpoint, provider_default_url, query_balance_path,
+        query_balance_request_url, OfficialBalanceProvider, AGGREGATE_API_PROVIDER_CLAUDE,
         AGGREGATE_API_PROVIDER_GEMINI, ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
@@ -320,6 +349,7 @@ mod tests {
             action: action.map(str::to_string),
             model_override: None,
             cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -349,6 +379,18 @@ mod tests {
         assert!(normalize_cost_multiplier(Some(0.0)).is_err());
         assert!(normalize_cost_multiplier(Some(101.0)).is_err());
         assert!(normalize_cost_multiplier(Some(f64::INFINITY)).is_err());
+    }
+
+    #[test]
+    fn daily_spend_limit_normalizes_empty_and_rejects_invalid_values() {
+        assert_eq!(normalize_daily_spend_limit_usd(None).unwrap(), None);
+        assert_eq!(normalize_daily_spend_limit_usd(Some(0.0)).unwrap(), None);
+        assert_eq!(
+            normalize_daily_spend_limit_usd(Some(3.5)).unwrap(),
+            Some(3.5)
+        );
+        assert!(normalize_daily_spend_limit_usd(Some(f64::INFINITY)).is_err());
+        assert!(normalize_daily_spend_limit_usd(Some(1_000_000.01)).is_err());
     }
 
     #[test]
@@ -465,7 +507,7 @@ mod tests {
         )
         .expect("parse payload");
 
-        let balance = parse_balance_snapshot(&payload).expect("balance");
+        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
 
         assert_eq!(balance.remaining, Some(12.5));
         assert_eq!(balance.unit.as_deref(), Some("USD"));
@@ -486,7 +528,7 @@ mod tests {
         )
         .expect("parse payload");
 
-        let balance = parse_balance_snapshot(&payload).expect("balance");
+        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
 
         assert_eq!(balance.remaining, Some(2.0));
         assert_eq!(balance.used, Some(1.0));
@@ -508,7 +550,7 @@ mod tests {
         )
         .expect("parse payload");
 
-        assert_eq!(parse_balance_snapshot(&payload), None);
+        assert_eq!(parse_balance_snapshot_with_provider(&payload, None), None);
     }
 
     #[test]
@@ -521,6 +563,109 @@ mod tests {
             balance_query_paths(&api),
             vec!["/user/balance", "/api/usage/token", "/api/user/self"]
         );
+    }
+
+    #[test]
+    fn balance_query_uses_official_deepseek_endpoint() {
+        let mut api = aggregate_api_with_action(None);
+        api.url = "https://api.deepseek.com/v1".to_string();
+
+        assert_eq!(balance_query_paths(&api), vec!["/user/balance"]);
+        assert_eq!(
+            query_balance_request_url(&api, "/user/balance"),
+            "https://api.deepseek.com/user/balance"
+        );
+    }
+
+    #[test]
+    fn balance_query_uses_official_openrouter_endpoint() {
+        let mut api = aggregate_api_with_action(None);
+        api.url = "https://openrouter.ai/api/v1".to_string();
+
+        assert_eq!(balance_query_paths(&api), vec!["/api/v1/credits"]);
+        assert_eq!(
+            query_balance_request_url(&api, "/api/v1/credits"),
+            "https://openrouter.ai/api/v1/credits"
+        );
+    }
+
+    #[test]
+    fn balance_parser_accepts_openrouter_credits_shape() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "data": {
+                    "total_credits": 10,
+                    "total_usage": 2.5
+                }
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
+
+        assert_eq!(balance.remaining, Some(7.5));
+        assert_eq!(balance.used, Some(2.5));
+        assert_eq!(balance.total, Some(10.0));
+        assert_eq!(balance.unit.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn balance_parser_accepts_siliconflow_nested_shape() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "code": 20000,
+                "data": {
+                    "totalBalance": "3.25",
+                    "status": "normal"
+                }
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
+
+        assert_eq!(balance.remaining, Some(3.25));
+        assert_eq!(balance.unit.as_deref(), Some("CNY"));
+        assert_eq!(balance.plan_name.as_deref(), Some("SiliconFlow"));
+    }
+
+    #[test]
+    fn balance_parser_uses_usd_for_global_siliconflow() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "code": 20000,
+                "data": {
+                    "totalBalance": "4.50"
+                }
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot_with_provider(
+            &payload,
+            Some(OfficialBalanceProvider::SiliconFlowGlobal),
+        )
+        .expect("balance");
+
+        assert_eq!(balance.remaining, Some(4.5));
+        assert_eq!(balance.unit.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn balance_parser_accepts_novita_minor_unit_shape() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "availableBalance": 125000,
+                "cashBalance": 100000
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
+
+        assert_eq!(balance.remaining, Some(12.5));
+        assert_eq!(balance.unit.as_deref(), Some("USD"));
+        assert_eq!(balance.plan_name.as_deref(), Some("Novita AI"));
     }
 
     #[test]
@@ -545,9 +690,8 @@ mod tests {
 
         let mut api = aggregate_api_with_action(None);
         api.url = base_url.clone();
-        api.auth_params_json = Some(
-            r#"{"location":"query","name":"api_key","headerValueFormat":"raw"}"#.to_string(),
-        );
+        api.auth_params_json =
+            Some(r#"{"location":"query","name":"api_key","headerValueFormat":"raw"}"#.to_string());
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -938,6 +1082,36 @@ fn string_from_value(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn official_balance_provider(base_url: &str) -> Option<OfficialBalanceProvider> {
+    let url = base_url.to_ascii_lowercase();
+    if url.contains("api.deepseek.com") {
+        Some(OfficialBalanceProvider::DeepSeek)
+    } else if url.contains("api.stepfun.ai") || url.contains("api.stepfun.com") {
+        Some(OfficialBalanceProvider::StepFun)
+    } else if url.contains("api.siliconflow.cn") {
+        Some(OfficialBalanceProvider::SiliconFlowCn)
+    } else if url.contains("api.siliconflow.com") {
+        Some(OfficialBalanceProvider::SiliconFlowGlobal)
+    } else if url.contains("openrouter.ai") {
+        Some(OfficialBalanceProvider::OpenRouter)
+    } else if url.contains("api.novita.ai") {
+        Some(OfficialBalanceProvider::Novita)
+    } else {
+        None
+    }
+}
+
+fn official_balance_endpoint(provider: OfficialBalanceProvider) -> &'static str {
+    match provider {
+        OfficialBalanceProvider::DeepSeek => "https://api.deepseek.com/user/balance",
+        OfficialBalanceProvider::StepFun => "https://api.stepfun.com/v1/accounts",
+        OfficialBalanceProvider::SiliconFlowCn => "https://api.siliconflow.cn/v1/user/info",
+        OfficialBalanceProvider::SiliconFlowGlobal => "https://api.siliconflow.com/v1/user/info",
+        OfficialBalanceProvider::OpenRouter => "https://openrouter.ai/api/v1/credits",
+        OfficialBalanceProvider::Novita => "https://api.novita.ai/v3/user/balance",
+    }
+}
+
 fn parse_deepseek_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
     let is_valid = value
         .get("is_available")
@@ -1051,13 +1225,107 @@ fn parse_generic_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
     })
 }
 
-fn parse_balance_snapshot(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+fn parse_stepfun_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let has_stepfun_signal = value.get("object").is_some()
+        || value.get("total_cash_balance").is_some()
+        || value.get("total_voucher_balance").is_some();
+    if !has_stepfun_signal {
+        return None;
+    }
+    let remaining = number_from_value(value.get("balance"))?;
+    Some(BalanceSnapshot {
+        remaining: Some(remaining),
+        used: None,
+        total: None,
+        unit: Some("CNY".to_string()),
+        plan_name: Some("StepFun".to_string()),
+        message: None,
+    })
+}
+
+fn parse_siliconflow_balance(
+    value: &serde_json::Value,
+    provider: Option<OfficialBalanceProvider>,
+) -> Option<BalanceSnapshot> {
+    let data = value.get("data")?;
+    let remaining = number_from_value(data.get("totalBalance"))
+        .or_else(|| number_from_value(data.get("balance")))
+        .or_else(|| number_from_value(data.get("chargeBalance")))?;
+    let unit = if provider == Some(OfficialBalanceProvider::SiliconFlowGlobal) {
+        "USD"
+    } else {
+        "CNY"
+    };
+    Some(BalanceSnapshot {
+        remaining: Some(remaining),
+        used: None,
+        total: None,
+        unit: Some(unit.to_string()),
+        plan_name: Some("SiliconFlow".to_string()),
+        message: None,
+    })
+}
+
+fn parse_openrouter_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let data = value.get("data").unwrap_or(value);
+    let total = number_from_value(data.get("total_credits"))?;
+    let used = number_from_value(data.get("total_usage")).unwrap_or(0.0);
+    let remaining = total - used;
+    Some(BalanceSnapshot {
+        remaining: Some(remaining),
+        used: Some(used),
+        total: Some(total),
+        unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
+        plan_name: Some("OpenRouter".to_string()),
+        message: if remaining > 0.0 {
+            None
+        } else {
+            Some("No credits remaining".to_string())
+        },
+    })
+}
+
+fn parse_novita_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let remaining = number_from_value(value.get("availableBalance"))? / 10000.0;
+    Some(BalanceSnapshot {
+        remaining: Some(remaining),
+        used: None,
+        total: None,
+        unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
+        plan_name: Some("Novita AI".to_string()),
+        message: if remaining > 0.0 {
+            None
+        } else {
+            Some("No balance remaining".to_string())
+        },
+    })
+}
+
+fn parse_balance_snapshot_with_provider(
+    value: &serde_json::Value,
+    provider: Option<OfficialBalanceProvider>,
+) -> Option<BalanceSnapshot> {
     parse_deepseek_balance(value)
+        .or_else(|| parse_stepfun_balance(value))
+        .or_else(|| parse_siliconflow_balance(value, provider))
+        .or_else(|| parse_openrouter_balance(value))
+        .or_else(|| parse_novita_balance(value))
         .or_else(|| parse_newapi_balance(value))
         .or_else(|| parse_generic_balance(value))
 }
 
 fn balance_query_paths(api: &AggregateApi) -> Vec<&'static str> {
+    if let Some(provider) = official_balance_provider(api.url.as_str()) {
+        return match provider {
+            OfficialBalanceProvider::DeepSeek => vec!["/user/balance"],
+            OfficialBalanceProvider::StepFun => vec!["/v1/accounts"],
+            OfficialBalanceProvider::SiliconFlowCn | OfficialBalanceProvider::SiliconFlowGlobal => {
+                vec!["/v1/user/info"]
+            }
+            OfficialBalanceProvider::OpenRouter => vec!["/api/v1/credits"],
+            OfficialBalanceProvider::Novita => vec!["/v3/user/balance"],
+        };
+    }
     let text =
         format!("{} {}", api.supplier_name.as_deref().unwrap_or(""), api.url).to_ascii_lowercase();
     if text.contains("newapi") || text.contains("new-api") {
@@ -1066,13 +1334,21 @@ fn balance_query_paths(api: &AggregateApi) -> Vec<&'static str> {
     vec!["/user/balance", "/api/usage/token", "/api/user/self"]
 }
 
+fn query_balance_request_url(api: &AggregateApi, path: &str) -> String {
+    if let Some(provider) = official_balance_provider(api.url.as_str()) {
+        return official_balance_endpoint(provider).to_string();
+    }
+    normalize_probe_url(api.url.as_str(), path)
+}
+
 fn query_balance_path(
     client: &reqwest::blocking::Client,
     api: &AggregateApi,
     secret: &str,
     path: &str,
 ) -> Result<(i64, BalanceSnapshot), String> {
-    let url = normalize_probe_url(api.url.as_str(), path);
+    let provider = official_balance_provider(api.url.as_str());
+    let url = query_balance_request_url(api, path);
     let builder = client
         .get(url.as_str())
         .header("accept", "application/json")
@@ -1096,12 +1372,14 @@ fn query_balance_path(
         .text()
         .map_err(|err| format!("read balance response failed: {err}"))?;
     if !(200..300).contains(&status) {
-        let safe_url = normalize_probe_url(api.url.as_str(), path);
-        return Err(format!("balance endpoint {safe_url} returned HTTP {status}"));
+        let safe_url = query_balance_request_url(api, path);
+        return Err(format!(
+            "balance endpoint {safe_url} returned HTTP {status}"
+        ));
     }
     let value: serde_json::Value = serde_json::from_str(body.as_str())
         .map_err(|err| format!("invalid balance JSON: {err}"))?;
-    let snapshot = parse_balance_snapshot(&value)
+    let snapshot = parse_balance_snapshot_with_provider(&value, provider)
         .ok_or_else(|| "balance response does not contain a supported balance shape".to_string())?;
     Ok((status, snapshot))
 }
@@ -1794,6 +2072,7 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
             action: item.action,
             model_override: item.model_override,
             cost_multiplier: item.cost_multiplier,
+            daily_spend_limit_usd: item.daily_spend_limit_usd,
             status: item.status,
             created_at: item.created_at,
             updated_at: item.updated_at,
@@ -1828,6 +2107,7 @@ pub(crate) fn create_aggregate_api(
     action: Option<String>,
     model_override: Option<String>,
     cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<AggregateApiCreateResult, String> {
@@ -1847,6 +2127,7 @@ pub(crate) fn create_aggregate_api(
         normalize_action_override(action_custom_enabled, action)?.unwrap_or(None);
     let normalized_model_override = normalize_model_override(model_override)?;
     let normalized_cost_multiplier = normalize_cost_multiplier(cost_multiplier)?;
+    let normalized_daily_spend_limit_usd = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
     let normalized_secret = if normalized_auth_type == AGGREGATE_API_AUTH_APIKEY {
         normalize_secret(key).ok_or_else(|| "key is required".to_string())?
     } else {
@@ -1877,6 +2158,7 @@ pub(crate) fn create_aggregate_api(
         action: normalized_action,
         model_override: normalized_model_override,
         cost_multiplier: normalized_cost_multiplier,
+        daily_spend_limit_usd: normalized_daily_spend_limit_usd,
         status: "active".to_string(),
         created_at,
         updated_at: created_at,
@@ -1927,6 +2209,7 @@ pub(crate) fn update_aggregate_api(
     action: Option<String>,
     model_override: Option<String>,
     cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
 ) -> Result<(), String> {
@@ -2021,6 +2304,12 @@ pub(crate) fn update_aggregate_api(
         let normalized = normalize_cost_multiplier(cost_multiplier)?;
         storage
             .update_aggregate_api_cost_multiplier(api_id, normalized)
+            .map_err(|err| err.to_string())?;
+    }
+    if daily_spend_limit_usd.is_some() {
+        let normalized = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
+        storage
+            .update_aggregate_api_daily_spend_limit_usd(api_id, normalized)
             .map_err(|err| err.to_string())?;
     }
 

@@ -1,0 +1,82 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - button "重新打开 Codex CLI 引导" [ref=e5]:
+        - generic [ref=e7]: CM
+        - generic [ref=e8]:
+          - generic [ref=e9]: CodexManager
+          - generic [ref=e10]: 账号池 · 用量管理
+      - navigation [ref=e12]:
+        - link "仪表盘" [ref=e13] [cursor=pointer]:
+          - /url: /
+          - img [ref=e14]
+          - generic [ref=e19]: 仪表盘
+        - link "账号管理" [ref=e20] [cursor=pointer]:
+          - /url: /accounts/
+          - img [ref=e21]
+          - generic [ref=e26]: 账号管理
+        - link "聚合API" [ref=e27] [cursor=pointer]:
+          - /url: /aggregate-api/
+          - img [ref=e28]
+          - generic [ref=e32]: 聚合API
+        - link "平台密钥" [ref=e33] [cursor=pointer]:
+          - /url: /apikeys/
+          - img [ref=e34]
+          - generic [ref=e38]: 平台密钥
+        - link "模型管理" [ref=e39] [cursor=pointer]:
+          - /url: /models/
+          - img [ref=e40]
+          - generic [ref=e50]: 模型管理
+        - link "插件中心" [ref=e51] [cursor=pointer]:
+          - /url: /plugins/
+          - img [ref=e52]
+          - generic [ref=e54]: 插件中心
+        - link "请求日志" [ref=e55] [cursor=pointer]:
+          - /url: /logs/
+          - img [ref=e56]
+          - generic [ref=e59]: 请求日志
+        - link "设置" [ref=e60] [cursor=pointer]:
+          - /url: /settings/
+          - img [ref=e61]
+          - generic [ref=e64]: 设置
+        - link "赞助与推荐" [ref=e65] [cursor=pointer]:
+          - /url: /author/
+          - img [ref=e66]
+          - generic [ref=e69]: 赞助与推荐
+      - button "收起侧边栏" [ref=e71]:
+        - img
+        - generic [ref=e72]: 收起侧边栏
+    - generic [ref=e73]:
+      - banner [ref=e74]:
+        - generic [ref=e75]:
+          - heading "仪表盘" [level=1] [ref=e76]
+          - generic [ref=e77]: 服务未连接
+        - button "免责声明 本项目仅用于学习与开发目的。 详情" [ref=e79]:
+          - img [ref=e81]
+          - generic [ref=e83]:
+            - generic [ref=e84]: 免责声明
+            - generic [ref=e85]: 本项目仅用于学习与开发目的。
+          - generic [ref=e86]:
+            - generic [ref=e87]: 详情
+            - img [ref=e88]
+        - generic [ref=e90]:
+          - generic [ref=e91]:
+            - combobox "选择语言" [ref=e92]:
+              - generic [ref=e93]:
+                - img
+                - generic [ref=e94]: 简体中文
+              - img: ▼
+            - textbox [ref=e95]: zh-CN
+          - button "密码" [ref=e96]:
+            - img
+            - generic [ref=e97]: 密码
+      - main [ref=e98]:
+        - generic [ref=e113]:
+          - generic [ref=e116]: 当前活跃账号
+          - generic [ref=e123]:
+            - generic [ref=e125]: 智能推荐
+            - paragraph [ref=e127]: 基于当前配额，系统会优先推荐剩余额度更高且仍可参与路由的账号。
+  - generic [ref=e134]:
+    - heading "正在准备环境" [level=2] [ref=e135]
+    - paragraph [ref=e136]: 正在同步本地配置，请稍候...
+  - region "Notifications alt+T"
