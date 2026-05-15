@@ -3,6 +3,7 @@ use tauri::{Emitter, Manager};
 
 mod app_shell;
 mod app_storage;
+mod codex_injector;
 mod commands;
 mod rpc_client;
 mod service_runtime;

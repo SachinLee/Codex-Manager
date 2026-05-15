@@ -328,13 +328,14 @@ mod tests {
     use tiny_http::{Response, Server, StatusCode};
 
     use super::{
-        action_path_or_default, balance_query_paths, build_codex_models_probe_url,
-        claude_probe_fallback_models_for_api, extract_model_ids_from_models_response,
-        normalize_action_override, normalize_cost_multiplier, normalize_daily_spend_limit_usd,
-        normalize_provider_type, normalize_provider_type_value, parse_balance_snapshot_with_provider,
-        probe_claude_endpoint, probe_codex_endpoint, provider_default_url, query_balance_path,
-        query_balance_request_url, OfficialBalanceProvider, AGGREGATE_API_PROVIDER_CLAUDE,
-        AGGREGATE_API_PROVIDER_GEMINI, ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
+        action_path_or_default, apply_balance_probe_auth, balance_query_paths,
+        build_codex_models_probe_url, claude_probe_fallback_models_for_api,
+        extract_model_ids_from_models_response, normalize_action_override, normalize_cost_multiplier,
+        normalize_daily_spend_limit_usd, normalize_provider_type, normalize_provider_type_value,
+        official_balance_provider, parse_balance_snapshot_with_provider, probe_claude_endpoint,
+        probe_codex_endpoint, provider_default_url, query_balance_path, query_balance_request_url,
+        OfficialBalanceProvider, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
+        ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
     fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
@@ -561,7 +562,7 @@ mod tests {
 
         assert_eq!(
             balance_query_paths(&api),
-            vec!["/user/balance", "/api/usage/token", "/api/user/self"]
+            vec!["/usage", "/user/balance", "/api/usage/token", "/api/user/self"]
         );
     }
 
@@ -586,6 +587,204 @@ mod tests {
         assert_eq!(
             query_balance_request_url(&api, "/api/v1/credits"),
             "https://openrouter.ai/api/v1/credits"
+        );
+    }
+
+    #[test]
+    fn balance_query_skips_newapi_path_v1_prefix_for_root_endpoints() {
+        let mut api = aggregate_api_with_action(None);
+        api.url = "https://proxy.example.com/v1".to_string();
+
+        assert_eq!(
+            query_balance_request_url(&api, "/api/user/self"),
+            "https://proxy.example.com/api/user/self"
+        );
+        assert_eq!(
+            query_balance_request_url(&api, "/api/usage/token"),
+            "https://proxy.example.com/api/usage/token"
+        );
+        assert_eq!(
+            query_balance_request_url(&api, "/user/balance"),
+            "https://proxy.example.com/v1/user/balance"
+        );
+    }
+
+    #[test]
+    fn balance_query_root_endpoints_work_without_v1_suffix() {
+        let mut api = aggregate_api_with_action(None);
+        api.url = "https://proxy.example.com".to_string();
+
+        assert_eq!(
+            query_balance_request_url(&api, "/api/user/self"),
+            "https://proxy.example.com/api/user/self"
+        );
+        assert_eq!(
+            query_balance_request_url(&api, "/user/balance"),
+            "https://proxy.example.com/v1/user/balance"
+        );
+    }
+
+    #[test]
+    fn official_balance_provider_matches_host_not_substring() {
+        assert_eq!(
+            official_balance_provider("https://api.deepseek.com/v1"),
+            Some(OfficialBalanceProvider::DeepSeek)
+        );
+        assert_eq!(
+            official_balance_provider("https://gw.example.com/pass/api.deepseek.com/v1"),
+            None,
+            "proxy URL containing the official host as a path segment must not be matched"
+        );
+        assert_eq!(
+            official_balance_provider("https://api-deepseek.com/v1"),
+            None,
+            "similar but different host must not be matched"
+        );
+        assert_eq!(
+            official_balance_provider("https://OPENROUTER.AI/api/v1"),
+            Some(OfficialBalanceProvider::OpenRouter),
+            "host comparison should be case-insensitive"
+        );
+    }
+
+    #[test]
+    fn balance_probe_auth_default_uses_only_authorization_header() {
+        let server = Server::http("127.0.0.1:0").expect("start mock server");
+        let base_url = format!("http://{}", server.server_addr());
+        let (tx, rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive balance request")
+                .expect("balance request present");
+            let headers: Vec<(String, String)> = request
+                .headers()
+                .iter()
+                .map(|h| {
+                    (
+                        h.field.as_str().as_str().to_ascii_lowercase(),
+                        h.value.as_str().to_string(),
+                    )
+                })
+                .collect();
+            tx.send(headers).expect("send captured headers");
+            request
+                .respond(Response::from_string(r#"{"balance":0}"#))
+                .expect("respond balance request");
+        });
+
+        let mut api = aggregate_api_with_action(None);
+        api.url = base_url;
+        api.auth_params_json = None;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build client");
+
+        let _ = query_balance_path(&client, &api, "sk-probe", "/user/balance");
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured headers");
+        join.join().expect("join mock server");
+
+        let has_auth = captured
+            .iter()
+            .any(|(name, value)| name == "authorization" && value == "Bearer sk-probe");
+        let has_x_api_key = captured.iter().any(|(name, _)| name == "x-api-key");
+        let has_api_key = captured.iter().any(|(name, _)| name == "api-key");
+        assert!(has_auth, "authorization header must be sent");
+        assert!(
+            !has_x_api_key,
+            "balance probe must not send x-api-key by default"
+        );
+        assert!(
+            !has_api_key,
+            "balance probe must not send api-key by default"
+        );
+    }
+
+    #[test]
+    fn balance_probe_auth_preserves_custom_header_from_auth_params() {
+        let server = Server::http("127.0.0.1:0").expect("start mock server");
+        let base_url = format!("http://{}", server.server_addr());
+        let (tx, rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive balance request")
+                .expect("balance request present");
+            let headers: Vec<(String, String)> = request
+                .headers()
+                .iter()
+                .map(|h| {
+                    (
+                        h.field.as_str().as_str().to_ascii_lowercase(),
+                        h.value.as_str().to_string(),
+                    )
+                })
+                .collect();
+            tx.send(headers).expect("send captured headers");
+            request
+                .respond(Response::from_string(r#"{"balance":0}"#))
+                .expect("respond balance request");
+        });
+
+        let mut api = aggregate_api_with_action(None);
+        api.url = base_url;
+        api.auth_params_json = Some(
+            r#"{"location":"header","name":"x-api-key","headerValueFormat":"raw"}"#.to_string(),
+        );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build client");
+
+        let _ = query_balance_path(&client, &api, "sk-probe", "/user/balance");
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured headers");
+        join.join().expect("join mock server");
+
+        let xak = captured
+            .iter()
+            .find(|(name, _)| name == "x-api-key")
+            .expect("x-api-key header present");
+        assert_eq!(xak.1, "sk-probe");
+    }
+
+    #[test]
+    fn balance_probe_auth_used_in_isolation_defaults_to_bearer_only() {
+        let api = aggregate_api_with_action(None);
+        let client = reqwest::blocking::Client::builder()
+            .build()
+            .expect("build client");
+        let builder = client.get("https://example.com/user/balance");
+        let (request_builder, url) = apply_balance_probe_auth(
+            builder,
+            "https://example.com/user/balance".to_string(),
+            &api,
+            "sk-unit",
+        )
+        .expect("apply auth");
+        let request = request_builder.build().expect("build request");
+
+        assert_eq!(url, "https://example.com/user/balance");
+        let headers = request.headers();
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sk-unit")
+        );
+        assert!(
+            !headers.contains_key("x-api-key"),
+            "balance probe must not add x-api-key by default"
+        );
+        assert!(
+            !headers.contains_key("api-key"),
+            "balance probe must not add api-key by default"
         );
     }
 
@@ -666,6 +865,41 @@ mod tests {
         assert_eq!(balance.remaining, Some(12.5));
         assert_eq!(balance.unit.as_deref(), Some("USD"));
         assert_eq!(balance.plan_name.as_deref(), Some("Novita AI"));
+    }
+
+    #[test]
+    fn balance_parser_accepts_usage_endpoint_shape() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "balance": 926.082552,
+                "isValid": true,
+                "mode": "usage",
+                "planName": "Sub2API",
+                "remaining": 926.082552,
+                "unit": "USD",
+                "usage": {}
+            }"#,
+        )
+        .expect("parse payload");
+
+        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
+
+        assert_eq!(balance.remaining, Some(926.082552));
+        assert_eq!(balance.unit.as_deref(), Some("USD"));
+        assert_eq!(balance.plan_name.as_deref(), Some("Sub2API"));
+        assert_eq!(balance.message, None);
+    }
+
+    #[test]
+    fn balance_query_paths_try_usage_endpoint_first_for_unlabeled_apis() {
+        let mut api = aggregate_api_with_action(None);
+        api.supplier_name = Some("custom upstream".to_string());
+        api.url = "https://api.example.com/v1".to_string();
+
+        assert_eq!(
+            balance_query_paths(&api),
+            vec!["/usage", "/user/balance", "/api/usage/token", "/api/user/self"]
+        );
     }
 
     #[test]
@@ -992,10 +1226,29 @@ fn with_query_param(url: &str, name: &str, value: &str) -> String {
 }
 
 fn apply_probe_auth(
+    builder: reqwest::blocking::RequestBuilder,
+    url: String,
+    api: &AggregateApi,
+    secret: &str,
+) -> Result<(reqwest::blocking::RequestBuilder, String), String> {
+    apply_probe_auth_inner(builder, url, api, secret, false)
+}
+
+fn apply_balance_probe_auth(
+    builder: reqwest::blocking::RequestBuilder,
+    url: String,
+    api: &AggregateApi,
+    secret: &str,
+) -> Result<(reqwest::blocking::RequestBuilder, String), String> {
+    apply_probe_auth_inner(builder, url, api, secret, true)
+}
+
+fn apply_probe_auth_inner(
     mut builder: reqwest::blocking::RequestBuilder,
     mut url: String,
     api: &AggregateApi,
     secret: &str,
+    authorization_only_default: bool,
 ) -> Result<(reqwest::blocking::RequestBuilder, String), String> {
     let auth_type = normalize_auth_type(Some(api.auth_type.clone()))?;
     let auth_params = api
@@ -1055,14 +1308,16 @@ fn apply_probe_auth(
     }
 
     let auth_value = format!("Bearer {}", secret.trim());
-    builder = builder
-        .header(
-            HeaderName::from_static("authorization"),
-            HeaderValue::from_str(auth_value.as_str())
-                .map_err(|_| "invalid aggregate api key".to_string())?,
-        )
-        .header("x-api-key", secret.trim())
-        .header("api-key", secret.trim());
+    builder = builder.header(
+        HeaderName::from_static("authorization"),
+        HeaderValue::from_str(auth_value.as_str())
+            .map_err(|_| "invalid aggregate api key".to_string())?,
+    );
+    if !authorization_only_default {
+        builder = builder
+            .header("x-api-key", secret.trim())
+            .header("api-key", secret.trim());
+    }
     Ok((builder, url))
 }
 
@@ -1083,21 +1338,17 @@ fn string_from_value(value: Option<&serde_json::Value>) -> Option<String> {
 }
 
 fn official_balance_provider(base_url: &str) -> Option<OfficialBalanceProvider> {
-    let url = base_url.to_ascii_lowercase();
-    if url.contains("api.deepseek.com") {
-        Some(OfficialBalanceProvider::DeepSeek)
-    } else if url.contains("api.stepfun.ai") || url.contains("api.stepfun.com") {
-        Some(OfficialBalanceProvider::StepFun)
-    } else if url.contains("api.siliconflow.cn") {
-        Some(OfficialBalanceProvider::SiliconFlowCn)
-    } else if url.contains("api.siliconflow.com") {
-        Some(OfficialBalanceProvider::SiliconFlowGlobal)
-    } else if url.contains("openrouter.ai") {
-        Some(OfficialBalanceProvider::OpenRouter)
-    } else if url.contains("api.novita.ai") {
-        Some(OfficialBalanceProvider::Novita)
-    } else {
-        None
+    let host = url::Url::parse(base_url.trim())
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))?;
+    match host.as_str() {
+        "api.deepseek.com" => Some(OfficialBalanceProvider::DeepSeek),
+        "api.stepfun.ai" | "api.stepfun.com" => Some(OfficialBalanceProvider::StepFun),
+        "api.siliconflow.cn" => Some(OfficialBalanceProvider::SiliconFlowCn),
+        "api.siliconflow.com" => Some(OfficialBalanceProvider::SiliconFlowGlobal),
+        "openrouter.ai" => Some(OfficialBalanceProvider::OpenRouter),
+        "api.novita.ai" => Some(OfficialBalanceProvider::Novita),
+        _ => None,
     }
 }
 
@@ -1113,6 +1364,12 @@ fn official_balance_endpoint(provider: OfficialBalanceProvider) -> &'static str 
 }
 
 fn parse_deepseek_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
+    let has_deepseek_signal = value.get("balance_infos").is_some()
+        || value.get("is_available").is_some()
+        || value.get("is_active").is_some();
+    if !has_deepseek_signal {
+        return None;
+    }
     let is_valid = value
         .get("is_available")
         .or_else(|| value.get("is_active"))
@@ -1329,16 +1586,28 @@ fn balance_query_paths(api: &AggregateApi) -> Vec<&'static str> {
     let text =
         format!("{} {}", api.supplier_name.as_deref().unwrap_or(""), api.url).to_ascii_lowercase();
     if text.contains("newapi") || text.contains("new-api") {
-        return vec!["/api/usage/token", "/api/user/self", "/user/balance"];
+        return vec!["/usage", "/api/usage/token", "/api/user/self", "/user/balance"];
     }
-    vec!["/user/balance", "/api/usage/token", "/api/user/self"]
+    vec!["/usage", "/user/balance", "/api/usage/token", "/api/user/self"]
 }
 
 fn query_balance_request_url(api: &AggregateApi, path: &str) -> String {
     if let Some(provider) = official_balance_provider(api.url.as_str()) {
         return official_balance_endpoint(provider).to_string();
     }
+    if path.starts_with("/api/") {
+        return normalize_root_probe_url(api.url.as_str(), path);
+    }
     normalize_probe_url(api.url.as_str(), path)
+}
+
+fn normalize_root_probe_url(base_url: &str, suffix: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let base = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    if suffix.trim().is_empty() {
+        return base.to_string();
+    }
+    format!("{base}{suffix}")
 }
 
 fn query_balance_path(
@@ -1353,34 +1622,35 @@ fn query_balance_path(
         .get(url.as_str())
         .header("accept", "application/json")
         .header("user-agent", "codex-manager/1.0");
-    let (request, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    let (request, updated_url) = apply_balance_probe_auth(builder, url.clone(), api, secret)?;
     let request = if updated_url != url {
         let rebuilt = client
             .get(updated_url.as_str())
             .header("accept", "application/json")
             .header("user-agent", "codex-manager/1.0");
-        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+        let (rebuilt, _) = apply_balance_probe_auth(rebuilt, updated_url, api, secret)?;
         rebuilt
     } else {
         request
     };
+    let safe_url = query_balance_request_url(api, path);
     let response = request
         .send()
-        .map_err(|err| format!("balance request failed: {err}"))?;
+        .map_err(|err| format!("balance request failed ({safe_url}): {err}"))?;
     let status = response.status().as_u16() as i64;
     let body = response
         .text()
-        .map_err(|err| format!("read balance response failed: {err}"))?;
+        .map_err(|err| format!("read balance response failed ({safe_url}): {err}"))?;
     if !(200..300).contains(&status) {
-        let safe_url = query_balance_request_url(api, path);
         return Err(format!(
             "balance endpoint {safe_url} returned HTTP {status}"
         ));
     }
     let value: serde_json::Value = serde_json::from_str(body.as_str())
-        .map_err(|err| format!("invalid balance JSON: {err}"))?;
-    let snapshot = parse_balance_snapshot_with_provider(&value, provider)
-        .ok_or_else(|| "balance response does not contain a supported balance shape".to_string())?;
+        .map_err(|err| format!("invalid balance JSON from {safe_url}: {err}"))?;
+    let snapshot = parse_balance_snapshot_with_provider(&value, provider).ok_or_else(|| {
+        format!("balance response from {safe_url} does not contain a supported balance shape")
+    })?;
     Ok((status, snapshot))
 }
 
@@ -2488,7 +2758,7 @@ pub(crate) fn query_aggregate_api_balance(
     let client = gateway::fresh_upstream_client();
     let started_at = Instant::now();
     let provider = normalize_provider_type_value(api.provider_type.as_str());
-    let mut last_error = None;
+    let mut attempt_errors: Vec<String> = Vec::new();
 
     for path in balance_query_paths(&api) {
         match query_balance_path(&client, &api, &secret, path) {
@@ -2508,10 +2778,16 @@ pub(crate) fn query_aggregate_api_balance(
                 });
             }
             Err(err) => {
-                last_error = Some(err);
+                attempt_errors.push(err);
             }
         }
     }
+
+    let message = if attempt_errors.is_empty() {
+        Some("balance query failed".to_string())
+    } else {
+        Some(attempt_errors.join(" | "))
+    };
 
     Ok(AggregateApiBalanceResult {
         id: api_id.to_string(),
@@ -2522,7 +2798,7 @@ pub(crate) fn query_aggregate_api_balance(
         total: None,
         unit: None,
         plan_name: None,
-        message: last_error.or_else(|| Some("balance query failed".to_string())),
+        message,
         queried_at: now_ts(),
         latency_ms: started_at.elapsed().as_millis() as i64,
     })

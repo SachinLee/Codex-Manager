@@ -1,6 +1,7 @@
 pub mod account;
 pub mod aggregate_api;
 pub mod apikey;
+pub mod codex_launcher;
 pub mod login;
 pub mod plugin;
 mod registry;

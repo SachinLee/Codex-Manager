@@ -12,6 +12,7 @@ mod account;
 mod aggregate_api;
 mod apikey;
 mod app_settings;
+mod codex_session;
 mod gateway;
 mod requestlog;
 mod service_config;
@@ -238,6 +239,9 @@ pub(crate) fn handle_request(req: JsonRpcRequest) -> JsonRpcMessage {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = requestlog::try_handle(&req) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = codex_session::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
 

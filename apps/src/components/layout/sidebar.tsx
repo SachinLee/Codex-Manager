@@ -10,6 +10,7 @@ import {
   FileText, 
   Settings, 
   UserRound,
+  Rocket,
   ChevronLeft, 
   ChevronRight
 } from "lucide-react";
@@ -32,6 +33,7 @@ const NAV_ITEMS = [
   { label: "平台密钥", href: "/apikeys", icon: Key },
   { label: "模型管理", href: "/models", icon: Boxes },
   { label: "插件中心", href: "/plugins", icon: Puzzle },
+  { label: "Codex 启动器", href: "/codex-launcher", icon: Rocket },
   { label: "请求日志", href: "/logs", icon: FileText },
   { label: "设置", href: "/settings", icon: Settings },
   { label: "赞助与推荐", href: "/author", icon: UserRound },

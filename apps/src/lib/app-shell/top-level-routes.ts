@@ -9,6 +9,7 @@ export const TOP_LEVEL_ROUTE_CONFIG = [
   { path: "/apikeys", label: "平台密钥" },
   { path: "/models", label: "模型管理" },
   { path: "/plugins", label: "插件中心" },
+  { path: "/codex-launcher", label: "Codex 启动器" },
   { path: "/logs", label: "请求日志" },
   { path: "/settings", label: "设置" },
   { path: "/author", label: "赞助与推荐" },

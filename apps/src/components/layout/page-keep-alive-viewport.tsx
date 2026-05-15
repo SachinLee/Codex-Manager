@@ -31,6 +31,7 @@ const LAZY_PAGE_COMPONENTS: Record<
   "/apikeys": lazy(() => import("@/app/apikeys/page")),
   "/models": lazy(() => import("@/app/models/page")),
   "/plugins": lazy(() => import("@/app/plugins/page")),
+  "/codex-launcher": lazy(() => import("@/app/codex-launcher/page")),
   "/logs": lazy(() => import("@/app/logs/page")),
   "/settings": lazy(() => import("@/app/settings/page")),
   "/author": lazy(() => import("@/app/author/page")),

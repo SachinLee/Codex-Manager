@@ -3,6 +3,7 @@ use codexmanager_core::rpc::types::{JsonRpcMessage, JsonRpcRequest};
 mod account;
 mod account_identity;
 mod aggregate_api;
+pub mod codex_session;
 mod apikey;
 pub(crate) mod app_settings;
 mod auth;
