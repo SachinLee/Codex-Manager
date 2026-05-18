@@ -23,13 +23,22 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "8";
+  const codexDeleteStyleVersion = "11";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "6";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "2";
+  const codexActionGroupVersion = "3";
+  // ===== Codex-Manager 集成层 =====
+  // 本注入脚本源自 CodexPlusPlus (https://github.com/BigPizzaV3/CodexPlusPlus, 作者 @BigPizzaV3)
+  // Codex-Manager 在保留原作者署名的前提下，对菜单结构、配色与按钮交互做了改造。
+  const codexManagerName = "Codex-Manager";
+  const codexManagerIssueUrl = "https://github.com/SachinLee/Codex-Manager/issues";
+  const rowMenuClass = "codex-row-menu";
+  const rowMenuTriggerClass = "codex-row-menu-trigger";
+  const rowMenuPopoverClass = "codex-row-menu-popover";
+  const rowMenuItemClass = "codex-row-menu-item";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
@@ -61,53 +70,130 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      /* 单一 "⋯" 触发按钮：hover 行才显示，不挤占标题宽度。
+         right 偏移要给 Codex 原生归档/置顶按钮（约 28-32px）留位，避免遮挡。 */
       .${actionGroupClass} {
         position: absolute;
-        right: 28px;
+        right: 36px;
         top: 50%;
         transform: translateY(-50%);
         z-index: 20;
         opacity: 0;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 0;
+        transition: opacity .12s ease;
       }
-      .${actionButtonClass},
-      .codex-archive-row-button {
-        border: 1px solid #ef4444;
+      [data-codex-delete-row="true"]:hover .${actionGroupClass},
+      [data-codex-delete-row="true"]:focus-within .${actionGroupClass},
+      [data-codex-delete-row="true"][data-codex-row-menu-open="true"] .${actionGroupClass} { opacity: 1; }
+      /* 出现归档确认按钮（"确认"按钮宽度更大）时，把 ⋯ 进一步左推让位 */
+      [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 72px; }
+      .${rowMenuTriggerClass} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border: 0;
         border-radius: 6px;
-        background: #f3f4f6;
-        color: #374151;
-        font-size: 12px;
-        line-height: 16px;
-        padding: 1px 6px;
+        background: transparent;
+        color: rgba(60,60,60,.78);
+        font-size: 18px;
+        line-height: 1;
+        letter-spacing: 0;
+        cursor: pointer;
+        padding: 0;
+      }
+      .${rowMenuTriggerClass}:hover,
+      .${rowMenuTriggerClass}:focus-visible,
+      [data-codex-row-menu-open="true"] .${rowMenuTriggerClass} {
+        background: rgba(0,0,0,.08);
+        color: #1a1a1a;
+        outline: none;
+      }
+      @media (prefers-color-scheme: dark) {
+        .${rowMenuTriggerClass} { color: rgba(236,236,236,.85); }
+        .${rowMenuTriggerClass}:hover,
+        .${rowMenuTriggerClass}:focus-visible,
+        [data-codex-row-menu-open="true"] .${rowMenuTriggerClass} {
+          background: rgba(255,255,255,.10);
+          color: #ffffff;
+        }
+      }
+      /* 弹层菜单：fixed 定位到触发按钮旁边 */
+      .${rowMenuPopoverClass} {
+        position: fixed;
+        z-index: 2147483300;
+        min-width: 156px;
+        padding: 4px;
+        border: 1px solid rgba(0,0,0,.10);
+        border-radius: 10px;
+        background: #ffffff;
+        color: #0d0d0d;
+        box-shadow: 0 12px 32px rgba(0,0,0,.18);
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      .${rowMenuItemClass} {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 7px 10px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
         cursor: pointer;
       }
+      .${rowMenuItemClass}:hover,
+      .${rowMenuItemClass}:focus-visible {
+        background: rgba(0,0,0,.06);
+        outline: none;
+      }
+      .${rowMenuItemClass}[data-variant="danger"] { color: #c92a2a; }
+      .${rowMenuItemClass}[data-variant="danger"]:hover { background: rgba(201,42,42,.10); }
+      .${rowMenuItemClass} .codex-row-menu-icon {
+        flex: 0 0 14px;
+        font-size: 14px;
+        line-height: 1;
+        opacity: .8;
+      }
+      @media (prefers-color-scheme: dark) {
+        .${rowMenuPopoverClass} {
+          background: #2f2f2f;
+          color: #ececec;
+          border-color: rgba(255,255,255,.10);
+          box-shadow: 0 12px 32px rgba(0,0,0,.45);
+        }
+        .${rowMenuItemClass}:hover,
+        .${rowMenuItemClass}:focus-visible { background: rgba(255,255,255,.08); }
+        .${rowMenuItemClass}[data-variant="danger"] { color: #ff6b6b; }
+        .${rowMenuItemClass}[data-variant="danger"]:hover { background: rgba(239,68,68,.16); }
+      }
+      /* 归档列表保留原有标记色（仅在归档面板内沿用） */
       .codex-archive-row-button {
+        border: 1px solid rgba(255,255,255,.14);
         border-radius: 7px;
-        font: 12px system-ui, sans-serif;
+        background: rgba(255,255,255,.06);
+        color: #ececec;
+        font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
         line-height: 16px;
         padding: 3px 8px;
+        cursor: pointer;
       }
-      .${buttonClass},
       .codex-archive-row-button.${buttonClass} {
-        border-color: #ef4444;
-        background: #fee2e2;
-        color: #991b1b;
+        border-color: rgba(239,68,68,.45);
+        background: rgba(239,68,68,.18);
+        color: #ffb4b4;
       }
-      .${exportButtonClass},
       .codex-archive-row-button.${exportButtonClass} {
-        border-color: #93c5fd;
-        background: #dbeafe;
-        color: #1d4ed8;
+        border-color: rgba(96,165,250,.4);
+        background: rgba(37,99,235,.18);
+        color: #bcd5ff;
       }
-      .${projectMoveButtonClass} {
-        border-color: #10a37f;
-        background: #d1fae5;
-        color: #065f46;
-      }
-      [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
-      [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
       .${projectMoveOverlayClass} {
         position: fixed;
         inset: 0;
@@ -276,25 +362,32 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 18px;
-        background: #2b2b2b;
-        color: #f3f4f6;
-        font: 14px system-ui, sans-serif;
-        box-shadow: 0 24px 80px rgba(0,0,0,.45);
+        border: 1px solid rgba(0,0,0,.08);
+        border-radius: 14px;
+        background: #ffffff;
+        color: #0d0d0d;
+        font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+        box-shadow: 0 24px 80px rgba(0,0,0,.18);
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-modal-content[data-codex-plus-active-tab="support"] { width: min(820px, calc(100vw - 48px)); }
+      @media (prefers-color-scheme: dark) {
+        .codex-plus-modal-content {
+          background: #212121;
+          color: #ececec;
+          border-color: rgba(255,255,255,.08);
+          box-shadow: 0 24px 80px rgba(0,0,0,.55);
+        }
+      }
       .codex-plus-modal-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 16px 20px 8px;
+        padding: 18px 22px 10px;
         flex: 0 0 auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-modal-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; }
+      .codex-plus-modal-title { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
       .codex-plus-backend-indicator { width: 9px; height: 9px; border-radius: 999px; background: #a1a1aa; display: inline-block; }
       .codex-plus-backend-indicator[data-status="ok"] { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.75); }
       .codex-plus-backend-indicator[data-status="failed"] { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,.75); }
@@ -302,57 +395,71 @@
       .codex-plus-modal-close {
         border: 0;
         background: transparent;
-        color: #d1d5db;
-        font-size: 20px;
+        color: rgba(13,13,13,.55);
+        font-size: 22px;
+        line-height: 1;
         cursor: pointer;
         pointer-events: auto;
         -webkit-app-region: no-drag;
+        padding: 0 4px;
+        border-radius: 6px;
       }
+      .codex-plus-modal-close:hover { background: rgba(0,0,0,.06); color: #0d0d0d; }
       .codex-plus-modal-body {
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
         overscroll-behavior: contain;
         scrollbar-gutter: stable;
-        padding: 4px 20px 16px;
+        padding: 4px 22px 18px;
         scrollbar-width: thin;
-        scrollbar-color: rgba(255,255,255,.28) transparent;
+        scrollbar-color: rgba(0,0,0,.20) transparent;
       }
       .codex-plus-modal-body::-webkit-scrollbar { width: 10px; }
       .codex-plus-modal-body::-webkit-scrollbar-track { background: transparent; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb {
         border: 2px solid transparent;
         border-radius: 999px;
-        background: rgba(255,255,255,.28);
+        background: rgba(0,0,0,.20);
         background-clip: padding-box;
       }
-      .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.38); background-clip: padding-box; }
+      .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.32); background-clip: padding-box; }
+      @media (prefers-color-scheme: dark) {
+        .codex-plus-modal-close { color: #d1d5db; }
+        .codex-plus-modal-close:hover { background: rgba(255,255,255,.08); color: #ffffff; }
+        .codex-plus-modal-body { scrollbar-color: rgba(255,255,255,.28) transparent; }
+        .codex-plus-modal-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.28); background-clip: padding-box; }
+        .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.38); background-clip: padding-box; }
+      }
       .codex-plus-row {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
-        gap: 12px;
-        padding: 10px 0;
-        border-top: 1px solid rgba(255,255,255,.1);
+        gap: 14px;
+        padding: 12px 0;
+        border-top: 1px solid rgba(0,0,0,.06);
       }
       .codex-plus-row:first-child { border-top: 0; }
-      .codex-plus-row-title { font-weight: 550; line-height: 1.35; }
-      .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 12px; line-height: 1.4; }
+      .codex-plus-row-title { font-weight: 500; line-height: 1.35; color: #0d0d0d; }
+      .codex-plus-row-description { margin-top: 3px; color: #5d5d5d; font-size: 12.5px; line-height: 1.5; }
       .codex-plus-toggle {
-        width: 42px;
-        height: 24px;
+        width: 38px;
+        height: 22px;
         border: 0;
         border-radius: 999px;
-        background: #52525b;
+        background: rgba(0,0,0,.16);
         padding: 2px;
+        cursor: pointer;
+        transition: background .15s ease;
       }
       .codex-plus-toggle span {
         display: block;
-        width: 20px;
-        height: 20px;
+        width: 18px;
+        height: 18px;
         border-radius: 999px;
-        background: white;
-        transition: transform .12s ease;
+        background: #ffffff;
+        box-shadow: 0 1px 2px rgba(0,0,0,.20);
+        transition: transform .14s ease;
       }
       .codex-plus-toggle,
       .codex-plus-action-button,
@@ -362,29 +469,102 @@
         align-self: center;
       }
       .codex-plus-toggle[data-enabled="true"] { background: #10a37f; }
-      .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
-      .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
-      .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
-      .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
-      .codex-plus-tab-button[data-active="true"] { background: #10a37f; color: white; border-color: #10a37f; }
+      .codex-plus-toggle[data-enabled="true"] span { transform: translateX(16px); }
+      .codex-plus-about { color: #5d5d5d; line-height: 1.6; font-size: 12.5px; }
+      .codex-plus-about a { color: #2563eb; text-decoration: none; }
+      .codex-plus-about a:hover { text-decoration: underline; }
+      .codex-plus-tabs { display: flex; gap: 6px; padding: 0 22px 10px; flex: 0 0 auto; }
+      .codex-plus-tab-button {
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #5d5d5d;
+        font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-weight: 500;
+        padding: 6px 12px;
+        cursor: pointer;
+        transition: background .12s ease, color .12s ease;
+      }
+      .codex-plus-tab-button:hover { background: rgba(0,0,0,.06); color: #0d0d0d; }
+      .codex-plus-tab-button[data-active="true"] { background: rgba(0,0,0,.08); color: #0d0d0d; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
-      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-issue-button {
+        border: 1px solid rgba(0,0,0,.10);
+        border-radius: 8px;
+        background: #ffffff;
+        color: #0d0d0d;
+        font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-weight: 500;
+        padding: 6px 12px;
+        cursor: pointer;
+        transition: background .12s ease;
+      }
+      .codex-plus-action-button:hover,
+      .codex-plus-issue-button:hover { background: rgba(0,0,0,.04); }
       .codex-plus-backend-status { display: grid; gap: 4px; min-width: 132px; justify-items: end; }
-      .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
-      .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
-      .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
-      .codex-plus-backend-repair { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-backend-label { color: #5d5d5d; font-size: 12px; }
+      .codex-plus-backend-label[data-status="ok"] { color: #0d8a5a; }
+      .codex-plus-backend-label[data-status="failed"] { color: #c92a2a; }
+      .codex-plus-backend-repair {
+        border: 1px solid rgba(0,0,0,.10);
+        border-radius: 8px;
+        background: #ffffff;
+        color: #0d0d0d;
+        font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .codex-plus-backend-repair:hover { background: rgba(0,0,0,.04); }
+      @media (prefers-color-scheme: dark) {
+        .codex-plus-row { border-top-color: rgba(255,255,255,.06); }
+        .codex-plus-row-title { color: #ececec; }
+        .codex-plus-row-description { color: #a0a0a0; }
+        .codex-plus-toggle { background: rgba(255,255,255,.12); }
+        .codex-plus-about { color: #a0a0a0; }
+        .codex-plus-about a { color: #4d9fff; }
+        .codex-plus-tab-button { color: #a0a0a0; }
+        .codex-plus-tab-button:hover { background: rgba(255,255,255,.06); color: #ececec; }
+        .codex-plus-tab-button[data-active="true"] { background: rgba(255,255,255,.10); color: #ffffff; }
+        .codex-plus-action-button,
+        .codex-plus-issue-button,
+        .codex-plus-backend-repair {
+          border-color: rgba(255,255,255,.12);
+          background: rgba(255,255,255,.04);
+          color: #ececec;
+        }
+        .codex-plus-action-button:hover,
+        .codex-plus-issue-button:hover,
+        .codex-plus-backend-repair:hover { background: rgba(255,255,255,.10); }
+        .codex-plus-backend-label { color: #a0a0a0; }
+        .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
+        .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
+      }
       .codex-plus-backend-repair[hidden] { display: none; }
-      .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
-      .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
+      .codex-plus-user-script-warning { margin-top: 4px; color: #b45309; font-size: 12px; }
+      .codex-plus-user-script-dirs { margin-top: 6px; color: #5d5d5d; font-size: 11px; line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
-      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 8px; }
-      .codex-plus-user-script-name { font-size: 12px; }
-      .codex-plus-user-script-meta { margin-top: 2px; color: #a1a1aa; font-size: 11px; }
-      .codex-plus-user-script-error { margin-top: 2px; color: #f87171; font-size: 11px; word-break: break-all; }
+      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid rgba(0,0,0,.08); border-radius: 8px; padding: 6px 8px; background: rgba(0,0,0,.02); }
+      .codex-plus-user-script-name { font-size: 12px; color: #0d0d0d; }
+      .codex-plus-user-script-meta { margin-top: 2px; color: #5d5d5d; font-size: 11px; }
+      .codex-plus-user-script-error { margin-top: 2px; color: #c92a2a; font-size: 11px; word-break: break-all; }
       .codex-plus-user-script-actions { display: grid; justify-items: end; gap: 8px; min-width: 120px; }
-      .codex-plus-user-script-reload { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-user-script-reload { border: 1px solid rgba(0,0,0,.10); border-radius: 7px; background: #ffffff; color: #0d0d0d; font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; padding: 6px 8px; cursor: pointer; }
+      .codex-plus-user-script-reload:hover { background: rgba(0,0,0,.04); }
+      @media (prefers-color-scheme: dark) {
+        .codex-plus-user-script-warning { color: #fbbf24; }
+        .codex-plus-user-script-dirs { color: #a1a1aa; }
+        .codex-plus-user-script-item { border-color: rgba(255,255,255,.08); background: rgba(255,255,255,.02); }
+        .codex-plus-user-script-name { color: #ececec; }
+        .codex-plus-user-script-meta { color: #a1a1aa; }
+        .codex-plus-user-script-error { color: #f87171; }
+        .codex-plus-user-script-reload {
+          border-color: rgba(255,255,255,.18);
+          background: #3f3f46;
+          color: #f3f4f6;
+        }
+        .codex-plus-user-script-reload:hover { background: rgba(255,255,255,.10); }
+      }
       .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
       .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
       .codex-plus-ad-section:first-of-type { margin-top: 0; }
@@ -708,14 +888,12 @@
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
-          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span>Codex++ ${codexPlusVersion}</span></div>
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span>${escapeHtml(codexManagerName)} 增强菜单</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
         </div>
-        <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
+        <div class="codex-plus-tabs" role="tablist" aria-label="${escapeHtml(codexManagerName)}">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -763,10 +941,10 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">关于</div><div class="codex-plus-about">${escapeHtml(codexManagerName)} 通过外部 launcher 向 Codex 注入增强菜单，不修改 Codex App 原始安装文件。<br>本菜单的注入脚本源自 <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">CodexPlusPlus</a>（作者 @BigPizzaV3），由 ${escapeHtml(codexManagerName)} 集成与改造。</div></div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
+              <div><div class="codex-plus-row-title">反馈问题</div><div class="codex-plus-row-description">在 ${escapeHtml(codexManagerName)} 仓库提交 Issue。</div></div>
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
             </div>
           </div>
@@ -782,25 +960,6 @@
               <div class="codex-plus-user-script-actions">
                 <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
                 <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
-              </div>
-            </div>
-          </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
-            <div class="codex-plus-ad-remote">
-              ${renderCodexPlusAds()}
-            </div>
-          </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
-            <div class="codex-plus-sponsor-grid">
-              <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">支付宝</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="支付宝赞赏码">
-              </div>
-              <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">微信</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="微信赞赏码">
               </div>
             </div>
           </div>
@@ -834,8 +993,7 @@
       }
       const issueButton = target?.closest("[data-codex-plus-issue]");
       if (issueButton) {
-        const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
-        window.open(issueUrl, "_blank");
+        window.open(codexManagerIssueUrl, "_blank");
         return;
       }
       const userScriptsEnabled = target?.closest("[data-codex-user-scripts-enabled]");
@@ -866,7 +1024,6 @@
       }
     }, true);
     document.body.appendChild(overlay);
-    if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab("home");
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
@@ -2306,20 +2463,15 @@
       return;
     }
     const existingGroup = actionGroupFromRow(row);
-    const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
-    const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
-    const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
-    const hasUnexpectedExport = !settings.markdownExport && !!existingExportButton;
-    const hasUnexpectedMove = !settings.projectMove && !!existingMoveButton;
-    const missingDelete = settings.sessionDelete && !existingDeleteButton;
-    const missingExport = settings.markdownExport && !existingExportButton;
-    const missingMove = settings.projectMove && !existingMoveButton;
-    const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
-    const exportReady = !settings.markdownExport || existingExportButton?.dataset.codexExportVersion === codexExportVersion;
-    const moveReady = !settings.projectMove || existingMoveButton?.dataset.codexProjectMoveVersion === codexProjectMoveVersion;
+    const existingTrigger = existingGroup?.querySelector(`.${rowMenuTriggerClass}`);
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && exportReady && moveReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingExport && !missingMove) return;
+    const triggerDeleteReady = !settings.sessionDelete || existingTrigger?.dataset.codexDeleteVersion === codexDeleteVersion;
+    const triggerExportReady = !settings.markdownExport || existingTrigger?.dataset.codexExportVersion === codexExportVersion;
+    const triggerMoveReady = !settings.projectMove || existingTrigger?.dataset.codexProjectMoveVersion === codexProjectMoveVersion;
+    const hasUnexpectedDelete = !settings.sessionDelete && existingTrigger?.dataset.codexDeleteVersion;
+    const hasUnexpectedExport = !settings.markdownExport && existingTrigger?.dataset.codexExportVersion;
+    const hasUnexpectedMove = !settings.projectMove && existingTrigger?.dataset.codexProjectMoveVersion;
+    if (groupReady && !!existingTrigger && triggerDeleteReady && triggerExportReady && triggerMoveReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove) return;
     removeActionGroups(row);
     row.dataset.codexDeleteRow = "false";
     row.dataset.codexProjectMoveRow = "false";
@@ -2328,45 +2480,129 @@
     row.dataset.codexDeleteRow = "true";
     row.dataset.codexProjectMoveRow = String(!!settings.projectMove);
     const group = document.createElement("div");
-    group.className = actionGroupClass;
+    group.className = `${actionGroupClass} ${rowMenuClass}`;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
-    if (settings.projectMove) {
-      const moveButton = document.createElement("button");
-      moveButton.type = "button";
-      moveButton.className = `${actionButtonClass} ${projectMoveButtonClass}`;
-      moveButton.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
-      moveButton.textContent = "移动";
-      const openProjectMove = (event) => openProjectMoveMenuForRow(row, moveButton, ref, event);
-      installActionButtonEvents(row, moveButton, openProjectMove);
-      group.appendChild(moveButton);
-      setTimeout(() => refreshActionButton(moveButton, row, openProjectMove), 0);
-    }
-    if (settings.markdownExport) {
-      const exportButton = document.createElement("button");
-      exportButton.type = "button";
-      exportButton.className = `${actionButtonClass} ${exportButtonClass}`;
-      exportButton.dataset.codexExportVersion = codexExportVersion;
-      exportButton.textContent = "导出";
-      const openExport = (event) => {
-        stopActionButtonEvent(row, exportButton, event);
-        exportMarkdown(ref);
-      };
-      installActionButtonEvents(row, exportButton, openExport);
-      group.appendChild(exportButton);
-      setTimeout(() => refreshActionButton(exportButton, row, openExport), 0);
-    }
-    if (settings.sessionDelete) {
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.className = `${actionButtonClass} ${buttonClass}`;
-      deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      deleteButton.textContent = "删除";
-      const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
-      installActionButtonEvents(row, deleteButton, openDeleteConfirm);
-      group.appendChild(deleteButton);
-      setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
-    }
+
+    // 单一 ⋯ 触发器：替代原本一字排开的「移动/导出/删除」三个按钮
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = rowMenuTriggerClass;
+    trigger.setAttribute("aria-label", "更多操作");
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.textContent = "⋯";
+
+    // 用于版本校验、隐藏旧按钮的 dataset 标记，保持原有 attachButton 早退逻辑
+    if (settings.projectMove) trigger.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
+    if (settings.markdownExport) trigger.dataset.codexExportVersion = codexExportVersion;
+    if (settings.sessionDelete) trigger.dataset.codexDeleteVersion = codexDeleteVersion;
+
+    const buildMenuItems = () => {
+      const items = [];
+      if (settings.projectMove) {
+        items.push({
+          key: "move",
+          label: "移动到…",
+          icon: "↗",
+          variant: "default",
+          run: (event) => openProjectMoveMenuForRow(row, trigger, ref, event),
+        });
+      }
+      if (settings.markdownExport) {
+        items.push({
+          key: "export",
+          label: "导出 Markdown",
+          icon: "↓",
+          variant: "default",
+          run: () => exportMarkdown(ref),
+        });
+      }
+      if (settings.sessionDelete) {
+        items.push({
+          key: "delete",
+          label: "删除会话",
+          icon: "×",
+          variant: "danger",
+          run: (event) => openDeleteConfirmForRow(row, trigger, ref, event),
+        });
+      }
+      return items;
+    };
+
+    const onTriggerActivate = (event) => {
+      // refreshActionButton 会 cloneNode(true) 替换原 trigger，闭包中的旧 trigger 已脱离 DOM，
+      // 必须用 event.currentTarget 拿到真正被点击的那一个，否则 getBoundingClientRect() 全 0、弹层飞到 (0,0)。
+      const liveTrigger = (event && event.currentTarget instanceof Element)
+        ? event.currentTarget
+        : (row.querySelector(`.${rowMenuTriggerClass}`) || trigger);
+      stopActionButtonEvent(row, liveTrigger, event);
+      openRowMenu(row, liveTrigger, buildMenuItems());
+    };
+    installActionButtonEvents(row, trigger, onTriggerActivate);
+    group.appendChild(trigger);
+    setTimeout(() => refreshActionButton(trigger, row, onTriggerActivate), 0);
     row.appendChild(group);
+  }
+
+  // 行操作弹层菜单：fixed 定位到 ⋯ 触发按钮旁，点击外部/Esc 关闭
+  function closeRowMenu() {
+    const existing = document.querySelector(`.${rowMenuPopoverClass}`);
+    if (existing) existing.remove();
+    document.querySelectorAll('[data-codex-row-menu-open="true"]').forEach((row) => {
+      delete row.dataset.codexRowMenuOpen;
+    });
+    if (window.__codexRowMenuCleanup) {
+      window.__codexRowMenuCleanup();
+      window.__codexRowMenuCleanup = null;
+    }
+  }
+
+  function openRowMenu(row, trigger, items) {
+    closeRowMenu();
+    if (!items.length) return;
+    row.dataset.codexRowMenuOpen = "true";
+    const popover = document.createElement("div");
+    popover.className = rowMenuPopoverClass;
+    popover.setAttribute("role", "menu");
+    items.forEach((item) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = rowMenuItemClass;
+      btn.dataset.variant = item.variant || "default";
+      btn.setAttribute("role", "menuitem");
+      btn.innerHTML = `<span class="codex-row-menu-icon" aria-hidden="true">${escapeHtml(item.icon || "")}</span><span>${escapeHtml(item.label)}</span>`;
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRowMenu();
+        try { item.run(event); } catch (_) {}
+      }, true);
+      popover.appendChild(btn);
+    });
+    document.body.appendChild(popover);
+    // 定位：默认按钮下方贴齐右边；空间不足则翻到上方
+    const rect = trigger.getBoundingClientRect();
+    const popRect = popover.getBoundingClientRect();
+    const gap = 6;
+    let top = rect.bottom + gap;
+    if (top + popRect.height > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - gap - popRect.height);
+    }
+    let left = rect.right - popRect.width;
+    if (left < 12) left = Math.min(window.innerWidth - popRect.width - 12, rect.left);
+    popover.style.top = `${Math.round(top)}px`;
+    popover.style.left = `${Math.round(left)}px`;
+
+    const onDocPointer = (event) => {
+      if (popover.contains(event.target) || trigger.contains(event.target)) return;
+      closeRowMenu();
+    };
+    const onKey = (event) => { if (event.key === "Escape") closeRowMenu(); };
+    document.addEventListener("pointerdown", onDocPointer, true);
+    document.addEventListener("keydown", onKey, true);
+    window.__codexRowMenuCleanup = () => {
+      document.removeEventListener("pointerdown", onDocPointer, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
   }
 
   function tryAttachButton(row) {

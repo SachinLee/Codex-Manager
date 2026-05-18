@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use codexmanager_service::codex_session;
+use codexmanager_service::codex_session::{self, DeleteStatus};
 
 /// CDP binding 名称（与 renderer-inject.js 一致）
 pub const BINDING_NAME: &str = "codexSessionDeleteV2";
@@ -38,8 +38,33 @@ fn dispatch(path: &str, payload: &Value) -> String {
         "/delete" => {
             let session_id = extract_session_id(payload);
             match codex_session::delete_session(&db_path, &session_id) {
-                Ok(r) => serde_json::to_string(&r).unwrap_or_else(|_| json_error("serialize_failed")),
-                Err(e) => json_error(&e),
+                Ok(r) => {
+                    let (status, message, undo_token) = match r.status {
+                        DeleteStatus::Deleted => (
+                            "server_deleted",
+                            "已删除".to_string(),
+                            r.undo_token,
+                        ),
+                        DeleteStatus::NotFound => (
+                            "failed",
+                            "会话不存在或已被删除".to_string(),
+                            None,
+                        ),
+                        DeleteStatus::BackupFailed => (
+                            "failed",
+                            "备份失败，未执行删除".to_string(),
+                            None,
+                        ),
+                    };
+                    json!({
+                        "status": status,
+                        "message": message,
+                        "undo_token": undo_token,
+                        "session_id": r.session_id,
+                    })
+                    .to_string()
+                }
+                Err(e) => json!({ "status": "failed", "message": e }).to_string(),
             }
         }
         "/undo" => {
