@@ -108,10 +108,7 @@ fn extract_prompt_cache_key(body: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-fn strip_compact_service_tier_for_transport(
-    body: &Bytes,
-    preserve_service_tier: bool,
-) -> Bytes {
+fn strip_compact_service_tier_for_transport(body: &Bytes, preserve_service_tier: bool) -> Bytes {
     if preserve_service_tier || body.is_empty() {
         return body.clone();
     }

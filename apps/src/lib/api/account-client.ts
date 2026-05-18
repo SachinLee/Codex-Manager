@@ -2,11 +2,14 @@ import { invoke, withAddr } from "./transport";
 import {
   normalizeAccountList,
   normalizeAccountDailyUsageStats,
-  normalizeAggregateApiBalanceResult,
+  normalizeAggregateApiBalanceRefreshResult,
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiDailyUsageStats,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
+  normalizeAggregateApiSupplierModel,
+  normalizeAggregateApiSupplierModelImportResult,
+  normalizeAggregateApiSupplierModelList,
   normalizeAggregateApiTestResult,
   normalizeApiKeyCreateResult,
   normalizeApiKeyList,
@@ -14,6 +17,7 @@ import {
   normalizeLoginStartResult,
   normalizeManagedModelCatalog,
   normalizeManagedModelInfo,
+  normalizeManagedModelRouting,
   normalizeModelCatalog,
   normalizeUsageAggregateSummary,
   normalizeUsageList,
@@ -45,10 +49,12 @@ import {
   AccountDailyUsageStat,
   AccountUsage,
   AggregateApi,
-  AggregateApiBalanceResult,
+  AggregateApiBalanceRefreshResult,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
+  AggregateApiSupplierModel,
+  AggregateApiSupplierModelImportResult,
   AggregateApiTestResult,
   ApiKey,
   ApiKeyCreateResult,
@@ -60,6 +66,9 @@ import {
   LoginStartResult,
   ManagedModelCatalog,
   ManagedModelInfo,
+  ManagedModelRouting,
+  ManagedModelSourceMapping,
+  ManagedModelSourceModel,
   ModelCatalog,
   ModelInfo,
   UsageAggregateSummary,
@@ -94,6 +103,9 @@ interface AccountUpdatePayload {
   label?: string | null;
   note?: string | null;
   tags?: string[] | string | null;
+  modelSlugs?: string[] | null;
+  quotaCapacityPrimaryWindowTokens?: number | null;
+  quotaCapacitySecondaryWindowTokens?: number | null;
 }
 
 interface ChatgptAuthTokensLoginPayload {
@@ -117,6 +129,7 @@ interface ApiKeyPayload {
   aggregateApiId?: string | null;
   accountPlanFilter?: string | null;
   quotaLimitTokens?: number | null;
+  customKey?: string | null;
 }
 
 export interface ManagedModelPayload {
@@ -125,6 +138,38 @@ export interface ManagedModelPayload {
   userEdited?: boolean | null;
   sortIndex?: number | null;
   model: ManagedModelInfo | ModelInfo;
+}
+
+export interface ManagedModelSourceSyncPayload {
+  sourceKind: string;
+  sourceId?: string | null;
+}
+
+export interface ManagedModelSourceModelPayload {
+  sourceKind: string;
+  sourceId: string;
+  upstreamModel: string;
+  displayName?: string | null;
+}
+
+export interface ManagedModelSourceMappingPayload {
+  id?: string | null;
+  platformModelSlug: string;
+  sourceKind: string;
+  sourceId: string;
+  upstreamModel: string;
+  enabled?: boolean | null;
+  priority?: number | null;
+  weight?: number | null;
+  billingModelSlug?: string | null;
+}
+
+export interface AggregateApiSupplierModelPayload {
+  supplierKey: string;
+  providerType: string;
+  upstreamModel: string;
+  displayName?: string | null;
+  status?: string | null;
 }
 
 interface AggregateApiPayload {
@@ -144,6 +189,13 @@ interface AggregateApiPayload {
   dailySpendLimitUsd?: number | null;
   username?: string | null;
   password?: string | null;
+  balanceQueryEnabled?: boolean | null;
+  balanceQueryTemplate?: string | null;
+  balanceQueryBaseUrl?: string | null;
+  balanceQueryAccessToken?: string | null;
+  balanceQueryUserId?: string | null;
+  balanceQueryConfigJson?: string | null;
+  modelSlugs?: string[] | null;
 }
 
 const MAX_IMPORT_RPC_BODY_BYTES = 4 * 1024 * 1024;
@@ -341,6 +393,19 @@ export const accountClient = {
               .filter(Boolean)
               .join(",")
           : params.tags ?? null,
+        modelSlugs: Array.isArray(params.modelSlugs)
+          ? params.modelSlugs
+              .map((item) => String(item || "").trim())
+              .filter(Boolean)
+          : null,
+        quotaCapacityPrimaryWindowTokens:
+          typeof params.quotaCapacityPrimaryWindowTokens === "number"
+            ? params.quotaCapacityPrimaryWindowTokens
+            : null,
+        quotaCapacitySecondaryWindowTokens:
+          typeof params.quotaCapacitySecondaryWindowTokens === "number"
+            ? params.quotaCapacitySecondaryWindowTokens
+            : null,
       })
     ),
   setPreferred: (accountId: string) =>
@@ -545,6 +610,25 @@ export const accountClient = {
             : null,
         username: params.username || null,
         password: params.password || null,
+        balanceQueryEnabled:
+          typeof params.balanceQueryEnabled === "boolean"
+            ? params.balanceQueryEnabled
+            : null,
+        balanceQueryTemplate: params.balanceQueryTemplate || null,
+        balanceQueryBaseUrl:
+          typeof params.balanceQueryBaseUrl === "string"
+            ? params.balanceQueryBaseUrl
+            : null,
+        balanceQueryAccessToken: params.balanceQueryAccessToken || null,
+        balanceQueryUserId:
+          typeof params.balanceQueryUserId === "string"
+            ? params.balanceQueryUserId
+            : null,
+        balanceQueryConfigJson:
+          typeof params.balanceQueryConfigJson === "string"
+            ? params.balanceQueryConfigJson
+            : null,
+        modelSlugs: Array.isArray(params.modelSlugs) ? params.modelSlugs : null,
       })
     );
     return normalizeAggregateApiCreateResult(result);
@@ -581,6 +665,25 @@ export const accountClient = {
             : null,
         username: params.username || null,
         password: params.password || null,
+        balanceQueryEnabled:
+          typeof params.balanceQueryEnabled === "boolean"
+            ? params.balanceQueryEnabled
+            : null,
+        balanceQueryTemplate: params.balanceQueryTemplate || null,
+        balanceQueryBaseUrl:
+          typeof params.balanceQueryBaseUrl === "string"
+            ? params.balanceQueryBaseUrl
+            : null,
+        balanceQueryAccessToken: params.balanceQueryAccessToken || null,
+        balanceQueryUserId:
+          typeof params.balanceQueryUserId === "string"
+            ? params.balanceQueryUserId
+            : null,
+        balanceQueryConfigJson:
+          typeof params.balanceQueryConfigJson === "string"
+            ? params.balanceQueryConfigJson
+            : null,
+        modelSlugs: Array.isArray(params.modelSlugs) ? params.modelSlugs : null,
       })
     ),
   deleteAggregateApi: (apiId: string) =>
@@ -599,13 +702,6 @@ export const accountClient = {
     );
     return normalizeAggregateApiTestResult(result);
   },
-  async queryAggregateApiBalance(apiId: string): Promise<AggregateApiBalanceResult> {
-    const result = await invoke<unknown>(
-      "service_aggregate_api_query_balance",
-      withAddr({ id: apiId })
-    );
-    return normalizeAggregateApiBalanceResult(result);
-  },
   async listAggregateApiDailyUsageStats(params?: {
     dayStartTs?: number;
     dayEndTs?: number;
@@ -615,6 +711,65 @@ export const accountClient = {
       withAddr(params)
     );
     return normalizeAggregateApiDailyUsageStats(result);
+  },
+  async refreshAggregateApiBalance(apiId: string): Promise<AggregateApiBalanceRefreshResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_refresh_balance",
+      withAddr({ id: apiId })
+    );
+    return normalizeAggregateApiBalanceRefreshResult(result);
+  },
+  async listAggregateApiSupplierModels(params?: {
+    supplierKey?: string | null;
+    providerType?: string | null;
+  }): Promise<AggregateApiSupplierModel[]> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_supplier_models_list",
+      withAddr({
+        supplierKey: params?.supplierKey || null,
+        providerType: params?.providerType || null,
+      })
+    );
+    return normalizeAggregateApiSupplierModelList(result);
+  },
+  async saveAggregateApiSupplierModel(
+    params: AggregateApiSupplierModelPayload,
+  ): Promise<AggregateApiSupplierModel> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_supplier_model_save",
+      withAddr({ payload: params }),
+    );
+    const item = normalizeAggregateApiSupplierModel(result);
+    if (!item) throw new Error("供应商模型保存结果为空");
+    return item;
+  },
+  deleteAggregateApiSupplierModel: (params: {
+    supplierKey: string;
+    providerType: string;
+    upstreamModel: string;
+  }) =>
+    invoke(
+      "service_aggregate_api_supplier_model_delete",
+      withAddr({
+        supplierKey: params.supplierKey,
+        providerType: params.providerType,
+        upstreamModel: params.upstreamModel,
+      }),
+    ),
+  async importAggregateApiSupplierModels(params: {
+    apiId: string;
+    supplierKey?: string | null;
+    providerType?: string | null;
+  }): Promise<AggregateApiSupplierModelImportResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_supplier_models_import",
+      withAddr({
+        apiId: params.apiId,
+        supplierKey: params.supplierKey || null,
+        providerType: params.providerType || null,
+      }),
+    );
+    return normalizeAggregateApiSupplierModelImportResult(result);
   },
 
   async listApiKeys(): Promise<ApiKey[]> {
@@ -636,6 +791,7 @@ export const accountClient = {
         aggregateApiId: params.aggregateApiId || null,
         accountPlanFilter: params.accountPlanFilter || null,
         quotaLimitTokens: params.quotaLimitTokens ?? null,
+        customKey: params.customKey || null,
       })
     );
     return normalizeApiKeyCreateResult(result);
@@ -683,6 +839,45 @@ export const accountClient = {
     );
     return normalizeManagedModelCatalog(result);
   },
+  async listManagedModelRouting(): Promise<ManagedModelRouting> {
+    const result = await invoke<unknown>("service_model_routing", withAddr());
+    return normalizeManagedModelRouting(result);
+  },
+  async syncManagedModelSourceModels(
+    params: ManagedModelSourceSyncPayload,
+  ): Promise<ManagedModelRouting> {
+    const result = await invoke<unknown>(
+      "service_model_source_sync",
+      withAddr({ payload: params }),
+    );
+    return normalizeManagedModelRouting(result);
+  },
+  async saveManagedModelSourceModel(
+    params: ManagedModelSourceModelPayload,
+  ): Promise<ManagedModelSourceModel> {
+    const result = await invoke<unknown>(
+      "service_model_source_model_save",
+      withAddr({ payload: params }),
+    );
+    const routing = normalizeManagedModelRouting({ sourceModels: [result], mappings: [] });
+    const item = routing.sourceModels[0];
+    if (!item) throw new Error("来源模型保存结果为空");
+    return item;
+  },
+  async saveManagedModelSourceMapping(
+    params: ManagedModelSourceMappingPayload,
+  ): Promise<ManagedModelSourceMapping> {
+    const result = await invoke<unknown>(
+      "service_model_source_mapping_save",
+      withAddr({ payload: params }),
+    );
+    const routing = normalizeManagedModelRouting({ sourceModels: [], mappings: [result] });
+    const item = routing.mappings[0];
+    if (!item) throw new Error("模型映射保存结果为空");
+    return item;
+  },
+  deleteManagedModelSourceMapping: (id: string) =>
+    invoke("service_model_source_mapping_delete", withAddr({ id })),
   async saveManagedModel(params: ManagedModelPayload): Promise<ManagedModelInfo> {
     const payload = {
       previousSlug: params.previousSlug || null,

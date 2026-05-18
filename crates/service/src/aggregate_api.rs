@@ -1,8 +1,13 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiBalanceResult, AggregateApiCreateResult, AggregateApiSecretResult,
-    AggregateApiSummary, AggregateApiTestResult,
+    AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
+    AggregateApiSecretResult, AggregateApiSummary, AggregateApiSupplierModelDeleteParams,
+    AggregateApiSupplierModelEntry, AggregateApiSupplierModelImportParams,
+    AggregateApiSupplierModelImportResult, AggregateApiSupplierModelUpsertParams,
+    AggregateApiTestResult, ManagedModelSourceModelEntry,
 };
-use codexmanager_core::storage::{now_ts, AggregateApi};
+use codexmanager_core::storage::{
+    now_ts, AggregateApi, AggregateApiSupplierModel, ModelSourceModel,
+};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -18,36 +23,47 @@ pub(crate) const AGGREGATE_API_PROVIDER_CLAUDE: &str = "claude";
 pub(crate) const AGGREGATE_API_PROVIDER_GEMINI: &str = "gemini";
 pub(crate) const AGGREGATE_API_AUTH_APIKEY: &str = "apikey";
 pub(crate) const AGGREGATE_API_AUTH_USERPASS: &str = "userpass";
+const AGGREGATE_API_BALANCE_TEMPLATE_GENERIC: &str = "generic";
+const AGGREGATE_API_BALANCE_TEMPLATE_NEW_API: &str = "new_api";
+const AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM: &str = "custom";
+const CUSTOM_BALANCE_AUTH_PROVIDER_BEARER: &str = "provider_bearer";
+const CUSTOM_BALANCE_AUTH_BALANCE_BEARER: &str = "balance_bearer";
+const CUSTOM_BALANCE_AUTH_NONE: &str = "none";
 const CLAUDE_DEFAULT_PROBE_MODEL: &str = "claude-haiku-4-5-20251001";
 const ALIBABA_CODING_PLAN_PROBE_MODEL: &str = "qwen3.5-plus";
-const MAX_DISCOVERED_CLAUDE_PROBE_MODELS: usize = 8;
-const DEFAULT_BALANCE_UNIT: &str = "USD";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OfficialBalanceProvider {
-    DeepSeek,
-    StepFun,
-    SiliconFlowCn,
-    SiliconFlowGlobal,
-    OpenRouter,
-    Novita,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct BalanceSnapshot {
-    remaining: Option<f64>,
-    used: Option<f64>,
-    total: Option<f64>,
-    unit: Option<String>,
-    plan_name: Option<String>,
-    message: Option<String>,
-}
+const MAX_DISCOVERED_MODEL_IDS: usize = 512;
+const AGGREGATE_API_MODEL_SOURCE_KIND: &str = "aggregate_api";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UserPassSecret {
     username: String,
     password: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomBalanceQueryConfig {
+    #[serde(default)]
+    method: Option<String>,
+    path: String,
+    #[serde(default)]
+    auth: Option<String>,
+    remaining_path: String,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    multiplier: Option<f64>,
+    #[serde(default)]
+    total_path: Option<String>,
+    #[serde(default)]
+    used_path: Option<String>,
+    #[serde(default)]
+    plan_path: Option<String>,
+    #[serde(default)]
+    valid_path: Option<String>,
+    #[serde(default)]
+    invalid_message_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,37 +140,6 @@ fn normalize_sort(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
 }
 
-fn normalize_cost_multiplier(value: Option<f64>) -> Result<f64, String> {
-    let Some(value) = value else {
-        return Ok(1.0);
-    };
-    if !value.is_finite() || value <= 0.0 {
-        return Err("aggregate api costMultiplier must be greater than 0".to_string());
-    }
-    if value > 100.0 {
-        return Err("aggregate api costMultiplier must be less than or equal to 100".to_string());
-    }
-    Ok(value)
-}
-
-fn normalize_daily_spend_limit_usd(value: Option<f64>) -> Result<Option<f64>, String> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if !value.is_finite() {
-        return Err("aggregate api dailySpendLimitUsd must be finite".to_string());
-    }
-    if value <= 0.0 {
-        return Ok(None);
-    }
-    if value > 1_000_000.0 {
-        return Err(
-            "aggregate api dailySpendLimitUsd must be less than or equal to 1000000".to_string(),
-        );
-    }
-    Ok(Some(value))
-}
-
 fn normalize_status(value: Option<String>) -> Result<String, String> {
     match value {
         Some(raw) => {
@@ -224,6 +209,242 @@ fn normalize_model_override(value: Option<String>) -> Result<Option<String>, Str
         return Err("aggregate api modelOverride contains unsupported characters".to_string());
     }
     Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_balance_query_template(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    match normalized.as_str() {
+        AGGREGATE_API_BALANCE_TEMPLATE_GENERIC => {
+            Ok(Some(AGGREGATE_API_BALANCE_TEMPLATE_GENERIC.to_string()))
+        }
+        "newapi" | "new_api" => Ok(Some(AGGREGATE_API_BALANCE_TEMPLATE_NEW_API.to_string())),
+        "custom" | "custom_json" => Ok(Some(AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM.to_string())),
+        other => Err(format!(
+            "unsupported aggregate api balance template: {other}"
+        )),
+    }
+}
+
+fn default_balance_query_template(template: Option<String>) -> String {
+    template.unwrap_or_else(|| AGGREGATE_API_BALANCE_TEMPLATE_GENERIC.to_string())
+}
+
+fn normalize_custom_balance_method(value: Option<String>) -> Result<String, String> {
+    let method = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
+    match method.as_str() {
+        "GET" | "POST" => Ok(method),
+        _ => Err("custom balance method must be GET or POST".to_string()),
+    }
+}
+
+fn normalize_custom_balance_auth(value: Option<String>) -> Result<String, String> {
+    let auth = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CUSTOM_BALANCE_AUTH_PROVIDER_BEARER)
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    match auth.as_str() {
+        "provider" | "provider_bearer" | "api_key" | "apikey" => {
+            Ok(CUSTOM_BALANCE_AUTH_PROVIDER_BEARER.to_string())
+        }
+        "balance" | "balance_bearer" | "access_token" => {
+            Ok(CUSTOM_BALANCE_AUTH_BALANCE_BEARER.to_string())
+        }
+        "none" | "no_auth" => Ok(CUSTOM_BALANCE_AUTH_NONE.to_string()),
+        _ => Err("custom balance auth is invalid".to_string()),
+    }
+}
+
+fn normalize_custom_balance_endpoint_path(value: String) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("custom balance path is required".to_string());
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return Err("custom balance path must be relative, not a full url".to_string());
+    }
+    if trimmed.contains("://") {
+        return Err("custom balance path is invalid".to_string());
+    }
+    Ok(if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    })
+}
+
+fn normalize_custom_balance_json_path(
+    value: Option<String>,
+    field_name: &str,
+    required: bool,
+) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        if required {
+            return Err(format!("custom balance {field_name} is required"));
+        }
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        if required {
+            return Err(format!("custom balance {field_name} is required"));
+        }
+        return Ok(None);
+    }
+    for segment in trimmed.split('.') {
+        if segment.is_empty() {
+            return Err(format!(
+                "custom balance {field_name} contains an empty segment"
+            ));
+        }
+        if !segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        {
+            return Err(format!(
+                "custom balance {field_name} contains unsupported characters"
+            ));
+        }
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_custom_balance_unit(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        return Ok(Some("USD".to_string()));
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Some("USD".to_string()));
+    }
+    if trimmed.chars().count() > 16 {
+        return Err("custom balance unit is too long".to_string());
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_custom_balance_multiplier(value: Option<f64>) -> Result<Option<f64>, String> {
+    let multiplier = value.unwrap_or(1.0);
+    if !multiplier.is_finite() || multiplier <= 0.0 {
+        return Err("custom balance multiplier must be greater than 0".to_string());
+    }
+    Ok(Some(multiplier))
+}
+
+fn normalize_custom_balance_query_config(value: Option<String>) -> Result<Option<String>, String> {
+    let raw = normalize_optional_text(value)
+        .ok_or_else(|| "custom balance query config is required".to_string())?;
+    if raw.len() > 4096 {
+        return Err("custom balance query config is too large".to_string());
+    }
+    let mut config: CustomBalanceQueryConfig = serde_json::from_str(raw.as_str())
+        .map_err(|_| "custom balance query config is invalid JSON".to_string())?;
+    config.method = Some(normalize_custom_balance_method(config.method.take())?);
+    config.path = normalize_custom_balance_endpoint_path(config.path)?;
+    config.auth = Some(normalize_custom_balance_auth(config.auth.take())?);
+    config.remaining_path =
+        normalize_custom_balance_json_path(Some(config.remaining_path), "remainingPath", true)?
+            .expect("required remainingPath");
+    config.unit = normalize_custom_balance_unit(config.unit.take())?;
+    config.multiplier = normalize_custom_balance_multiplier(config.multiplier)?;
+    config.total_path =
+        normalize_custom_balance_json_path(config.total_path.take(), "totalPath", false)?;
+    config.used_path =
+        normalize_custom_balance_json_path(config.used_path.take(), "usedPath", false)?;
+    config.plan_path =
+        normalize_custom_balance_json_path(config.plan_path.take(), "planPath", false)?;
+    config.valid_path =
+        normalize_custom_balance_json_path(config.valid_path.take(), "validPath", false)?;
+    config.invalid_message_path = normalize_custom_balance_json_path(
+        config.invalid_message_path.take(),
+        "invalidMessagePath",
+        false,
+    )?;
+    serde_json::to_string(&config)
+        .map(Some)
+        .map_err(|_| "serialize custom balance query config failed".to_string())
+}
+
+fn normalize_balance_query_config_json(
+    template: Option<&str>,
+    value: Option<String>,
+) -> Result<Option<String>, String> {
+    if template == Some(AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM) {
+        return normalize_custom_balance_query_config(value);
+    }
+    Ok(None)
+}
+
+fn normalize_optional_url(
+    value: Option<String>,
+    field_name: &str,
+) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim().trim_end_matches('/').to_string();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed =
+        reqwest::Url::parse(trimmed.as_str()).map_err(|_| format!("invalid {field_name}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(format!("invalid {field_name} scheme"));
+    }
+    Ok(Some(trimmed))
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_required_text(field_name: &str, value: impl AsRef<str>) -> Result<String, String> {
+    let trimmed = value.as_ref().trim();
+    if trimmed.is_empty() {
+        return Err(format!("{field_name} is required"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_supplier_model_status(value: Option<String>) -> Result<String, String> {
+    let normalized = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("available")
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    match normalized.as_str() {
+        "available" | "active" | "enabled" | "enable" => Ok("available".to_string()),
+        "disabled" | "disable" | "inactive" => Ok("disabled".to_string()),
+        other => Err(format!("unsupported supplier model status: {other}")),
+    }
+}
+
+fn supplier_template_key_for_api(api: &AggregateApi) -> String {
+    api.supplier_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| api.url.trim())
+        .to_string()
 }
 
 fn normalize_auth_params_json(
@@ -328,13 +549,12 @@ mod tests {
     use tiny_http::{Response, Server, StatusCode};
 
     use super::{
-        action_path_or_default, apply_balance_probe_auth, balance_query_paths,
-        build_codex_models_probe_url, claude_probe_fallback_models_for_api,
-        extract_model_ids_from_models_response, normalize_action_override, normalize_cost_multiplier,
-        normalize_daily_spend_limit_usd, normalize_provider_type, normalize_provider_type_value,
-        official_balance_provider, parse_balance_snapshot_with_provider, probe_claude_endpoint,
-        probe_codex_endpoint, provider_default_url, query_balance_path, query_balance_request_url,
-        OfficialBalanceProvider, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
+        action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
+        extract_custom_balance, extract_generic_balance, extract_model_ids_from_models_response,
+        extract_new_api_balance, normalize_action_override, normalize_custom_balance_query_config,
+        normalize_provider_type, normalize_provider_type_value, probe_claude_endpoint,
+        probe_codex_endpoint, provider_default_url, CustomBalanceQueryConfig,
+        AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
         ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
@@ -349,14 +569,21 @@ mod tests {
             auth_params_json: None,
             action: action.map(str::to_string),
             model_override: None,
-            cost_multiplier: 1.0,
-            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
             last_test_at: None,
             last_test_status: None,
             last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
         }
     }
 
@@ -371,27 +598,6 @@ mod tests {
     fn action_override_enabled_and_empty_preserves_empty_string() {
         let value = normalize_action_override(Some(true), Some("   ".to_string())).unwrap();
         assert_eq!(value, Some(Some(String::new())));
-    }
-
-    #[test]
-    fn cost_multiplier_defaults_to_one_and_rejects_invalid_values() {
-        assert_eq!(normalize_cost_multiplier(None).unwrap(), 1.0);
-        assert_eq!(normalize_cost_multiplier(Some(2.5)).unwrap(), 2.5);
-        assert!(normalize_cost_multiplier(Some(0.0)).is_err());
-        assert!(normalize_cost_multiplier(Some(101.0)).is_err());
-        assert!(normalize_cost_multiplier(Some(f64::INFINITY)).is_err());
-    }
-
-    #[test]
-    fn daily_spend_limit_normalizes_empty_and_rejects_invalid_values() {
-        assert_eq!(normalize_daily_spend_limit_usd(None).unwrap(), None);
-        assert_eq!(normalize_daily_spend_limit_usd(Some(0.0)).unwrap(), None);
-        assert_eq!(
-            normalize_daily_spend_limit_usd(Some(3.5)).unwrap(),
-            Some(3.5)
-        );
-        assert!(normalize_daily_spend_limit_usd(Some(f64::INFINITY)).is_err());
-        assert!(normalize_daily_spend_limit_usd(Some(1_000_000.01)).is_err());
     }
 
     #[test]
@@ -497,452 +703,114 @@ mod tests {
     }
 
     #[test]
-    fn balance_parser_accepts_deepseek_balance_shape() {
-        let payload: Value = serde_json::from_str(
+    fn extract_model_ids_from_models_response_keeps_full_provider_catalog() {
+        let mut data = (0..13)
+            .map(|index| serde_json::json!({ "id": format!("provider-model-{index}") }))
+            .collect::<Vec<Value>>();
+        data.push(serde_json::json!({ "id": "gpt-5.5" }));
+        let body = serde_json::json!({ "data": data }).to_string();
+
+        let models = extract_model_ids_from_models_response(body.as_str());
+
+        assert!(models.contains(&"gpt-5.5".to_string()));
+        assert_eq!(models.len(), 14);
+    }
+
+    #[test]
+    fn generic_balance_extractor_accepts_common_balance_shape() {
+        let body: Value = serde_json::from_str(
+            r#"{"is_active":true,"balance":12.5,"currency":"USD","used":1.25}"#,
+        )
+        .expect("parse balance body");
+
+        let snapshot = extract_generic_balance(&body).expect("extract balance");
+
+        assert!(snapshot.is_valid);
+        assert_eq!(snapshot.remaining, Some(12.5));
+        assert_eq!(snapshot.unit.as_deref(), Some("USD"));
+        assert_eq!(snapshot.used, Some(1.25));
+    }
+
+    #[test]
+    fn new_api_balance_extractor_converts_quota_to_usd() {
+        let body: Value = serde_json::from_str(
+            r#"{"success":true,"data":{"group":"default","quota":1000000,"used_quota":500000}}"#,
+        )
+        .expect("parse new api balance body");
+
+        let snapshot = extract_new_api_balance(&body).expect("extract balance");
+
+        assert!(snapshot.is_valid);
+        assert_eq!(snapshot.plan_name.as_deref(), Some("default"));
+        assert_eq!(snapshot.remaining, Some(2.0));
+        assert_eq!(snapshot.used, Some(1.0));
+        assert_eq!(snapshot.total, Some(3.0));
+    }
+
+    #[test]
+    fn generic_balance_extractor_accepts_usage_balance_shape() {
+        let body: Value = serde_json::from_str(
+            r#"{"mode":"quota_limited","status":"active","quota":{"limit":20,"used":7.5,"remaining":12.5}}"#,
+        )
+        .expect("parse usage body");
+
+        let snapshot = extract_generic_balance(&body).expect("extract usage balance");
+
+        assert!(snapshot.is_valid);
+        assert_eq!(snapshot.plan_name.as_deref(), Some("quota_limited"));
+        assert_eq!(snapshot.remaining, Some(12.5));
+        assert_eq!(snapshot.used, Some(7.5));
+        assert_eq!(snapshot.total, Some(20.0));
+        assert_eq!(snapshot.unit.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn custom_balance_config_normalizes_and_extracts_paths() {
+        let normalized = normalize_custom_balance_query_config(Some(
             r#"{
-                "is_available": true,
-                "balance_infos": [
-                    { "total_balance": "12.50", "currency": "USD" }
-                ]
-            }"#,
+                "method":"get",
+                "path":"v1/usage",
+                "auth":"balance-bearer",
+                "remainingPath":"data.available",
+                "totalPath":"data.limit",
+                "usedPath":"data.used",
+                "planPath":"data.plan",
+                "validPath":"data.valid",
+                "unit":"credits",
+                "multiplier":0.5
+            }"#
+            .to_string(),
+        ))
+        .expect("normalize custom balance config")
+        .expect("custom config present");
+        let config: CustomBalanceQueryConfig =
+            serde_json::from_str(normalized.as_str()).expect("parse normalized custom config");
+
+        assert_eq!(config.method.as_deref(), Some("GET"));
+        assert_eq!(config.path, "/v1/usage");
+        assert_eq!(config.auth.as_deref(), Some("balance_bearer"));
+
+        let body: Value = serde_json::from_str(
+            r#"{"data":{"available":4,"limit":10,"used":6,"plan":"pro","valid":true}}"#,
         )
-        .expect("parse payload");
+        .expect("parse custom balance body");
+        let snapshot = extract_custom_balance(&body, &config).expect("extract custom balance");
 
-        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
-
-        assert_eq!(balance.remaining, Some(12.5));
-        assert_eq!(balance.unit.as_deref(), Some("USD"));
-        assert_eq!(balance.message, None);
+        assert!(snapshot.is_valid);
+        assert_eq!(snapshot.remaining, Some(2.0));
+        assert_eq!(snapshot.total, Some(5.0));
+        assert_eq!(snapshot.used, Some(3.0));
+        assert_eq!(snapshot.plan_name.as_deref(), Some("pro"));
+        assert_eq!(snapshot.unit.as_deref(), Some("credits"));
     }
 
     #[test]
-    fn balance_parser_accepts_newapi_quota_shape() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "success": true,
-                "data": {
-                    "group": "pro",
-                    "quota": 1000000,
-                    "used_quota": 500000
-                }
-            }"#,
-        )
-        .expect("parse payload");
+    fn custom_balance_config_rejects_absolute_request_path() {
+        let result = normalize_custom_balance_query_config(Some(
+            r#"{"path":"https://example.com/v1/usage","remainingPath":"balance"}"#.to_string(),
+        ));
 
-        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
-
-        assert_eq!(balance.remaining, Some(2.0));
-        assert_eq!(balance.used, Some(1.0));
-        assert_eq!(balance.total, Some(3.0));
-        assert_eq!(balance.unit.as_deref(), Some("USD"));
-        assert_eq!(balance.plan_name.as_deref(), Some("pro"));
-    }
-
-    #[test]
-    fn balance_parser_ignores_success_json_without_balance_signal() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "success": true,
-                "data": {
-                    "id": "user-1",
-                    "name": "Alice"
-                }
-            }"#,
-        )
-        .expect("parse payload");
-
-        assert_eq!(parse_balance_snapshot_with_provider(&payload, None), None);
-    }
-
-    #[test]
-    fn balance_query_paths_try_newapi_fallbacks_for_unlabeled_apis() {
-        let mut api = aggregate_api_with_action(None);
-        api.supplier_name = Some("custom upstream".to_string());
-        api.url = "https://api.example.com/v1".to_string();
-
-        assert_eq!(
-            balance_query_paths(&api),
-            vec!["/usage", "/user/balance", "/api/usage/token", "/api/user/self"]
-        );
-    }
-
-    #[test]
-    fn balance_query_uses_official_deepseek_endpoint() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://api.deepseek.com/v1".to_string();
-
-        assert_eq!(balance_query_paths(&api), vec!["/user/balance"]);
-        assert_eq!(
-            query_balance_request_url(&api, "/user/balance"),
-            "https://api.deepseek.com/user/balance"
-        );
-    }
-
-    #[test]
-    fn balance_query_uses_official_openrouter_endpoint() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://openrouter.ai/api/v1".to_string();
-
-        assert_eq!(balance_query_paths(&api), vec!["/api/v1/credits"]);
-        assert_eq!(
-            query_balance_request_url(&api, "/api/v1/credits"),
-            "https://openrouter.ai/api/v1/credits"
-        );
-    }
-
-    #[test]
-    fn balance_query_skips_newapi_path_v1_prefix_for_root_endpoints() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://proxy.example.com/v1".to_string();
-
-        assert_eq!(
-            query_balance_request_url(&api, "/api/user/self"),
-            "https://proxy.example.com/api/user/self"
-        );
-        assert_eq!(
-            query_balance_request_url(&api, "/api/usage/token"),
-            "https://proxy.example.com/api/usage/token"
-        );
-        assert_eq!(
-            query_balance_request_url(&api, "/user/balance"),
-            "https://proxy.example.com/v1/user/balance"
-        );
-    }
-
-    #[test]
-    fn balance_query_root_endpoints_work_without_v1_suffix() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://proxy.example.com".to_string();
-
-        assert_eq!(
-            query_balance_request_url(&api, "/api/user/self"),
-            "https://proxy.example.com/api/user/self"
-        );
-        assert_eq!(
-            query_balance_request_url(&api, "/user/balance"),
-            "https://proxy.example.com/v1/user/balance"
-        );
-    }
-
-    #[test]
-    fn official_balance_provider_matches_host_not_substring() {
-        assert_eq!(
-            official_balance_provider("https://api.deepseek.com/v1"),
-            Some(OfficialBalanceProvider::DeepSeek)
-        );
-        assert_eq!(
-            official_balance_provider("https://gw.example.com/pass/api.deepseek.com/v1"),
-            None,
-            "proxy URL containing the official host as a path segment must not be matched"
-        );
-        assert_eq!(
-            official_balance_provider("https://api-deepseek.com/v1"),
-            None,
-            "similar but different host must not be matched"
-        );
-        assert_eq!(
-            official_balance_provider("https://OPENROUTER.AI/api/v1"),
-            Some(OfficialBalanceProvider::OpenRouter),
-            "host comparison should be case-insensitive"
-        );
-    }
-
-    #[test]
-    fn balance_probe_auth_default_uses_only_authorization_header() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive balance request")
-                .expect("balance request present");
-            let headers: Vec<(String, String)> = request
-                .headers()
-                .iter()
-                .map(|h| {
-                    (
-                        h.field.as_str().as_str().to_ascii_lowercase(),
-                        h.value.as_str().to_string(),
-                    )
-                })
-                .collect();
-            tx.send(headers).expect("send captured headers");
-            request
-                .respond(Response::from_string(r#"{"balance":0}"#))
-                .expect("respond balance request");
-        });
-
-        let mut api = aggregate_api_with_action(None);
-        api.url = base_url;
-        api.auth_params_json = None;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let _ = query_balance_path(&client, &api, "sk-probe", "/user/balance");
-
-        let captured = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured headers");
-        join.join().expect("join mock server");
-
-        let has_auth = captured
-            .iter()
-            .any(|(name, value)| name == "authorization" && value == "Bearer sk-probe");
-        let has_x_api_key = captured.iter().any(|(name, _)| name == "x-api-key");
-        let has_api_key = captured.iter().any(|(name, _)| name == "api-key");
-        assert!(has_auth, "authorization header must be sent");
-        assert!(
-            !has_x_api_key,
-            "balance probe must not send x-api-key by default"
-        );
-        assert!(
-            !has_api_key,
-            "balance probe must not send api-key by default"
-        );
-    }
-
-    #[test]
-    fn balance_probe_auth_preserves_custom_header_from_auth_params() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive balance request")
-                .expect("balance request present");
-            let headers: Vec<(String, String)> = request
-                .headers()
-                .iter()
-                .map(|h| {
-                    (
-                        h.field.as_str().as_str().to_ascii_lowercase(),
-                        h.value.as_str().to_string(),
-                    )
-                })
-                .collect();
-            tx.send(headers).expect("send captured headers");
-            request
-                .respond(Response::from_string(r#"{"balance":0}"#))
-                .expect("respond balance request");
-        });
-
-        let mut api = aggregate_api_with_action(None);
-        api.url = base_url;
-        api.auth_params_json = Some(
-            r#"{"location":"header","name":"x-api-key","headerValueFormat":"raw"}"#.to_string(),
-        );
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let _ = query_balance_path(&client, &api, "sk-probe", "/user/balance");
-
-        let captured = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured headers");
-        join.join().expect("join mock server");
-
-        let xak = captured
-            .iter()
-            .find(|(name, _)| name == "x-api-key")
-            .expect("x-api-key header present");
-        assert_eq!(xak.1, "sk-probe");
-    }
-
-    #[test]
-    fn balance_probe_auth_used_in_isolation_defaults_to_bearer_only() {
-        let api = aggregate_api_with_action(None);
-        let client = reqwest::blocking::Client::builder()
-            .build()
-            .expect("build client");
-        let builder = client.get("https://example.com/user/balance");
-        let (request_builder, url) = apply_balance_probe_auth(
-            builder,
-            "https://example.com/user/balance".to_string(),
-            &api,
-            "sk-unit",
-        )
-        .expect("apply auth");
-        let request = request_builder.build().expect("build request");
-
-        assert_eq!(url, "https://example.com/user/balance");
-        let headers = request.headers();
-        assert_eq!(
-            headers
-                .get("authorization")
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer sk-unit")
-        );
-        assert!(
-            !headers.contains_key("x-api-key"),
-            "balance probe must not add x-api-key by default"
-        );
-        assert!(
-            !headers.contains_key("api-key"),
-            "balance probe must not add api-key by default"
-        );
-    }
-
-    #[test]
-    fn balance_parser_accepts_openrouter_credits_shape() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "data": {
-                    "total_credits": 10,
-                    "total_usage": 2.5
-                }
-            }"#,
-        )
-        .expect("parse payload");
-
-        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
-
-        assert_eq!(balance.remaining, Some(7.5));
-        assert_eq!(balance.used, Some(2.5));
-        assert_eq!(balance.total, Some(10.0));
-        assert_eq!(balance.unit.as_deref(), Some("USD"));
-    }
-
-    #[test]
-    fn balance_parser_accepts_siliconflow_nested_shape() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "code": 20000,
-                "data": {
-                    "totalBalance": "3.25",
-                    "status": "normal"
-                }
-            }"#,
-        )
-        .expect("parse payload");
-
-        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
-
-        assert_eq!(balance.remaining, Some(3.25));
-        assert_eq!(balance.unit.as_deref(), Some("CNY"));
-        assert_eq!(balance.plan_name.as_deref(), Some("SiliconFlow"));
-    }
-
-    #[test]
-    fn balance_parser_uses_usd_for_global_siliconflow() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "code": 20000,
-                "data": {
-                    "totalBalance": "4.50"
-                }
-            }"#,
-        )
-        .expect("parse payload");
-
-        let balance = parse_balance_snapshot_with_provider(
-            &payload,
-            Some(OfficialBalanceProvider::SiliconFlowGlobal),
-        )
-        .expect("balance");
-
-        assert_eq!(balance.remaining, Some(4.5));
-        assert_eq!(balance.unit.as_deref(), Some("USD"));
-    }
-
-    #[test]
-    fn balance_parser_accepts_novita_minor_unit_shape() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "availableBalance": 125000,
-                "cashBalance": 100000
-            }"#,
-        )
-        .expect("parse payload");
-
-        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
-
-        assert_eq!(balance.remaining, Some(12.5));
-        assert_eq!(balance.unit.as_deref(), Some("USD"));
-        assert_eq!(balance.plan_name.as_deref(), Some("Novita AI"));
-    }
-
-    #[test]
-    fn balance_parser_accepts_usage_endpoint_shape() {
-        let payload: Value = serde_json::from_str(
-            r#"{
-                "balance": 926.082552,
-                "isValid": true,
-                "mode": "usage",
-                "planName": "Sub2API",
-                "remaining": 926.082552,
-                "unit": "USD",
-                "usage": {}
-            }"#,
-        )
-        .expect("parse payload");
-
-        let balance = parse_balance_snapshot_with_provider(&payload, None).expect("balance");
-
-        assert_eq!(balance.remaining, Some(926.082552));
-        assert_eq!(balance.unit.as_deref(), Some("USD"));
-        assert_eq!(balance.plan_name.as_deref(), Some("Sub2API"));
-        assert_eq!(balance.message, None);
-    }
-
-    #[test]
-    fn balance_query_paths_try_usage_endpoint_first_for_unlabeled_apis() {
-        let mut api = aggregate_api_with_action(None);
-        api.supplier_name = Some("custom upstream".to_string());
-        api.url = "https://api.example.com/v1".to_string();
-
-        assert_eq!(
-            balance_query_paths(&api),
-            vec!["/usage", "/user/balance", "/api/usage/token", "/api/user/self"]
-        );
-    }
-
-    #[test]
-    fn balance_query_error_does_not_leak_query_secret_or_body() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive balance request")
-                .expect("balance request present");
-            tx.send(request.url().to_string())
-                .expect("send captured balance request");
-            request
-                .respond(
-                    Response::from_string(r#"{"error":"secret sk-balance-secret leaked"}"#)
-                        .with_status_code(StatusCode(401)),
-                )
-                .expect("respond balance request");
-        });
-
-        let mut api = aggregate_api_with_action(None);
-        api.url = base_url.clone();
-        api.auth_params_json =
-            Some(r#"{"location":"query","name":"api_key","headerValueFormat":"raw"}"#.to_string());
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let err = query_balance_path(&client, &api, "sk-balance-secret", "/user/balance")
-            .expect_err("balance request should fail");
-
-        let captured = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured request");
-        join.join().expect("join mock server");
-        assert!(captured.contains("api_key=sk-balance-secret"));
-        assert!(err.contains("/user/balance"));
-        assert!(!err.contains("sk-balance-secret"));
-        assert!(!err.contains("api_key="));
-        assert!(!err.contains("leaked"));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1226,29 +1094,10 @@ fn with_query_param(url: &str, name: &str, value: &str) -> String {
 }
 
 fn apply_probe_auth(
-    builder: reqwest::blocking::RequestBuilder,
-    url: String,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<(reqwest::blocking::RequestBuilder, String), String> {
-    apply_probe_auth_inner(builder, url, api, secret, false)
-}
-
-fn apply_balance_probe_auth(
-    builder: reqwest::blocking::RequestBuilder,
-    url: String,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<(reqwest::blocking::RequestBuilder, String), String> {
-    apply_probe_auth_inner(builder, url, api, secret, true)
-}
-
-fn apply_probe_auth_inner(
     mut builder: reqwest::blocking::RequestBuilder,
     mut url: String,
     api: &AggregateApi,
     secret: &str,
-    authorization_only_default: bool,
 ) -> Result<(reqwest::blocking::RequestBuilder, String), String> {
     let auth_type = normalize_auth_type(Some(api.auth_type.clone()))?;
     let auth_params = api
@@ -1308,350 +1157,15 @@ fn apply_probe_auth_inner(
     }
 
     let auth_value = format!("Bearer {}", secret.trim());
-    builder = builder.header(
-        HeaderName::from_static("authorization"),
-        HeaderValue::from_str(auth_value.as_str())
-            .map_err(|_| "invalid aggregate api key".to_string())?,
-    );
-    if !authorization_only_default {
-        builder = builder
-            .header("x-api-key", secret.trim())
-            .header("api-key", secret.trim());
-    }
+    builder = builder
+        .header(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(auth_value.as_str())
+                .map_err(|_| "invalid aggregate api key".to_string())?,
+        )
+        .header("x-api-key", secret.trim())
+        .header("api-key", secret.trim());
     Ok((builder, url))
-}
-
-fn number_from_value(value: Option<&serde_json::Value>) -> Option<f64> {
-    match value {
-        Some(serde_json::Value::Number(number)) => number.as_f64(),
-        Some(serde_json::Value::String(raw)) => raw.trim().parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
-fn string_from_value(value: Option<&serde_json::Value>) -> Option<String> {
-    value
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn official_balance_provider(base_url: &str) -> Option<OfficialBalanceProvider> {
-    let host = url::Url::parse(base_url.trim())
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))?;
-    match host.as_str() {
-        "api.deepseek.com" => Some(OfficialBalanceProvider::DeepSeek),
-        "api.stepfun.ai" | "api.stepfun.com" => Some(OfficialBalanceProvider::StepFun),
-        "api.siliconflow.cn" => Some(OfficialBalanceProvider::SiliconFlowCn),
-        "api.siliconflow.com" => Some(OfficialBalanceProvider::SiliconFlowGlobal),
-        "openrouter.ai" => Some(OfficialBalanceProvider::OpenRouter),
-        "api.novita.ai" => Some(OfficialBalanceProvider::Novita),
-        _ => None,
-    }
-}
-
-fn official_balance_endpoint(provider: OfficialBalanceProvider) -> &'static str {
-    match provider {
-        OfficialBalanceProvider::DeepSeek => "https://api.deepseek.com/user/balance",
-        OfficialBalanceProvider::StepFun => "https://api.stepfun.com/v1/accounts",
-        OfficialBalanceProvider::SiliconFlowCn => "https://api.siliconflow.cn/v1/user/info",
-        OfficialBalanceProvider::SiliconFlowGlobal => "https://api.siliconflow.com/v1/user/info",
-        OfficialBalanceProvider::OpenRouter => "https://openrouter.ai/api/v1/credits",
-        OfficialBalanceProvider::Novita => "https://api.novita.ai/v3/user/balance",
-    }
-}
-
-fn parse_deepseek_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
-    let has_deepseek_signal = value.get("balance_infos").is_some()
-        || value.get("is_available").is_some()
-        || value.get("is_active").is_some();
-    if !has_deepseek_signal {
-        return None;
-    }
-    let is_valid = value
-        .get("is_available")
-        .or_else(|| value.get("is_active"))
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    let first_balance = value
-        .get("balance_infos")
-        .and_then(|value| value.as_array())
-        .and_then(|items| items.first());
-    let remaining = first_balance
-        .and_then(|item| number_from_value(item.get("total_balance")))
-        .or_else(|| number_from_value(value.get("balance")))
-        .or_else(|| number_from_value(value.pointer("/credits/balance")));
-    remaining?;
-    let unit = first_balance
-        .and_then(|item| string_from_value(item.get("currency")))
-        .or_else(|| string_from_value(value.get("currency")))
-        .or_else(|| Some(DEFAULT_BALANCE_UNIT.to_string()));
-    let message = if is_valid {
-        None
-    } else {
-        Some("balance api reported unavailable".to_string())
-    };
-
-    Some(BalanceSnapshot {
-        remaining,
-        used: None,
-        total: None,
-        unit,
-        plan_name: None,
-        message,
-    })
-}
-
-fn parse_newapi_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
-    let data = value.get("data").unwrap_or(value);
-    let success = value
-        .get("success")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    if !success {
-        return Some(BalanceSnapshot {
-            remaining: None,
-            used: None,
-            total: None,
-            unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
-            plan_name: None,
-            message: string_from_value(value.get("message")).or_else(|| {
-                string_from_value(value.get("error"))
-                    .or_else(|| Some("balance query failed".to_string()))
-            }),
-        });
-    }
-
-    let has_balance_signal = [
-        "quota",
-        "remaining_quota",
-        "used_quota",
-        "total_quota",
-        "remaining",
-        "used",
-        "total",
-    ]
-    .iter()
-    .any(|key| data.get(*key).is_some());
-    if !has_balance_signal {
-        return None;
-    }
-
-    let remaining = number_from_value(data.get("quota"))
-        .map(|value| value / 500000.0)
-        .or_else(|| number_from_value(data.get("remaining_quota")).map(|value| value / 500000.0))
-        .or_else(|| number_from_value(data.get("remaining")));
-    let used = number_from_value(data.get("used_quota"))
-        .map(|value| value / 500000.0)
-        .or_else(|| number_from_value(data.get("used")));
-    let total = match (remaining, used) {
-        (Some(remaining), Some(used)) => Some(remaining + used),
-        _ => number_from_value(data.get("total_quota"))
-            .map(|value| value / 500000.0)
-            .or_else(|| number_from_value(data.get("total"))),
-    };
-
-    Some(BalanceSnapshot {
-        remaining,
-        used,
-        total,
-        unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
-        plan_name: string_from_value(data.get("group"))
-            .or_else(|| string_from_value(data.get("plan_name"))),
-        message: None,
-    })
-}
-
-fn parse_generic_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
-    let remaining = number_from_value(value.get("balance"))
-        .or_else(|| number_from_value(value.get("remaining")))
-        .or_else(|| number_from_value(value.get("credit")))
-        .or_else(|| number_from_value(value.pointer("/credits/balance")));
-    remaining.map(|remaining| BalanceSnapshot {
-        remaining: Some(remaining),
-        used: number_from_value(value.get("used")),
-        total: number_from_value(value.get("total")),
-        unit: string_from_value(value.get("unit"))
-            .or_else(|| string_from_value(value.get("currency")))
-            .or_else(|| Some(DEFAULT_BALANCE_UNIT.to_string())),
-        plan_name: string_from_value(value.get("planName"))
-            .or_else(|| string_from_value(value.get("plan_name"))),
-        message: None,
-    })
-}
-
-fn parse_stepfun_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
-    let has_stepfun_signal = value.get("object").is_some()
-        || value.get("total_cash_balance").is_some()
-        || value.get("total_voucher_balance").is_some();
-    if !has_stepfun_signal {
-        return None;
-    }
-    let remaining = number_from_value(value.get("balance"))?;
-    Some(BalanceSnapshot {
-        remaining: Some(remaining),
-        used: None,
-        total: None,
-        unit: Some("CNY".to_string()),
-        plan_name: Some("StepFun".to_string()),
-        message: None,
-    })
-}
-
-fn parse_siliconflow_balance(
-    value: &serde_json::Value,
-    provider: Option<OfficialBalanceProvider>,
-) -> Option<BalanceSnapshot> {
-    let data = value.get("data")?;
-    let remaining = number_from_value(data.get("totalBalance"))
-        .or_else(|| number_from_value(data.get("balance")))
-        .or_else(|| number_from_value(data.get("chargeBalance")))?;
-    let unit = if provider == Some(OfficialBalanceProvider::SiliconFlowGlobal) {
-        "USD"
-    } else {
-        "CNY"
-    };
-    Some(BalanceSnapshot {
-        remaining: Some(remaining),
-        used: None,
-        total: None,
-        unit: Some(unit.to_string()),
-        plan_name: Some("SiliconFlow".to_string()),
-        message: None,
-    })
-}
-
-fn parse_openrouter_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
-    let data = value.get("data").unwrap_or(value);
-    let total = number_from_value(data.get("total_credits"))?;
-    let used = number_from_value(data.get("total_usage")).unwrap_or(0.0);
-    let remaining = total - used;
-    Some(BalanceSnapshot {
-        remaining: Some(remaining),
-        used: Some(used),
-        total: Some(total),
-        unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
-        plan_name: Some("OpenRouter".to_string()),
-        message: if remaining > 0.0 {
-            None
-        } else {
-            Some("No credits remaining".to_string())
-        },
-    })
-}
-
-fn parse_novita_balance(value: &serde_json::Value) -> Option<BalanceSnapshot> {
-    let remaining = number_from_value(value.get("availableBalance"))? / 10000.0;
-    Some(BalanceSnapshot {
-        remaining: Some(remaining),
-        used: None,
-        total: None,
-        unit: Some(DEFAULT_BALANCE_UNIT.to_string()),
-        plan_name: Some("Novita AI".to_string()),
-        message: if remaining > 0.0 {
-            None
-        } else {
-            Some("No balance remaining".to_string())
-        },
-    })
-}
-
-fn parse_balance_snapshot_with_provider(
-    value: &serde_json::Value,
-    provider: Option<OfficialBalanceProvider>,
-) -> Option<BalanceSnapshot> {
-    parse_deepseek_balance(value)
-        .or_else(|| parse_stepfun_balance(value))
-        .or_else(|| parse_siliconflow_balance(value, provider))
-        .or_else(|| parse_openrouter_balance(value))
-        .or_else(|| parse_novita_balance(value))
-        .or_else(|| parse_newapi_balance(value))
-        .or_else(|| parse_generic_balance(value))
-}
-
-fn balance_query_paths(api: &AggregateApi) -> Vec<&'static str> {
-    if let Some(provider) = official_balance_provider(api.url.as_str()) {
-        return match provider {
-            OfficialBalanceProvider::DeepSeek => vec!["/user/balance"],
-            OfficialBalanceProvider::StepFun => vec!["/v1/accounts"],
-            OfficialBalanceProvider::SiliconFlowCn | OfficialBalanceProvider::SiliconFlowGlobal => {
-                vec!["/v1/user/info"]
-            }
-            OfficialBalanceProvider::OpenRouter => vec!["/api/v1/credits"],
-            OfficialBalanceProvider::Novita => vec!["/v3/user/balance"],
-        };
-    }
-    let text =
-        format!("{} {}", api.supplier_name.as_deref().unwrap_or(""), api.url).to_ascii_lowercase();
-    if text.contains("newapi") || text.contains("new-api") {
-        return vec!["/usage", "/api/usage/token", "/api/user/self", "/user/balance"];
-    }
-    vec!["/usage", "/user/balance", "/api/usage/token", "/api/user/self"]
-}
-
-fn query_balance_request_url(api: &AggregateApi, path: &str) -> String {
-    if let Some(provider) = official_balance_provider(api.url.as_str()) {
-        return official_balance_endpoint(provider).to_string();
-    }
-    if path.starts_with("/api/") {
-        return normalize_root_probe_url(api.url.as_str(), path);
-    }
-    normalize_probe_url(api.url.as_str(), path)
-}
-
-fn normalize_root_probe_url(base_url: &str, suffix: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    let base = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
-    if suffix.trim().is_empty() {
-        return base.to_string();
-    }
-    format!("{base}{suffix}")
-}
-
-fn query_balance_path(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-    path: &str,
-) -> Result<(i64, BalanceSnapshot), String> {
-    let provider = official_balance_provider(api.url.as_str());
-    let url = query_balance_request_url(api, path);
-    let builder = client
-        .get(url.as_str())
-        .header("accept", "application/json")
-        .header("user-agent", "codex-manager/1.0");
-    let (request, updated_url) = apply_balance_probe_auth(builder, url.clone(), api, secret)?;
-    let request = if updated_url != url {
-        let rebuilt = client
-            .get(updated_url.as_str())
-            .header("accept", "application/json")
-            .header("user-agent", "codex-manager/1.0");
-        let (rebuilt, _) = apply_balance_probe_auth(rebuilt, updated_url, api, secret)?;
-        rebuilt
-    } else {
-        request
-    };
-    let safe_url = query_balance_request_url(api, path);
-    let response = request
-        .send()
-        .map_err(|err| format!("balance request failed ({safe_url}): {err}"))?;
-    let status = response.status().as_u16() as i64;
-    let body = response
-        .text()
-        .map_err(|err| format!("read balance response failed ({safe_url}): {err}"))?;
-    if !(200..300).contains(&status) {
-        return Err(format!(
-            "balance endpoint {safe_url} returned HTTP {status}"
-        ));
-    }
-    let value: serde_json::Value = serde_json::from_str(body.as_str())
-        .map_err(|err| format!("invalid balance JSON from {safe_url}: {err}"))?;
-    let snapshot = parse_balance_snapshot_with_provider(&value, provider).ok_or_else(|| {
-        format!("balance response from {safe_url} does not contain a supported balance shape")
-    })?;
-    Ok((status, snapshot))
 }
 
 /// 函数 `normalize_provider_type`
@@ -1772,6 +1286,496 @@ fn read_first_chunk(mut response: reqwest::blocking::Response) -> Result<(), Str
     } else {
         Err("No response data received".to_string())
     }
+}
+
+fn join_api_path(base_url: &str, path: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    let suffix = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("{base}{suffix}")
+}
+
+fn balance_query_base_url(api: &AggregateApi, template: &str) -> String {
+    let mut base = api
+        .balance_query_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(api.url.as_str())
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if template == AGGREGATE_API_BALANCE_TEMPLATE_NEW_API && api.balance_query_base_url.is_none() {
+        if let Some(stripped) = base.strip_suffix("/v1") {
+            base = stripped.to_string();
+        }
+    }
+    base
+}
+
+fn balance_query_usage_base_url(api: &AggregateApi) -> String {
+    let base = balance_query_base_url(api, AGGREGATE_API_BALANCE_TEMPLATE_GENERIC);
+    if api.balance_query_base_url.is_none() {
+        if let Some(stripped) = base.strip_suffix("/v1") {
+            return stripped.to_string();
+        }
+    }
+    base
+}
+
+fn apply_balance_auth(
+    client: &reqwest::blocking::Client,
+    url: String,
+    api: &AggregateApi,
+    secret: &str,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    let builder = client.get(url.as_str());
+    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    if updated_url == url {
+        return Ok(builder);
+    }
+    let rebuilt = client.get(updated_url.as_str());
+    let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+    Ok(rebuilt)
+}
+
+fn short_error_body(body: &str) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 240 {
+        return compact;
+    }
+    compact.chars().take(240).collect::<String>()
+}
+
+fn read_json_response(response: reqwest::blocking::Response) -> Result<serde_json::Value, String> {
+    let status = response.status();
+    let bytes = response.bytes().map_err(|err| err.to_string())?;
+    let body = String::from_utf8_lossy(bytes.as_ref()).to_string();
+    if !status.is_success() {
+        let detail = short_error_body(body.as_str());
+        if detail.is_empty() {
+            return Err(format!("balance query http_status={}", status.as_u16()));
+        }
+        return Err(format!(
+            "balance query http_status={}; {detail}",
+            status.as_u16()
+        ));
+    }
+    serde_json::from_str(body.as_str())
+        .map_err(|_| "balance response is not valid JSON".to_string())
+}
+
+fn json_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn json_path_dot<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        if let Ok(index) = segment.parse::<usize>() {
+            current = current.as_array()?.get(index)?;
+        } else {
+            current = current.get(segment)?;
+        }
+    }
+    Some(current)
+}
+
+fn json_number(value: Option<&serde_json::Value>) -> Option<f64> {
+    match value? {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(value) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn repair_mojibake_utf8(value: &str) -> String {
+    let mut bytes = Vec::with_capacity(value.len());
+    for ch in value.chars() {
+        let code = ch as u32;
+        if code > u8::MAX as u32 {
+            return value.to_string();
+        }
+        bytes.push(code as u8);
+    }
+    match String::from_utf8(bytes) {
+        Ok(repaired)
+            if repaired
+                .chars()
+                .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch)) =>
+        {
+            repaired
+        }
+        _ => value.to_string(),
+    }
+}
+
+fn json_string(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(repair_mojibake_utf8(trimmed))
+            }
+        }
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn json_bool(value: Option<&serde_json::Value>) -> Option<bool> {
+    match value? {
+        serde_json::Value::Bool(value) => Some(*value),
+        serde_json::Value::Number(number) => Some(number.as_i64().unwrap_or(0) != 0),
+        serde_json::Value::String(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "true" | "1" | "yes" | "on" | "active" => Some(true),
+                "false" | "0" | "no" | "off" | "disabled" | "inactive" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn first_number(value: &serde_json::Value, paths: &[&[&str]]) -> Option<f64> {
+    paths
+        .iter()
+        .find_map(|path| json_number(json_path(value, path)))
+}
+
+fn first_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| json_string(json_path(value, path)))
+}
+
+fn custom_number(value: &serde_json::Value, path: Option<&str>, multiplier: f64) -> Option<f64> {
+    path.and_then(|path| json_number(json_path_dot(value, path)))
+        .map(|value| value * multiplier)
+}
+
+fn custom_string(value: &serde_json::Value, path: Option<&str>) -> Option<String> {
+    path.and_then(|path| json_string(json_path_dot(value, path)))
+}
+
+fn custom_bool(value: &serde_json::Value, path: Option<&str>) -> Option<bool> {
+    path.and_then(|path| json_bool(json_path_dot(value, path)))
+}
+
+fn extract_generic_balance(
+    value: &serde_json::Value,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let success = json_bool(json_path(value, &["success"])).unwrap_or(true);
+    let is_active = json_bool(json_path(value, &["is_active"]))
+        .or_else(|| json_bool(json_path(value, &["active"])))
+        .or_else(|| json_bool(json_path(value, &["data", "is_active"])))
+        .or_else(|| json_bool(json_path(value, &["data", "active"])))
+        .or_else(|| json_bool(json_path(value, &["isValid"])))
+        .or_else(|| json_bool(json_path(value, &["is_valid"])))
+        .or_else(|| json_bool(json_path(value, &["data", "isValid"])))
+        .or_else(|| json_bool(json_path(value, &["data", "is_valid"])))
+        .unwrap_or(true);
+    let status = first_string(value, &[&["status"], &["data", "status"]]);
+    let status_valid = status
+        .as_deref()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(
+                normalized.as_str(),
+                "expired" | "quota_exhausted" | "disabled"
+            )
+        })
+        .unwrap_or(true);
+    let invalid_message = first_string(
+        value,
+        &[
+            &["message"],
+            &["error"],
+            &["status"],
+            &["data", "message"],
+            &["data", "error"],
+        ],
+    );
+    let is_valid = success && is_active && status_valid;
+    let remaining = first_number(
+        value,
+        &[
+            &["remaining"],
+            &["balance"],
+            &["available"],
+            &["quota", "remaining"],
+            &["data", "remaining"],
+            &["data", "balance"],
+            &["data", "available"],
+            &["data", "quota", "remaining"],
+            &["credits", "balance"],
+        ],
+    );
+    if is_valid && remaining.is_none() {
+        return Err("balance response missing remaining field".to_string());
+    }
+    Ok(AggregateApiBalanceSnapshot {
+        is_valid,
+        invalid_message: if is_valid { None } else { invalid_message },
+        remaining,
+        unit: first_string(
+            value,
+            &[
+                &["unit"],
+                &["currency"],
+                &["data", "unit"],
+                &["data", "currency"],
+            ],
+        )
+        .or_else(|| Some("USD".to_string())),
+        plan_name: first_string(
+            value,
+            &[
+                &["planName"],
+                &["plan_name"],
+                &["mode"],
+                &["data", "planName"],
+                &["data", "plan_name"],
+                &["data", "group"],
+                &["data", "mode"],
+            ],
+        ),
+        total: first_number(
+            value,
+            &[
+                &["total"],
+                &["quota", "limit"],
+                &["data", "total"],
+                &["data", "quota", "limit"],
+            ],
+        ),
+        used: first_number(
+            value,
+            &[
+                &["used"],
+                &["used_quota"],
+                &["quota", "used"],
+                &["data", "used"],
+                &["data", "used_quota"],
+                &["data", "quota", "used"],
+            ],
+        ),
+        extra: None,
+    })
+}
+
+fn extract_new_api_balance(
+    value: &serde_json::Value,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let success = json_bool(json_path(value, &["success"])).unwrap_or(true);
+    let data = json_path(value, &["data"]).unwrap_or(value);
+    let quota = json_number(data.get("quota"));
+    let used_quota = json_number(data.get("used_quota")).unwrap_or(0.0);
+    if success && quota.is_none() {
+        return Err("new api balance response missing data.quota".to_string());
+    }
+    let remaining = quota.map(|value| value / 500_000.0);
+    let used = Some(used_quota / 500_000.0);
+    let total = remaining.map(|value| value + used.unwrap_or(0.0));
+    Ok(AggregateApiBalanceSnapshot {
+        is_valid: success,
+        invalid_message: if success {
+            None
+        } else {
+            first_string(value, &[&["message"], &["error"]])
+        },
+        remaining,
+        unit: Some("USD".to_string()),
+        plan_name: json_string(data.get("group")).or_else(|| json_string(data.get("plan"))),
+        total,
+        used,
+        extra: None,
+    })
+}
+
+fn extract_custom_balance(
+    value: &serde_json::Value,
+    config: &CustomBalanceQueryConfig,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let success = json_bool(json_path(value, &["success"])).unwrap_or(true);
+    let explicit_valid = custom_bool(value, config.valid_path.as_deref()).unwrap_or(true);
+    let is_valid = success && explicit_valid;
+    let multiplier = config.multiplier.unwrap_or(1.0);
+    let remaining = custom_number(value, Some(config.remaining_path.as_str()), multiplier);
+    if is_valid && remaining.is_none() {
+        return Err("custom balance response missing remaining field".to_string());
+    }
+    Ok(AggregateApiBalanceSnapshot {
+        is_valid,
+        invalid_message: if is_valid {
+            None
+        } else {
+            custom_string(value, config.invalid_message_path.as_deref()).or_else(|| {
+                first_string(
+                    value,
+                    &[
+                        &["message"],
+                        &["error"],
+                        &["data", "message"],
+                        &["data", "error"],
+                    ],
+                )
+            })
+        },
+        remaining,
+        unit: config.unit.clone().or_else(|| Some("USD".to_string())),
+        plan_name: custom_string(value, config.plan_path.as_deref()),
+        total: custom_number(value, config.total_path.as_deref(), multiplier),
+        used: custom_number(value, config.used_path.as_deref(), multiplier),
+        extra: None,
+    })
+}
+
+fn query_generic_balance_path(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    base_url: &str,
+    path: &str,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let url = join_api_path(base_url, path);
+    let response = apply_balance_auth(client, url, api, secret)?
+        .header("accept", "application/json")
+        .header("accept-encoding", "identity")
+        .header("user-agent", "codex-manager/aggregate-api-balance")
+        .send()
+        .map_err(|err| err.to_string())?;
+    let value = read_json_response(response)?;
+    extract_generic_balance(&value)
+}
+
+fn should_try_usage_balance_fallback(error: &str) -> bool {
+    error.contains("http_status=404")
+        || error.contains("http_status=405")
+        || error.contains("http_status=501")
+        || error.contains("balance response is not valid JSON")
+        || error.contains("balance response missing remaining field")
+}
+
+fn query_generic_balance(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let base_url = balance_query_base_url(api, AGGREGATE_API_BALANCE_TEMPLATE_GENERIC);
+    match query_generic_balance_path(client, api, secret, base_url.as_str(), "/user/balance") {
+        Ok(snapshot) => Ok(snapshot),
+        Err(err) if should_try_usage_balance_fallback(err.as_str()) => {
+            let usage_base_url = balance_query_usage_base_url(api);
+            query_generic_balance_path(client, api, secret, usage_base_url.as_str(), "/v1/usage")
+                .map_err(|fallback_err| format!("{err}; fallback /v1/usage failed: {fallback_err}"))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn parse_custom_balance_query_config(
+    value: Option<&str>,
+) -> Result<CustomBalanceQueryConfig, String> {
+    let normalized = normalize_custom_balance_query_config(value.map(str::to_string))?
+        .ok_or_else(|| "custom balance query config is required".to_string())?;
+    serde_json::from_str(normalized.as_str())
+        .map_err(|_| "custom balance query config is invalid JSON".to_string())
+}
+
+fn query_custom_balance(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    provider_secret: &str,
+    balance_secret: Option<String>,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let config = parse_custom_balance_query_config(api.balance_query_config_json.as_deref())?;
+    let base_url = balance_query_base_url(api, AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM);
+    let url = join_api_path(base_url.as_str(), config.path.as_str());
+    let method = config.method.as_deref().unwrap_or("GET");
+    let mut builder = if method == "POST" {
+        client.post(url.as_str())
+    } else {
+        client.get(url.as_str())
+    }
+    .header("accept", "application/json")
+    .header("accept-encoding", "identity")
+    .header("user-agent", "codex-manager/aggregate-api-balance");
+    match config
+        .auth
+        .as_deref()
+        .unwrap_or(CUSTOM_BALANCE_AUTH_PROVIDER_BEARER)
+    {
+        CUSTOM_BALANCE_AUTH_NONE => {}
+        CUSTOM_BALANCE_AUTH_BALANCE_BEARER => {
+            let access_token = balance_secret
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| provider_secret.trim());
+            if access_token.is_empty() {
+                return Err("custom balance access token is required".to_string());
+            }
+            builder = builder.bearer_auth(access_token);
+        }
+        _ => {
+            let access_token = provider_secret.trim();
+            if access_token.is_empty() {
+                return Err("aggregate api secret is required".to_string());
+            }
+            builder = builder.bearer_auth(access_token);
+        }
+    }
+    let response = builder.send().map_err(|err| err.to_string())?;
+    let value = read_json_response(response)?;
+    extract_custom_balance(&value, &config)
+}
+
+fn query_new_api_balance(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    provider_secret: &str,
+    balance_secret: Option<String>,
+) -> Result<AggregateApiBalanceSnapshot, String> {
+    let base_url = balance_query_base_url(api, AGGREGATE_API_BALANCE_TEMPLATE_NEW_API);
+    let url = join_api_path(base_url.as_str(), "/api/user/self");
+    let access_token = balance_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| provider_secret.trim());
+    if access_token.is_empty() {
+        return Err("balance access token is required".to_string());
+    }
+    let mut builder = client
+        .get(url.as_str())
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("accept-encoding", "identity")
+        .header("user-agent", "codex-manager/aggregate-api-balance")
+        .bearer_auth(access_token);
+    if let Some(user_id) = api
+        .balance_query_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        builder = builder.header("New-Api-User", user_id);
+    }
+    let response = builder.send().map_err(|err| err.to_string())?;
+    let value = read_json_response(response)?;
+    extract_new_api_balance(&value)
 }
 
 /// 函数 `build_claude_probe_body`
@@ -1921,7 +1925,7 @@ fn extract_model_ids_from_models_response(body: &str) -> Vec<String> {
     };
     let mut models = Vec::new();
     for item in items {
-        if models.len() >= MAX_DISCOVERED_CLAUDE_PROBE_MODELS {
+        if models.len() >= MAX_DISCOVERED_MODEL_IDS {
             break;
         }
         if let Some(model) = model_id_from_value(item) {
@@ -2072,6 +2076,36 @@ fn probe_codex_models_endpoint(
     }
     read_first_chunk(response)?;
     Ok(status_code)
+}
+
+fn discover_codex_models_endpoint(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+) -> Result<Vec<String>, String> {
+    let url = build_codex_models_probe_url(api);
+    let builder = client.get(url.as_str());
+    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    let builder = if updated_url != url {
+        let rebuilt = client.get(updated_url.as_str());
+        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+        rebuilt
+    } else {
+        builder
+    };
+    let response = add_codex_probe_headers(builder)?
+        .send()
+        .map_err(|err| err.to_string())?;
+    let status_code = response.status().as_u16();
+    if !response.status().is_success() {
+        return Err(format!("codex models discovery http_status={status_code}"));
+    }
+    let body = response.text().map_err(|err| err.to_string())?;
+    let models = extract_model_ids_from_models_response(body.as_str());
+    if models.is_empty() {
+        return Err("codex models discovery returned empty model list".to_string());
+    }
+    Ok(models)
 }
 
 /// 函数 `probe_codex_responses_endpoint`
@@ -2324,9 +2358,22 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
     let items = storage
         .list_aggregate_apis()
         .map_err(|err| format!("list aggregate apis failed: {err}"))?;
+    let assignments = storage
+        .list_quota_source_model_assignments()
+        .map_err(|err| format!("list aggregate api model assignments failed: {err}"))?;
+    let mut models_by_api = std::collections::HashMap::<String, Vec<String>>::new();
+    for assignment in assignments {
+        if assignment.source_kind == "aggregate_api" {
+            models_by_api
+                .entry(assignment.source_id)
+                .or_default()
+                .push(assignment.model_slug);
+        }
+    }
     Ok(items
         .into_iter()
         .map(|item| AggregateApiSummary {
+            model_slugs: models_by_api.remove(item.id.as_str()).unwrap_or_default(),
             id: item.id,
             provider_type: item.provider_type,
             supplier_name: item.supplier_name,
@@ -2349,8 +2396,163 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
             last_test_at: item.last_test_at,
             last_test_status: item.last_test_status,
             last_test_error: item.last_test_error,
+            balance_query_enabled: item.balance_query_enabled,
+            balance_query_template: item.balance_query_template,
+            balance_query_base_url: item.balance_query_base_url,
+            balance_query_user_id: item.balance_query_user_id,
+            balance_query_config_json: item.balance_query_config_json,
+            last_balance_at: item.last_balance_at,
+            last_balance_status: item.last_balance_status,
+            last_balance_error: item.last_balance_error,
+            last_balance_json: item.last_balance_json,
         })
         .collect())
+}
+
+pub(crate) fn list_aggregate_api_supplier_models(
+    supplier_key: Option<String>,
+    provider_type: Option<String>,
+) -> Result<Vec<AggregateApiSupplierModelEntry>, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let supplier_key = supplier_key.and_then(|value| normalize_optional_text(Some(value)));
+    let provider_type = provider_type
+        .map(|value| normalize_provider_type(Some(value)))
+        .transpose()?
+        .and_then(|value| normalize_optional_text(Some(value)));
+    storage
+        .list_aggregate_api_supplier_models(supplier_key.as_deref(), provider_type.as_deref())
+        .map_err(|err| format!("list supplier models failed: {err}"))
+        .map(|items| items.into_iter().map(supplier_model_entry).collect())
+}
+
+pub(crate) fn save_aggregate_api_supplier_model(
+    params: AggregateApiSupplierModelUpsertParams,
+) -> Result<AggregateApiSupplierModelEntry, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let supplier_key = normalize_required_text("supplierKey", params.supplier_key)?;
+    let provider_type = normalize_provider_type(Some(params.provider_type))?;
+    let upstream_model = normalize_required_text("upstreamModel", params.upstream_model)?;
+    let now = now_ts();
+    let model = AggregateApiSupplierModel {
+        supplier_key,
+        provider_type,
+        upstream_model,
+        display_name: params
+            .display_name
+            .and_then(|value| normalize_optional_text(Some(value))),
+        status: normalize_supplier_model_status(params.status)?,
+        created_at: now,
+        updated_at: now,
+    };
+    storage
+        .upsert_aggregate_api_supplier_model(&model)
+        .map_err(|err| format!("save supplier model failed: {err}"))?;
+    Ok(supplier_model_entry(model))
+}
+
+pub(crate) fn delete_aggregate_api_supplier_model(
+    params: AggregateApiSupplierModelDeleteParams,
+) -> Result<(), String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let supplier_key = normalize_required_text("supplierKey", params.supplier_key)?;
+    let provider_type = normalize_provider_type(Some(params.provider_type))?;
+    let upstream_model = normalize_required_text("upstreamModel", params.upstream_model)?;
+    storage
+        .delete_aggregate_api_supplier_model(
+            supplier_key.as_str(),
+            provider_type.as_str(),
+            upstream_model.as_str(),
+        )
+        .map_err(|err| format!("delete supplier model failed: {err}"))
+}
+
+pub(crate) fn import_aggregate_api_supplier_models(
+    params: AggregateApiSupplierModelImportParams,
+) -> Result<AggregateApiSupplierModelImportResult, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let api_id = normalize_required_text("apiId", params.api_id)?;
+    let api = storage
+        .find_aggregate_api_by_id(api_id.as_str())
+        .map_err(|err| format!("read aggregate api failed: {err}"))?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let supplier_key = params
+        .supplier_key
+        .and_then(|value| normalize_optional_text(Some(value)))
+        .unwrap_or_else(|| supplier_template_key_for_api(&api));
+    let provider_type = params
+        .provider_type
+        .map(|value| normalize_provider_type(Some(value)))
+        .transpose()?
+        .unwrap_or_else(|| normalize_provider_type_value(api.provider_type.as_str()));
+    let templates = storage
+        .list_aggregate_api_supplier_models(
+            Some(supplier_key.as_str()),
+            Some(provider_type.as_str()),
+        )
+        .map_err(|err| format!("list supplier models failed: {err}"))?;
+    let mut imported = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let now = now_ts();
+    for template in templates {
+        if template.status != "available" {
+            continue;
+        }
+        if !seen.insert(template.upstream_model.clone()) {
+            continue;
+        }
+        let record = ModelSourceModel {
+            source_kind: AGGREGATE_API_MODEL_SOURCE_KIND.to_string(),
+            source_id: api.id.clone(),
+            upstream_model: template.upstream_model,
+            display_name: template.display_name,
+            status: "available".to_string(),
+            discovery_kind: "template".to_string(),
+            last_synced_at: Some(now),
+            extra_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        storage
+            .upsert_model_source_model(&record)
+            .map_err(|err| format!("import supplier model failed: {err}"))?;
+        imported.push(source_model_entry(record));
+    }
+    if !imported.is_empty() {
+        crate::apikey_models::auto_associate_aggregate_api_source_models(
+            &storage,
+            api.id.as_str(),
+        )?;
+    }
+    Ok(AggregateApiSupplierModelImportResult {
+        imported: imported.len(),
+        items: imported,
+    })
+}
+
+fn supplier_model_entry(model: AggregateApiSupplierModel) -> AggregateApiSupplierModelEntry {
+    AggregateApiSupplierModelEntry {
+        supplier_key: model.supplier_key,
+        provider_type: model.provider_type,
+        upstream_model: model.upstream_model,
+        display_name: model.display_name,
+        status: model.status,
+        created_at: model.created_at,
+        updated_at: model.updated_at,
+    }
+}
+
+fn source_model_entry(model: ModelSourceModel) -> ManagedModelSourceModelEntry {
+    ManagedModelSourceModelEntry {
+        source_kind: model.source_kind,
+        source_id: model.source_id,
+        upstream_model: model.upstream_model,
+        display_name: model.display_name,
+        status: model.status,
+        discovery_kind: model.discovery_kind,
+        last_synced_at: model.last_synced_at,
+        created_at: model.created_at,
+        updated_at: model.updated_at,
+    }
 }
 
 /// 函数 `create_aggregate_api`
@@ -2376,12 +2578,17 @@ pub(crate) fn create_aggregate_api(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
-    cost_multiplier: Option<f64>,
-    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
+    balance_query_enabled: Option<bool>,
+    balance_query_template: Option<String>,
+    balance_query_base_url: Option<String>,
+    balance_query_access_token: Option<String>,
+    balance_query_user_id: Option<String>,
+    balance_query_config_json: Option<String>,
+    model_slugs: Option<Vec<String>>,
 ) -> Result<AggregateApiCreateResult, String> {
-    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let mut storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let normalized_provider_type = normalize_provider_type(provider_type)?;
     let normalized_supplier_name = normalize_supplier_name(supplier_name)?;
     let normalized_sort = normalize_sort(sort);
@@ -2396,8 +2603,22 @@ pub(crate) fn create_aggregate_api(
     let normalized_action =
         normalize_action_override(action_custom_enabled, action)?.unwrap_or(None);
     let normalized_model_override = normalize_model_override(model_override)?;
-    let normalized_cost_multiplier = normalize_cost_multiplier(cost_multiplier)?;
-    let normalized_daily_spend_limit_usd = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
+    let normalized_balance_query_enabled = balance_query_enabled.unwrap_or(false);
+    let normalized_balance_query_template = if normalized_balance_query_enabled {
+        Some(default_balance_query_template(
+            normalize_balance_query_template(balance_query_template)?,
+        ))
+    } else {
+        normalize_balance_query_template(balance_query_template)?
+    };
+    let normalized_balance_query_base_url =
+        normalize_optional_url(balance_query_base_url, "balanceQueryBaseUrl")?;
+    let normalized_balance_query_access_token = normalize_secret(balance_query_access_token);
+    let normalized_balance_query_user_id = normalize_optional_text(balance_query_user_id);
+    let normalized_balance_query_config_json = normalize_balance_query_config_json(
+        normalized_balance_query_template.as_deref(),
+        balance_query_config_json,
+    )?;
     let normalized_secret = if normalized_auth_type == AGGREGATE_API_AUTH_APIKEY {
         normalize_secret(key).ok_or_else(|| "key is required".to_string())?
     } else {
@@ -2427,14 +2648,23 @@ pub(crate) fn create_aggregate_api(
             .unwrap_or(None),
         action: normalized_action,
         model_override: normalized_model_override,
-        cost_multiplier: normalized_cost_multiplier,
-        daily_spend_limit_usd: normalized_daily_spend_limit_usd,
+        cost_multiplier: 1.0,
+        daily_spend_limit_usd: None,
         status: "active".to_string(),
         created_at,
         updated_at: created_at,
         last_test_at: None,
         last_test_status: None,
         last_test_error: None,
+        balance_query_enabled: normalized_balance_query_enabled,
+        balance_query_template: normalized_balance_query_template,
+        balance_query_base_url: normalized_balance_query_base_url,
+        balance_query_user_id: normalized_balance_query_user_id,
+        balance_query_config_json: normalized_balance_query_config_json,
+        last_balance_at: None,
+        last_balance_status: None,
+        last_balance_error: None,
+        last_balance_json: None,
     };
     storage
         .insert_aggregate_api(&record)
@@ -2442,6 +2672,24 @@ pub(crate) fn create_aggregate_api(
     if let Err(err) = storage.upsert_aggregate_api_secret(&id, &normalized_secret) {
         let _ = storage.delete_aggregate_api(&id);
         return Err(format!("persist aggregate api secret failed: {err}"));
+    }
+    if let Some(access_token) = normalized_balance_query_access_token {
+        if let Err(err) = storage.upsert_aggregate_api_balance_secret(&id, &access_token) {
+            let _ = storage.delete_aggregate_api(&id);
+            return Err(format!(
+                "persist aggregate api balance secret failed: {err}"
+            ));
+        }
+    }
+    if let Some(model_slugs) = model_slugs {
+        if let Err(err) =
+            storage.set_quota_source_model_assignments("aggregate_api", &id, model_slugs.as_slice())
+        {
+            let _ = storage.delete_aggregate_api(&id);
+            return Err(format!(
+                "persist aggregate api model assignments failed: {err}"
+            ));
+        }
     }
     Ok(AggregateApiCreateResult {
         id,
@@ -2478,15 +2726,20 @@ pub(crate) fn update_aggregate_api(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
-    cost_multiplier: Option<f64>,
-    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
+    balance_query_enabled: Option<bool>,
+    balance_query_template: Option<String>,
+    balance_query_base_url: Option<String>,
+    balance_query_access_token: Option<String>,
+    balance_query_user_id: Option<String>,
+    balance_query_config_json: Option<String>,
+    model_slugs: Option<Vec<String>>,
 ) -> Result<(), String> {
     if api_id.is_empty() {
         return Err("aggregate api id required".to_string());
     }
-    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let mut storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let existing = storage
         .find_aggregate_api_by_id(api_id)
         .map_err(|err| err.to_string())?
@@ -2570,16 +2823,79 @@ pub(crate) fn update_aggregate_api(
             .update_aggregate_api_model_override(api_id, normalized.as_deref())
             .map_err(|err| err.to_string())?;
     }
-    if cost_multiplier.is_some() {
-        let normalized = normalize_cost_multiplier(cost_multiplier)?;
+
+    let balance_query_base_url_provided = balance_query_base_url.is_some();
+    let balance_query_user_id_provided = balance_query_user_id.is_some();
+    let balance_query_config_json_provided = balance_query_config_json.is_some();
+    let normalized_balance_query_template =
+        normalize_balance_query_template(balance_query_template)?;
+    let normalized_balance_query_base_url =
+        normalize_optional_url(balance_query_base_url, "balanceQueryBaseUrl")?;
+    let normalized_balance_query_access_token = normalize_secret(balance_query_access_token);
+    let normalized_balance_query_user_id = normalize_optional_text(balance_query_user_id);
+    let normalized_balance_query_config_json = if balance_query_config_json_provided {
+        normalize_balance_query_config_json(
+            normalized_balance_query_template
+                .as_deref()
+                .or(existing.balance_query_template.as_deref()),
+            balance_query_config_json,
+        )?
+    } else {
+        None
+    };
+    if balance_query_enabled.is_some()
+        || normalized_balance_query_template.is_some()
+        || balance_query_base_url_provided
+        || balance_query_user_id_provided
+        || balance_query_config_json_provided
+    {
+        let next_enabled = balance_query_enabled.unwrap_or(existing.balance_query_enabled);
+        let next_template = if next_enabled {
+            Some(default_balance_query_template(
+                normalized_balance_query_template.or(existing.balance_query_template.clone()),
+            ))
+        } else {
+            normalized_balance_query_template.or(existing.balance_query_template.clone())
+        };
+        let next_base_url = if balance_query_base_url_provided {
+            normalized_balance_query_base_url
+        } else {
+            existing.balance_query_base_url
+        };
+        let next_user_id = if balance_query_user_id_provided {
+            normalized_balance_query_user_id
+        } else {
+            existing.balance_query_user_id
+        };
+        let next_config_json = if balance_query_config_json_provided {
+            normalized_balance_query_config_json
+        } else if next_template.as_deref() == Some(AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM) {
+            normalize_balance_query_config_json(
+                next_template.as_deref(),
+                existing.balance_query_config_json,
+            )?
+        } else {
+            None
+        };
         storage
-            .update_aggregate_api_cost_multiplier(api_id, normalized)
+            .update_aggregate_api_balance_query(
+                api_id,
+                next_enabled,
+                next_template.as_deref(),
+                next_base_url.as_deref(),
+                next_user_id.as_deref(),
+                next_config_json.as_deref(),
+            )
             .map_err(|err| err.to_string())?;
     }
-    if daily_spend_limit_usd.is_some() {
-        let normalized = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
+    if let Some(access_token) = normalized_balance_query_access_token {
         storage
-            .update_aggregate_api_daily_spend_limit_usd(api_id, normalized)
+            .upsert_aggregate_api_balance_secret(api_id, &access_token)
+            .map_err(|err| err.to_string())?;
+    }
+    if let Some(false) = balance_query_enabled {
+        storage
+            .delete_aggregate_api_balance_secret(api_id)
             .map_err(|err| err.to_string())?;
     }
 
@@ -2613,6 +2929,11 @@ pub(crate) fn update_aggregate_api(
                 .upsert_aggregate_api_secret(api_id, &secret)
                 .map_err(|err| err.to_string())?;
         }
+    }
+    if let Some(model_slugs) = model_slugs {
+        storage
+            .set_quota_source_model_assignments("aggregate_api", api_id, model_slugs.as_slice())
+            .map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -2739,10 +3060,8 @@ pub(crate) fn test_aggregate_api_connection(
     })
 }
 
-pub(crate) fn query_aggregate_api_balance(
-    api_id: &str,
-) -> Result<AggregateApiBalanceResult, String> {
-    if api_id.is_empty() {
+pub(crate) fn discover_aggregate_api_models(api_id: &str) -> Result<Vec<String>, String> {
+    if api_id.trim().is_empty() {
         return Err("aggregate api id required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
@@ -2754,52 +3073,114 @@ pub(crate) fn query_aggregate_api_balance(
         .find_aggregate_api_secret_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api secret not found".to_string())?;
-
-    let client = gateway::fresh_upstream_client();
-    let started_at = Instant::now();
-    let provider = normalize_provider_type_value(api.provider_type.as_str());
-    let mut attempt_errors: Vec<String> = Vec::new();
-
-    for path in balance_query_paths(&api) {
-        match query_balance_path(&client, &api, &secret, path) {
-            Ok((_status, snapshot)) => {
-                return Ok(AggregateApiBalanceResult {
-                    id: api_id.to_string(),
-                    ok: snapshot.message.is_none(),
-                    provider,
-                    remaining: snapshot.remaining,
-                    used: snapshot.used,
-                    total: snapshot.total,
-                    unit: snapshot.unit,
-                    plan_name: snapshot.plan_name,
-                    message: snapshot.message,
-                    queried_at: now_ts(),
-                    latency_ms: started_at.elapsed().as_millis() as i64,
-                });
-            }
-            Err(err) => {
-                attempt_errors.push(err);
-            }
-        }
+    if let Some(model_override) = api
+        .model_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(vec![model_override.to_string()]);
     }
 
-    let message = if attempt_errors.is_empty() {
-        Some("balance query failed".to_string())
-    } else {
-        Some(attempt_errors.join(" | "))
-    };
+    let client = gateway::fresh_upstream_client();
+    let provider_type = normalize_provider_type_value(api.provider_type.as_str());
+    match provider_type.as_str() {
+        AGGREGATE_API_PROVIDER_CLAUDE => {
+            let (models, discovery_error) = claude_probe_models_for_api(&client, &api, &secret);
+            if models.is_empty() {
+                Err(discovery_error.unwrap_or_else(|| {
+                    "claude models discovery returned empty model list".to_string()
+                }))
+            } else {
+                Ok(models)
+            }
+        }
+        AGGREGATE_API_PROVIDER_GEMINI => Err(
+            "gemini aggregate api does not expose a generic model list; add source models manually"
+                .to_string(),
+        ),
+        _ => discover_codex_models_endpoint(&client, &api, &secret),
+    }
+}
 
-    Ok(AggregateApiBalanceResult {
-        id: api_id.to_string(),
-        ok: false,
-        provider,
-        remaining: None,
-        used: None,
-        total: None,
-        unit: None,
-        plan_name: None,
-        message,
-        queried_at: now_ts(),
-        latency_ms: started_at.elapsed().as_millis() as i64,
-    })
+pub(crate) fn refresh_aggregate_api_balance(
+    api_id: &str,
+) -> Result<AggregateApiBalanceRefreshResult, String> {
+    if api_id.is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let api = storage
+        .find_aggregate_api_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    if !api.balance_query_enabled {
+        return Err("aggregate api balance query is disabled".to_string());
+    }
+    let provider_secret = storage
+        .find_aggregate_api_secret_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api secret not found".to_string())?;
+    let balance_secret = storage
+        .find_aggregate_api_balance_secret_by_id(api_id)
+        .map_err(|err| err.to_string())?;
+    let template = default_balance_query_template(normalize_balance_query_template(
+        api.balance_query_template.clone(),
+    )?);
+    let client = gateway::fresh_upstream_client();
+    let started_at = Instant::now();
+    let result = match template.as_str() {
+        AGGREGATE_API_BALANCE_TEMPLATE_NEW_API => {
+            query_new_api_balance(&client, &api, &provider_secret, balance_secret)
+        }
+        AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM => {
+            query_custom_balance(&client, &api, &provider_secret, balance_secret)
+        }
+        _ => query_generic_balance(&client, &api, &provider_secret),
+    };
+    let queried_at = now_ts();
+    let latency_ms = started_at.elapsed().as_millis() as i64;
+
+    match result {
+        Ok(snapshot) => {
+            let ok = snapshot.is_valid;
+            let message = if ok {
+                None
+            } else {
+                snapshot
+                    .invalid_message
+                    .clone()
+                    .or_else(|| Some("balance query returned invalid account".to_string()))
+            };
+            let balance_json = serde_json::to_string(&snapshot)
+                .map_err(|_| "serialize balance result failed".to_string())?;
+            let _ = storage.update_aggregate_api_balance_result(
+                api_id,
+                ok,
+                Some(balance_json.as_str()),
+                message.as_deref(),
+            );
+            Ok(AggregateApiBalanceRefreshResult {
+                id: api_id.to_string(),
+                ok,
+                balance: Some(snapshot),
+                message,
+                queried_at,
+                latency_ms,
+            })
+        }
+        Err(err) => {
+            let message = format!("template={template}; {err}");
+            let _ =
+                storage.update_aggregate_api_balance_result(api_id, false, None, Some(&message));
+            Ok(AggregateApiBalanceRefreshResult {
+                id: api_id.to_string(),
+                ok: false,
+                balance: None,
+                message: Some(message),
+                queried_at,
+                latency_ms,
+            })
+        }
+    }
 }

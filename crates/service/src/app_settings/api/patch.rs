@@ -51,6 +51,8 @@ pub(super) struct AppSettingsPatch {
     background_tasks: Option<BackgroundTasksInput>,
     env_overrides: Option<HashMap<String, String>>,
     web_access_password: Option<String>,
+    web_auth_mode: Option<String>,
+    distribution_enabled: Option<bool>,
 }
 
 /// 函数 `parse_app_settings_patch`
@@ -163,10 +165,8 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     if let Some(author_server_recommendations) = patch.author_server_recommendations {
         let normalized = normalize_author_link_items(author_server_recommendations);
         let raw = serialize_author_link_items(&normalized)?;
-        let _ = save_persisted_app_setting(
-            APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY,
-            Some(&raw),
-        )?;
+        let _ =
+            save_persisted_app_setting(APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, Some(&raw))?;
     }
     if let Some(proxy_url) = patch.upstream_proxy_url {
         let _ = set_gateway_upstream_proxy_url(Some(&proxy_url))?;
@@ -188,6 +188,12 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(password) = patch.web_access_password {
         let _ = crate::set_web_access_password(Some(&password))?;
+    }
+    if let Some(mode) = patch.web_auth_mode {
+        let _ = crate::set_web_auth_mode(&mode)?;
+    }
+    if let Some(enabled) = patch.distribution_enabled {
+        let _ = crate::set_distribution_enabled(enabled)?;
     }
 
     Ok(())

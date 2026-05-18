@@ -23,7 +23,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "11";
+  const codexDeleteStyleVersion = "12";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "6";
@@ -39,7 +39,7 @@
   const rowMenuTriggerClass = "codex-row-menu-trigger";
   const rowMenuPopoverClass = "codex-row-menu-popover";
   const rowMenuItemClass = "codex-row-menu-item";
-  const codexArchiveRowActionsVersion = "2";
+  const codexArchiveRowActionsVersion = "3";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
   const codexPlusVersion = "1.0.7";
@@ -173,26 +173,49 @@
         .${rowMenuItemClass}[data-variant="danger"] { color: #ff6b6b; }
         .${rowMenuItemClass}[data-variant="danger"]:hover { background: rgba(239,68,68,.16); }
       }
-      /* 归档列表保留原有标记色（仅在归档面板内沿用） */
+      /* 归档页多为浅色卡片：默认浅色按钮，暗色主题再覆盖 */
       .codex-archive-row-button {
-        border: 1px solid rgba(255,255,255,.14);
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+        margin-left: 8px;
+        border: 1px solid rgba(0,0,0,.14);
         border-radius: 7px;
-        background: rgba(255,255,255,.06);
-        color: #ececec;
+        background: #ffffff;
+        color: #0d0d0d;
         font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
         line-height: 16px;
-        padding: 3px 8px;
+        padding: 4px 10px;
         cursor: pointer;
+        box-shadow: 0 1px 2px rgba(0,0,0,.06);
       }
       .codex-archive-row-button.${buttonClass} {
-        border-color: rgba(239,68,68,.45);
-        background: rgba(239,68,68,.18);
-        color: #ffb4b4;
+        border-color: rgba(220,38,38,.45);
+        background: #fef2f2;
+        color: #b91c1c;
       }
       .codex-archive-row-button.${exportButtonClass} {
-        border-color: rgba(96,165,250,.4);
-        background: rgba(37,99,235,.18);
-        color: #bcd5ff;
+        border-color: rgba(37,99,235,.35);
+        background: #eff6ff;
+        color: #1d4ed8;
+      }
+      @media (prefers-color-scheme: dark) {
+        .codex-archive-row-button {
+          border-color: rgba(255,255,255,.14);
+          background: rgba(255,255,255,.06);
+          color: #ececec;
+          box-shadow: none;
+        }
+        .codex-archive-row-button.${buttonClass} {
+          border-color: rgba(239,68,68,.45);
+          background: rgba(239,68,68,.18);
+          color: #ffb4b4;
+        }
+        .codex-archive-row-button.${exportButtonClass} {
+          border-color: rgba(96,165,250,.4);
+          background: rgba(37,99,235,.18);
+          color: #bcd5ff;
+        }
       }
       .${projectMoveOverlayClass} {
         position: fixed;
@@ -1276,39 +1299,62 @@
     return cachedSessionRows;
   }
 
+  function isArchiveTitleText(value) {
+    return value === "已归档对话" || value === "Archived conversations";
+  }
+
   function archivePageHintVisible() {
     if (window.location.href.includes("archive")) return true;
     if (document.querySelector('[data-codex-archive-page-row="true"], [data-codex-archive-delete-all]')) return true;
     const archiveNav = document.querySelector(selectors.archiveNav);
     if (archiveNav?.className?.includes?.("bg-token-list-hover-background")) return true;
-    // 放宽：兼容标题不在 h1/h2/h3 的情况（settings 抽屉里"已归档对话"可能是 div/span）
-    const titleHit = Array.from(document.querySelectorAll("h1, h2, h3, h4, div, span, p")).find((element) => {
-      const text = (element.textContent || "").replace(/\s+/g, " ").trim();
-      return text === "已归档对话" || text === "Archived conversations";
-    });
-    return !!titleHit;
+    return !!archiveTitleContainer();
   }
 
-  function archiveRowFromUnarchiveButton(button) {
-    return button.closest('[data-codex-archive-page-row="true"]')
-      || button.closest('[role="listitem"], [role="row"]')
-      || button.closest(".flex.w-full.items-center.justify-between")
-      || button.parentElement;
+  function isUnarchiveControl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.dataset.codexArchiveRowAction) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag !== "button" && el.getAttribute("role") !== "button") return false;
+    if (el.getAttribute("aria-label") === "取消归档对话") return true;
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) return false;
+    return text === "取消归档"
+      || text === "Unarchive"
+      || /^取消归档(\b|\s|$)/.test(text)
+      || /^unarchive\b/i.test(text);
+  }
+
+  function archiveRowFromUnarchiveButton(control) {
+    const marked = control.closest('[data-codex-archive-page-row="true"]');
+    if (marked) return marked;
+    const rowSelectors = [
+      '[role="listitem"]',
+      '[role="row"]',
+      ".flex.w-full.items-center.justify-between",
+      "motion.div",
+      "motion.li",
+    ];
+    for (const selector of rowSelectors) {
+      const hit = control.closest(selector);
+      if (hit?.querySelector?.(".truncate.text-base, .truncate.select-none, [data-thread-title]")) return hit;
+    }
+    let el = control.parentElement;
+    for (let depth = 0; depth < 8 && el; depth += 1) {
+      const hasTitle = el.querySelector(".truncate.text-base, .truncate.select-none, [data-thread-title]");
+      const hasUnarchive = Array.from(el.querySelectorAll("button, [role='button']")).some(isUnarchiveControl);
+      if (hasTitle && hasUnarchive) return el;
+      el = el.parentElement;
+    }
+    return control.parentElement;
   }
 
   function archivedPageRows() {
     if (!archivePageHintVisible()) return [];
-    // 放宽匹配：兼容中英文 + 按钮内含图标/嵌套元素（导致 textContent 含额外字符）
-    const rows = Array.from(document.querySelectorAll("button")).filter((button) => {
-      if (button.getAttribute("aria-label") === "取消归档对话") return true;
-      const text = (button.textContent || "").replace(/\s+/g, " ").trim();
-      if (!text) return false;
-      return text === "取消归档"
-        || text === "Unarchive"
-        || /^取消归档(\b|\s|$)/.test(text)
-        || /^unarchive\b/i.test(text);
-    }).map(archiveRowFromUnarchiveButton).filter(Boolean);
-    // 去重（多个按钮可能指向同一个 row 容器）
+    const rows = Array.from(document.querySelectorAll("button, [role='button']"))
+      .filter(isUnarchiveControl)
+      .map(archiveRowFromUnarchiveButton)
+      .filter(Boolean);
     const seen = new Set();
     const unique = [];
     for (const row of rows) {
@@ -2687,10 +2733,6 @@
     event.stopImmediatePropagation?.();
   }
 
-  function isArchiveTitleText(value) {
-    return value === "已归档对话" || value === "Archived conversations";
-  }
-
   function archiveTitleContainer() {
     const heading = Array.from(document.querySelectorAll("h1, h2, h3"))
       .find((element) => isArchiveTitleText((element.textContent || "").trim()));
@@ -2718,15 +2760,18 @@
     row.querySelectorAll("[data-codex-archive-row-action]").forEach((button) => button.remove());
     row.dataset.codexArchiveDeleteRow = "false";
     if (!settings.sessionDelete && !settings.markdownExport) return;
-    const unarchiveButton = Array.from(row.querySelectorAll("button")).find((button) => {
-      if (button.getAttribute("aria-label") === "取消归档对话") return true;
-      const text = (button.textContent || "").replace(/\s+/g, " ").trim();
-      return text === "取消归档"
-        || text === "Unarchive"
-        || /^取消归档(\b|\s|$)/.test(text)
-        || /^unarchive\b/i.test(text);
-    });
+    const unarchiveButton = Array.from(row.querySelectorAll("button, [role='button']")).find(isUnarchiveControl);
     if (!unarchiveButton) return;
+    const actionsWrap = unarchiveButton.parentElement;
+    if (actionsWrap) {
+      const display = getComputedStyle(actionsWrap).display;
+      if (display !== "flex" && display !== "inline-flex") {
+        actionsWrap.style.display = "inline-flex";
+        actionsWrap.style.alignItems = "center";
+        actionsWrap.style.flexWrap = "nowrap";
+        actionsWrap.style.gap = "8px";
+      }
+    }
     row.dataset.codexArchiveDeleteRow = "true";
     row.dataset.codexArchiveRowActionsVersion = codexArchiveRowActionsVersion;
     let insertionPoint = unarchiveButton;

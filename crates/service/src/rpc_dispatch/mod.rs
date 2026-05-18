@@ -7,13 +7,18 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::storage_helpers;
+use crate::RpcActor;
 
 mod account;
+mod account_manager;
 mod aggregate_api;
 mod apikey;
 mod app_settings;
 mod codex_session;
+mod dashboard;
 mod gateway;
+mod model_groups;
+mod quota;
 mod requestlog;
 mod service_config;
 mod startup;
@@ -179,6 +184,58 @@ pub(super) fn value_or_error<T: Serialize>(result: Result<T, String>) -> Value {
     }
 }
 
+fn permission_denied(method: &str) -> String {
+    format!("permission_denied: {method}")
+}
+
+const MEMBER_METHOD_ALLOWLIST: &[&str] = &[
+    "account/chatgptAuthTokens/refresh",
+    "account/chatgptAuthTokens/refreshAll",
+    "account/list",
+    "account/read",
+    "account/update",
+    "account/usage/aggregate",
+    "account/usage/list",
+    "account/usage/read",
+    "account/usage/refresh",
+    "account/warmup",
+    "accountManager/password/change",
+    "accountManager/profile/update",
+    "accountManager/session/current",
+    "accountManager/status",
+    "apikey/create",
+    "apikey/delete",
+    "apikey/disable",
+    "apikey/enable",
+    "apikey/list",
+    "apikey/modelCatalogList",
+    "apikey/modelRouting",
+    "apikey/models",
+    "apikey/readSecret",
+    "apikey/updateModel",
+    "apikey/usageStats",
+    "appSettings/get",
+    "dashboard/memberSummary",
+    "requestlog/list",
+    "requestlog/summary",
+    "requestlog/today_summary",
+    "startup/snapshot",
+];
+
+fn member_method_allowed(method: &str) -> bool {
+    if crate::current_web_auth_mode() == "password" {
+        return true;
+    }
+    MEMBER_METHOD_ALLOWLIST.contains(&method)
+}
+
+fn ensure_method_allowed(actor: &RpcActor, method: &str) -> Result<(), String> {
+    if actor.is_admin() || member_method_allowed(method) {
+        return Ok(());
+    }
+    Err(permission_denied(method))
+}
+
 /// 函数 `handle_request`
 ///
 /// 作者: gaohongshun
@@ -190,7 +247,12 @@ pub(super) fn value_or_error<T: Serialize>(result: Result<T, String>) -> Value {
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn handle_request(req: JsonRpcRequest) -> JsonRpcMessage {
+    handle_request_with_actor(req, RpcActor::system_admin())
+}
+
+pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) -> JsonRpcMessage {
     if req.method == "initialize" {
         let _ = storage_helpers::initialize_storage();
         if let Some(storage) = storage_helpers::open_storage() {
@@ -211,16 +273,26 @@ pub(crate) fn handle_request(req: JsonRpcRequest) -> JsonRpcMessage {
         return JsonRpcMessage::Response(response(&req, as_json(result)));
     }
 
+    if let Err(err) = ensure_method_allowed(&actor, &req.method) {
+        return JsonRpcMessage::Response(response(&req, value_or_error::<()>(Err(err))));
+    }
+
     if let Some(resp) = account::try_handle(&req) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = account_manager::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = aggregate_api::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
-    if let Some(resp) = apikey::try_handle(&req) {
+    if let Some(resp) = apikey::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = app_settings::try_handle(&req) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = dashboard::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = usage::try_handle(&req) {
@@ -229,16 +301,22 @@ pub(crate) fn handle_request(req: JsonRpcRequest) -> JsonRpcMessage {
     if let Some(resp) = service_config::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
-    if let Some(resp) = startup::try_handle(&req) {
+    if let Some(resp) = startup::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = gateway::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
+    if let Some(resp) = model_groups::try_handle(&req, &actor) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = quota::try_handle(&req) {
+        return JsonRpcMessage::Response(resp);
+    }
     if let Some(resp) = crate::plugin::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
-    if let Some(resp) = requestlog::try_handle(&req) {
+    if let Some(resp) = requestlog::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = codex_session::try_handle(&req) {

@@ -1,3 +1,5 @@
+import type { ManagedModelSourceModel } from "@/types/model";
+
 export interface ApiKey {
   id: string;
   name: string;
@@ -43,6 +45,16 @@ export interface AggregateApi {
   lastTestAt: number | null;
   lastTestStatus: string | null;
   lastTestError: string | null;
+  balanceQueryEnabled: boolean;
+  balanceQueryTemplate: string | null;
+  balanceQueryBaseUrl: string | null;
+  balanceQueryUserId: string | null;
+  balanceQueryConfigJson: string | null;
+  lastBalanceAt: number | null;
+  lastBalanceStatus: string | null;
+  lastBalanceError: string | null;
+  lastBalanceJson: string | null;
+  modelSlugs: string[];
 }
 
 export interface AggregateApiCreateResult {
@@ -67,15 +79,21 @@ export interface AggregateApiTestResult {
   latencyMs: number;
 }
 
-export interface AggregateApiBalanceResult {
-  id: string;
-  ok: boolean;
-  provider: string;
+export interface AggregateApiBalanceSnapshot {
+  isValid: boolean;
+  invalidMessage: string | null;
   remaining: number | null;
-  used: number | null;
-  total: number | null;
   unit: string | null;
   planName: string | null;
+  total: number | null;
+  used: number | null;
+  extra: Record<string, unknown> | null;
+}
+
+export interface AggregateApiBalanceRefreshResult {
+  id: string;
+  ok: boolean;
+  balance: AggregateApiBalanceSnapshot | null;
   message: string | null;
   queriedAt: number;
   latencyMs: number;
@@ -94,6 +112,21 @@ export interface AggregateApiDailyUsageStat {
   reasoningOutputTokens: number;
   estimatedCostUsd: number;
   cacheHitRate: number;
+}
+
+export interface AggregateApiSupplierModel {
+  supplierKey: string;
+  providerType: string;
+  upstreamModel: string;
+  displayName: string | null;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AggregateApiSupplierModelImportResult {
+  imported: number;
+  items: ManagedModelSourceModel[];
 }
 
 export interface ApiKeyUsageStat {

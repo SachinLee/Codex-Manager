@@ -506,6 +506,10 @@ async fn async_main() {
 
     let mut protected_app = Router::new()
         .route("/api/rpc", post(service_gateway::rpc_proxy))
+        .route(
+            "/api/events/usage-refresh",
+            get(service_gateway::usage_refresh_events),
+        )
         .route("/__quit", get(service_gateway::quit));
 
     let disk_ok = ensure_index_file(&index);
@@ -515,7 +519,9 @@ async fn async_main() {
             let static_service = ServeDir::new(&web_root)
                 .append_index_html_on_directories(true)
                 .not_found_service(ServeFile::new(index));
-            protected_app = protected_app.fallback_service(static_service);
+            protected_app = protected_app
+                .nest_service("/_next", ServeDir::new(web_root.join("_next")))
+                .fallback_service(static_service);
         } else {
             protected_app = protected_app
                 .route("/", get(ui_assets::serve_missing_ui))

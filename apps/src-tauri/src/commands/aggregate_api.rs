@@ -46,10 +46,15 @@ pub async fn service_aggregate_api_create(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
-    cost_multiplier: Option<f64>,
-    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
+    balance_query_enabled: Option<bool>,
+    balance_query_template: Option<String>,
+    balance_query_base_url: Option<String>,
+    balance_query_access_token: Option<String>,
+    balance_query_user_id: Option<String>,
+    balance_query_config_json: Option<String>,
+    model_slugs: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "providerType": provider_type,
@@ -63,10 +68,15 @@ pub async fn service_aggregate_api_create(
         "actionCustomEnabled": action_custom_enabled,
         "action": action,
         "modelOverride": model_override,
-        "costMultiplier": cost_multiplier,
-        "dailySpendLimitUsd": daily_spend_limit_usd,
         "username": username,
         "password": password,
+        "balanceQueryEnabled": balance_query_enabled,
+        "balanceQueryTemplate": balance_query_template,
+        "balanceQueryBaseUrl": balance_query_base_url,
+        "balanceQueryAccessToken": balance_query_access_token,
+        "balanceQueryUserId": balance_query_user_id,
+        "balanceQueryConfigJson": balance_query_config_json,
+        "modelSlugs": model_slugs,
     });
     rpc_call_in_background("aggregateApi/create", addr, Some(params)).await
 }
@@ -104,10 +114,15 @@ pub async fn service_aggregate_api_update(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
-    cost_multiplier: Option<f64>,
-    daily_spend_limit_usd: Option<f64>,
     username: Option<String>,
     password: Option<String>,
+    balance_query_enabled: Option<bool>,
+    balance_query_template: Option<String>,
+    balance_query_base_url: Option<String>,
+    balance_query_access_token: Option<String>,
+    balance_query_user_id: Option<String>,
+    balance_query_config_json: Option<String>,
+    model_slugs: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "id": id,
@@ -123,10 +138,15 @@ pub async fn service_aggregate_api_update(
         "actionCustomEnabled": action_custom_enabled,
         "action": action,
         "modelOverride": model_override,
-        "costMultiplier": cost_multiplier,
-        "dailySpendLimitUsd": daily_spend_limit_usd,
         "username": username,
         "password": password,
+        "balanceQueryEnabled": balance_query_enabled,
+        "balanceQueryTemplate": balance_query_template,
+        "balanceQueryBaseUrl": balance_query_base_url,
+        "balanceQueryAccessToken": balance_query_access_token,
+        "balanceQueryUserId": balance_query_user_id,
+        "balanceQueryConfigJson": balance_query_config_json,
+        "modelSlugs": model_slugs,
     });
     rpc_call_in_background("aggregateApi/update", addr, Some(params)).await
 }
@@ -195,10 +215,61 @@ pub async fn service_aggregate_api_test_connection(
 }
 
 #[tauri::command]
-pub async fn service_aggregate_api_query_balance(
+pub async fn service_aggregate_api_refresh_balance(
     addr: Option<String>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({ "id": id });
-    rpc_call_in_background("aggregateApi/queryBalance", addr, Some(params)).await
+    rpc_call_in_background("aggregateApi/refreshBalance", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_supplier_models_list(
+    addr: Option<String>,
+    supplier_key: Option<String>,
+    provider_type: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "supplierKey": supplier_key,
+        "providerType": provider_type,
+    });
+    rpc_call_in_background("aggregateApi/supplierModels/list", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_supplier_model_save(
+    addr: Option<String>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("aggregateApi/supplierModels/save", addr, Some(payload)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_supplier_model_delete(
+    addr: Option<String>,
+    supplier_key: String,
+    provider_type: String,
+    upstream_model: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "supplierKey": supplier_key,
+        "providerType": provider_type,
+        "upstreamModel": upstream_model,
+    });
+    rpc_call_in_background("aggregateApi/supplierModels/delete", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_supplier_models_import(
+    addr: Option<String>,
+    api_id: String,
+    supplier_key: Option<String>,
+    provider_type: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "apiId": api_id,
+        "supplierKey": supplier_key,
+        "providerType": provider_type,
+    });
+    rpc_call_in_background("aggregateApi/sourceModels/importSupplier", addr, Some(params)).await
 }

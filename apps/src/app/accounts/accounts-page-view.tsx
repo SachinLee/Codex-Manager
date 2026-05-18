@@ -50,6 +50,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -76,6 +77,7 @@ import {
   formatMillionTokenAmount,
   formatUsdAmount,
 } from "@/lib/utils/billing";
+import { formatCompactNumber } from "@/lib/utils/usage";
 import type { Account, AccountDailyUsageStat } from "@/types";
 import {
   type AccountEditorState,
@@ -84,6 +86,7 @@ import {
   type DeleteDialogState,
   type StatusFilter,
   AccountInfoCell,
+  AccountStatusCell,
   QuotaOverviewCell,
   buildQuotaSummaryItems,
   formatAccountExportModeLabel,
@@ -145,6 +148,9 @@ export interface AccountsPageViewProps {
   tagsDraft: string;
   noteDraft: string;
   sortDraft: string;
+  modelWhitelistDraft: string;
+  quotaPrimaryDraft: string;
+  quotaSecondaryDraft: string;
   isRefreshingAllAccounts: boolean;
   isRefreshingAccountId: string | null;
   isRefreshingRtAccountId: string | null;
@@ -172,6 +178,9 @@ export interface AccountsPageViewProps {
   setTagsDraft: Dispatch<SetStateAction<string>>;
   setNoteDraft: Dispatch<SetStateAction<string>>;
   setSortDraft: Dispatch<SetStateAction<string>>;
+  setModelWhitelistDraft: Dispatch<SetStateAction<string>>;
+  setQuotaPrimaryDraft: Dispatch<SetStateAction<string>>;
+  setQuotaSecondaryDraft: Dispatch<SetStateAction<string>>;
   setPage: Dispatch<SetStateAction<number>>;
   handleSearchChange: (value: string) => void;
   handlePlanFilterChange: (value: string | null) => void;
@@ -249,6 +258,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     tagsDraft,
     noteDraft,
     sortDraft,
+    modelWhitelistDraft,
+    quotaPrimaryDraft,
+    quotaSecondaryDraft,
     isRefreshingAllAccounts,
     isRefreshingAccountId,
     isRefreshingRtAccountId,
@@ -276,6 +288,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     setTagsDraft,
     setNoteDraft,
     setSortDraft,
+    setModelWhitelistDraft,
+    setQuotaPrimaryDraft,
+    setQuotaSecondaryDraft,
     setPage,
     handleSearchChange,
     handlePlanFilterChange,
@@ -318,7 +333,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
   return (
     <div className="space-y-6">
       {!isServiceReady ? (
-        <Card className="glass-card border-none shadow-sm">
+        <Card className="glass-card shadow-sm">
           <CardContent className="pt-6 text-sm text-muted-foreground">
             {t(
               "服务未连接，账号列表与相关操作暂不可用；连接恢复后会自动继续加载。",
@@ -327,7 +342,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
         </Card>
       ) : null}
 
-      <Card className="glass-card border-none shadow-md backdrop-blur-md">
+      <Card className="glass-card shadow-sm">
         <CardContent className="grid gap-3 pt-0 lg:grid-cols-[200px_auto_minmax(0,1fr)_auto] lg:items-center">
           <div className="min-w-0">
             <Input
@@ -346,6 +361,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
+                    <SelectGroup>
                 <SelectItem value="all">
                   {t("全部类型")} ({accounts.length})
                 </SelectItem>
@@ -355,6 +371,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     {planType.count})
                   </SelectItem>
                 ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Select
@@ -369,11 +386,13 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
+                    <SelectGroup>
                 {statusFilterOptions.map((filter) => (
                   <SelectItem key={filter.id} value={filter.id}>
                     {filter.label}
                   </SelectItem>
                 ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>
@@ -428,9 +447,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
-                className="w-64 rounded-xl border border-border/70 bg-popover/95 p-2 shadow-xl backdrop-blur-md"
+                className="w-64 rounded-xl border border-border/70 bg-popover/95 p-2 shadow-sm"
               >
-                <DropdownMenuGroup>
+                                  <DropdownMenuGroup>
                   <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground/80">
                     {t("刷新")}
                   </DropdownMenuLabel>
@@ -475,7 +494,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 <DropdownMenuSeparator />
                 <DropdownMenuGroup>
                   <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground/80">
-                    {t("账号管理")}
+                    {t("号池管理")}
                   </DropdownMenuLabel>
                   <DropdownMenuItem
                     className="h-9 rounded-lg px-2"
@@ -614,12 +633,14 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
+                    <SelectGroup>
                   <SelectItem value="multiple">
                     {formatAccountExportModeLabel("multiple", t)}
                   </SelectItem>
                   <SelectItem value="single">
                     {formatAccountExportModeLabel("single", t)}
                   </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <div className="rounded-xl bg-accent/20 px-3 py-2">
@@ -747,7 +768,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
         </DialogContent>
       </Dialog>
 
-      <Card className="glass-card overflow-hidden border-none py-0 shadow-xl backdrop-blur-md">
+      <Card className="glass-card overflow-hidden py-0 shadow-sm">
         <CardContent className="p-0">
           <Table>
             <TableHeader>
@@ -846,6 +867,44 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                       </TableCell>
                       <TableCell>
                         <QuotaOverviewCell items={quotaItems} />
+                        <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+                          <span className="rounded-full border border-border/50 bg-background/40 px-2 py-0.5">
+                            {t("模型池")}:{" "}
+                            {account.modelSlugs.length
+                              ? account.modelSlugs.slice(0, 2).join(", ")
+                              : t("全部 API 模型")}
+                            {account.modelSlugs.length > 2
+                              ? ` +${account.modelSlugs.length - 2}`
+                              : ""}
+                          </span>
+                          {account.quotaCapacityPrimaryWindowTokens ||
+                          account.quotaCapacitySecondaryWindowTokens ? (
+                            <span className="rounded-full border border-border/50 bg-background/40 px-2 py-0.5">
+                              {t("容量覆盖")}:{" "}
+                              {account.quotaCapacityPrimaryWindowTokens
+                                ? `5h ${formatCompactNumber(
+                                    account.quotaCapacityPrimaryWindowTokens,
+                                    "0.00",
+                                    2,
+                                    true,
+                                  )}`
+                                : "5h --"}
+                              {" / "}
+                              {account.quotaCapacitySecondaryWindowTokens
+                                ? `7d ${formatCompactNumber(
+                                    account.quotaCapacitySecondaryWindowTokens,
+                                    "0.00",
+                                    2,
+                                    true,
+                                  )}`
+                                : "7d --"}
+                            </span>
+                          ) : (
+                            <span className="rounded-full border border-border/50 bg-background/40 px-2 py-0.5">
+                              {t("未设置账号容量覆盖")}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {(() => {
@@ -932,24 +991,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-1.5">
-                          <div
-                            className={cn(
-                              "h-1.5 w-1.5 rounded-full",
-                              account.isAvailable ? "bg-green-500" : "bg-red-500",
-                            )}
-                          />
-                          <span
-                            className={cn(
-                              "text-[11px] font-medium",
-                              account.isAvailable
-                                ? "text-green-600 dark:text-green-400"
-                                : "text-red-600 dark:text-red-400",
-                            )}
-                          >
-                            {t(account.availabilityText || "未知")}
-                          </span>
-                        </div>
+                        <AccountStatusCell account={account} />
                       </TableCell>
                       <TableCell className="table-sticky-action-cell">
                         <div className="table-action-cell gap-1">
@@ -983,6 +1025,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                                  <DropdownMenuGroup>
                               <DropdownMenuItem
                                 className="gap-2"
                                 disabled={
@@ -1054,6 +1097,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                               >
                                 <Trash2 className="h-4 w-4" /> {t("删除")}
                               </DropdownMenuItem>
+                              </DropdownMenuGroup>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
@@ -1086,11 +1130,13 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                    <SelectGroup>
                 {["5", "10", "20", "50", "100", "500"].map((value) => (
                   <SelectItem key={value} value={value}>
                     {value}
                   </SelectItem>
                 ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>
@@ -1171,16 +1217,16 @@ export function AccountsPageView(props: AccountsPageViewProps) {
           }
         }}
       >
-        <DialogContent className="glass-card border-none sm:max-w-[560px]">
-          <DialogHeader>
+        <DialogContent className="glass-card max-h-[calc(100vh-2rem)] overflow-hidden p-0 sm:max-w-[560px]">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>{t("编辑账号信息")}</DialogTitle>
             <DialogDescription>
               {accountEditorState
-                ? `${t("修改")} ${accountEditorState.accountName} ${t("的名称、标签、备注与排序。")}`
+                ? `${t("修改")} ${accountEditorState.accountName} ${t("的名称、标签、备注、排序与额度池配置。")}`
                 : t("修改账号的基础资料。")}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-2">
+          <div className="grid max-h-[calc(100vh-13rem)] gap-4 overflow-y-auto px-6 py-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label htmlFor="account-label-input">{t("账号名称")}</Label>
@@ -1239,6 +1285,53 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 <span>{t("仅修改当前账号")}</span>
               </div>
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="account-model-whitelist-input">
+                {t("额度模型白名单")}
+              </Label>
+              <Input
+                id="account-model-whitelist-input"
+                value={modelWhitelistDraft}
+                disabled={Boolean(isUpdatingProfileAccountId)}
+                onChange={(event) => setModelWhitelistDraft(event.target.value)}
+                placeholder="gpt-5.4, gpt-5.4-mini"
+              />
+              <p className="text-[11px] leading-4 text-muted-foreground">
+                {t("仅用于额度池统计归属；留空表示该账号对全部 API 可用模型生效。")}
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="account-quota-primary-input">
+                  {t("5h 容量覆盖（Token）")}
+                </Label>
+                <Input
+                  id="account-quota-primary-input"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={quotaPrimaryDraft}
+                  disabled={Boolean(isUpdatingProfileAccountId)}
+                  onChange={(event) => setQuotaPrimaryDraft(event.target.value)}
+                  placeholder={t("留空使用计划模板")}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="account-quota-secondary-input">
+                  {t("7d 容量覆盖（Token）")}
+                </Label>
+                <Input
+                  id="account-quota-secondary-input"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={quotaSecondaryDraft}
+                  disabled={Boolean(isUpdatingProfileAccountId)}
+                  onChange={(event) => setQuotaSecondaryDraft(event.target.value)}
+                  placeholder={t("留空使用计划模板")}
+                />
+              </div>
+            </div>
             <div className="grid gap-3 rounded-xl bg-muted/20 px-3 py-3 text-[11px] text-muted-foreground sm:grid-cols-2">
               <div className="space-y-1">
                 <div>{t("账号 ID")}</div>
@@ -1256,7 +1349,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
               </div>
             </div>
           </div>
-          <DialogFooter className="gap-2 sm:gap-2">
+          <DialogFooter className="mx-0 mb-0 gap-2 rounded-b-xl border-t bg-muted/40 px-6 py-4 sm:gap-2">
             <DialogClose
               className={buttonVariants({ variant: "outline" })}
               type="button"

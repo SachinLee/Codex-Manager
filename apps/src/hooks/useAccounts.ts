@@ -586,18 +586,27 @@ export function useAccounts() {
       note,
       tags,
       sort,
+      modelSlugs,
+      quotaCapacityPrimaryWindowTokens,
+      quotaCapacitySecondaryWindowTokens,
     }: {
       accountId: string;
       label?: string | null;
       note?: string | null;
       tags?: string[] | string | null;
       sort?: number | null;
+      modelSlugs?: string[] | null;
+      quotaCapacityPrimaryWindowTokens?: number | null;
+      quotaCapacitySecondaryWindowTokens?: number | null;
     }) =>
       accountClient.updateProfile(accountId, {
         label,
         note,
         tags,
         sort,
+        modelSlugs,
+        quotaCapacityPrimaryWindowTokens,
+        quotaCapacitySecondaryWindowTokens,
       }),
     onSuccess: async () => {
       await invalidateAll();
@@ -864,6 +873,9 @@ export function useAccounts() {
         note?: string | null;
         tags?: string[] | string | null;
         sort?: number | null;
+        modelSlugs?: string[] | null;
+        quotaCapacityPrimaryWindowTokens?: number | null;
+        quotaCapacitySecondaryWindowTokens?: number | null;
       }
     ) => {
       if (!ensureServiceReady("更新账号信息")) return;

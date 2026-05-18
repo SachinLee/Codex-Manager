@@ -48,6 +48,9 @@ scripts/release/stage-service-package.ps1
 scripts/release/stage-service-package.sh
 scripts/tests/release_version.test.ps1
 
+# IDE/editor files
+.idea/
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -6,10 +6,13 @@ import {
   AccountListResult,
   AccountUsage,
   AggregateApi,
-  AggregateApiBalanceResult,
+  AggregateApiBalanceRefreshResult,
+  AggregateApiBalanceSnapshot,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
+  AggregateApiSupplierModel,
+  AggregateApiSupplierModelImportResult,
   AggregateApiTestResult,
   ApiKey,
   ApiKeyCreateResult,
@@ -24,6 +27,9 @@ import {
   LoginStartResult,
   ManagedModelCatalog,
   ManagedModelInfo,
+  ManagedModelRouting,
+  ManagedModelSourceMapping,
+  ManagedModelSourceModel,
   ModelCatalog,
   ModelInfo,
   ModelReasoningLevel,
@@ -55,6 +61,7 @@ import {
   isLowQuotaUsage,
   toNullableNumber,
 } from "@/lib/utils/usage";
+import { readBillingModeLock } from "./billing-mode-lock";
 
 const DEFAULT_BACKGROUND_TASKS: BackgroundTaskSettings = {
   usagePollingEnabled: true,
@@ -469,7 +476,9 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
   const groupName = asString(source.groupName ?? source.group_name);
   const status = asString(source.status);
   const statusReason = asString(source.statusReason ?? source.status_reason);
-  const availability = calcAvailability(usage, { status, statusReason });
+  const rawHasToken = source.hasToken ?? source.has_token;
+  const hasToken = typeof rawHasToken === "boolean" ? Boolean(rawHasToken) : true;
+  const availability = calcAvailability(usage, { status, statusReason, hasToken });
   const usageBuckets = getUsageDisplayBuckets(usage);
 
   return {
@@ -483,6 +492,7 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
     sort: asInteger(source.sort ?? source.priority, 0, 0),
     status,
     statusReason,
+    hasToken,
     planType:
       asString(source.planType ?? source.plan_type ?? source.subscriptionPlan ?? source.subscription_plan) ||
       null,
@@ -501,6 +511,15 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
     ),
     note: asString(source.note) || null,
     tags: asStringArray(source.tags),
+    modelSlugs: asStringArray(source.modelSlugs ?? source.model_slugs),
+    quotaCapacityPrimaryWindowTokens: toNullableNumber(
+      source.quotaCapacityPrimaryWindowTokens ??
+        source.quota_capacity_primary_window_tokens
+    ),
+    quotaCapacitySecondaryWindowTokens: toNullableNumber(
+      source.quotaCapacitySecondaryWindowTokens ??
+        source.quota_capacity_secondary_window_tokens
+    ),
     isAvailable: availability.level === "ok",
     isLowQuota: isLowQuotaUsage(usage),
     lastRefreshAt: usage?.capturedAt ?? null,
@@ -737,6 +756,62 @@ export function normalizeManagedModelCatalog(payload: unknown): ManagedModelCata
   };
 }
 
+function normalizeManagedModelSourceModel(payload: unknown): ManagedModelSourceModel | null {
+  const source = asObject(payload);
+  const sourceKind = asString(source.sourceKind ?? source.source_kind);
+  const sourceId = asString(source.sourceId ?? source.source_id);
+  const upstreamModel = asString(source.upstreamModel ?? source.upstream_model);
+  if (!sourceKind || !sourceId || !upstreamModel) return null;
+  return {
+    sourceKind,
+    sourceId,
+    upstreamModel,
+    displayName: asString(source.displayName ?? source.display_name) || null,
+    status: asString(source.status) || "available",
+    discoveryKind: asString(source.discoveryKind ?? source.discovery_kind) || "synced",
+    lastSyncedAt: toNullableNumber(source.lastSyncedAt ?? source.last_synced_at),
+    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
+    updatedAt: asInteger(source.updatedAt ?? source.updated_at, 0, 0),
+  };
+}
+
+function normalizeManagedModelSourceMapping(payload: unknown): ManagedModelSourceMapping | null {
+  const source = asObject(payload);
+  const id = asString(source.id);
+  const platformModelSlug = asString(
+    source.platformModelSlug ?? source.platform_model_slug,
+  );
+  const sourceKind = asString(source.sourceKind ?? source.source_kind);
+  const sourceId = asString(source.sourceId ?? source.source_id);
+  const upstreamModel = asString(source.upstreamModel ?? source.upstream_model);
+  if (!id || !platformModelSlug || !sourceKind || !sourceId || !upstreamModel) return null;
+  return {
+    id,
+    platformModelSlug,
+    sourceKind,
+    sourceId,
+    upstreamModel,
+    enabled: asBoolean(source.enabled, true),
+    priority: asInteger(source.priority, 0, -100000),
+    weight: asInteger(source.weight, 1, 1),
+    billingModelSlug: asString(source.billingModelSlug ?? source.billing_model_slug) || null,
+    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
+    updatedAt: asInteger(source.updatedAt ?? source.updated_at, 0, 0),
+  };
+}
+
+export function normalizeManagedModelRouting(payload: unknown): ManagedModelRouting {
+  const source = asObject(payload);
+  return {
+    sourceModels: asArray(source.sourceModels ?? source.source_models)
+      .map((item) => normalizeManagedModelSourceModel(item))
+      .filter((item): item is ManagedModelSourceModel => Boolean(item)),
+    mappings: asArray(source.mappings)
+      .map((item) => normalizeManagedModelSourceMapping(item))
+      .filter((item): item is ManagedModelSourceMapping => Boolean(item)),
+  };
+}
+
 /**
  * 函数 `normalizeApiKey`
  *
@@ -873,6 +948,28 @@ export function normalizeAggregateApi(item: unknown): AggregateApi | null {
     lastTestAt: toNullableNumber(source.lastTestAt ?? source.last_test_at),
     lastTestStatus: asString(source.lastTestStatus ?? source.last_test_status) || null,
     lastTestError: asString(source.lastTestError ?? source.last_test_error) || null,
+    balanceQueryEnabled: asBoolean(
+      source.balanceQueryEnabled ?? source.balance_query_enabled,
+      false
+    ),
+    balanceQueryTemplate:
+      asString(source.balanceQueryTemplate ?? source.balance_query_template) || null,
+    balanceQueryBaseUrl:
+      asString(source.balanceQueryBaseUrl ?? source.balance_query_base_url) || null,
+    balanceQueryUserId:
+      asString(source.balanceQueryUserId ?? source.balance_query_user_id) || null,
+    balanceQueryConfigJson:
+      asString(
+        source.balanceQueryConfigJson ?? source.balance_query_config_json
+      ) || null,
+    lastBalanceAt: toNullableNumber(source.lastBalanceAt ?? source.last_balance_at),
+    lastBalanceStatus:
+      asString(source.lastBalanceStatus ?? source.last_balance_status) || null,
+    lastBalanceError:
+      asString(source.lastBalanceError ?? source.last_balance_error) || null,
+    lastBalanceJson:
+      asString(source.lastBalanceJson ?? source.last_balance_json) || null,
+    modelSlugs: asStringArray(source.modelSlugs ?? source.model_slugs),
   };
 }
 
@@ -954,20 +1051,82 @@ export function normalizeAggregateApiTestResult(payload: unknown): AggregateApiT
   };
 }
 
-export function normalizeAggregateApiBalanceResult(payload: unknown): AggregateApiBalanceResult {
+export function normalizeAggregateApiBalanceSnapshot(
+  payload: unknown
+): AggregateApiBalanceSnapshot | null {
+  const source = asObject(payload);
+  const hasBalanceFields =
+    "remaining" in source ||
+    "used" in source ||
+    "total" in source ||
+    "isValid" in source ||
+    "is_valid" in source;
+  if (!hasBalanceFields) return null;
+  return {
+    isValid: asBoolean(source.isValid ?? source.is_valid, true),
+    invalidMessage:
+      asString(source.invalidMessage ?? source.invalid_message) || null,
+    remaining: toNullableNumber(source.remaining),
+    unit: asString(source.unit) || null,
+    planName: asString(source.planName ?? source.plan_name) || null,
+    total: toNullableNumber(source.total),
+    used: toNullableNumber(source.used),
+    extra: toNullableObject(source.extra),
+  };
+}
+
+export function normalizeAggregateApiBalanceRefreshResult(
+  payload: unknown
+): AggregateApiBalanceRefreshResult {
   const source = asObject(payload);
   return {
     id: asString(source.id),
     ok: asBoolean(source.ok),
-    provider: asString(source.provider),
-    remaining: toNullableNumber(source.remaining),
-    used: toNullableNumber(source.used),
-    total: toNullableNumber(source.total),
-    unit: asString(source.unit) || null,
-    planName: asString(source.planName ?? source.plan_name) || null,
+    balance: normalizeAggregateApiBalanceSnapshot(source.balance),
     message: asString(source.message) || null,
     queriedAt: asInteger(source.queriedAt ?? source.queried_at, 0, 0),
     latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
+  };
+}
+
+export function normalizeAggregateApiSupplierModel(
+  payload: unknown
+): AggregateApiSupplierModel | null {
+  const source = asObject(payload);
+  const supplierKey = asString(source.supplierKey ?? source.supplier_key);
+  const providerType = asString(source.providerType ?? source.provider_type);
+  const upstreamModel = asString(source.upstreamModel ?? source.upstream_model);
+  if (!supplierKey || !providerType || !upstreamModel) return null;
+  return {
+    supplierKey,
+    providerType,
+    upstreamModel,
+    displayName: asString(source.displayName ?? source.display_name) || null,
+    status: asString(source.status) || "available",
+    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
+    updatedAt: asInteger(source.updatedAt ?? source.updated_at, 0, 0),
+  };
+}
+
+export function normalizeAggregateApiSupplierModelList(
+  payload: unknown
+): AggregateApiSupplierModel[] {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload);
+  return items
+    .map((item) => normalizeAggregateApiSupplierModel(item))
+    .filter((item): item is AggregateApiSupplierModel => Boolean(item));
+}
+
+export function normalizeAggregateApiSupplierModelImportResult(
+  payload: unknown
+): AggregateApiSupplierModelImportResult {
+  const source = asObject(payload);
+  return {
+    imported: asInteger(source.imported, 0, 0),
+    items: asArray(source.items)
+      .map((item) => normalizeManagedModelSourceModel(item))
+      .filter((item): item is ManagedModelSourceModel => Boolean(item)),
   };
 }
 
@@ -1385,6 +1544,11 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     requestType: asString(source.requestType ?? source.request_type) || "http",
     path: requestPath,
     model: asString(source.model),
+    upstreamModel: asString(source.upstreamModel ?? source.upstream_model),
+    actualSourceKind: asString(
+      source.actualSourceKind ?? source.actual_source_kind
+    ),
+    actualSourceId: asString(source.actualSourceId ?? source.actual_source_id),
     reasoningEffort: asString(source.reasoningEffort ?? source.reasoning_effort),
     serviceTier: asString(source.serviceTier ?? source.service_tier),
     effectiveServiceTier: asString(
@@ -1679,6 +1843,14 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       source.webAccessPasswordConfigured,
       false
     ),
+    webAuthMode: asString(source.webAuthMode) || "none",
+    webAuthModeOptions: asArray(source.webAuthModeOptions)
+      .map((item) => asString(item))
+      .filter(Boolean),
+    distributionEnabled: asBoolean(source.distributionEnabled, false),
+    billingModeLock: readBillingModeLock(source.billingModeLock),
+    appUsersConfigured: asBoolean(source.appUsersConfigured, false),
+    appUserCount: asInteger(source.appUserCount, 0, 0),
     locale: asString(source.locale) || "zh-CN",
     localeOptions: asArray(source.localeOptions).map((item) => asString(item)).filter(Boolean),
     serviceAddr: asString(source.serviceAddr) || "localhost:48760",
