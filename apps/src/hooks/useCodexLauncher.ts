@@ -61,7 +61,7 @@ export function useCodexSessionDelete() {
   return useMutation({
     mutationFn: (sessionId: string) => codexLauncherClient.deleteSession(sessionId),
     onSuccess: (result) => {
-      if (result.status === "Deleted") {
+      if (result.status === "deleted") {
         toast.success("会话已删除", {
           action: result.undoToken
             ? {
@@ -71,6 +71,10 @@ export function useCodexSessionDelete() {
             : undefined,
         });
         qc.invalidateQueries({ queryKey: KEYS.sessions });
+      } else if (result.status === "notFound") {
+        toast.error("会话不存在或已被删除");
+      } else if (result.status === "backupFailed") {
+        toast.error("备份失败，未执行删除");
       } else {
         toast.error(`删除失败: ${result.status}`);
       }

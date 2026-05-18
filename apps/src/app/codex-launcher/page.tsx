@@ -1,21 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Rocket,
   Square,
   RefreshCw,
   Trash2,
-  Undo2,
   FolderOpen,
   Zap,
   Circle,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -31,7 +47,19 @@ import {
   useCodexSessions,
   useCodexSessionDelete,
 } from "@/hooks/useCodexLauncher";
-import { codexLauncherClient } from "@/lib/api/codex-launcher";
+import { codexLauncherClient, type CodexSession } from "@/lib/api/codex-launcher";
+
+const ARCHIVE_ALL = "__all__";
+const PROJECT_ALL = "__all__";
+const PROJECT_NONE = "__none__";
+
+function shortCwd(p: string): string {
+  // 仅显示最后两段路径，避免占满列宽（hover title 显示全路径）
+  const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const parts = norm.split("/").filter(Boolean);
+  if (parts.length <= 2) return norm;
+  return ".../" + parts.slice(-2).join("/");
+}
 
 function StatusDot({ active }: { active: boolean }) {
   return (
@@ -144,6 +172,51 @@ function SessionTable() {
   const { data: sessions, isLoading, refetch } = useCodexSessions();
   const deleteMutation = useCodexSessionDelete();
 
+  const [keyword, setKeyword] = useState("");
+  const [projectFilter, setProjectFilter] = useState<string>(PROJECT_ALL);
+  const [archiveFilter, setArchiveFilter] = useState<string>(ARCHIVE_ALL);
+  const [pendingDelete, setPendingDelete] = useState<CodexSession | null>(null);
+
+  // 项目下拉：从会话 cwd 去重；保留全路径作为 value，用 shortCwd 展示
+  const projectOptions = useMemo(() => {
+    if (!sessions) return [] as string[];
+    const set = new Set<string>();
+    sessions.forEach((s) => {
+      if (s.cwd) set.add(s.cwd);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [sessions]);
+
+  const filtered = useMemo(() => {
+    if (!sessions) return [] as CodexSession[];
+    const kw = keyword.trim().toLowerCase();
+    return sessions.filter((s) => {
+      if (kw) {
+        const hay = `${s.title || ""} ${s.cwd || ""}`.toLowerCase();
+        if (!hay.includes(kw)) return false;
+      }
+      if (projectFilter !== PROJECT_ALL) {
+        if (projectFilter === PROJECT_NONE) {
+          if (s.cwd) return false;
+        } else if (s.cwd !== projectFilter) {
+          return false;
+        }
+      }
+      if (archiveFilter !== ARCHIVE_ALL) {
+        const wantArchived = archiveFilter === "archived";
+        if (!!s.archived !== wantArchived) return false;
+      }
+      return true;
+    });
+  }, [sessions, keyword, projectFilter, archiveFilter]);
+
+  const handleConfirmDelete = () => {
+    if (!pendingDelete) return;
+    deleteMutation.mutate(pendingDelete.sessionId, {
+      onSettled: () => setPendingDelete(null),
+    });
+  };
+
   if (isLoading) {
     return (
       <Card className="glass-card">
@@ -160,13 +233,13 @@ function SessionTable() {
   return (
     <Card className="glass-card">
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <CardTitle className="text-base flex items-center gap-2">
             <Circle className="h-4 w-4 text-primary" />
             会话管理
             {sessions && (
               <Badge variant="secondary" className="ml-1">
-                {sessions.length}
+                {filtered.length}/{sessions.length}
               </Badge>
             )}
           </CardTitle>
@@ -174,26 +247,105 @@ function SessionTable() {
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
         </div>
+
+        {sessions && sessions.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap mt-3">
+            <div className="relative flex-1 min-w-[180px] max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="搜索标题或路径"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                className="h-8 pl-8 text-sm"
+              />
+            </div>
+            <Select
+              value={projectFilter}
+              onValueChange={(v) => setProjectFilter(v ?? PROJECT_ALL)}
+            >
+              <SelectTrigger className="h-8 w-[220px] text-sm">
+                <SelectValue placeholder="所属项目" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={PROJECT_ALL}>全部项目</SelectItem>
+                <SelectItem value={PROJECT_NONE}>无项目</SelectItem>
+                {projectOptions.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    <span className="font-mono text-xs">{shortCwd(p)}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={archiveFilter}
+              onValueChange={(v) => setArchiveFilter(v ?? ARCHIVE_ALL)}
+            >
+              <SelectTrigger className="h-8 w-[120px] text-sm">
+                <SelectValue placeholder="归档状态" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ARCHIVE_ALL}>全部</SelectItem>
+                <SelectItem value="active">未归档</SelectItem>
+                <SelectItem value="archived">已归档</SelectItem>
+              </SelectContent>
+            </Select>
+            {(keyword || projectFilter !== PROJECT_ALL || archiveFilter !== ARCHIVE_ALL) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setKeyword("");
+                  setProjectFilter(PROJECT_ALL);
+                  setArchiveFilter(ARCHIVE_ALL);
+                }}
+              >
+                重置
+              </Button>
+            )}
+          </div>
+        )}
       </CardHeader>
       <CardContent className="p-0">
         {!sessions || sessions.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">
             暂无会话数据（需先启动 Codex）
           </p>
+        ) : filtered.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-8">
+            没有匹配当前筛选条件的会话
+          </p>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>标题</TableHead>
-                <TableHead className="w-40">更新时间</TableHead>
+                <TableHead className="w-56">所属项目</TableHead>
+                <TableHead className="w-20 text-center">归档</TableHead>
+                <TableHead className="w-32">更新时间</TableHead>
                 <TableHead className="w-24 text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sessions.map((s) => (
+              {filtered.map((s) => (
                 <TableRow key={s.sessionId}>
                   <TableCell className="font-medium max-w-xs truncate">
                     {s.title || <span className="text-muted-foreground italic">无标题</span>}
+                  </TableCell>
+                  <TableCell
+                    className="text-xs text-muted-foreground font-mono truncate max-w-[14rem]"
+                    title={s.cwd || ""}
+                  >
+                    {s.cwd ? shortCwd(s.cwd) : <span className="italic">—</span>}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {s.archived ? (
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                        已归档
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     {s.updatedAt
@@ -206,7 +358,7 @@ function SessionTable() {
                       variant="ghost"
                       className="h-7 w-7 p-0 text-destructive hover:text-destructive"
                       disabled={deleteMutation.isPending}
-                      onClick={() => deleteMutation.mutate(s.sessionId)}
+                      onClick={() => setPendingDelete(s)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -217,6 +369,62 @@ function SessionTable() {
           </Table>
         )}
       </CardContent>
+
+      <Dialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认删除会话</DialogTitle>
+            <DialogDescription>
+              即将删除以下会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。
+            </DialogDescription>
+          </DialogHeader>
+          {pendingDelete && (
+            <div className="space-y-2 text-sm">
+              <div>
+                <span className="text-muted-foreground">标题：</span>
+                <span className="font-medium">
+                  {pendingDelete.title || <span className="italic">无标题</span>}
+                </span>
+              </div>
+              {pendingDelete.cwd && (
+                <div className="break-all">
+                  <span className="text-muted-foreground">所属项目：</span>
+                  <span className="font-mono text-xs">{pendingDelete.cwd}</span>
+                </div>
+              )}
+              {pendingDelete.archived && (
+                <div>
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                    已归档
+                  </Badge>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleteMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDelete}
+              disabled={deleteMutation.isPending}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              {deleteMutation.isPending ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

@@ -15,6 +15,12 @@ pub struct SessionRef {
     pub title: Option<String>,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
+    /// 会话所属工作目录（threads 表 `cwd` 列）；generic 模式下为 None
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// 是否归档（threads 表 `archived` 列）；generic 模式下为 None
+    #[serde(default)]
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

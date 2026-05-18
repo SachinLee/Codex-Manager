@@ -39,7 +39,7 @@
   const rowMenuTriggerClass = "codex-row-menu-trigger";
   const rowMenuPopoverClass = "codex-row-menu-popover";
   const rowMenuItemClass = "codex-row-menu-item";
-  const codexArchiveRowActionsVersion = "1";
+  const codexArchiveRowActionsVersion = "2";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
   const codexPlusVersion = "1.0.7";
@@ -1281,7 +1281,12 @@
     if (document.querySelector('[data-codex-archive-page-row="true"], [data-codex-archive-delete-all]')) return true;
     const archiveNav = document.querySelector(selectors.archiveNav);
     if (archiveNav?.className?.includes?.("bg-token-list-hover-background")) return true;
-    return !!Array.from(document.querySelectorAll("h1, h2, h3")).find((element) => (element.textContent || "").trim() === "已归档对话");
+    // 放宽：兼容标题不在 h1/h2/h3 的情况（settings 抽屉里"已归档对话"可能是 div/span）
+    const titleHit = Array.from(document.querySelectorAll("h1, h2, h3, h4, div, span, p")).find((element) => {
+      const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+      return text === "已归档对话" || text === "Archived conversations";
+    });
+    return !!titleHit;
   }
 
   function archiveRowFromUnarchiveButton(button) {
@@ -1293,12 +1298,29 @@
 
   function archivedPageRows() {
     if (!archivePageHintVisible()) return [];
-    const rows = Array.from(document.querySelectorAll("button")).filter((button) => (button.textContent || "").trim() === "取消归档").map(archiveRowFromUnarchiveButton).filter(Boolean);
-    rows.forEach((row) => {
+    // 放宽匹配：兼容中英文 + 按钮内含图标/嵌套元素（导致 textContent 含额外字符）
+    const rows = Array.from(document.querySelectorAll("button")).filter((button) => {
+      if (button.getAttribute("aria-label") === "取消归档对话") return true;
+      const text = (button.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text) return false;
+      return text === "取消归档"
+        || text === "Unarchive"
+        || /^取消归档(\b|\s|$)/.test(text)
+        || /^unarchive\b/i.test(text);
+    }).map(archiveRowFromUnarchiveButton).filter(Boolean);
+    // 去重（多个按钮可能指向同一个 row 容器）
+    const seen = new Set();
+    const unique = [];
+    for (const row of rows) {
+      if (seen.has(row)) continue;
+      seen.add(row);
+      unique.push(row);
+    }
+    unique.forEach((row) => {
       row.dataset.codexArchivePageRow = "true";
       row.setAttribute("data-codex-archive-page-row", "true");
     });
-    return rows;
+    return unique;
   }
 
   function archivedSessionRows() {
@@ -2696,7 +2718,14 @@
     row.querySelectorAll("[data-codex-archive-row-action]").forEach((button) => button.remove());
     row.dataset.codexArchiveDeleteRow = "false";
     if (!settings.sessionDelete && !settings.markdownExport) return;
-    const unarchiveButton = Array.from(row.querySelectorAll("button")).find((button) => (button.textContent || "").trim() === "取消归档");
+    const unarchiveButton = Array.from(row.querySelectorAll("button")).find((button) => {
+      if (button.getAttribute("aria-label") === "取消归档对话") return true;
+      const text = (button.textContent || "").replace(/\s+/g, " ").trim();
+      return text === "取消归档"
+        || text === "Unarchive"
+        || /^取消归档(\b|\s|$)/.test(text)
+        || /^unarchive\b/i.test(text);
+    });
     if (!unarchiveButton) return;
     row.dataset.codexArchiveDeleteRow = "true";
     row.dataset.codexArchiveRowActionsVersion = codexArchiveRowActionsVersion;

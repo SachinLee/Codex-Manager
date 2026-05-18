@@ -18,11 +18,16 @@ export interface CodexSession {
   title: string | null;
   createdAt: number | null;
   updatedAt: number | null;
+  cwd: string | null;
+  archived: boolean | null;
 }
+
+/** 后端 serde camelCase 序列化：deleted / notFound / backupFailed */
+export type DeleteStatus = "deleted" | "notFound" | "backupFailed";
 
 export interface DeleteResult {
   sessionId: string;
-  status: "Deleted" | "NotFound" | "BackupFailed";
+  status: DeleteStatus;
   undoToken: string | null;
 }
 

@@ -90,7 +90,7 @@ pub fn list_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String> {
 fn list_codex_threads(conn: &Connection) -> Result<Vec<SessionRef>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, created_at, updated_at FROM threads ORDER BY updated_at DESC LIMIT 500",
+            "SELECT id, title, created_at, updated_at, cwd, archived FROM threads ORDER BY updated_at DESC LIMIT 500",
         )
         .map_err(|e| format!("查询 threads 失败: {e}"))?;
 
@@ -101,6 +101,8 @@ fn list_codex_threads(conn: &Connection) -> Result<Vec<SessionRef>, String> {
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 updated_at: row.get(3)?,
+                cwd: row.get(4).ok(),
+                archived: row.get::<_, Option<i64>>(5).ok().flatten().map(|n| n != 0),
             })
         })
         .map_err(|e| format!("遍历 threads 结果失败: {e}"))?
@@ -122,6 +124,8 @@ fn list_generic_sessions(conn: &Connection) -> Result<Vec<SessionRef>, String> {
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 updated_at: row.get(3)?,
+                cwd: None,
+                archived: None,
             })
         })
         .map_err(|e| format!("遍历 sessions 结果失败: {e}"))?
@@ -143,7 +147,7 @@ pub fn list_archived_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String>
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, created_at, updated_at FROM threads WHERE archived = 1 ORDER BY updated_at DESC",
+            "SELECT id, title, created_at, updated_at, cwd FROM threads WHERE archived = 1 ORDER BY updated_at DESC",
         )
         .map_err(|e| format!("查询归档 threads 失败: {e}"))?;
 
@@ -154,6 +158,8 @@ pub fn list_archived_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String>
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 updated_at: row.get(3)?,
+                cwd: row.get(4).ok(),
+                archived: Some(true),
             })
         })
         .map_err(|e| format!("遍历归档结果失败: {e}"))?
