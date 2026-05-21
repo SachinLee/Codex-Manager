@@ -1606,6 +1606,7 @@ pub struct DashboardAdminUsageSummaryResult {
     pub range_end_ts: i64,
     pub today_start_ts: i64,
     pub today_end_ts: i64,
+    pub total_usage: DashboardTokenUsageResult,
     pub today_usage: DashboardTokenUsageResult,
     #[serde(default)]
     pub daily_usage: Vec<DashboardDailyUsagePoint>,

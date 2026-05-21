@@ -365,6 +365,7 @@ fn dashboard_admin_usage_summary_serialization_uses_camel_case() {
         range_end_ts: 1_700_086_400,
         today_start_ts: 1_700_000_000,
         today_end_ts: 1_700_086_400,
+        total_usage: usage.clone(),
         today_usage: usage.clone(),
         daily_usage: vec![DashboardDailyUsagePoint {
             day_start_ts: 1_700_000_000,
@@ -408,6 +409,7 @@ fn dashboard_admin_usage_summary_serialization_uses_camel_case() {
         "rangeEndTs",
         "todayStartTs",
         "todayEndTs",
+        "totalUsage",
         "todayUsage",
         "dailyUsage",
         "openaiAccounts",

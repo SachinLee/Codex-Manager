@@ -45,6 +45,7 @@ export interface DashboardAdminUsageSummary {
   rangeEndTs: number;
   todayStartTs: number;
   todayEndTs: number;
+  totalUsage: DashboardTokenUsage;
   todayUsage: DashboardTokenUsage;
   dailyUsage: DashboardDailyUsagePoint[];
   users: DashboardUserUsageSummary[];

@@ -769,6 +769,8 @@ fn admin_usage_summary_requires_admin_and_returns_range_rollups() {
     );
     assert_eq!(admin_resp.result["rangeStartTs"], day_start);
     assert_eq!(admin_resp.result["rangeEndTs"], day_end);
+    assert_eq!(admin_resp.result["totalUsage"]["totalTokens"], 30);
+    assert_eq!(admin_resp.result["totalUsage"]["estimatedCostUsd"], 0.03);
     assert_eq!(admin_resp.result["dailyUsage"].as_array().unwrap().len(), 1);
     assert_eq!(
         admin_resp.result["dailyUsage"][0]["usage"]["totalTokens"],

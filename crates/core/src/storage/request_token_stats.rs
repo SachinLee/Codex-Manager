@@ -3,10 +3,9 @@ use serde_json::Value as JsonValue;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::{
-    now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary,
-    ApiKeyModelTokenUsageSummary, ApiKeyTokenUsageSummary, DailyTokenUsageRollup,
-    RequestLogTodaySummary, RequestTokenStat, SourceTokenUsageRollup, Storage, TokenUsageRollup,
-    TokenUsageSummary, UserTokenUsageRollup,
+    now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary, ApiKeyModelTokenUsageSummary,
+    ApiKeyTokenUsageSummary, DailyTokenUsageRollup, RequestLogTodaySummary, RequestTokenStat,
+    SourceTokenUsageRollup, Storage, TokenUsageRollup, TokenUsageSummary, UserTokenUsageRollup,
 };
 
 const DEFAULT_REQUEST_TOKEN_STATS_RETAIN_DAYS: i64 = 14;
@@ -46,6 +45,21 @@ fn token_total_sql_expr() -> &'static str {
                 ELSE 0
             END
      END"
+}
+
+fn token_total_sql_expr_for(prefix: &str) -> String {
+    format!(
+        "CASE
+        WHEN {prefix}total_tokens IS NOT NULL THEN
+            CASE WHEN {prefix}total_tokens > 0 THEN {prefix}total_tokens ELSE 0 END
+        ELSE
+            CASE
+                WHEN IFNULL({prefix}input_tokens, 0) - IFNULL({prefix}cached_input_tokens, 0) + IFNULL({prefix}output_tokens, 0) > 0
+                    THEN IFNULL({prefix}input_tokens, 0) - IFNULL({prefix}cached_input_tokens, 0) + IFNULL({prefix}output_tokens, 0)
+                ELSE 0
+            END
+     END"
+    )
 }
 
 const TOKEN_ROLLUP_COLUMNS: &str = "
@@ -215,26 +229,30 @@ impl Storage {
                 "INSERT INTO request_token_stat_rollups (
                     key_id, account_id, model,
                     input_tokens, cached_input_tokens, output_tokens, total_tokens,
-                    reasoning_output_tokens, estimated_cost_usd, source_rows, updated_at
+                    reasoning_output_tokens, estimated_cost_usd, source_rows, success_count,
+                    error_count, updated_at
                  )
                  SELECT
-                    COALESCE(NULLIF(TRIM(key_id), ''), ''),
-                    COALESCE(NULLIF(TRIM(account_id), ''), ''),
-                    COALESCE(NULLIF(TRIM(model), ''), ''),
-                    IFNULL(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE 0 END), 0),
-                    IFNULL(SUM(CASE WHEN cached_input_tokens > 0 THEN cached_input_tokens ELSE 0 END), 0),
-                    IFNULL(SUM(CASE WHEN output_tokens > 0 THEN output_tokens ELSE 0 END), 0),
+                    COALESCE(NULLIF(TRIM(t.key_id), ''), ''),
+                    COALESCE(NULLIF(TRIM(t.account_id), ''), ''),
+                    COALESCE(NULLIF(TRIM(t.model), ''), ''),
+                    IFNULL(SUM(CASE WHEN t.input_tokens > 0 THEN t.input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.cached_input_tokens > 0 THEN t.cached_input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.output_tokens > 0 THEN t.output_tokens ELSE 0 END), 0),
                     IFNULL(SUM({token_total}), 0),
-                    IFNULL(SUM(CASE WHEN reasoning_output_tokens > 0 THEN reasoning_output_tokens ELSE 0 END), 0),
-                    IFNULL(SUM(CASE WHEN estimated_cost_usd > 0 THEN estimated_cost_usd ELSE 0 END), 0.0),
+                    IFNULL(SUM(CASE WHEN t.reasoning_output_tokens > 0 THEN t.reasoning_output_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.estimated_cost_usd > 0 THEN t.estimated_cost_usd ELSE 0 END), 0.0),
                     COUNT(1),
+                    COUNT(CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN 1 END),
+                    COUNT(CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN 1 END),
                     ?2
-                 FROM request_token_stats
-                 WHERE created_at < ?1
+                 FROM request_token_stats t
+                 LEFT JOIN request_logs r ON r.id = t.request_log_id
+                 WHERE t.created_at < ?1
                  GROUP BY
-                    COALESCE(NULLIF(TRIM(key_id), ''), ''),
-                    COALESCE(NULLIF(TRIM(account_id), ''), ''),
-                    COALESCE(NULLIF(TRIM(model), ''), '')
+                    COALESCE(NULLIF(TRIM(t.key_id), ''), ''),
+                    COALESCE(NULLIF(TRIM(t.account_id), ''), ''),
+                    COALESCE(NULLIF(TRIM(t.model), ''), '')
                  ON CONFLICT(key_id, account_id, model) DO UPDATE SET
                     input_tokens = request_token_stat_rollups.input_tokens + excluded.input_tokens,
                     cached_input_tokens = request_token_stat_rollups.cached_input_tokens + excluded.cached_input_tokens,
@@ -243,8 +261,10 @@ impl Storage {
                     reasoning_output_tokens = request_token_stat_rollups.reasoning_output_tokens + excluded.reasoning_output_tokens,
                     estimated_cost_usd = request_token_stat_rollups.estimated_cost_usd + excluded.estimated_cost_usd,
                     source_rows = request_token_stat_rollups.source_rows + excluded.source_rows,
+                    success_count = request_token_stat_rollups.success_count + excluded.success_count,
+                    error_count = request_token_stat_rollups.error_count + excluded.error_count,
                     updated_at = excluded.updated_at",
-                token_total = token_total_sql_expr(),
+                token_total = token_total_sql_expr_for("t."),
             ),
             (cutoff_ts, now),
         )?;
@@ -288,6 +308,57 @@ impl Storage {
             reasoning_output_tokens: 0,
             estimated_cost_usd: 0.0,
         })
+    }
+
+    pub fn summarize_request_token_stats_total(&self) -> Result<TokenUsageRollup> {
+        let sql = format!(
+            "WITH all_stats AS (
+                SELECT
+                    t.input_tokens,
+                    t.cached_input_tokens,
+                    t.output_tokens,
+                    t.reasoning_output_tokens,
+                    t.total_tokens,
+                    t.estimated_cost_usd,
+                    1 AS request_count,
+                    CASE
+                        WHEN r.status_code >= 200 AND r.status_code <= 299 THEN 1
+                        ELSE 0
+                    END AS success_count,
+                    CASE
+                        WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN 1
+                        ELSE 0
+                    END AS error_count
+                FROM request_token_stats t
+                LEFT JOIN request_logs r ON r.id = t.request_log_id
+                UNION ALL
+                SELECT
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    total_tokens,
+                    estimated_cost_usd,
+                    source_rows AS request_count,
+                    success_count,
+                    error_count
+                FROM request_token_stat_rollups
+             )
+             SELECT
+                IFNULL(SUM(IFNULL(input_tokens, 0)), 0) AS input_tokens,
+                IFNULL(SUM(IFNULL(cached_input_tokens, 0)), 0) AS cached_input_tokens,
+                IFNULL(SUM(IFNULL(output_tokens, 0)), 0) AS output_tokens,
+                IFNULL(SUM(IFNULL(reasoning_output_tokens, 0)), 0) AS reasoning_output_tokens,
+                IFNULL(SUM({token_total}), 0) AS total_tokens,
+                IFNULL(SUM(IFNULL(estimated_cost_usd, 0.0)), 0.0) AS estimated_cost_usd,
+                IFNULL(SUM(IFNULL(request_count, 0)), 0) AS request_count,
+                IFNULL(SUM(IFNULL(success_count, 0)), 0) AS success_count,
+                IFNULL(SUM(IFNULL(error_count, 0)), 0) AS error_count
+             FROM all_stats",
+            token_total = token_total_sql_expr(),
+        );
+        self.conn
+            .query_row(&sql, [], |row| token_usage_rollup_from_row(row, 0))
     }
 
     pub fn summarize_request_token_stats_by_key(&self) -> Result<Vec<ApiKeyTokenUsageSummary>> {
@@ -860,6 +931,8 @@ impl Storage {
                 reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
                 estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
                 source_rows INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (key_id, account_id, model)
             )",
@@ -874,6 +947,16 @@ impl Storage {
             "CREATE INDEX IF NOT EXISTS idx_request_token_stat_rollups_model
              ON request_token_stat_rollups(model)",
             [],
+        )?;
+        self.ensure_column(
+            "request_token_stat_rollups",
+            "success_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column(
+            "request_token_stat_rollups",
+            "error_count",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
         self.ensure_column("request_token_stats", "total_tokens", "INTEGER")?;
         self.ensure_column("request_token_stats", "aggregate_api_id", "TEXT")?;

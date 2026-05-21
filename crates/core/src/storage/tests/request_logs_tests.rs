@@ -436,6 +436,68 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
 }
 
 #[test]
+fn request_token_stats_total_includes_current_rows_and_rollups() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    for (index, status_code, total_tokens, cost) in [
+        (0_i64, Some(200_i64), Some(30_i64), Some(0.03_f64)),
+        (1_i64, Some(502_i64), Some(70_i64), Some(0.07_f64)),
+    ] {
+        let created_at = 2_000 + index;
+        let request_log_id = storage
+            .insert_request_log(&RequestLog {
+                trace_id: Some(format!("trc-total-{index}")),
+                key_id: Some("gk-total".to_string()),
+                account_id: Some("acc-total".to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code,
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert request log");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                key_id: Some("gk-total".to_string()),
+                account_id: Some("acc-total".to_string()),
+                model: Some("gpt-5".to_string()),
+                input_tokens: Some(10),
+                cached_input_tokens: Some(2),
+                output_tokens: Some(5),
+                total_tokens,
+                estimated_cost_usd: cost,
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert token stat");
+    }
+
+    let before_rollup = storage
+        .summarize_request_token_stats_total()
+        .expect("summarize current total");
+    assert_eq!(before_rollup.total_tokens, 100);
+    assert_eq!(before_rollup.request_count, 2);
+    assert_eq!(before_rollup.success_count, 1);
+    assert_eq!(before_rollup.error_count, 1);
+    assert_eq!(before_rollup.estimated_cost_usd, 0.10);
+
+    storage
+        .rollup_all_request_token_stats()
+        .expect("rollup token stats");
+
+    let after_rollup = storage
+        .summarize_request_token_stats_total()
+        .expect("summarize rolled total");
+    assert_eq!(after_rollup.total_tokens, 100);
+    assert_eq!(after_rollup.request_count, 2);
+    assert_eq!(after_rollup.success_count, 1);
+    assert_eq!(after_rollup.error_count, 1);
+    assert_eq!(after_rollup.estimated_cost_usd, 0.10);
+}
+
+#[test]
 fn request_logs_support_time_range_filters() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");

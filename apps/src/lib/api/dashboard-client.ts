@@ -117,6 +117,7 @@ function readAdminUsageSummary(value: unknown): DashboardAdminUsageSummary {
     rangeEndTs: asNumber(source.rangeEndTs ?? source.range_end_ts),
     todayStartTs: asNumber(source.todayStartTs ?? source.today_start_ts),
     todayEndTs: asNumber(source.todayEndTs ?? source.today_end_ts),
+    totalUsage: readTokenUsage(source.totalUsage ?? source.total_usage),
     todayUsage: readTokenUsage(source.todayUsage ?? source.today_usage),
     dailyUsage: asArray(source.dailyUsage ?? source.daily_usage).map(
       readDailyUsagePoint,

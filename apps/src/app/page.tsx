@@ -402,8 +402,8 @@ function MetricCard({ title, value, icon: Icon, color, sub, badge }: MetricCardP
 function DashboardInitialSkeleton() {
   return (
     <div className="space-y-6 animate-in fade-in duration-700">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, index) => (
           <Skeleton key={index} className="h-36 w-full rounded-xl" />
         ))}
       </div>
@@ -1006,9 +1006,9 @@ function AdminDashboard() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-700">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         {isLoading ? (
-          Array.from({ length: 4 }).map((_, index) => (
+          Array.from({ length: 5 }).map((_, index) => (
             <Skeleton key={index} className="h-36 w-full rounded-xl" />
           ))
         ) : (
@@ -1020,6 +1020,19 @@ function AdminDashboard() {
               color="text-blue-500"
               sub={t("池中所有配置账号")}
               badge={`${t("最近日志")} ${requestLogs.length} ${t("条")}`}
+            />
+
+            <MetricCard
+              title={t("累计费用")}
+              value={
+                isAdminUsageLoading
+                  ? "--"
+                  : formatUsd(adminUsageSummary?.totalUsage.estimatedCostUsd)
+              }
+              icon={DollarSign}
+              color="text-emerald-500"
+              sub={t("历史累计 API 等价估算")}
+              badge={`${t("今日")} ${formatUsd(adminUsageSummary?.todayUsage.estimatedCostUsd)}`}
             />
 
             <StatProgressCard

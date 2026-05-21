@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Copy,
   Database,
+  DollarSign,
   RefreshCw,
   Shield,
   Trash2,
@@ -237,8 +238,8 @@ function LogsPageSkeleton() {
   return (
     <div className="space-y-5">
       <Skeleton className="h-28 w-full rounded-xl" />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, index) => (
           <Skeleton key={index} className="h-32 w-full rounded-xl" />
         ))}
       </div>
@@ -1553,6 +1554,7 @@ function LogsPageContent() {
     successCount: 0,
     errorCount: 0,
     totalTokens: 0,
+    totalCostUsd: 0,
   };
   const totalPages = Math.max(
     1,
@@ -1876,7 +1878,7 @@ function LogsPageContent() {
             </CardContent>
           </Card>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <SummaryCard
               title={t("当前结果")}
               value={`${summary.filteredCount}`}
@@ -1904,6 +1906,13 @@ function LogsPageContent() {
               description={t("当前筛选结果中的总Token")}
               icon={Database}
               toneClass="bg-amber-500/12 text-amber-500"
+            />
+            <SummaryCard
+              title={t("筛选费用")}
+              value={formatUsdAmount(summary.totalCostUsd)}
+              description={t("当前筛选结果估算费用")}
+              icon={DollarSign}
+              toneClass="bg-emerald-500/12 text-emerald-500"
             />
           </div>
 

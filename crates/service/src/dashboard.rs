@@ -51,6 +51,9 @@ pub(crate) fn read_admin_usage_summary(
         .next()
         .map(|item| item.usage)
         .unwrap_or_default();
+    let total_usage = storage
+        .summarize_request_token_stats_total()
+        .map_err(|err| format!("summarize total usage failed: {err}"))?;
     let daily_usage = fill_daily_usage(
         range_start,
         range_end,
@@ -110,6 +113,7 @@ pub(crate) fn read_admin_usage_summary(
         range_end_ts: range_end,
         today_start_ts: today_start,
         today_end_ts: today_end,
+        total_usage: dashboard_usage(&total_usage),
         today_usage: dashboard_usage(&today_usage),
         daily_usage,
         users,
