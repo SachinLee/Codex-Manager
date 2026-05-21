@@ -66,7 +66,8 @@ pub(crate) fn read_requestlog_today_summary_for_key_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_day_bounds_ts, MAX_REQUESTED_DAY_RANGE_SECS};
+    use super::super::day_range::MAX_REQUESTED_DAY_RANGE_SECS;
+    use super::resolve_day_bounds_ts;
 
     #[test]
     fn resolve_day_bounds_uses_requested_range_when_complete() {

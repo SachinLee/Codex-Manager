@@ -26,6 +26,7 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub upstream_model: Option<&'a str>,
     pub actual_source_kind: Option<&'a str>,
     pub actual_source_id: Option<&'a str>,
+    pub cost_multiplier: Option<f64>,
 }
 
 #[allow(dead_code)]
@@ -189,6 +190,20 @@ fn estimate_cost_usd(
     (billable_in_tokens / 1000.0) * in_per_1k
         + (cached_in_tokens / 1000.0) * cached_in_per_1k
         + (out_tokens / 1000.0) * out_per_1k
+}
+
+#[allow(dead_code)]
+fn estimate_cost_usd_with_multiplier(
+    model: Option<&str>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    multiplier: Option<f64>,
+) -> f64 {
+    let multiplier = multiplier
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0);
+    estimate_cost_usd(model, input_tokens, cached_input_tokens, output_tokens) * multiplier
 }
 
 /// 函数 `normalize_token`
@@ -418,7 +433,10 @@ pub(crate) fn write_request_log_with_attempts(
         input_tokens,
         cached_input_tokens,
         output_tokens,
-    );
+    ) * trace_context
+        .cost_multiplier
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0);
     let request_type = trace_context
         .request_type
         .map(str::trim)

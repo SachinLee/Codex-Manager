@@ -26,6 +26,14 @@ fn api_id_param(req: &JsonRpcRequest) -> Option<&str> {
     super::str_param(req, "id").or_else(|| super::str_param(req, "apiId"))
 }
 
+fn optional_f64_param(req: &JsonRpcRequest, key: &str) -> Option<Option<f64>> {
+    let value = req.params.as_ref()?.get(key)?;
+    if value.is_null() {
+        return Some(None);
+    }
+    value.as_f64().map(Some)
+}
+
 /// 函数 `try_handle`
 ///
 /// 作者: gaohongshun
@@ -60,6 +68,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let model_override = super::string_param(req, "modelOverride");
             let username = super::string_param(req, "username");
             let password = super::string_param(req, "password");
+            let cost_multiplier = super::f64_param(req, "costMultiplier");
+            let daily_spend_limit_usd = super::f64_param(req, "dailySpendLimitUsd");
             let balance_query_enabled = super::bool_param(req, "balanceQueryEnabled");
             let balance_query_template = super::string_param(req, "balanceQueryTemplate");
             let balance_query_base_url = super::string_param(req, "balanceQueryBaseUrl");
@@ -81,6 +91,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 model_override,
                 username,
                 password,
+                cost_multiplier,
+                daily_spend_limit_usd,
                 balance_query_enabled,
                 balance_query_template,
                 balance_query_base_url,
@@ -110,6 +122,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let model_override = super::string_param(req, "modelOverride");
             let username = super::string_param(req, "username");
             let password = super::string_param(req, "password");
+            let cost_multiplier = super::f64_param(req, "costMultiplier");
+            let daily_spend_limit_usd = optional_f64_param(req, "dailySpendLimitUsd");
             let balance_query_enabled = super::bool_param(req, "balanceQueryEnabled");
             let balance_query_template = super::string_param(req, "balanceQueryTemplate");
             let balance_query_base_url = super::string_param(req, "balanceQueryBaseUrl");
@@ -133,6 +147,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 model_override,
                 username,
                 password,
+                cost_multiplier,
+                daily_spend_limit_usd,
                 balance_query_enabled,
                 balance_query_template,
                 balance_query_base_url,
@@ -224,7 +240,10 @@ fn string_array_param(req: &JsonRpcRequest, key: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::try_handle;
+    use crate::storage_helpers;
     use codexmanager_core::rpc::types::JsonRpcRequest;
+    use codexmanager_core::storage::Storage;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// 函数 `rpc_request`
     ///
@@ -266,6 +285,28 @@ mod tests {
             .to_string()
     }
 
+    fn isolated_db_path(label: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "codexmanager-aggregate-rpc-{label}-{}-{nanos}.db",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn setup_storage(label: &str) -> String {
+        let db_path = isolated_db_path(label);
+        let _ = std::fs::remove_file(&db_path);
+        std::env::set_var("CODEXMANAGER_DB_PATH", db_path.as_str());
+        storage_helpers::initialize_storage().expect("init storage");
+        db_path
+    }
+
     /// 函数 `aggregate_api_update_accepts_id_and_api_id`
     ///
     /// 作者: gaohongshun
@@ -299,6 +340,116 @@ mod tests {
         ))
         .expect("response");
         assert_ne!(error_message(&with_api_id), "aggregate api id required");
+    }
+
+    #[test]
+    fn aggregate_api_create_persists_cost_multiplier() {
+        let _guard = crate::test_env_guard();
+        let db_path = setup_storage("create-cost-multiplier");
+
+        let response = try_handle(&rpc_request(
+            "aggregateApi/create",
+            serde_json::json!({
+                "providerType": "codex",
+                "supplierName": "cost supplier",
+                "url": "https://cost.example.com/v1",
+                "key": "secret",
+                "costMultiplier": 1.8,
+                "dailySpendLimitUsd": 12.5
+            }),
+        ))
+        .expect("response");
+        assert_eq!(error_message(&response), "");
+        let api_id = response.result["id"].as_str().expect("created id");
+
+        let storage = Storage::open(db_path.as_str()).expect("open storage");
+        let api = storage
+            .find_aggregate_api_by_id(api_id)
+            .expect("read aggregate api")
+            .expect("aggregate api exists");
+        assert!((api.cost_multiplier - 1.8).abs() < f64::EPSILON);
+        assert_eq!(api.daily_spend_limit_usd, Some(12.5));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn aggregate_api_update_persists_cost_multiplier() {
+        let _guard = crate::test_env_guard();
+        let db_path = setup_storage("update-cost-multiplier");
+        let create_response = try_handle(&rpc_request(
+            "aggregateApi/create",
+            serde_json::json!({
+                "providerType": "codex",
+                "supplierName": "cost supplier",
+                "url": "https://cost.example.com/v1",
+                "key": "secret"
+            }),
+        ))
+        .expect("create response");
+        assert_eq!(error_message(&create_response), "");
+        let api_id = create_response.result["id"].as_str().expect("created id");
+
+        let update_response = try_handle(&rpc_request(
+            "aggregateApi/update",
+            serde_json::json!({
+                "id": api_id,
+                "supplierName": "cost supplier",
+                "costMultiplier": 2.25,
+                "dailySpendLimitUsd": 30.0
+            }),
+        ))
+        .expect("update response");
+        assert_eq!(error_message(&update_response), "");
+
+        let storage = Storage::open(db_path.as_str()).expect("open storage");
+        let api = storage
+            .find_aggregate_api_by_id(api_id)
+            .expect("read aggregate api")
+            .expect("aggregate api exists");
+        assert!((api.cost_multiplier - 2.25).abs() < f64::EPSILON);
+        assert_eq!(api.daily_spend_limit_usd, Some(30.0));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn aggregate_api_update_can_clear_daily_spend_limit() {
+        let _guard = crate::test_env_guard();
+        let db_path = setup_storage("clear-daily-spend-limit");
+        let create_response = try_handle(&rpc_request(
+            "aggregateApi/create",
+            serde_json::json!({
+                "providerType": "codex",
+                "supplierName": "cost supplier",
+                "url": "https://cost.example.com/v1",
+                "key": "secret",
+                "dailySpendLimitUsd": 12.5
+            }),
+        ))
+        .expect("create response");
+        assert_eq!(error_message(&create_response), "");
+        let api_id = create_response.result["id"].as_str().expect("created id");
+
+        let update_response = try_handle(&rpc_request(
+            "aggregateApi/update",
+            serde_json::json!({
+                "id": api_id,
+                "supplierName": "cost supplier",
+                "dailySpendLimitUsd": null
+            }),
+        ))
+        .expect("update response");
+        assert_eq!(error_message(&update_response), "");
+
+        let storage = Storage::open(db_path.as_str()).expect("open storage");
+        let api = storage
+            .find_aggregate_api_by_id(api_id)
+            .expect("read aggregate api")
+            .expect("aggregate api exists");
+        assert_eq!(api.daily_spend_limit_usd, None);
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     /// 函数 `aggregate_api_test_connection_accepts_id_and_api_id`

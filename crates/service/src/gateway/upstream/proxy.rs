@@ -242,14 +242,22 @@ fn resolve_aggregate_candidates_for_route(
     else {
         return Ok(candidates);
     };
+    let aggregate_mappings = storage
+        .list_enabled_model_source_mappings_for_platform(model)
+        .map_err(|err| format!("model_mapping_read_failed: {err}"))?
+        .into_iter()
+        .filter(|mapping| mapping.source_kind == "aggregate_api")
+        .collect::<Vec<_>>();
+    if aggregate_mappings.is_empty() {
+        return Ok(candidates);
+    }
     candidates = candidates
         .into_iter()
         .filter_map(|mut api| {
-            let mapping = storage
-                .find_enabled_model_source_mapping(model, "aggregate_api", api.id.as_str())
-                .ok()
-                .flatten()?;
-            api.model_override = Some(mapping.upstream_model);
+            let mapping = aggregate_mappings
+                .iter()
+                .find(|mapping| mapping.source_id == api.id)?;
+            api.model_override = Some(mapping.upstream_model.clone());
             Some(api)
         })
         .collect();
@@ -838,14 +846,143 @@ mod tests {
     use super::{
         aggregate_route_should_fallback_to_accounts, exhausted_gateway_error_for_log,
         hybrid_route_error_message, provider_upstream_hint, request_deadline_for_path,
-        resolve_upstream_is_stream, respond_when_account_candidates_empty,
+        resolve_aggregate_candidates_for_route, resolve_upstream_is_stream,
+        respond_when_account_candidates_empty,
         should_fallback_to_aggregate_after_account_exhaustion,
         should_try_provider_executor_aggregate_route,
     };
     use crate::gateway::upstream::executor::{
         GatewayUpstreamExecutionPlan, GatewayUpstreamExecutorKind, GatewayUpstreamRouteKind,
     };
+    use codexmanager_core::storage::{now_ts, AggregateApi, ModelSourceMapping};
     use std::time::{Duration, Instant};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn aggregate_api(id: &str, sort: i64) -> AggregateApi {
+        let now = now_ts();
+        AggregateApi {
+            id: id.to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: Some(id.to_string()),
+            sort,
+            url: format!("https://{id}.example.com/v1"),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        }
+    }
+
+    fn model_mapping(
+        platform_model: &str,
+        source_id: &str,
+        upstream_model: &str,
+    ) -> ModelSourceMapping {
+        let now = now_ts();
+        ModelSourceMapping {
+            id: format!("map-{source_id}-{upstream_model}"),
+            platform_model_slug: platform_model.to_string(),
+            source_kind: "aggregate_api".to_string(),
+            source_id: source_id.to_string(),
+            upstream_model: upstream_model.to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+            billing_model_slug: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn isolated_db_path(label: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "codexmanager-proxy-{label}-{}-{nanos}.db",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn open_test_storage(label: &str) -> crate::storage_helpers::StorageHandle {
+        let path = isolated_db_path(label);
+        std::env::set_var("CODEXMANAGER_DB_PATH", path.as_str());
+        let storage = crate::storage_helpers::open_storage().expect("open storage");
+        storage.init().expect("init storage");
+        storage
+    }
+
+    #[test]
+    fn aggregate_candidates_keep_legacy_passthrough_when_no_aggregate_model_mapping() {
+        let _guard = crate::test_env_guard();
+        let storage = open_test_storage("aggregate-candidates-legacy");
+        storage
+            .insert_aggregate_api(&aggregate_api("agg-a", 10))
+            .expect("insert aggregate api");
+
+        let candidates = resolve_aggregate_candidates_for_route(
+            &storage,
+            "openai_compat",
+            None,
+            Some("gpt-5.5"),
+        )
+        .expect("resolve candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, "agg-a");
+        assert_eq!(candidates[0].model_override, None);
+    }
+
+    #[test]
+    fn aggregate_candidates_use_explicit_model_mappings_when_present() {
+        let _guard = crate::test_env_guard();
+        let storage = open_test_storage("aggregate-candidates-mapped");
+        storage
+            .insert_aggregate_api(&aggregate_api("agg-a", 10))
+            .expect("insert aggregate api a");
+        storage
+            .insert_aggregate_api(&aggregate_api("agg-b", 20))
+            .expect("insert aggregate api b");
+        storage
+            .upsert_model_source_mapping(&model_mapping("gpt-5.5", "agg-b", "vendor-gpt-5.5"))
+            .expect("insert model mapping");
+
+        let candidates = resolve_aggregate_candidates_for_route(
+            &storage,
+            "openai_compat",
+            None,
+            Some("gpt-5.5"),
+        )
+        .expect("resolve candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, "agg-b");
+        assert_eq!(
+            candidates[0].model_override.as_deref(),
+            Some("vendor-gpt-5.5")
+        );
+    }
 
     /// 函数 `exhausted_gateway_error_includes_attempts_skips_and_last_error`
     ///

@@ -73,7 +73,7 @@ impl Storage {
                 last_balance_status,
                 last_balance_error,
                 last_balance_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 &api.id,
                 &api.provider_type,
@@ -631,6 +631,19 @@ impl Storage {
             "UPDATE aggregate_apis
              SET daily_spend_limit_usd = NULL
              WHERE daily_spend_limit_usd IS NOT NULL AND daily_spend_limit_usd <= 0",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE aggregate_apis
+             SET balance_query_enabled = 1,
+                 balance_query_template = COALESCE(NULLIF(TRIM(balance_query_template), ''), 'generic')
+             WHERE balance_query_enabled = 0
+               AND (
+                    NULLIF(TRIM(COALESCE(balance_query_template, '')), '') IS NOT NULL
+                    OR last_balance_at IS NOT NULL
+                    OR NULLIF(TRIM(COALESCE(last_balance_status, '')), '') IS NOT NULL
+                    OR NULLIF(TRIM(COALESCE(last_balance_json, '')), '') IS NOT NULL
+               )",
             [],
         )?;
         Ok(())

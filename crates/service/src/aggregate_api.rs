@@ -140,6 +140,24 @@ fn normalize_sort(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
 }
 
+fn normalize_cost_multiplier(value: Option<f64>) -> Result<f64, String> {
+    let multiplier = value.unwrap_or(1.0);
+    if !multiplier.is_finite() || multiplier <= 0.0 {
+        return Err("aggregate api cost multiplier must be greater than 0".to_string());
+    }
+    Ok(multiplier)
+}
+
+fn normalize_daily_spend_limit_usd(value: Option<f64>) -> Result<Option<f64>, String> {
+    let Some(limit) = value else {
+        return Ok(None);
+    };
+    if !limit.is_finite() || limit <= 0.0 {
+        return Ok(None);
+    }
+    Ok(Some(limit))
+}
+
 fn normalize_status(value: Option<String>) -> Result<String, String> {
     match value {
         Some(raw) => {
@@ -569,6 +587,8 @@ mod tests {
             auth_params_json: None,
             action: action.map(str::to_string),
             model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -2580,6 +2600,8 @@ pub(crate) fn create_aggregate_api(
     model_override: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
     balance_query_enabled: Option<bool>,
     balance_query_template: Option<String>,
     balance_query_base_url: Option<String>,
@@ -2603,6 +2625,8 @@ pub(crate) fn create_aggregate_api(
     let normalized_action =
         normalize_action_override(action_custom_enabled, action)?.unwrap_or(None);
     let normalized_model_override = normalize_model_override(model_override)?;
+    let normalized_cost_multiplier = normalize_cost_multiplier(cost_multiplier)?;
+    let normalized_daily_spend_limit_usd = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
     let normalized_balance_query_enabled = balance_query_enabled.unwrap_or(false);
     let normalized_balance_query_template = if normalized_balance_query_enabled {
         Some(default_balance_query_template(
@@ -2648,8 +2672,8 @@ pub(crate) fn create_aggregate_api(
             .unwrap_or(None),
         action: normalized_action,
         model_override: normalized_model_override,
-        cost_multiplier: 1.0,
-        daily_spend_limit_usd: None,
+        cost_multiplier: normalized_cost_multiplier,
+        daily_spend_limit_usd: normalized_daily_spend_limit_usd,
         status: "active".to_string(),
         created_at,
         updated_at: created_at,
@@ -2728,6 +2752,8 @@ pub(crate) fn update_aggregate_api(
     model_override: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<Option<f64>>,
     balance_query_enabled: Option<bool>,
     balance_query_template: Option<String>,
     balance_query_base_url: Option<String>,
@@ -2821,6 +2847,18 @@ pub(crate) fn update_aggregate_api(
         let normalized = normalize_model_override(model_override)?;
         storage
             .update_aggregate_api_model_override(api_id, normalized.as_deref())
+            .map_err(|err| err.to_string())?;
+    }
+    if cost_multiplier.is_some() {
+        let normalized = normalize_cost_multiplier(cost_multiplier)?;
+        storage
+            .update_aggregate_api_cost_multiplier(api_id, normalized)
+            .map_err(|err| err.to_string())?;
+    }
+    if let Some(daily_spend_limit_usd) = daily_spend_limit_usd {
+        let normalized = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
+        storage
+            .update_aggregate_api_daily_spend_limit_usd(api_id, normalized)
             .map_err(|err| err.to_string())?;
     }
 

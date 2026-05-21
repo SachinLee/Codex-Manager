@@ -1375,6 +1375,8 @@ fn request_token_stats_rollups_use_owner_and_actual_source_precedence() {
                 auth_params_json: None,
                 action: None,
                 model_override: None,
+                cost_multiplier: 1.0,
+                daily_spend_limit_usd: None,
                 status: "active".to_string(),
                 created_at: base,
                 updated_at: base,

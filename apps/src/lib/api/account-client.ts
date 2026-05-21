@@ -187,6 +187,7 @@ interface AggregateApiPayload {
   modelOverride?: string | null;
   costMultiplier?: number | null;
   dailySpendLimitUsd?: number | null;
+  clearDailySpendLimitUsd?: boolean | null;
   username?: string | null;
   password?: string | null;
   balanceQueryEnabled?: boolean | null;
@@ -662,7 +663,9 @@ export const accountClient = {
         dailySpendLimitUsd:
           typeof params.dailySpendLimitUsd === "number"
             ? params.dailySpendLimitUsd
-            : null,
+            : params.clearDailySpendLimitUsd
+              ? null
+              : undefined,
         username: params.username || null,
         password: params.password || null,
         balanceQueryEnabled:

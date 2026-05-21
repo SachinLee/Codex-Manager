@@ -801,6 +801,7 @@ pub(in super::super) fn proxy_aggregate_request(
             aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();
         let candidate_url = candidate.url.clone();
+        let candidate_cost_multiplier = candidate.cost_multiplier;
         last_attempt_id = Some(candidate_id.clone());
         last_attempt_upstream_model = candidate_upstream_model.clone();
         let Some(secret) = storage
@@ -860,6 +861,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         upstream_model: candidate_upstream_model.as_deref(),
                         actual_source_kind: Some("aggregate_api"),
                         actual_source_id: Some(candidate_id.as_str()),
+                        cost_multiplier: Some(candidate_cost_multiplier),
                         ..Default::default()
                     },
                     Some(key_id),
@@ -1077,6 +1079,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     upstream_model: candidate_upstream_model.as_deref(),
                     actual_source_kind: Some("aggregate_api"),
                     actual_source_id: Some(candidate_id.as_str()),
+                    cost_multiplier: Some(candidate_cost_multiplier),
                     ..Default::default()
                 },
                 Some(key_id),
@@ -1185,6 +1188,8 @@ mod bridge_tests {
             auth_params_json: None,
             action: None,
             model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: sort,
             updated_at: sort,
@@ -1365,6 +1370,8 @@ mod tests {
             auth_params_json: None,
             action: action.map(str::to_string),
             model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -1457,6 +1464,8 @@ mod tests {
                     auth_params_json: None,
                     action: None,
                     model_override: None,
+                    cost_multiplier: 1.0,
+                    daily_spend_limit_usd: None,
                     status: "active".to_string(),
                     created_at: now,
                     updated_at: now,

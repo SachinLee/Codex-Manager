@@ -76,10 +76,17 @@ import { useI18n } from "@/lib/i18n/provider";
 import {
   AggregateApi,
   AggregateApiBalanceSnapshot,
+  AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
   AggregateApiSupplierModel,
   ManagedModelSourceModel,
 } from "@/types";
+import {
+  formatCacheRateValue,
+  formatMillionTokenAmount,
+  formatUsdAmount,
+} from "@/lib/utils/billing";
+import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 
 type TranslateFn = (key: string, values?: Record<string, string | number>) => string;
 
@@ -133,6 +140,22 @@ function formatBalanceAmount(snapshot: AggregateApiBalanceSnapshot | null) {
   return unit ? `${value} ${unit}` : value;
 }
 
+function buildAggregateApiDailyUsageMap(
+  items: AggregateApiDailyUsageStat[],
+): Map<string, AggregateApiDailyUsageStat> {
+  return new Map(items.map((item) => [item.aggregateApiId, item]));
+}
+
+function formatCostMultiplier(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return "x1";
+  }
+  return `x${value.toLocaleString("zh-CN", {
+    maximumFractionDigits: 3,
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 1,
+  })}`;
+}
+
 function aggregateApiSupplierKey(api: AggregateApi | null) {
   if (!api) return "";
   return String(api.supplierName || "").trim() || String(api.url || "").trim();
@@ -182,6 +205,7 @@ export default function AggregateApiPage() {
   const queryClient = useQueryClient();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
+  const localDayRange = useLocalDayRange();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const isPageActive = useDesktopPageActive("/aggregate-api/");
   const isQueryEnabled = useDeferredDesktopActivation(
@@ -225,6 +249,23 @@ export default function AggregateApiPage() {
     queryFn: () => quotaClient.modelPools(),
     enabled: isQueryEnabled,
     retry: 1,
+  });
+
+  const { data: aggregateApiDailyUsage = [] } = useQuery({
+    queryKey: [
+      "requestlog",
+      "aggregate-api-daily-usage",
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      accountClient.listAggregateApiDailyUsageStats({
+        dayStartTs: localDayRange.dayStartTs,
+        dayEndTs: localDayRange.dayEndTs,
+      }),
+    enabled: isQueryEnabled,
+    retry: 1,
+    staleTime: 10_000,
   });
 
   const { data: modelRouting, isLoading: modelRoutingLoading } = useQuery({
@@ -323,6 +364,10 @@ export default function AggregateApiPage() {
     () => new Set(sourceModels.map((item) => item.upstreamModel)),
     [sourceModels],
   );
+  const aggregateApiDailyUsageById = useMemo(
+    () => buildAggregateApiDailyUsageMap(aggregateApiDailyUsage),
+    [aggregateApiDailyUsage],
+  );
 
   const filteredAggregateApis = useMemo(() => {
     if (providerFilter === "all") {
@@ -330,6 +375,22 @@ export default function AggregateApiPage() {
     }
     return aggregateApis.filter((api) => api.providerType === providerFilter);
   }, [aggregateApis, providerFilter]);
+  const balanceEnabledApiIds = useMemo(
+    () =>
+      filteredAggregateApis
+        .filter((api) => api.balanceQueryEnabled)
+        .map((api) => api.id),
+    [filteredAggregateApis],
+  );
+  const balanceAutoEnableApis = useMemo(
+    () =>
+      filteredAggregateApis.filter(
+        (api) =>
+          !api.balanceQueryEnabled &&
+          String(api.status || "").trim().toLowerCase() !== "disabled",
+      ),
+    [filteredAggregateApis],
+  );
 
   const defaultCreateSort = useMemo(() => {
     const maxSort = aggregateApis.reduce(
@@ -533,6 +594,7 @@ export default function AggregateApiPage() {
     },
     onSettled: async (_result, _error, apiId) => {
       await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await queryClient.invalidateQueries({ queryKey: ["requestlog"] });
       setRefreshingBalanceId((current) => (current === apiId ? null : current));
     },
     onError: (error: unknown) => {
@@ -541,9 +603,31 @@ export default function AggregateApiPage() {
   });
 
   const refreshAllBalancesMutation = useMutation({
-    mutationFn: async (apiIds: string[]) => {
+    mutationFn: async ({
+      apiIds,
+      autoEnableApis,
+    }: {
+      apiIds: string[];
+      autoEnableApis?: AggregateApi[];
+    }) => {
+      const enabledIds = [...apiIds];
+      if (autoEnableApis?.length) {
+        await Promise.all(
+          autoEnableApis.map((api) =>
+            accountClient.updateAggregateApi(api.id, {
+              supplierName: api.supplierName || api.url,
+              balanceQueryEnabled: true,
+              balanceQueryTemplate: api.balanceQueryTemplate || "generic",
+              balanceQueryBaseUrl: api.balanceQueryBaseUrl || "",
+              balanceQueryUserId: api.balanceQueryUserId || "",
+              balanceQueryConfigJson: api.balanceQueryConfigJson || "",
+            }),
+          ),
+        );
+        enabledIds.push(...autoEnableApis.map((api) => api.id));
+      }
       const results = await Promise.allSettled(
-        apiIds.map((id) => accountClient.refreshAggregateApiBalance(id))
+        enabledIds.map((id) => accountClient.refreshAggregateApiBalance(id))
       );
       return results;
     },
@@ -568,6 +652,7 @@ export default function AggregateApiPage() {
     },
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await queryClient.invalidateQueries({ queryKey: ["requestlog"] });
       setRefreshingBalances(false);
     },
     onError: (error: unknown) => {
@@ -1029,20 +1114,22 @@ export default function AggregateApiPage() {
                   variant="outline"
                   className="h-10 gap-2"
                   onClick={() => {
-                    const apiIds = filteredAggregateApis
-                      .filter((api) => api.balanceQueryEnabled)
-                      .map((api) => api.id);
-                    if (apiIds.length === 0) {
+                    if (
+                      balanceEnabledApiIds.length === 0 &&
+                      balanceAutoEnableApis.length === 0
+                    ) {
                       toast.info(t("暂无已启用余额检测的聚合 API"));
                       return;
                     }
-                    refreshAllBalancesMutation.mutate(apiIds);
+                    refreshAllBalancesMutation.mutate({
+                      apiIds: balanceEnabledApiIds,
+                      autoEnableApis:
+                        balanceEnabledApiIds.length === 0
+                          ? balanceAutoEnableApis
+                          : [],
+                    });
                   }}
-                  disabled={
-                    !isServiceReady ||
-                    refreshingBalances ||
-                    filteredAggregateApis.every((api) => !api.balanceQueryEnabled)
-                  }
+                  disabled={!isServiceReady || refreshingBalances}
                 >
                   <RefreshCw className={refreshingBalances ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
                   {t("刷新余额")}
@@ -1070,6 +1157,7 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[64px] text-center">{t("顺序")}</TableHead>
                   <TableHead className="w-[130px]">{t("测试连通性")}</TableHead>
                   <TableHead className="w-[150px]">{t("余额")}</TableHead>
+                  <TableHead className="w-[150px]">{t("今日使用")}</TableHead>
                   <TableHead className="w-[112px] text-right pr-4">{t("状态")}</TableHead>
                   <TableHead className="table-sticky-action-head w-[144px] text-center">
                     {t("操作")}
@@ -1099,6 +1187,9 @@ export default function AggregateApiPage() {
                         <Skeleton className="h-6 w-24 rounded-full" />
                       </TableCell>
                       <TableCell>
+                        <Skeleton className="h-6 w-24 rounded-full" />
+                      </TableCell>
+                      <TableCell>
                         <Skeleton className="h-6 w-16 rounded-full" />
                       </TableCell>
                       <TableCell className="table-sticky-action-cell text-center">
@@ -1108,7 +1199,7 @@ export default function AggregateApiPage() {
                   ))
                 ) : filteredAggregateApis.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="h-48 text-center">
+                    <TableCell colSpan={9} className="h-48 text-center">
                       <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                         <ShieldCheck className="h-8 w-8 opacity-20" />
                         <p>
@@ -1142,6 +1233,7 @@ export default function AggregateApiPage() {
                       : quotaInfo
                         ? Array.from(quotaInfo.models).slice(0, 2)
                         : [];
+                    const dailyUsage = aggregateApiDailyUsageById.get(api.id);
 
                     return (
                       <TableRow key={api.id} className="group">
@@ -1175,6 +1267,12 @@ export default function AggregateApiPage() {
                                     {t("额度模型")}: {t("全部 API 模型")}
                                   </span>
                                 )}
+                                <span className="block truncate text-[10px] text-muted-foreground/80">
+                                  {t("成本倍率")}: {formatCostMultiplier(api.costMultiplier)}
+                                  {api.dailySpendLimitUsd
+                                    ? ` · ${formatUsdAmount(api.dailySpendLimitUsd)} / ${t("日")}`
+                                    : ""}
+                                </span>
                               </div>
                             </TooltipTrigger>
                             <TooltipContent className="max-w-sm whitespace-pre-wrap break-words">
@@ -1195,6 +1293,14 @@ export default function AggregateApiPage() {
                                   {api.modelSlugs.length
                                     ? api.modelSlugs.join(", ")
                                     : t("全部 API 可用模型")}
+                                </div>
+                                <div className="text-[11px] opacity-80">
+                                  {t("成本倍率")}: {formatCostMultiplier(api.costMultiplier)}
+                                  {" · "}
+                                  {t("每日费用上限")}:{" "}
+                                  {api.dailySpendLimitUsd
+                                    ? formatUsdAmount(api.dailySpendLimitUsd)
+                                    : t("不限")}
                                 </div>
                                 <div className="text-[11px] opacity-80">
                                   {t("创建时间")}: {createdTimeText}
@@ -1398,6 +1504,31 @@ export default function AggregateApiPage() {
                               </TooltipContent>
                             </Tooltip>
                           ) : null}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap align-middle">
+                          {dailyUsage && dailyUsage.requestCount > 0 ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="grid max-w-[145px] cursor-help gap-0.5 text-left"
+                              >
+                                <span className="truncate text-xs font-semibold text-foreground">
+                                  {formatMillionTokenAmount(dailyUsage.totalTokens)} tok
+                                </span>
+                                <span className="truncate text-[10px] text-muted-foreground">
+                                  {formatUsdAmount(dailyUsage.estimatedCostUsd)} · cache{" "}
+                                  {formatCacheRateValue(dailyUsage.cacheHitRate)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                                {`${t("请求")} ${dailyUsage.requestCount}\n${t("输入")} ${formatMillionTokenAmount(dailyUsage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(dailyUsage.cachedInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(dailyUsage.billableInputTokens)}\n${t("输出")} ${formatMillionTokenAmount(dailyUsage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(dailyUsage.reasoningOutputTokens)}`}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              {t("今日无请求")}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="align-middle pr-4">
                           <div className="flex items-center justify-end gap-2">

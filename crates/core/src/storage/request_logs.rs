@@ -563,8 +563,8 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn clear_request_logs(&self) -> Result<()> {
-        // 中文注释：清空日志前先把 token 明细滚成长期汇总，避免 API Key 配额/累计统计归零。
-        let _ = self.rollup_all_request_token_stats()?;
+        // 中文注释：只清空可见请求日志，保留 token 明细给用量统计和配额计算使用。
+        // 长期压缩由 observability maintenance 的保留策略负责。
         self.conn.execute("DELETE FROM request_logs", [])?;
         let _ = self
             .conn

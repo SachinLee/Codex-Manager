@@ -141,6 +141,8 @@ export function AggregateApiModal({
   const [action, setAction] = useState("");
   const [modelOverride, setModelOverride] = useState("");
   const [modelWhitelist, setModelWhitelist] = useState("");
+  const [costMultiplier, setCostMultiplier] = useState("1");
+  const [dailySpendLimitUsd, setDailySpendLimitUsd] = useState("");
   const [balanceQueryEnabled, setBalanceQueryEnabled] = useState(false);
   const [balanceQueryTemplate, setBalanceQueryTemplate] =
     useState<BalanceQueryTemplate>("generic");
@@ -226,6 +228,10 @@ export function AggregateApiModal({
     setActionCustomEnabled(aggregateApi?.action !== null && aggregateApi?.action !== undefined);
     setModelOverride(aggregateApi?.modelOverride || "");
     setModelWhitelist((aggregateApi?.modelSlugs || []).join(", "));
+    setCostMultiplier(String(aggregateApi?.costMultiplier || 1));
+    setDailySpendLimitUsd(
+      aggregateApi?.dailySpendLimitUsd ? String(aggregateApi.dailySpendLimitUsd) : "",
+    );
     setBalanceQueryEnabled(Boolean(aggregateApi?.balanceQueryEnabled));
     const nextBalanceQueryTemplate =
       aggregateApi?.balanceQueryTemplate === "new_api"
@@ -333,6 +339,22 @@ export function AggregateApiModal({
         return;
       }
     }
+    const parsedCostMultiplier = Number(costMultiplier.trim() || "1");
+    if (!Number.isFinite(parsedCostMultiplier) || parsedCostMultiplier <= 0) {
+      toast.error(t("成本倍率必须大于 0"));
+      return;
+    }
+    const trimmedDailySpendLimit = dailySpendLimitUsd.trim();
+    const parsedDailySpendLimit = trimmedDailySpendLimit
+      ? Number(trimmedDailySpendLimit)
+      : null;
+    if (
+      parsedDailySpendLimit != null &&
+      (!Number.isFinite(parsedDailySpendLimit) || parsedDailySpendLimit <= 0)
+    ) {
+      toast.error(t("每日费用上限必须大于 0"));
+      return;
+    }
 
     const authParams =
       authCustomEnabled && authType === "apikey"
@@ -424,6 +446,9 @@ export function AggregateApiModal({
           actionCustomEnabled,
           action: actionCustomEnabled ? action.trim() : null,
           modelOverride: modelOverride.trim(),
+          costMultiplier: parsedCostMultiplier,
+          dailySpendLimitUsd: parsedDailySpendLimit,
+          clearDailySpendLimitUsd: parsedDailySpendLimit == null,
           username: authType === "userpass" ? username.trim() || null : null,
           password: authType === "userpass" ? password.trim() || null : null,
           balanceQueryEnabled,
@@ -457,6 +482,8 @@ export function AggregateApiModal({
         actionCustomEnabled,
         action: actionCustomEnabled ? action.trim() : null,
         modelOverride: modelOverride.trim(),
+        costMultiplier: parsedCostMultiplier,
+        dailySpendLimitUsd: parsedDailySpendLimit,
         username: authType === "userpass" ? username.trim() : null,
         password: authType === "userpass" ? password.trim() : null,
         balanceQueryEnabled,
@@ -674,6 +701,47 @@ export function AggregateApiModal({
                 <p className="text-[11px] leading-4 text-muted-foreground">
                   {t("仅用于额度池归属统计；留空表示该来源对所有 API 可用模型生效。")}
                 </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label htmlFor="aggregate-api-cost-multiplier">
+                    {t("成本倍率")}
+                  </Label>
+                  <Input
+                    id="aggregate-api-cost-multiplier"
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={costMultiplier}
+                    disabled={!isServiceReady}
+                    onChange={(event) => setCostMultiplier(event.target.value)}
+                  />
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    {t("请求费用按模型基础价格计算后乘以该倍率；默认 1。")}
+                  </p>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="aggregate-api-daily-spend-limit">
+                    {t("每日费用上限")}
+                  </Label>
+                  <Input
+                    id="aggregate-api-daily-spend-limit"
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={dailySpendLimitUsd}
+                    disabled={!isServiceReady}
+                    placeholder={t("留空表示不限")}
+                    onChange={(event) =>
+                      setDailySpendLimitUsd(event.target.value)
+                    }
+                  />
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    {t("用于聚合 API 当日消耗控制；留空不限制。")}
+                  </p>
+                </div>
               </div>
 
               {authType === "apikey" ? (
