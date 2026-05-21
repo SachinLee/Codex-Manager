@@ -666,6 +666,10 @@ export const accountClient = {
             : params.clearDailySpendLimitUsd
               ? null
               : undefined,
+        clearDailySpendLimitUsd:
+          typeof params.clearDailySpendLimitUsd === "boolean"
+            ? params.clearDailySpendLimitUsd
+            : null,
         username: params.username || null,
         password: params.password || null,
         balanceQueryEnabled:
@@ -822,6 +826,7 @@ export const accountClient = {
     if ("quotaLimitTokens" in params) {
       payload.quotaLimitTokens = params.quotaLimitTokens ?? null;
     }
+    payload.hasQuotaLimitTokens = "quotaLimitTokens" in params;
     return invoke("service_apikey_update_model", withAddr(payload));
   },
   disableApiKey: (keyId: string) =>

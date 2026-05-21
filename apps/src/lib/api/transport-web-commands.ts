@@ -474,6 +474,10 @@ export function createWebCommandMap(
     service_aggregate_api_supplier_models_import: {
       rpcMethod: "aggregateApi/sourceModels/importSupplier",
     },
+    codex_session_delete_many: { rpcMethod: "codexSession/deleteMany" },
+    codex_session_delete_all_archived: {
+      rpcMethod: "codexSession/deleteAllArchived",
+    },
     service_login_start: {
       rpcMethod: "account/login/start",
       mapParams: (params) => ({

@@ -141,13 +141,18 @@ macro_rules! invoke_handler {
             crate::commands::apikey::service_apikey_enable,
             // codex launcher
             crate::commands::codex_launcher::codex_launcher_start,
+            crate::commands::codex_launcher::codex_launcher_start_plain,
             crate::commands::codex_launcher::codex_launcher_stop,
             crate::commands::codex_launcher::codex_launcher_status,
             crate::commands::codex_launcher::codex_launcher_resolve_path,
             crate::commands::codex_launcher::codex_session_list,
             crate::commands::codex_launcher::codex_session_delete,
+            crate::commands::codex_launcher::codex_session_delete_many,
+            crate::commands::codex_launcher::codex_session_delete_all_archived,
             crate::commands::codex_launcher::codex_session_undo,
             crate::commands::codex_launcher::codex_session_list_archived,
+            crate::commands::codex_launcher::codex_provider_sync_cm,
+            crate::commands::codex_launcher::codex_configure_cm,
             // system
             crate::commands::system::open_in_browser,
             crate::commands::system::open_external_url,

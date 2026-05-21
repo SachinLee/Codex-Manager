@@ -555,14 +555,16 @@ function AdminUsageAnalyticsCard({
             {t("管理员用量分析")}
           </CardTitle>
           <p className="mt-1 text-xs text-muted-foreground">
-            {t("按天、成员、OpenAI 账号和聚合 API 汇总 token 消耗")}
+            {t("按天、成员、OpenAI 账号和聚合 API 汇总 token 消耗；费用为 API 等价估算")}
           </p>
         </div>
         <div className="rounded-lg bg-primary/10 px-3 py-2 text-right text-xs">
           <div className="font-semibold text-primary">
             {formatCompactTokenAmount(summary.todayUsage.totalTokens)}
           </div>
-          <div className="text-muted-foreground">{formatUsd(summary.todayUsage.estimatedCostUsd)}</div>
+          <div className="text-muted-foreground">
+            {t("API等价")} {formatUsd(summary.todayUsage.estimatedCostUsd)}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.9fr)]">
@@ -825,11 +827,11 @@ function AdminDashboard() {
             sub: t("大模型思考过程"),
           },
           {
-            title: t("预计费用"),
+            title: t("API等价费用"),
             value: formatUsd(stats.todayCost),
             icon: DollarSign,
             color: "text-emerald-500",
-            sub: t("按官价估算"),
+            sub: t("按官方 API 价格折算，账号通道不代表真实扣费"),
           },
         ].map((card) =>
           isLoading ? (

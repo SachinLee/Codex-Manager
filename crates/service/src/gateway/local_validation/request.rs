@@ -1123,8 +1123,12 @@ fn resolve_preferred_client_prompt_cache_key(
     incoming_headers: &super::super::IncomingHeaderSnapshot,
     initial_request_meta: &ParsedRequestMetadata,
     client_request_meta: &ParsedRequestMetadata,
+    native_codex_client: bool,
 ) -> Option<String> {
     if protocol_type == PROTOCOL_ANTHROPIC_NATIVE {
+        return None;
+    }
+    if native_codex_client {
         return None;
     }
 
@@ -1167,10 +1171,12 @@ fn resolve_local_conversation_id(
     normalized_path: &str,
     incoming_headers: &super::super::IncomingHeaderSnapshot,
     client_has_prompt_cache_key: bool,
+    native_codex_client: bool,
 ) -> Option<String> {
+    let allow_prompt_cache_fallback = native_codex_client || !client_has_prompt_cache_key;
     super::super::resolve_local_conversation_id_with_sticky_fallback(
         incoming_headers,
-        !client_has_prompt_cache_key
+        allow_prompt_cache_fallback
             && should_derive_compat_conversation_anchor(protocol_type, normalized_path),
     )
 }
@@ -1305,7 +1311,8 @@ pub(super) fn build_local_validation_result(
         initial_service_tier_diagnostic.normalized_value.as_deref(),
     );
     let initial_request_meta = super::super::parse_request_metadata(&body);
-    let native_codex_client = is_native_codex_client_request(&incoming_headers);
+    let native_codex_client =
+        is_native_codex_client_request(&incoming_headers) || initial_request_meta.has_client_metadata;
     log::debug!(
         "event=gateway_client_profile trace_id={} path={} originator={} user_agent={} session_affinity={} native_codex={}",
         trace_id.as_str(),
@@ -1324,6 +1331,7 @@ pub(super) fn build_local_validation_result(
         normalized_path.as_str(),
         &incoming_headers,
         initial_request_meta.has_prompt_cache_key,
+        native_codex_client,
     );
     ensure_codex_image_tool_model_not_used_for_text_request(
         normalized_path.as_str(),
@@ -1543,6 +1551,7 @@ pub(super) fn build_local_validation_result(
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        native_codex_client,
     );
     let local_conversation_id = initial_local_conversation_id.clone();
     let allow_codex_compat_rewrite = allow_codex_compat_rewrite_for_client(

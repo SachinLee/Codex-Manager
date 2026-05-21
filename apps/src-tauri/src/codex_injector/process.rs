@@ -42,36 +42,40 @@ pub fn pick_free_port(preferred: u16) -> u16 {
     preferred
 }
 
-/// 启动 Codex 进程，返回 PID（UWP 模式返回 None）
-pub fn launch_codex(kind: &CodexInstallKind, debug_port: u16) -> Result<Option<u32>, String> {
+/// 普通启动 Codex 进程，返回 PID（UWP 模式可能返回 None）
+pub fn launch_codex_plain(kind: &CodexInstallKind) -> Result<Option<u32>, String> {
     match kind {
+        #[cfg(target_os = "macos")]
+        CodexInstallKind::Exe(path) if path.extension().map_or(false, |e| e == "app") => {
+            log::info!("普通启动 Codex.app: {}", path.display());
+            std::process::Command::new("open")
+                .arg("-a")
+                .arg(path)
+                .spawn()
+                .map_err(|e| format!("open -a Codex 失败: {e}"))?;
+            Ok(None)
+        }
+
         CodexInstallKind::Exe(path) => {
-            log::info!(
-                "以调试端口 {debug_port} 启动 Codex EXE: {}",
-                path.display()
-            );
+            log::info!("普通启动 Codex EXE: {}", path.display());
             let child = std::process::Command::new(path)
-                .arg(format!("--remote-debugging-port={debug_port}"))
-                .arg(format!(
-                    "--remote-allow-origins=http://127.0.0.1:{debug_port}"
-                ))
                 .spawn()
                 .map_err(|e| format!("启动 Codex 失败: {e}"))?;
             Ok(Some(child.id()))
         }
 
         #[cfg(target_os = "windows")]
-        CodexInstallKind::Uwp { app_user_model_id } => {
-            launch_uwp(app_user_model_id, debug_port)
-        }
+        CodexInstallKind::Uwp { app_user_model_id } => launch_uwp_plain(app_user_model_id),
+    }
+}
 
+/// 启动 Codex 进程并开启调试端口，返回 PID（UWP 模式返回 None）
+pub fn launch_codex(kind: &CodexInstallKind, debug_port: u16) -> Result<Option<u32>, String> {
+    match kind {
         #[cfg(target_os = "macos")]
         CodexInstallKind::Exe(path) if path.extension().map_or(false, |e| e == "app") => {
             // macOS .app bundle：用 `open -a` 传参
-            log::info!(
-                "以调试端口 {debug_port} 启动 Codex.app: {}",
-                path.display()
-            );
+            log::info!("以调试端口 {debug_port} 启动 Codex.app: {}", path.display());
             std::process::Command::new("open")
                 .arg("-a")
                 .arg(path)
@@ -84,6 +88,21 @@ pub fn launch_codex(kind: &CodexInstallKind, debug_port: u16) -> Result<Option<u
                 .map_err(|e| format!("open -a Codex 失败: {e}"))?;
             Ok(None) // open 命令启动后无法直接获得 Codex 的 PID
         }
+
+        CodexInstallKind::Exe(path) => {
+            log::info!("以调试端口 {debug_port} 启动 Codex EXE: {}", path.display());
+            let child = std::process::Command::new(path)
+                .arg(format!("--remote-debugging-port={debug_port}"))
+                .arg(format!(
+                    "--remote-allow-origins=http://127.0.0.1:{debug_port}"
+                ))
+                .spawn()
+                .map_err(|e| format!("启动 Codex 失败: {e}"))?;
+            Ok(Some(child.id()))
+        }
+
+        #[cfg(target_os = "windows")]
+        CodexInstallKind::Uwp { app_user_model_id } => launch_uwp(app_user_model_id, debug_port),
     }
 }
 
@@ -109,15 +128,14 @@ pub fn is_process_alive(pid: u32) -> bool {
     {
         // SYNCHRONIZE = 0x00100000
         const SYNCHRONIZE: u32 = 0x00100000;
-        let handle = unsafe {
-            windows_sys::Win32::System::Threading::OpenProcess(SYNCHRONIZE, 0, pid)
-        };
+        let handle =
+            unsafe { windows_sys::Win32::System::Threading::OpenProcess(SYNCHRONIZE, 0, pid) };
         if handle.is_null() {
             return false;
         }
-        let still_running = unsafe {
-            windows_sys::Win32::System::Threading::WaitForSingleObject(handle, 0)
-        } == windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+        let still_running =
+            unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(handle, 0) }
+                == windows_sys::Win32::Foundation::WAIT_TIMEOUT;
         unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
         still_running
     }
@@ -151,6 +169,29 @@ pub fn kill_existing_codex() {}
 /// `Shell.Application.ShellExecute` 不行——参数会被静默丢弃。
 #[cfg(target_os = "windows")]
 fn launch_uwp(app_user_model_id: &str, debug_port: u16) -> Result<Option<u32>, String> {
+    let args = format!(
+        "--remote-debugging-port={debug_port} --remote-allow-origins=http://127.0.0.1:{debug_port}"
+    );
+    log::info!("激活 UWP 包: {app_user_model_id}, 调试端口: {debug_port}");
+
+    // 先清理可能存在的旧 Codex 进程，否则 ActivateApplication 会复用旧实例
+    kill_existing_codex();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    launch_uwp_with_args(app_user_model_id, Some(args.as_str()))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_uwp_plain(app_user_model_id: &str) -> Result<Option<u32>, String> {
+    log::info!("普通激活 UWP 包: {app_user_model_id}");
+    launch_uwp_with_args(app_user_model_id, None)
+}
+
+#[cfg(target_os = "windows")]
+fn launch_uwp_with_args(
+    app_user_model_id: &str,
+    args: Option<&str>,
+) -> Result<Option<u32>, String> {
     use std::ffi::c_void;
     use windows_sys::core::{GUID, HRESULT};
     use windows_sys::Win32::System::Com::{
@@ -161,7 +202,8 @@ fn launch_uwp(app_user_model_id: &str, debug_port: u16) -> Result<Option<u32>, S
     // IApplicationActivationManager 的 vtable 布局（顺序严格按 shobjidl.h）
     #[repr(C)]
     struct IAamVtbl {
-        query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+        query_interface:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
         add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
         release: unsafe extern "system" fn(*mut c_void) -> u32,
         activate_application: unsafe extern "system" fn(
@@ -191,33 +233,36 @@ fn launch_uwp(app_user_model_id: &str, debug_port: u16) -> Result<Option<u32>, S
     };
     const AO_NONE: u32 = 0;
 
-    log::info!("激活 UWP 包: {app_user_model_id}, 调试端口: {debug_port}");
-
-    // 先清理可能存在的旧 Codex 进程，否则 ActivateApplication 会复用旧实例
-    kill_existing_codex();
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
-    let args = format!(
-        "--remote-debugging-port={debug_port} --remote-allow-origins=http://127.0.0.1:{debug_port}"
-    );
-
     // 转 UTF-16 宽字符串（末尾 NUL），生命周期必须覆盖 ActivateApplication 调用
     let aumid_w: Vec<u16> = app_user_model_id
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
-    let args_w: Vec<u16> = args.encode_utf16().chain(std::iter::once(0)).collect();
+    let args_w: Option<Vec<u16>> =
+        args.map(|s| s.encode_utf16().chain(std::iter::once(0)).collect());
+    let args_ptr = args_w
+        .as_ref()
+        .map_or(std::ptr::null(), |value| value.as_ptr());
 
     unsafe {
         // ApplicationActivationManager 必须 STA 单元化
         let init_hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
         // S_OK = 0, S_FALSE = 1 (已初始化), RPC_E_CHANGED_MODE 等情况都继续尝试
         if init_hr < 0 {
-            log::warn!("CoInitializeEx 返回 HRESULT 0x{:08X}（继续尝试激活）", init_hr as u32);
+            log::warn!(
+                "CoInitializeEx 返回 HRESULT 0x{:08X}（继续尝试激活）",
+                init_hr as u32
+            );
         }
 
         let mut mgr: *mut c_void = std::ptr::null_mut();
-        let hr = CoCreateInstance(&CLSID_AAM, std::ptr::null_mut(), CLSCTX_LOCAL_SERVER, &IID_AAM, &mut mgr);
+        let hr = CoCreateInstance(
+            &CLSID_AAM,
+            std::ptr::null_mut(),
+            CLSCTX_LOCAL_SERVER,
+            &IID_AAM,
+            &mut mgr,
+        );
         if hr < 0 || mgr.is_null() {
             CoUninitialize();
             let msg = format!(
@@ -233,7 +278,7 @@ fn launch_uwp(app_user_model_id: &str, debug_port: u16) -> Result<Option<u32>, S
         let release = (*vtbl_ptr).release;
 
         let mut pid: u32 = 0;
-        let hr = activate(mgr, aumid_w.as_ptr(), args_w.as_ptr(), AO_NONE, &mut pid);
+        let hr = activate(mgr, aumid_w.as_ptr(), args_ptr, AO_NONE, &mut pid);
         release(mgr);
         CoUninitialize();
 

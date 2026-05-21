@@ -161,10 +161,6 @@ const GUIDE_CONFIG_LINES = [
     line: 'approvals_reviewer = "user"',
   },
   {
-    comment: "服务层级，fast 通常能兼顾延迟和可用性",
-    line: 'service_tier = "fast"',
-  },
-  {
     comment: null,
     line: "",
   },

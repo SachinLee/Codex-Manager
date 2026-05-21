@@ -177,9 +177,7 @@ pub async fn service_model_catalog_delete(
 }
 
 #[tauri::command]
-pub async fn service_model_routing(
-    addr: Option<String>,
-) -> Result<serde_json::Value, String> {
+pub async fn service_model_routing(addr: Option<String>) -> Result<serde_json::Value, String> {
     rpc_call_in_background("apikey/modelRouting", addr, None).await
 }
 
@@ -268,8 +266,10 @@ pub async fn service_apikey_update_model(
     rotation_strategy: Option<String>,
     aggregate_api_id: Option<String>,
     account_plan_filter: Option<String>,
+    quota_limit_tokens: Option<i64>,
+    has_quota_limit_tokens: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let params = serde_json::json!({
+    let mut params = serde_json::json!({
       "id": key_id,
       "name": name,
       "modelSlug": model_slug,
@@ -282,6 +282,11 @@ pub async fn service_apikey_update_model(
       "aggregateApiId": aggregate_api_id,
       "accountPlanFilter": account_plan_filter,
     });
+    if has_quota_limit_tokens.unwrap_or(false) {
+        params["quotaLimitTokens"] = quota_limit_tokens
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null);
+    }
     rpc_call_in_background("apikey/updateModel", addr, Some(params)).await
 }
 

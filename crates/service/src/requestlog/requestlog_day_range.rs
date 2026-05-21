@@ -2,7 +2,7 @@ use chrono::{Duration, Local, LocalResult, TimeZone};
 
 pub(crate) const MAX_REQUESTED_DAY_RANGE_SECS: i64 = 48 * 60 * 60;
 
-fn local_day_bounds_ts() -> Result<(i64, i64), String> {
+pub(crate) fn local_day_bounds_ts() -> Result<(i64, i64), String> {
     let now = Local::now();
     let today = now.date_naive();
     let start_naive = today

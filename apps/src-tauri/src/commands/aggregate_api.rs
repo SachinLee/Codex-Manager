@@ -54,6 +54,8 @@ pub async fn service_aggregate_api_create(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
+    cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
     model_slugs: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
@@ -76,6 +78,8 @@ pub async fn service_aggregate_api_create(
         "balanceQueryAccessToken": balance_query_access_token,
         "balanceQueryUserId": balance_query_user_id,
         "balanceQueryConfigJson": balance_query_config_json,
+        "costMultiplier": cost_multiplier,
+        "dailySpendLimitUsd": daily_spend_limit_usd,
         "modelSlugs": model_slugs,
     });
     rpc_call_in_background("aggregateApi/create", addr, Some(params)).await
@@ -122,9 +126,12 @@ pub async fn service_aggregate_api_update(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
+    cost_multiplier: Option<f64>,
+    daily_spend_limit_usd: Option<f64>,
+    clear_daily_spend_limit_usd: Option<bool>,
     model_slugs: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
-    let params = serde_json::json!({
+    let mut params = serde_json::json!({
         "id": id,
         "providerType": provider_type,
         "supplierName": supplier_name,
@@ -146,8 +153,14 @@ pub async fn service_aggregate_api_update(
         "balanceQueryAccessToken": balance_query_access_token,
         "balanceQueryUserId": balance_query_user_id,
         "balanceQueryConfigJson": balance_query_config_json,
+        "costMultiplier": cost_multiplier,
         "modelSlugs": model_slugs,
     });
+    if let Some(value) = daily_spend_limit_usd {
+        params["dailySpendLimitUsd"] = serde_json::Value::from(value);
+    } else if clear_daily_spend_limit_usd.unwrap_or(false) {
+        params["dailySpendLimitUsd"] = serde_json::Value::Null;
+    }
     rpc_call_in_background("aggregateApi/update", addr, Some(params)).await
 }
 
@@ -271,5 +284,10 @@ pub async fn service_aggregate_api_supplier_models_import(
         "supplierKey": supplier_key,
         "providerType": provider_type,
     });
-    rpc_call_in_background("aggregateApi/sourceModels/importSupplier", addr, Some(params)).await
+    rpc_call_in_background(
+        "aggregateApi/sourceModels/importSupplier",
+        addr,
+        Some(params),
+    )
+    .await
 }

@@ -133,6 +133,7 @@ pub(super) fn maybe_respond_local_models(
         model_for_log,
         reasoning_for_log,
         storage,
+        log_request: false,
     };
     let cached = match read_cached_models_response(storage) {
         Ok(models) => models,

@@ -307,6 +307,49 @@ fn sample_incoming_headers_with_session_id(
     super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers)
 }
 
+fn sample_incoming_headers_with_platform_key(
+    conversation_id: Option<&str>,
+    turn_state: Option<&str>,
+    user_agent: Option<&str>,
+    originator: Option<&str>,
+    session_affinity: Option<&str>,
+    platform_key: &str,
+) -> super::super::super::IncomingHeaderSnapshot {
+    let mut headers = HeaderMap::new();
+    if let Some(conversation_id) = conversation_id {
+        headers.insert(
+            "conversation_id",
+            HeaderValue::from_str(conversation_id).expect("header"),
+        );
+    }
+    if let Some(turn_state) = turn_state {
+        headers.insert(
+            "x-codex-turn-state",
+            HeaderValue::from_str(turn_state).expect("header"),
+        );
+    }
+    if let Some(user_agent) = user_agent {
+        headers.insert(
+            "User-Agent",
+            HeaderValue::from_str(user_agent).expect("header"),
+        );
+    }
+    if let Some(originator) = originator {
+        headers.insert(
+            "originator",
+            HeaderValue::from_str(originator).expect("header"),
+        );
+    }
+    if let Some(session_affinity) = session_affinity {
+        headers.insert(
+            "x-session-affinity",
+            HeaderValue::from_str(session_affinity).expect("header"),
+        );
+    }
+    headers.insert("x-api-key", HeaderValue::from_str(platform_key).expect("header"));
+    super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers)
+}
+
 #[test]
 fn preferred_client_prompt_cache_key_is_used_without_native_anchor() {
     let incoming_headers = sample_incoming_headers(None, None, None, None, None);
@@ -318,9 +361,33 @@ fn preferred_client_prompt_cache_key_is_used_without_native_anchor() {
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        false,
     );
 
     assert_eq!(actual.as_deref(), Some("client_thread"));
+}
+
+#[test]
+fn preferred_client_prompt_cache_key_is_ignored_for_native_codex_clients() {
+    let incoming_headers = sample_incoming_headers(
+        None,
+        None,
+        Some("codex_exec/0.999.0"),
+        Some("codex_exec"),
+        Some("affinity-1"),
+    );
+    let initial_request_meta = sample_request_metadata(Some("client_thread"));
+    let client_request_meta = sample_request_metadata(Some("client_thread"));
+
+    let actual = resolve_preferred_client_prompt_cache_key(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        &incoming_headers,
+        &initial_request_meta,
+        &client_request_meta,
+        true,
+    );
+
+    assert_eq!(actual, None);
 }
 
 #[test]
@@ -334,6 +401,7 @@ fn preferred_client_prompt_cache_key_is_ignored_when_conversation_anchor_exists(
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        false,
     );
 
     assert_eq!(actual, None);
@@ -351,6 +419,7 @@ fn preferred_client_prompt_cache_key_is_ignored_when_turn_state_exists() {
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        false,
     );
 
     assert_eq!(actual, None);
@@ -367,6 +436,7 @@ fn preferred_client_prompt_cache_key_is_ignored_even_when_matching_native_anchor
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        false,
     );
 
     assert_eq!(actual, None);
@@ -383,6 +453,72 @@ fn preferred_client_prompt_cache_key_is_disabled_for_anthropic_native_requests()
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        false,
+    );
+
+    assert_eq!(actual, None);
+}
+
+#[test]
+fn native_codex_responses_with_prompt_cache_key_still_get_sticky_conversation_id() {
+    let incoming_headers = sample_incoming_headers_with_platform_key(
+        None,
+        None,
+        Some("codex_exec/0.999.0"),
+        Some("codex_exec"),
+        Some("affinity-1"),
+        "gk_test",
+    );
+
+    let actual = resolve_local_conversation_id(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        "/v1/responses",
+        &incoming_headers,
+        true,
+        true,
+    );
+
+    assert!(actual.is_some());
+}
+
+#[test]
+fn codex_shaped_responses_with_prompt_cache_key_still_get_sticky_conversation_id() {
+    let incoming_headers = sample_incoming_headers_with_platform_key(
+        None,
+        None,
+        Some("codex-app/1.0"),
+        Some("codex-app"),
+        None,
+        "gk_test",
+    );
+
+    let actual = resolve_local_conversation_id(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        "/v1/responses",
+        &incoming_headers,
+        true,
+        true,
+    );
+
+    assert!(actual.is_some());
+}
+
+#[test]
+fn non_native_responses_with_prompt_cache_key_do_not_get_sticky_conversation_id() {
+    let incoming_headers = sample_incoming_headers(
+        None,
+        None,
+        Some("external-client/1.0"),
+        Some("external-client"),
+        None,
+    );
+
+    let actual = resolve_local_conversation_id(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        "/v1/responses",
+        &incoming_headers,
+        true,
+        false,
     );
 
     assert_eq!(actual, None);

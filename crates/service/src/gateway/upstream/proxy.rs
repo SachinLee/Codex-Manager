@@ -236,6 +236,25 @@ fn resolve_aggregate_candidates_for_route(
         protocol_type,
         aggregate_api_id,
     )?;
+    let total_before_daily_limit = candidates.len();
+    let (day_start_ts, day_end_ts) = crate::requestlog::day_range::local_day_bounds_ts()?;
+    candidates = super::protocol::aggregate_api::filter_daily_spend_limited_candidates(
+        storage,
+        candidates,
+        day_start_ts,
+        day_end_ts,
+    )?;
+    if candidates.is_empty() && total_before_daily_limit > 0 {
+        let provider_type = match protocol_type {
+            "anthropic_native" => "claude",
+            "gemini_native" => "gemini",
+            _ => "codex",
+        };
+        return Err(format!(
+            "{} for provider {provider_type}",
+            super::protocol::aggregate_api::AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED
+        ));
+    }
     let Some(model) = model_for_log
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -854,7 +873,7 @@ mod tests {
     use crate::gateway::upstream::executor::{
         GatewayUpstreamExecutionPlan, GatewayUpstreamExecutorKind, GatewayUpstreamRouteKind,
     };
-    use codexmanager_core::storage::{now_ts, AggregateApi, ModelSourceMapping};
+    use codexmanager_core::storage::{now_ts, AggregateApi, ModelSourceMapping, RequestTokenStat};
     use std::time::{Duration, Instant};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -982,6 +1001,74 @@ mod tests {
             candidates[0].model_override.as_deref(),
             Some("vendor-gpt-5.5")
         );
+    }
+
+    #[test]
+    fn aggregate_candidates_skip_daily_spend_exhausted_sources() {
+        let _guard = crate::test_env_guard();
+        let storage = open_test_storage("aggregate-candidates-daily-limit");
+        let now = now_ts();
+        let mut exhausted = aggregate_api("agg-exhausted", 10);
+        exhausted.daily_spend_limit_usd = Some(1.0);
+        let mut available = aggregate_api("agg-available", 20);
+        available.daily_spend_limit_usd = Some(2.0);
+        storage
+            .insert_aggregate_api(&exhausted)
+            .expect("insert exhausted aggregate api");
+        storage
+            .insert_aggregate_api(&available)
+            .expect("insert available aggregate api");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 1,
+                aggregate_api_id: Some("agg-exhausted".to_string()),
+                estimated_cost_usd: Some(1.0),
+                created_at: now,
+                ..RequestTokenStat::default()
+            })
+            .expect("insert exhausted usage");
+
+        let candidates = resolve_aggregate_candidates_for_route(
+            &storage,
+            "openai_compat",
+            None,
+            Some("gpt-5.5"),
+        )
+        .expect("resolve candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, "agg-available");
+    }
+
+    #[test]
+    fn aggregate_candidates_error_when_all_daily_spend_limited() {
+        let _guard = crate::test_env_guard();
+        let storage = open_test_storage("aggregate-candidates-daily-limit-all");
+        let now = now_ts();
+        let mut exhausted = aggregate_api("agg-exhausted", 10);
+        exhausted.daily_spend_limit_usd = Some(1.0);
+        storage
+            .insert_aggregate_api(&exhausted)
+            .expect("insert exhausted aggregate api");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 1,
+                aggregate_api_id: Some("agg-exhausted".to_string()),
+                estimated_cost_usd: Some(1.0),
+                created_at: now,
+                ..RequestTokenStat::default()
+            })
+            .expect("insert exhausted usage");
+
+        let error = resolve_aggregate_candidates_for_route(
+            &storage,
+            "openai_compat",
+            None,
+            Some("gpt-5.5"),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("aggregate_api_daily_spend_limit_exhausted"));
     }
 
     /// 函数 `exhausted_gateway_error_includes_attempts_skips_and_last_error`

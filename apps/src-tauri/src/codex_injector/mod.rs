@@ -6,7 +6,7 @@ mod process;
 pub use app_paths::{describe_codex_path, find_codex};
 pub use bridge::build_bridge_setup_script;
 pub use cdp_client::{find_codex_page, run_injection, wait_for_debug_port};
-pub use process::{new_shared_status, stop_process, InjectorStatus, SharedStatus};
+pub use process::{is_process_alive, new_shared_status, stop_process, InjectorStatus, SharedStatus};
 
 /// 注入脚本（编译时内嵌，确保资产不丢失）
 const INJECT_SCRIPT: &str = include_str!("../../assets/renderer-inject.js");
@@ -76,6 +76,24 @@ pub fn start_and_inject(
     }
 
     result
+}
+
+/// 普通启动 Codex：不打开调试端口，不执行 CDP 注入。
+pub fn start_plain(custom_path: Option<&str>, status: SharedStatus) -> Result<(), String> {
+    let install_kind = find_codex(custom_path)?;
+    let path_desc = describe_codex_path(&install_kind);
+    log::info!("Codex 普通启动路径: {path_desc}");
+
+    let pid = process::launch_codex_plain(&install_kind)?;
+    log::info!("Codex 已普通启动，PID: {pid:?}");
+
+    let mut s = status.lock().unwrap();
+    s.running = true;
+    s.injected = false;
+    s.debug_port = None;
+    s.codex_path = Some(path_desc);
+    s.pid = pid;
+    Ok(())
 }
 
 fn retry_find_page(debug_port: u16, retries: u32, interval_ms: u64) -> Result<String, String> {

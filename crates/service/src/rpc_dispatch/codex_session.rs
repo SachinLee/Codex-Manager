@@ -6,6 +6,13 @@ fn db_path() -> std::path::PathBuf {
     codex_session::default_codex_db_path()
 }
 
+fn codex_home() -> std::path::PathBuf {
+    db_path()
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
 pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
     let result = match req.method.as_str() {
         "codexSession/list" => {
@@ -17,6 +24,35 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "codexSession/delete" => {
             let session_id = super::str_param(req, "sessionId").unwrap_or("");
             super::value_or_error(codex_session::delete_session(&db_path(), session_id))
+        }
+        "codexSession/deleteMany" => {
+            let session_ids = req
+                .params
+                .as_ref()
+                .and_then(|params| params.get("sessionIds"))
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let db = db_path();
+            let mut results = Vec::with_capacity(session_ids.len());
+            for session_id in session_ids {
+                match codex_session::delete_session(&db, session_id.as_str()) {
+                    Ok(result) => results.push(result),
+                    Err(err) => {
+                        log::warn!("批量删除会话 {} 失败: {err}", session_id);
+                        results.push(codex_session::DeleteResult::backup_failed(session_id));
+                    }
+                }
+            }
+            super::as_json(results).into()
         }
         "codexSession/undo" => {
             let token = super::str_param(req, "undoToken").unwrap_or("");
@@ -31,6 +67,12 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         }
         "codexSession/listBackupTokens" => {
             super::as_json(codex_session::list_backup_tokens()).into()
+        }
+        "codexSession/providerSyncCm" => {
+            super::value_or_error(codex_session::sync_provider_to_cm(&codex_home()))
+        }
+        "codexSession/configureCm" => {
+            super::value_or_error(codex_session::configure_cm_for_codex_app())
         }
         _ => return None,
     };

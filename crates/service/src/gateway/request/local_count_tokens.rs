@@ -151,6 +151,7 @@ pub(super) fn maybe_respond_local_count_tokens(
         model_for_log,
         reasoning_for_log,
         storage,
+        log_request: true,
     };
 
     let estimate_result = if is_gemini_count_tokens {

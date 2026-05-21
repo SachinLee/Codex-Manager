@@ -11,6 +11,7 @@ pub(super) struct LocalResponseContext<'a> {
     pub(super) model_for_log: Option<&'a str>,
     pub(super) reasoning_for_log: Option<&'a str>,
     pub(super) storage: &'a codexmanager_core::storage::Storage,
+    pub(super) log_request: bool,
 }
 
 /// 函数 `record_local_result`
@@ -36,6 +37,9 @@ pub(super) fn record_local_result(
     super::trace_log::log_attempt_result(ctx.trace_id, "-", None, status_code, error);
     super::trace_log::log_request_final(ctx.trace_id, status_code, None, None, error, 0);
     super::record_gateway_request_outcome(ctx.path, status_code, Some(ctx.protocol_type));
+    if !ctx.log_request {
+        return;
+    }
     super::write_request_log(
         ctx.storage,
         super::request_log::RequestLogTraceContext {

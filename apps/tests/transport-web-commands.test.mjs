@@ -185,6 +185,15 @@ test("createWebCommandMap 为模型来源映射命令提供 Web RPC 映射", () 
   });
 });
 
+test("createWebCommandMap 暴露 Codex 会话批量删除 RPC", () => {
+  assert.deepEqual(commandMap.codex_session_delete_many, {
+    rpcMethod: "codexSession/deleteMany",
+  });
+  assert.deepEqual(commandMap.codex_session_delete_all_archived, {
+    rpcMethod: "codexSession/deleteAllArchived",
+  });
+});
+
 test("createWebCommandMap 为外部协议跳转提供当前窗口回退", async () => {
   const previousWindow = globalThis.window;
   const location = { href: "/" };

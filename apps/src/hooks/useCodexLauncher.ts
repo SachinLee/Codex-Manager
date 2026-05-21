@@ -44,6 +44,19 @@ export function useCodexLauncherStart() {
   });
 }
 
+export function useCodexLauncherStartPlain() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (opts?: Pick<LaunchOptions, "customPath">) =>
+      codexLauncherClient.startPlain(opts),
+    onSuccess: () => {
+      toast.success("Codex 已启动");
+      qc.invalidateQueries({ queryKey: KEYS.status });
+    },
+    onError: (e: Error) => toast.error(`启动失败: ${e.message}`),
+  });
+}
+
 export function useCodexLauncherStop() {
   const qc = useQueryClient();
   return useMutation({
@@ -80,5 +93,43 @@ export function useCodexSessionDelete() {
       }
     },
     onError: (e: Error) => toast.error(`删除失败: ${e.message}`),
+  });
+}
+
+export function useCodexSessionsDeleteMany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionIds: string[]) => codexLauncherClient.deleteSessions(sessionIds),
+    onSuccess: (results) => {
+      const deleted = results.filter((result) => result.status === "deleted").length;
+      const failed = results.length - deleted;
+      if (failed > 0) {
+        toast.warning(`已删除 ${deleted} 个会话，${failed} 个未删除`);
+      } else {
+        toast.success(`已删除 ${deleted} 个会话`);
+      }
+      qc.invalidateQueries({ queryKey: KEYS.sessions });
+      qc.invalidateQueries({ queryKey: KEYS.archived });
+    },
+    onError: (e: Error) => toast.error(`批量删除失败: ${e.message}`),
+  });
+}
+
+export function useCodexArchivedSessionsDeleteAll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => codexLauncherClient.deleteAllArchivedSessions(),
+    onSuccess: (results) => {
+      const deleted = results.filter((result) => result.status === "deleted").length;
+      const failed = results.length - deleted;
+      if (failed > 0) {
+        toast.warning(`已删除 ${deleted} 个已归档会话，${failed} 个未删除`);
+      } else {
+        toast.success(`已删除 ${deleted} 个已归档会话`);
+      }
+      qc.invalidateQueries({ queryKey: KEYS.sessions });
+      qc.invalidateQueries({ queryKey: KEYS.archived });
+    },
+    onError: (e: Error) => toast.error(`删除已归档会话失败: ${e.message}`),
   });
 }

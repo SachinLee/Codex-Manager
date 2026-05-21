@@ -14,6 +14,7 @@ pub(crate) struct ParsedRequestMetadata {
     pub(crate) request_shape: Option<String>,
     pub(crate) has_prompt_cache_key: bool,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) has_client_metadata: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -87,6 +88,7 @@ pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
         });
 
     let request_shape = Some(summarize_request_shape_from_object(object));
+    let has_client_metadata = object.contains_key("client_metadata");
     let has_prompt_cache_key = value
         .get("prompt_cache_key")
         .and_then(Value::as_str)
@@ -112,6 +114,7 @@ pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
         request_shape,
         has_prompt_cache_key,
         prompt_cache_key,
+        has_client_metadata,
     }
 }
 

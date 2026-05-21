@@ -10,6 +10,7 @@ import {
   Zap,
   Circle,
   Search,
+  KeyRound,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -43,11 +44,15 @@ import {
 import {
   useCodexLauncherStatus,
   useCodexLauncherStart,
+  useCodexLauncherStartPlain,
   useCodexLauncherStop,
   useCodexSessions,
   useCodexSessionDelete,
+  useCodexSessionsDeleteMany,
+  useCodexArchivedSessionsDeleteAll,
 } from "@/hooks/useCodexLauncher";
 import { codexLauncherClient, type CodexSession } from "@/lib/api/codex-launcher";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const ARCHIVE_ALL = "__all__";
 const PROJECT_ALL = "__all__";
@@ -73,14 +78,46 @@ function StatusDot({ active }: { active: boolean }) {
 
 function LauncherStatusCard() {
   const { data: status, isLoading } = useCodexLauncherStatus();
-  const startMutation = useCodexLauncherStart();
+  const injectStartMutation = useCodexLauncherStart();
+  const plainStartMutation = useCodexLauncherStartPlain();
   const stopMutation = useCodexLauncherStop();
 
-  const [customPort, setCustomPort] = useState<string>("");
+  const [configuringCm, setConfiguringCm] = useState(false);
+  const [syncingProvider, setSyncingProvider] = useState(false);
 
-  const handleStart = () => {
-    const port = customPort ? parseInt(customPort, 10) : undefined;
-    startMutation.mutate(port ? { debugPort: port } : undefined);
+  const handlePlainStart = () => {
+    plainStartMutation.mutate(undefined);
+  };
+
+  const handleInjectStart = () => {
+    injectStartMutation.mutate(undefined);
+  };
+
+  const handleConfigureCm = async () => {
+    setConfiguringCm(true);
+    try {
+      const result = await codexLauncherClient.configureCm();
+      const sync = result.providerSync;
+      toast.success(
+        `已配置 cm：账号 ${result.selectedAccountLabel || result.selectedAccountId}，同步 ${sync.changedSessionFiles} 个会话文件 / ${sync.sqliteRowsUpdated} 行`
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setConfiguringCm(false);
+    }
+  };
+
+  const handleSyncProvider = async () => {
+    setSyncingProvider(true);
+    try {
+      const result = await codexLauncherClient.syncProviderCm();
+      toast.success(`Provider 已同步：${result.changedSessionFiles} 个会话文件 / ${result.sqliteRowsUpdated} 行`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSyncingProvider(false);
+    }
   };
 
   if (isLoading) {
@@ -101,7 +138,7 @@ function LauncherStatusCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <Zap className="h-4 w-4 text-primary" />
-          Codex 注入器状态
+          Codex 启动状态
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -111,8 +148,8 @@ function LauncherStatusCard() {
             {status?.running ? "运行中" : "未运行"}
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <StatusDot active={!!status?.injected} />
-            {status?.injected ? "已注入" : "未注入"}
+            <StatusDot active={!!status?.running || !!status?.injected} />
+            {status?.injected ? "已注入" : status?.running ? "普通启动" : "未注入"}
           </div>
           {status?.debugPort && (
             <div className="text-muted-foreground col-span-2">
@@ -128,14 +165,25 @@ function LauncherStatusCard() {
 
         <div className="flex items-center gap-2 flex-wrap">
           {!status?.running ? (
-            <Button
-              size="sm"
-              onClick={handleStart}
-              disabled={startMutation.isPending}
-            >
-              <Rocket className="h-3.5 w-3.5 mr-1.5" />
-              {startMutation.isPending ? "启动中..." : "启动 Codex"}
-            </Button>
+            <>
+              <Button
+                size="sm"
+                onClick={handlePlainStart}
+                disabled={plainStartMutation.isPending || injectStartMutation.isPending}
+              >
+                <Rocket className="h-3.5 w-3.5 mr-1.5" />
+                {plainStartMutation.isPending ? "启动中..." : "普通启动"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleInjectStart}
+                disabled={plainStartMutation.isPending || injectStartMutation.isPending}
+              >
+                <Zap className="h-3.5 w-3.5 mr-1.5" />
+                {injectStartMutation.isPending ? "注入中..." : "启动并注入"}
+              </Button>
+            </>
           ) : (
             <Button
               size="sm"
@@ -162,6 +210,24 @@ function LauncherStatusCard() {
             <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
             探测路径
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleConfigureCm}
+            disabled={configuringCm}
+          >
+            <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+            {configuringCm ? "配置中..." : "配置 cm"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={handleSyncProvider}
+            disabled={syncingProvider}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncingProvider ? "animate-spin" : ""}`} />
+            同步 Provider
+          </Button>
         </div>
       </CardContent>
     </Card>
@@ -171,11 +237,16 @@ function LauncherStatusCard() {
 function SessionTable() {
   const { data: sessions, isLoading, refetch } = useCodexSessions();
   const deleteMutation = useCodexSessionDelete();
+  const deleteManyMutation = useCodexSessionsDeleteMany();
+  const deleteAllArchivedMutation = useCodexArchivedSessionsDeleteAll();
 
   const [keyword, setKeyword] = useState("");
   const [projectFilter, setProjectFilter] = useState<string>(PROJECT_ALL);
   const [archiveFilter, setArchiveFilter] = useState<string>(ARCHIVE_ALL);
   const [pendingDelete, setPendingDelete] = useState<CodexSession | null>(null);
+  const [pendingBulkDelete, setPendingBulkDelete] = useState<CodexSession[]>([]);
+  const [pendingDeleteArchived, setPendingDeleteArchived] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 
   // 项目下拉：从会话 cwd 去重；保留全路径作为 value，用 shortCwd 展示
   const projectOptions = useMemo(() => {
@@ -210,10 +281,83 @@ function SessionTable() {
     });
   }, [sessions, keyword, projectFilter, archiveFilter]);
 
+  const filteredIds = useMemo(
+    () => filtered.map((session) => session.sessionId),
+    [filtered]
+  );
+  const selectedInFiltered = useMemo(
+    () => filtered.filter((session) => selectedIds.has(session.sessionId)),
+    [filtered, selectedIds]
+  );
+  const allFilteredSelected =
+    filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+  const someFilteredSelected =
+    filteredIds.some((id) => selectedIds.has(id)) && !allFilteredSelected;
+  const archivedCount = useMemo(
+    () => (sessions || []).filter((session) => session.archived).length,
+    [sessions]
+  );
+
   const handleConfirmDelete = () => {
     if (!pendingDelete) return;
     deleteMutation.mutate(pendingDelete.sessionId, {
       onSettled: () => setPendingDelete(null),
+    });
+  };
+
+  const toggleSelected = (sessionId: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  };
+
+  const toggleFilteredSelected = (checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      filteredIds.forEach((id) => {
+        if (checked) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleConfirmBulkDelete = () => {
+    const ids = pendingBulkDelete.map((session) => session.sessionId);
+    if (ids.length === 0) return;
+    deleteManyMutation.mutate(ids, {
+      onSettled: () => {
+        setSelectedIds((current) => {
+          const next = new Set(current);
+          ids.forEach((id) => next.delete(id));
+          return next;
+        });
+        setPendingBulkDelete([]);
+      },
+    });
+  };
+
+  const handleConfirmDeleteArchived = () => {
+    deleteAllArchivedMutation.mutate(undefined, {
+      onSettled: () => {
+        setSelectedIds((current) => {
+          const next = new Set(current);
+          (sessions || [])
+            .filter((session) => session.archived)
+            .forEach((session) => next.delete(session.sessionId));
+          return next;
+        });
+        setPendingDeleteArchived(false);
+      },
     });
   };
 
@@ -303,6 +447,30 @@ function SessionTable() {
                 重置
               </Button>
             )}
+            {selectedInFiltered.length > 0 && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-8 text-xs"
+                disabled={deleteManyMutation.isPending}
+                onClick={() => setPendingBulkDelete(selectedInFiltered)}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                删除选中 {selectedInFiltered.length}
+              </Button>
+            )}
+            {archivedCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs text-destructive hover:text-destructive"
+                disabled={deleteAllArchivedMutation.isPending}
+                onClick={() => setPendingDeleteArchived(true)}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                删除已归档 {archivedCount}
+              </Button>
+            )}
           </div>
         )}
       </CardHeader>
@@ -319,6 +487,14 @@ function SessionTable() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={allFilteredSelected}
+                    aria-checked={someFilteredSelected ? "mixed" : allFilteredSelected}
+                    onCheckedChange={(checked) => toggleFilteredSelected(checked === true)}
+                    aria-label="选择当前筛选会话"
+                  />
+                </TableHead>
                 <TableHead>标题</TableHead>
                 <TableHead className="w-56">所属项目</TableHead>
                 <TableHead className="w-20 text-center">归档</TableHead>
@@ -329,6 +505,15 @@ function SessionTable() {
             <TableBody>
               {filtered.map((s) => (
                 <TableRow key={s.sessionId}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selectedIds.has(s.sessionId)}
+                      onCheckedChange={(checked) =>
+                        toggleSelected(s.sessionId, checked === true)
+                      }
+                      aria-label={`选择会话 ${s.title || s.sessionId}`}
+                    />
+                  </TableCell>
                   <TableCell className="font-medium max-w-xs truncate">
                     {s.title || <span className="text-muted-foreground italic">无标题</span>}
                   </TableCell>
@@ -425,6 +610,82 @@ function SessionTable() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={pendingBulkDelete.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setPendingBulkDelete([]);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认批量删除会话</DialogTitle>
+            <DialogDescription>
+              即将删除 {pendingBulkDelete.length} 个会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-48 space-y-2 overflow-y-auto text-sm">
+            {pendingBulkDelete.slice(0, 12).map((session) => (
+              <div key={session.sessionId} className="truncate">
+                {session.title || <span className="text-muted-foreground italic">无标题</span>}
+              </div>
+            ))}
+            {pendingBulkDelete.length > 12 && (
+              <div className="text-xs text-muted-foreground">
+                还有 {pendingBulkDelete.length - 12} 个会话
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingBulkDelete([])}
+              disabled={deleteManyMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmBulkDelete}
+              disabled={deleteManyMutation.isPending}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              {deleteManyMutation.isPending ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingDeleteArchived}
+        onOpenChange={(open) => setPendingDeleteArchived(open)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认删除已归档会话</DialogTitle>
+            <DialogDescription>
+              即将删除全部 {archivedCount} 个已归档会话及其本地数据。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDeleteArchived(false)}
+              disabled={deleteAllArchivedMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDeleteArchived}
+              disabled={deleteAllArchivedMutation.isPending}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              {deleteAllArchivedMutation.isPending ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
@@ -435,7 +696,7 @@ export default function CodexLauncherPage() {
       <div>
         <h1 className="text-xl font-semibold">Codex 启动器</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          注入式启动 Codex，实现会话删除、插件入口解锁等增强功能
+          普通启动 Codex 并使用 Codex-Manager 会话管理；注入模式仅作为旧增强能力保留
         </p>
       </div>
 

@@ -714,6 +714,46 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
     }
 }
 
+pub(crate) fn filter_daily_spend_limited_candidates(
+    storage: &Storage,
+    candidates: Vec<AggregateApi>,
+    day_start_ts: i64,
+    day_end_ts: i64,
+) -> Result<Vec<AggregateApi>, String> {
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+    let usage_by_api = storage
+        .summarize_request_token_stats_by_aggregate_api_between(day_start_ts, day_end_ts)
+        .map_err(|err| format!("aggregate_api_daily_usage_read_failed: {err}"))?
+        .into_iter()
+        .map(|item| (item.aggregate_api_id, item.estimated_cost_usd.max(0.0)))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    Ok(candidates
+        .into_iter()
+        .filter(|api| {
+            let Some(limit) = api
+                .daily_spend_limit_usd
+                .filter(|value| value.is_finite() && *value > 0.0)
+            else {
+                return true;
+            };
+            let used = usage_by_api.get(api.id.as_str()).copied().unwrap_or(0.0);
+            let available = used < limit;
+            if !available {
+                log::info!(
+                    "event=aggregate_api_daily_spend_limit_skip api_id={} used_usd={:.6} limit_usd={:.6}",
+                    api.id,
+                    used,
+                    limit
+                );
+            }
+            available
+        })
+        .collect())
+}
+
 /// 函数 `proxy_aggregate_request`
 ///
 /// 作者: gaohongshun
@@ -1346,11 +1386,12 @@ mod bridge_tests {
 
 #[cfg(test)]
 mod tests {
-    use codexmanager_core::storage::{now_ts, AggregateApi, Storage};
+    use codexmanager_core::storage::{now_ts, AggregateApi, RequestTokenStat, Storage};
 
     use super::{
-        build_upstream_url, effective_action_path, resolve_aggregate_api_rotation_candidates,
-        resolve_passthrough_sse_protocol, rewrite_body_model_override,
+        build_upstream_url, effective_action_path, filter_daily_spend_limited_candidates,
+        resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
+        rewrite_body_model_override,
     };
     use crate::aggregate_api::{
         AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -1492,6 +1533,62 @@ mod tests {
             .map(|item| item.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(candidate_ids, vec!["agg-gemini"]);
+    }
+
+    #[test]
+    fn daily_spend_limited_candidates_are_skipped() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let mut exhausted = aggregate_api_with_action(None);
+        exhausted.id = "agg-exhausted".to_string();
+        exhausted.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        exhausted.daily_spend_limit_usd = Some(1.0);
+        let mut available = aggregate_api_with_action(None);
+        available.id = "agg-available".to_string();
+        available.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        available.daily_spend_limit_usd = Some(2.0);
+
+        storage
+            .insert_aggregate_api(&exhausted)
+            .expect("insert exhausted aggregate api");
+        storage
+            .insert_aggregate_api(&available)
+            .expect("insert available aggregate api");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 1,
+                aggregate_api_id: Some("agg-exhausted".to_string()),
+                estimated_cost_usd: Some(1.0),
+                created_at: now,
+                ..RequestTokenStat::default()
+            })
+            .expect("insert exhausted usage");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 2,
+                aggregate_api_id: Some("agg-available".to_string()),
+                estimated_cost_usd: Some(1.5),
+                created_at: now,
+                ..RequestTokenStat::default()
+            })
+            .expect("insert available usage");
+
+        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
+            .expect("resolve candidates");
+        let filtered = filter_daily_spend_limited_candidates(
+            &storage,
+            candidates,
+            now.saturating_sub(60),
+            now.saturating_add(60),
+        )
+        .expect("filter daily limit");
+        let candidate_ids = filtered
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(candidate_ids, vec!["agg-available"]);
     }
 
     /// 函数 `final_error_promotes_success_status_to_bad_gateway`
