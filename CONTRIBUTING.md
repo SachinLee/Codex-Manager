@@ -55,10 +55,10 @@ cargo test --workspace
 
 ```bash
 pnpm -C apps run dev
-pnpm -C apps run test
-pnpm -C apps run test:ui
 pnpm -C apps run build
-pnpm -C apps run check
+pnpm -C apps run build:desktop
+pnpm -C apps run test:runtime
+pnpm -C apps run test:navigation
 ```
 
 Rust：
@@ -92,10 +92,13 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 -Bundle nsis -CleanDist -Porta
 
 以下文件已明显偏大，修改时必须克制追加总控逻辑：
 
-- `apps/src/main.js`
+- `apps/src/app/settings/page.tsx`
+- `apps/src/app/logs/page.tsx`
+- `apps/src/app/aggregate-api/page.tsx`
+- `apps/src/app/page.tsx`
 - `apps/src-tauri/src/lib.rs`
 - `crates/service/src/lib.rs`
-- `crates/service/src/gateway/protocol_adapter/response_conversion.rs`
+- `crates/service/src/gateway/`
 - `.github/workflows/release-all.yml`
 
 ### 3.3 大文件预警阈值
@@ -130,9 +133,9 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 -Bundle nsis -CleanDist -Porta
 前端改动：
 
 ```bash
-pnpm -C apps run test
 pnpm -C apps run build
-pnpm -C apps run test:ui
+pnpm -C apps run test:runtime
+pnpm -C apps run test:navigation
 ```
 
 Rust / 服务端改动：

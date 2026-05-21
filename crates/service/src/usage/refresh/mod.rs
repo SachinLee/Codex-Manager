@@ -147,8 +147,8 @@ static USAGE_REFRESH_COMPLETED_SUBSCRIBERS: OnceLock<
     Mutex<Vec<Sender<UsageRefreshCompletedEvent>>>,
 > = OnceLock::new();
 
+use self::batch::refresh_usage_and_aggregate_balances_for_polling_cycle;
 pub(crate) use self::batch::refresh_usage_for_all_accounts;
-use self::batch::refresh_usage_for_polling_batch;
 #[cfg(test)]
 use self::batch::{next_usage_poll_cursor, usage_poll_batch_indices};
 use self::errors::{
@@ -638,6 +638,7 @@ fn refresh_account_snapshot(
             .upsert_account_subscription(
                 account_id,
                 subscription.has_subscription,
+                subscription.account_plan_type.as_deref(),
                 subscription.plan_type.as_deref(),
                 subscription.expires_at,
                 subscription.renews_at,

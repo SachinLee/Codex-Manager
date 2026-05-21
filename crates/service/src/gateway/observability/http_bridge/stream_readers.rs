@@ -10,7 +10,7 @@ use super::{
     build_images_api_response, chat_image_payload, collect_image_generation_data_urls,
     collect_image_generation_results, image_generation_result_payload, images_usage_value,
     inspect_sse_frame_for_protocol, ImagesResponseFormat, OpenAIResponsesEvent,
-    PassthroughSseProtocol, SseTerminal, UpstreamResponseUsage,
+    OpenAIResponsesOutputTextState, PassthroughSseProtocol, SseTerminal, UpstreamResponseUsage,
 };
 #[path = "stream_readers/anthropic.rs"]
 mod anthropic;

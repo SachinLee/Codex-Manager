@@ -52,6 +52,7 @@ pub struct AccountMetadata {
 pub struct AccountSubscription {
     pub account_id: String,
     pub has_subscription: bool,
+    pub account_plan_type: Option<String>,
     pub plan_type: Option<String>,
     pub expires_at: Option<i64>,
     pub renews_at: Option<i64>,
@@ -1073,6 +1074,9 @@ impl Storage {
             include_str!("../../migrations/065_aggregate_api_daily_spend_limit.sql"),
             |s| s.ensure_aggregate_apis_table(),
         )?;
+        self.apply_compat_migration("063_account_subscriptions_account_plan_type", |s| {
+            s.ensure_account_subscriptions_table()
+        })?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_supplier_model_tables()?;

@@ -750,6 +750,161 @@ fn openai_chat_completions_api_body_is_adapted_to_responses_for_codex_backend() 
 }
 
 #[test]
+fn openai_chat_completions_response_format_json_object_adapts_to_responses_text_format() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "return json" }],
+        "response_format": { "type": "json_object" }
+    });
+    let adapted = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect("adapt chat body");
+    let payload: Value = serde_json::from_slice(&adapted).expect("json body");
+
+    assert_eq!(
+        payload
+            .get("text")
+            .and_then(|text| text.get("format"))
+            .and_then(|format| format.get("type"))
+            .and_then(Value::as_str),
+        Some("json_object")
+    );
+}
+
+#[test]
+fn openai_chat_completions_response_format_json_schema_adapts_to_responses_text_format() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "return json" }],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer_schema",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "answer": { "type": "string" }
+                    },
+                    "required": ["answer"],
+                    "additionalProperties": false
+                }
+            }
+        }
+    });
+    let adapted = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect("adapt chat body");
+    let payload: Value = serde_json::from_slice(&adapted).expect("json body");
+    let format = payload
+        .get("text")
+        .and_then(|text| text.get("format"))
+        .expect("text format");
+
+    assert_eq!(
+        format.get("type").and_then(Value::as_str),
+        Some("json_schema")
+    );
+    assert_eq!(
+        format.get("name").and_then(Value::as_str),
+        Some("answer_schema")
+    );
+    assert_eq!(format.get("strict").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        format
+            .get("schema")
+            .and_then(|schema| schema.get("required"))
+            .and_then(Value::as_array)
+            .and_then(|required| required.first())
+            .and_then(Value::as_str),
+        Some("answer")
+    );
+}
+
+#[test]
+fn openai_chat_completions_response_format_preserves_existing_text_fields() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "return json" }],
+        "text": {
+            "verbosity": "low",
+            "format": { "type": "text" }
+        },
+        "response_format": { "type": "json_object" }
+    });
+    let adapted = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect("adapt chat body");
+    let payload: Value = serde_json::from_slice(&adapted).expect("json body");
+
+    assert_eq!(
+        payload
+            .get("text")
+            .and_then(|text| text.get("verbosity"))
+            .and_then(Value::as_str),
+        Some("low")
+    );
+    assert_eq!(
+        payload
+            .get("text")
+            .and_then(|text| text.get("format"))
+            .and_then(|format| format.get("type"))
+            .and_then(Value::as_str),
+        Some("json_object")
+    );
+}
+
+#[test]
+fn openai_chat_completions_ignores_non_object_text_without_response_format() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "hello" }],
+        "text": "legacy-client-noise"
+    });
+    let adapted = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect("adapt chat body");
+    let payload: Value = serde_json::from_slice(&adapted).expect("json body");
+
+    assert!(payload.get("text").is_none());
+}
+
+#[test]
+fn openai_chat_completions_response_format_rejects_non_object_text() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "return json" }],
+        "text": "legacy-client-noise",
+        "response_format": { "type": "json_object" }
+    });
+    let err = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect_err("response_format with non-object text should fail");
+
+    assert!(err.contains("text must be an object"));
+}
+
+#[test]
+fn openai_chat_completions_response_format_rejects_invalid_values() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "return json" }],
+        "response_format": { "type": "xml" }
+    });
+    let err = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect_err("unsupported response_format should fail");
+
+    assert!(err.contains("unsupported response_format.type"));
+}
+
+#[test]
 fn opencode_headers_with_only_session_id_are_not_treated_as_native_codex_clients() {
     let opencode_headers = sample_incoming_headers_with_session_id(
         None,

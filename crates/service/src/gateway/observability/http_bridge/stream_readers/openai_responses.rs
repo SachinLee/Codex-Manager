@@ -1,8 +1,8 @@
 use super::{
-    classify_upstream_stream_read_error, mark_first_response_ms, merge_usage,
-    stream_idle_timed_out, stream_idle_timeout_message, stream_reader_disconnected_message,
-    stream_wait_timeout, upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex,
-    OpenAIResponsesEvent, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
+    classify_upstream_stream_read_error, mark_first_response_ms, stream_idle_timed_out,
+    stream_idle_timeout_message, stream_reader_disconnected_message, stream_wait_timeout,
+    upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex, OpenAIResponsesEvent,
+    OpenAIResponsesOutputTextState, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
 };
 use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem, GatewayStreamResponse};
 use eventsource_stream::{Event, Eventsource};
@@ -109,6 +109,7 @@ pub(crate) struct OpenAIResponsesPassthroughSseReader {
     observer: OpenAIResponsesSidecarObserver,
     out_cursor: Cursor<Vec<u8>>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
+    usage_text_state: OpenAIResponsesOutputTextState,
     keepalive_frame: SseKeepAliveFrame,
     request_started_at: Instant,
     last_upstream_activity: Instant,
@@ -142,6 +143,7 @@ impl OpenAIResponsesPassthroughSseReader {
             observer: OpenAIResponsesSidecarObserver::new(sidecar_upstream),
             out_cursor: Cursor::new(Vec::new()),
             usage_collector,
+            usage_text_state: OpenAIResponsesOutputTextState::default(),
             keepalive_frame,
             request_started_at,
             last_upstream_activity: Instant::now(),
@@ -149,25 +151,25 @@ impl OpenAIResponsesPassthroughSseReader {
         }
     }
 
-    fn update_usage_from_event(&self, event: OpenAIResponsesEvent) {
+    fn update_usage_from_event(&mut self, event: OpenAIResponsesEvent) {
         if let Ok(mut collector) = self.usage_collector.lock() {
-            if let Some(event_type) = event.event_type {
-                collector.last_event_type = Some(event_type);
+            if let Some(event_type) = event.event_type.as_ref() {
+                collector.last_event_type = Some(event_type.clone());
             }
-            merge_usage(&mut collector.usage, event.usage);
-            if let Some(upstream_error_hint) = event.upstream_error_hint {
-                collector.upstream_error_hint = Some(upstream_error_hint);
+            event.merge_usage_into(&mut collector.usage, &mut self.usage_text_state);
+            if let Some(upstream_error_hint) = event.upstream_error_hint.as_ref() {
+                collector.upstream_error_hint = Some(upstream_error_hint.clone());
             }
-            if let Some(terminal) = event.terminal {
+            if let Some(terminal) = event.terminal.as_ref() {
                 collector.saw_terminal = true;
                 if let SseTerminal::Err(message) = terminal {
-                    collector.terminal_error = Some(message);
+                    collector.terminal_error = Some(message.clone());
                 }
             }
         }
     }
 
-    fn drain_sidecar_events(&self) {
+    fn drain_sidecar_events(&mut self) {
         loop {
             match self.observer.try_recv() {
                 Ok(OpenAIResponsesSidecarItem::Event(event)) => {
@@ -187,7 +189,7 @@ impl OpenAIResponsesPassthroughSseReader {
         }
     }
 
-    fn drain_sidecar_with_deadline(&self, timeout: Duration) {
+    fn drain_sidecar_with_deadline(&mut self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
             self.drain_sidecar_events();

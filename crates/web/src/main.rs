@@ -87,6 +87,12 @@ fn normalize_addr(raw: &str) -> Option<String> {
     Some(value.to_string())
 }
 
+async fn ui_document_cache_middleware(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    ui_assets::append_no_store_for_html_documents(&mut response);
+    response
+}
+
 /// 函数 `normalize_connect_addr`
 ///
 /// 作者: gaohongshun
@@ -537,10 +543,12 @@ async fn async_main() {
             .route("/{*path}", get(ui_assets::serve_missing_ui));
     }
 
-    let protected_app = protected_app.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        auth::web_auth_middleware,
-    ));
+    let protected_app = protected_app
+        .layer(axum::middleware::from_fn(ui_document_cache_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::web_auth_middleware,
+        ));
     let app = Router::new()
         .route("/health", get(service_gateway::gateway_proxy))
         .route("/metrics", get(service_gateway::gateway_proxy))
@@ -602,6 +610,7 @@ async fn async_main() {
 /// 无
 fn main() {
     codexmanager_service::portable::bootstrap_current_process();
+    codexmanager_service::init_logging();
     let _ = codexmanager_service::initialize_storage_if_needed();
     codexmanager_service::sync_runtime_settings_from_storage();
 

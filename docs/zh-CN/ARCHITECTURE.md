@@ -20,10 +20,10 @@ CodexManager 由两类运行模式组成：
 ```text
 .
 ├─ apps/                  # 前端与 Tauri 桌面端
-│  ├─ src/                # Vite + 原生 JavaScript 前端
+│  ├─ src/                # Next.js App Router + TypeScript 前端
 │  ├─ src-tauri/          # Tauri 桌面壳与原生命令桥接
 │  ├─ tests/              # 前端 UI/结构测试
-│  └─ dist/               # 前端构建产物
+│  └─ out/                # Next.js 静态导出产物
 ├─ crates/
 │  ├─ core/               # 数据库迁移、存储基础、认证/用量底层能力
 │  ├─ service/            # 本地 HTTP/RPC 服务、网关、协议适配、设置持久化
@@ -39,17 +39,19 @@ CodexManager 由两类运行模式组成：
 
 ### 3.1 前端总控入口
 
-- `apps/src/main.js`：前端启动装配入口
-- `apps/src/runtime/app-bootstrap.js`：界面初始化编排
-- `apps/src/runtime/app-runtime.js`：刷新流程与运行期协同
-- `apps/src/settings/controller.js`：设置域门面，继续向子模块分发
+- `apps/src/app/layout.tsx`：App Router 根布局与全局 Provider 装配
+- `apps/src/components/providers.tsx`：React Query、next-themes、i18n、Tooltip 与 Toaster 装配
+- `apps/src/components/layout/app-bootstrap.tsx`：桌面/Web 运行时初始化与 service 连接编排
+- `apps/src/components/layout/page-keep-alive-viewport.tsx`：顶层页面懒加载与 keep-alive 缓存
+- `apps/src/lib/api/transport.ts`：Tauri invoke 与 Web RPC fallback 的统一传输层
+- `apps/src/lib/app-shell/top-level-routes.ts`：顶层路由、角色可见性与导航分组配置
 
 ### 3.2 桌面端壳层入口
 
 - `apps/src-tauri/src/lib.rs`：Tauri 应用装配入口
-- `apps/src-tauri/src/settings_commands.rs`：桌面端设置桥接命令
+- `apps/src-tauri/src/commands/registry.rs`：Tauri command 注册入口
 - `apps/src-tauri/src/service_runtime.rs`：桌面内嵌 service 生命周期
-- `apps/src-tauri/src/rpc_client.rs`：桌面端 RPC 调用基础设施
+- `apps/src-tauri/src/rpc_client/`：桌面端 RPC 调用基础设施
 
 ### 3.3 service 网关与协议入口
 
@@ -155,7 +157,7 @@ Service 模式由以下二进制组成：
 
 - 提供 Web UI 静态资源
 - 挂载或代理到 service
-- 可选把 `apps/dist` 内嵌到二进制，形成单文件发布物
+- 可选把 `apps/out` 内嵌到二进制，形成单文件发布物
 
 ### 5.6 `crates/start/`
 
@@ -218,7 +220,8 @@ Service 模式由以下二进制组成：
 
 - `pnpm -C apps run dev`
 - `pnpm -C apps run build`
-- `pnpm -C apps run check`
+- `pnpm -C apps run build:desktop`
+- `pnpm -C apps run test:runtime`
 
 Rust：
 
@@ -265,16 +268,17 @@ Rust：
 
 当前仓库需要重点关注以下问题：
 
-1. `apps/src-tauri/src/lib.rs` 仍偏厚，桌面壳层装配与命令实现尚需继续拆开。
-2. `crates/service/src/lib.rs` 配置、运行时同步、副作用边界不够清晰。
-3. `crates/service/src/gateway/protocol_adapter/response_conversion.rs` 兼容分支较多，回归风险高。
-4. `.github/workflows/release-all.yml` 仍然较长，多平台逻辑需要持续约束。
+1. `apps/src/app/settings/page.tsx`、`apps/src/app/logs/page.tsx`、`apps/src/app/aggregate-api/page.tsx` 等页面仍偏厚，新增逻辑应优先下沉到 hooks、feature components 或 `src/lib/` helper。
+2. `apps/src-tauri/src/lib.rs` 仍是桌面壳层装配入口，新增桌面能力应优先落在 `app_shell/`、`commands/`、`rpc_client/` 等子模块。
+3. `crates/service/src/lib.rs` 是 service 总出口，新增业务实现应优先落在领域模块，避免继续扩大导出和副作用边界。
+4. `crates/service/src/gateway/` 协议兼容分支较多，回归风险高。
+5. `.github/workflows/release-all.yml` 仍然较长，多平台逻辑需要持续约束。
 
 ## 10. 建议的改动落点
 
 为了减少结构污染，新增需求尽量按以下原则落点：
 
-- 新页面或前端交互：优先落在 `apps/src/views/`、`apps/src/services/`、`apps/src/ui/`
+- 新页面或前端交互：优先落在 `apps/src/app/`、`apps/src/components/`、`apps/src/hooks/`、`apps/src/lib/`
 - 新桌面能力：优先落在 `apps/src-tauri/src/` 的独立模块，而不是全部继续塞进 `lib.rs`
 - 新设置项：先判断属于环境变量、持久化配置还是运行时状态
 - 新协议兼容：优先落在 gateway / protocol adapter 子模块，不要把条件分支继续无序堆叠

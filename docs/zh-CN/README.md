@@ -19,18 +19,6 @@
 <table>
   <tr>
     <td align="center" valign="middle" width="180">
-      <a href="https://coder.visioncoder.cn">
-        <img src="https://coder.visioncoder.cn/logo.png" alt="VisionCoder" width="88" />
-      </a>
-    </td>
-    <td valign="top">
-      <strong>感谢 VisionCoder 对本项目的支持。</strong><br />
-      <a href="https://coder.visioncoder.cn">VisionCoder 开发平台</a> 是一个可靠高效的 API 中继服务提供商，提供 Claude Code、Codex、Gemini 等主流 AI 模型，帮助开发者和团队更轻松地集成 AI 功能，提升工作效率。<br />
-      <strong>限时活动：</strong> VisionCoder 为我们的用户提供 <a href="https://coder.visioncoder.cn">Token Plan</a> 优惠，购买 1 个月，赠送 1 个月。
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="middle" width="180">
       <a href="https://gzxsy.vip/register?aff=eapz">
         <img src="../../assets/images/sponsors/xingsiyan.jpg" alt="星思研中转站" width="120" />
       </a>
@@ -48,6 +36,7 @@
 | --- | --- |
 | 跑起来项目、部署 service/web、处理 macOS 首启 | [运行与部署指南](report/运行与部署指南.md) |
 | 配置 Codex CLI / ccswitch 的 `auth.json` 与 `config.toml` | [运行与部署指南](report/运行与部署指南.md#通过-ccswitch-接入) |
+| 不登陆 Codex，使用 ChatGPT `/api/auth/session` 导入账号 | [不登陆 Codex 使用 ChatGPT 的 /api/auth/session 在软件中的使用](report/不登陆Codex使用ChatGPT-auth-session导入账号.md) |
 | 配环境变量、数据库、端口、代理、监听地址 | [环境变量与运行配置说明](report/环境变量与运行配置说明.md) |
 | 排查账号不命中、导入异常、挑战拦截 | [FAQ 与账号命中规则](report/FAQ与账号命中规则.md) |
 | 排查后台任务账号跳过、禁用与停用原因 | [后台任务账号跳过说明](report/后台任务账号跳过说明.md) |
@@ -77,6 +66,7 @@
 | [运行与部署指南.md](report/运行与部署指南.md) | 首次启动、Service 版、Docker、macOS 首启 |
 | [环境变量与运行配置说明.md](report/环境变量与运行配置说明.md) | 统一查看所有运行配置、默认值与作用 |
 | [FAQ与账号命中规则.md](report/FAQ与账号命中规则.md) | 常见问题、账号命中与日志排障 |
+| [不登陆Codex使用ChatGPT-auth-session导入账号.md](report/不登陆Codex使用ChatGPT-auth-session导入账号.md) | 通过 ChatGPT `/api/auth/session` JSON 批量导入账号 |
 | [当前网关与Codex官方请求参数对照表.md](report/当前网关与Codex官方请求参数对照表.md) | 当前网关实际出站参数、目标 Codex 参数，以及两者差异的对照表 |
 | [原生Codex线程锚点优先级说明.md](report/原生Codex线程锚点优先级说明.md) | 说明原生 Codex、`prompt_cache_key` 与兼容兜底锚点的优先级规则 |
 | [后台任务账号跳过说明.md](report/后台任务账号跳过说明.md) | 后台任务过滤、禁用账号、workspace 停用原因 |

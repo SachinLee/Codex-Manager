@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Cursor};
 
+use super::openai_responses_event::{OpenAIResponsesEvent, OpenAIResponsesOutputTextState};
 use super::{
     append_output_text_raw, collect_output_text_from_event_fields, collect_response_output_text,
     inspect_sse_frame, is_response_completed_event_name, merge_usage, parse_sse_frame_json,
@@ -372,21 +373,32 @@ fn update_responses_sse_synthesis(synthesis: &mut ResponsesSseSynthesis, value: 
     }
 
     let mut text_out = String::new();
-    collect_output_text_from_event_fields(value, &mut text_out);
-    if matches!(
-        event_type,
-        "response.output_text.delta"
-            | "response.output_text.done"
-            | "response.content_part.added"
-            | "response.content_part.delta"
-            | "response.content_part.done"
-    ) {
-        if let Some(delta) = value.get("delta") {
-            collect_response_output_text(delta, &mut text_out);
+    match event_type {
+        "response.output_text.delta" | "response.content_part.delta" => {
+            if let Some(delta) = value.get("delta") {
+                collect_response_output_text(delta, &mut text_out);
+            }
         }
-    }
-    if let Some(response) = value.get("response") {
-        collect_response_output_text(response, &mut text_out);
+        "response.output_text.done" => {
+            if synthesis.output_text.trim().is_empty() {
+                if let Some(text) = value.get("text") {
+                    collect_response_output_text(text, &mut text_out);
+                } else if let Some(delta) = value.get("delta") {
+                    collect_response_output_text(delta, &mut text_out);
+                }
+            }
+        }
+        "response.content_part.done" => {
+            if synthesis.output_text.trim().is_empty() {
+                collect_output_text_from_event_fields(value, &mut text_out);
+                if text_out.trim().is_empty() {
+                    if let Some(delta) = value.get("delta") {
+                        collect_response_output_text(delta, &mut text_out);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
     if !text_out.trim().is_empty() {
         append_output_text_raw(&mut synthesis.output_text, text_out.as_str());
@@ -523,21 +535,25 @@ fn enrich_completed_response_with_sse_text(
         .get("output")
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty());
-    let has_effective_output = response_has_effective_output(&Value::Object(response_obj.clone()));
+    let had_effective_output = response_has_effective_output(&Value::Object(response_obj.clone()));
+    let mut inserted_output_from_delta_text = false;
     if !has_structured_output {
         if let Some(output_items) = build_response_output_items_from_sse(synthesis) {
             response_obj.insert("output".to_string(), output_items);
-        } else if !has_effective_output && !synthesis.output_text.trim().is_empty() {
+        } else if !had_effective_output && !synthesis.output_text.trim().is_empty() {
             response_obj.insert(
                 "output".to_string(),
                 build_response_output_items_from_text(synthesis.output_text.as_str()),
             );
+            inserted_output_from_delta_text = true;
         }
     }
-    if response_obj
-        .get("output_text")
-        .and_then(Value::as_str)
-        .is_none_or(|text| text.trim().is_empty())
+    let has_effective_output = response_has_effective_output(&Value::Object(response_obj.clone()));
+    if (inserted_output_from_delta_text || !has_effective_output)
+        && response_obj
+            .get("output_text")
+            .and_then(Value::as_str)
+            .is_none_or(|text| text.trim().is_empty())
         && !synthesis.output_text.trim().is_empty()
     {
         response_obj.insert(
@@ -562,6 +578,11 @@ fn enrich_completed_response_with_sse_text(
 /// 返回函数执行结果
 fn synthesize_response_body_from_sse(synthesis: &ResponsesSseSynthesis) -> Option<Vec<u8>> {
     let output_items = build_response_output_items_from_sse(synthesis);
+    let output_items_have_text = output_items.as_ref().is_some_and(|output_items| {
+        let mut response = serde_json::Map::new();
+        response.insert("output".to_string(), output_items.clone());
+        response_has_effective_output(&Value::Object(response))
+    });
     if !synthesis.saw_completed
         || (synthesis.output_text.trim().is_empty() && output_items.is_none())
     {
@@ -601,7 +622,7 @@ fn synthesize_response_body_from_sse(synthesis: &ResponsesSseSynthesis) -> Optio
         output_items
             .unwrap_or_else(|| build_response_output_items_from_text(synthesis.output_text.trim())),
     );
-    if !synthesis.output_text.trim().is_empty() {
+    if !output_items_have_text && !synthesis.output_text.trim().is_empty() {
         out.insert(
             "output_text".to_string(),
             Value::String(synthesis.output_text.trim().to_string()),
@@ -684,6 +705,28 @@ fn synthesize_chat_completion_body(synthesis: &ChatCompletionSseSynthesis) -> Op
     serde_json::to_vec(&Value::Object(out)).ok()
 }
 
+fn merge_sse_frame_usage(
+    usage: &mut UpstreamResponseUsage,
+    responses_text_state: &mut OpenAIResponsesOutputTextState,
+    frame: &[String],
+) {
+    if let Some(event) = OpenAIResponsesEvent::parse(frame) {
+        if event
+            .event_type
+            .as_deref()
+            .is_some_and(|event_type| event_type.starts_with("response."))
+        {
+            event.merge_usage_into(usage, responses_text_state);
+            return;
+        }
+    }
+
+    let inspection = inspect_sse_frame(frame);
+    if let Some(parsed_usage) = inspection.usage {
+        merge_usage(usage, parsed_usage);
+    }
+}
+
 /// 函数 `collect_non_stream_json_from_sse_bytes`
 ///
 /// 作者: gaohongshun
@@ -701,6 +744,7 @@ pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
     let mut usage = UpstreamResponseUsage::default();
     let mut completed_response: Option<Value> = None;
     let mut responses_sse_synthesis = ResponsesSseSynthesis::default();
+    let mut responses_usage_text_state = OpenAIResponsesOutputTextState::default();
     let mut chat_completion_synthesis = ChatCompletionSseSynthesis::default();
     let mut frame_lines: Vec<String> = Vec::new();
 
@@ -719,10 +763,7 @@ pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
                 continue;
             }
             let frame = std::mem::take(&mut frame_lines);
-            let inspection = inspect_sse_frame(&frame);
-            if let Some(parsed_usage) = inspection.usage {
-                merge_usage(&mut usage, parsed_usage);
-            }
+            merge_sse_frame_usage(&mut usage, &mut responses_usage_text_state, &frame);
             if let Some(value) = parse_sse_frame_json(&frame) {
                 update_responses_sse_synthesis(&mut responses_sse_synthesis, &value);
                 update_chat_completion_sse_synthesis(&mut chat_completion_synthesis, &value);
@@ -742,10 +783,7 @@ pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
     }
 
     if !frame_lines.is_empty() {
-        let inspection = inspect_sse_frame(&frame_lines);
-        if let Some(parsed_usage) = inspection.usage {
-            merge_usage(&mut usage, parsed_usage);
-        }
+        merge_sse_frame_usage(&mut usage, &mut responses_usage_text_state, &frame_lines);
         if let Some(value) = parse_sse_frame_json(&frame_lines) {
             update_responses_sse_synthesis(&mut responses_sse_synthesis, &value);
             update_chat_completion_sse_synthesis(&mut chat_completion_synthesis, &value);

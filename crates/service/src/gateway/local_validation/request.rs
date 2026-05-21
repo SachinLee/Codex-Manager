@@ -351,6 +351,70 @@ fn chat_tool_choice_to_responses(value: &serde_json::Value) -> serde_json::Value
     serde_json::json!({ "type": "function", "name": name })
 }
 
+fn chat_response_format_to_responses_text_format(
+    value: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "response_format must be an object".to_string())?;
+    let format_type = obj
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "response_format.type is required".to_string())?;
+
+    match format_type {
+        "text" => Ok(serde_json::json!({ "type": "text" })),
+        "json_object" => Ok(serde_json::json!({ "type": "json_object" })),
+        "json_schema" => {
+            let schema = obj
+                .get("json_schema")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| {
+                    "response_format.json_schema must be an object for json_schema".to_string()
+                })?;
+            let mut mapped = serde_json::Map::new();
+            mapped.insert(
+                "type".to_string(),
+                serde_json::Value::String("json_schema".to_string()),
+            );
+            for (key, value) in schema {
+                mapped.insert(key.clone(), value.clone());
+            }
+            Ok(serde_json::Value::Object(mapped))
+        }
+        other => Err(format!("unsupported response_format.type: {other}")),
+    }
+}
+
+fn chat_text_config_with_response_format(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    let has_response_format = obj.contains_key("response_format");
+    let mut text = match obj.get("text") {
+        Some(serde_json::Value::Null) | None => serde_json::Map::new(),
+        Some(serde_json::Value::Object(existing)) => existing.clone(),
+        Some(_) if has_response_format => {
+            return Err("text must be an object when provided with response_format".to_string());
+        }
+        Some(_) => serde_json::Map::new(),
+    };
+
+    if let Some(response_format) = obj.get("response_format") {
+        text.insert(
+            "format".to_string(),
+            chat_response_format_to_responses_text_format(response_format)?,
+        );
+    }
+
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::Value::Object(text)))
+    }
+}
+
 fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<u8>, String> {
     let payload = serde_json::from_slice::<serde_json::Value>(&body)
         .map_err(|err| format!("invalid chat completions request json: {err}"))?;
@@ -475,6 +539,9 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
     }
     if let Some(metadata) = obj.get("metadata") {
         rewritten.insert("metadata".to_string(), metadata.clone());
+    }
+    if let Some(text) = chat_text_config_with_response_format(obj)? {
+        rewritten.insert("text".to_string(), text);
     }
     serde_json::to_vec(&serde_json::Value::Object(rewritten))
         .map_err(|err| format!("serialize responses compatibility request failed: {err}"))

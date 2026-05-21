@@ -148,6 +148,19 @@ fn open_streaming_mock_http_response(
     (response, server)
 }
 
+fn chat_sse_content_fragments(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| data.trim() != "[DONE]")
+        .filter_map(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+        .filter_map(|value| {
+            value["choices"][0]["delta"]["content"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// 函数 `parse_usage_from_json_reads_cached_and_reasoning_details`
 ///
 /// 作者: gaohongshun
@@ -275,6 +288,29 @@ fn parse_usage_from_json_merges_response_usage_over_top_level_usage() {
     assert_eq!(usage.output_tokens, Some(9));
     assert_eq!(usage.total_tokens, Some(22));
     assert_eq!(usage.reasoning_output_tokens, None);
+}
+
+#[test]
+fn parse_usage_from_json_prefers_output_text_over_duplicate_output() {
+    let payload = json!({
+        "response": {
+            "output_text": "{\"answer\":true}",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "{\"answer\":true}" }]
+            }],
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 2,
+                "total_tokens": 5
+            }
+        }
+    });
+
+    let usage = parse_usage_from_json(&payload);
+    assert_eq!(usage.output_text.as_deref(), Some(r#"{"answer":true}"#));
+    assert_eq!(usage.total_tokens, Some(5));
 }
 
 /// 函数 `parse_usage_from_sse_frame_reads_response_completed_usage`
@@ -676,6 +712,7 @@ fn chat_completions_reader_converts_responses_sse_to_chat_sse() {
     let mut out = String::new();
     reader.read_to_string(&mut out).expect("read chat sse");
     assert!(out.contains("\"object\":\"chat.completion.chunk\""));
+    assert!(out.contains("\"role\":\"assistant\""));
     assert!(out.contains("\"content\":\"你\""));
     assert!(out.contains("\"content\":\"好\""));
     assert!(out.contains("\"finish_reason\":\"stop\""));
@@ -686,6 +723,74 @@ fn chat_completions_reader_converts_responses_sse_to_chat_sse() {
     assert_eq!(collector.usage.input_tokens, Some(2));
     assert_eq!(collector.usage.output_tokens, Some(2));
     assert_eq!(collector.usage.total_tokens, Some(4));
+}
+
+#[test]
+fn chat_completions_reader_uses_output_text_done_text_when_delta_missing() {
+    let json_text = r#"{"ok":true}"#;
+    let sse = concat!(
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"{\\\"ok\\\":true}\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chat_done_only\",\"model\":\"gpt-5.4\",\"created\":1775900000,\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_tokens\":4}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = open_mock_http_response("text/event-stream", sse);
+    let collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = ChatCompletionsFromResponsesSseReader::new(
+        response,
+        Arc::clone(&collector),
+        std::time::Instant::now(),
+    );
+    let mut out = String::new();
+    reader.read_to_string(&mut out).expect("read chat sse");
+
+    assert_eq!(chat_sse_content_fragments(&out), vec![json_text]);
+    assert!(out.contains("\"finish_reason\":\"stop\""));
+    assert!(out.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_completions_reader_uses_output_item_done_text_when_delta_missing() {
+    let json_text = r#"{"ok":true}"#;
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"response_id\":\"resp_chat_item_only\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"ok\\\":true}\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chat_item_only\",\"model\":\"gpt-5.4\",\"created\":1775900000,\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_tokens\":4}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = open_mock_http_response("text/event-stream", sse);
+    let collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = ChatCompletionsFromResponsesSseReader::new(
+        response,
+        Arc::clone(&collector),
+        std::time::Instant::now(),
+    );
+    let mut out = String::new();
+    reader.read_to_string(&mut out).expect("read chat sse");
+
+    assert_eq!(chat_sse_content_fragments(&out), vec![json_text]);
+    assert!(out.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_completions_reader_does_not_duplicate_output_text_done_snapshot_after_delta() {
+    let json_text = r#"{"ok":true}"#;
+    let sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"ok\\\":true}\"}\n\n",
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"{\\\"ok\\\":true}\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chat_no_dup\",\"model\":\"gpt-5.4\",\"created\":1775900000,\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_tokens\":4}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = open_mock_http_response("text/event-stream", sse);
+    let collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = ChatCompletionsFromResponsesSseReader::new(
+        response,
+        Arc::clone(&collector),
+        std::time::Instant::now(),
+    );
+    let mut out = String::new();
+    reader.read_to_string(&mut out).expect("read chat sse");
+
+    assert_eq!(chat_sse_content_fragments(&out), vec![json_text]);
+    assert!(out.contains("data: [DONE]"));
 }
 
 #[test]
@@ -731,6 +836,57 @@ fn chat_completions_reader_dedupes_partial_image_and_done_image() {
 
     assert_eq!(out.matches("data:image/png;base64,aGVsbG8=").count(), 1);
     assert!(out.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_completions_reader_converts_function_call_to_tool_calls() {
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_answer\",\"arguments\":\"\"}}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"question\\\":\\\"2+2\\\"}\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_answer\",\"arguments\":\"{\\\"question\\\":\\\"2+2\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool_1\",\"model\":\"gpt-5.4\",\"created\":1775900000,\"usage\":{\"input_tokens\":4,\"output_tokens\":1,\"total_tokens\":5}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = open_mock_http_response("text/event-stream", sse);
+    let collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = ChatCompletionsFromResponsesSseReader::new(
+        response,
+        Arc::clone(&collector),
+        std::time::Instant::now(),
+    );
+    let mut out = String::new();
+    reader.read_to_string(&mut out).expect("read chat sse");
+
+    assert!(out.contains("\"role\":\"assistant\""));
+    assert!(out.contains("\"tool_calls\""));
+    assert!(out.contains("\"id\":\"call_1\""));
+    assert!(out.contains("\"name\":\"get_answer\""));
+    assert!(out.contains("\"arguments\":\"{\\\"question\\\":\\\"2+2\\\"}\""));
+    assert!(out.contains("\"finish_reason\":\"tool_calls\""));
+    assert!(out.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_completions_reader_uses_done_arguments_when_delta_is_missing() {
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_answer\",\"arguments\":\"\"}}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_answer\",\"arguments\":\"{\\\"question\\\":\\\"2+2\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool_1\",\"model\":\"gpt-5.4\",\"created\":1775900000}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = open_mock_http_response("text/event-stream", sse);
+    let collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = ChatCompletionsFromResponsesSseReader::new(
+        response,
+        Arc::clone(&collector),
+        std::time::Instant::now(),
+    );
+    let mut out = String::new();
+    reader.read_to_string(&mut out).expect("read chat sse");
+
+    assert!(out.contains("\"id\":\"call_1\""));
+    assert!(out.contains("\"arguments\":\"{\\\"question\\\":\\\"2+2\\\"}\""));
+    assert!(out.contains("\"finish_reason\":\"tool_calls\""));
 }
 
 #[test]
@@ -1003,6 +1159,58 @@ fn collect_non_stream_json_from_sse_bytes_supports_event_only_type_frames() {
     assert_eq!(usage.input_tokens, Some(3));
     assert_eq!(usage.output_tokens, Some(2));
     assert_eq!(usage.total_tokens, Some(5));
+}
+
+#[test]
+fn sse_responses_json_text_not_duplicated_across_delta_item_completed() {
+    let json_text = r#"{"answer":true}"#;
+    let sse = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"response_id\":\"resp_json_single\",\"delta\":\"{\\\"answer\\\":true}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"response_id\":\"resp_json_single\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"id\":\"resp_json_single\",\"created\":3,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (body, usage) = collect_non_stream_json_from_sse_bytes(sse.as_bytes());
+    let body = body.expect("synthesized response json");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("parse synthesized body");
+    let content = value["output"][0]["content"][0]["text"]
+        .as_str()
+        .expect("assistant text");
+
+    assert_eq!(content, json_text);
+    serde_json::from_str::<serde_json::Value>(content).expect("parse json mode content");
+    assert!(value.get("output_text").is_none());
+    assert_eq!(usage.output_text.as_deref(), Some(json_text));
+    assert_eq!(usage.input_tokens, Some(3));
+    assert_eq!(usage.output_tokens, Some(2));
+    assert_eq!(usage.total_tokens, Some(5));
+}
+
+#[test]
+fn sse_completed_response_without_usable_output_falls_back_to_delta_text() {
+    let sse = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"response_id\":\"resp_json_fallback\",\"delta\":\"{\\\"ok\\\":true}\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"id\":\"resp_json_fallback\",\"created\":4,\"model\":\"gpt-5.3-codex\",\"output\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (body, usage) = collect_non_stream_json_from_sse_bytes(sse.as_bytes());
+    let body = body.expect("synthesized response json");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("parse synthesized body");
+    let content = value["output"][0]["content"][0]["text"]
+        .as_str()
+        .expect("assistant text");
+
+    assert_eq!(content, r#"{"ok":true}"#);
+    assert_eq!(value["output_text"], r#"{"ok":true}"#);
+    assert_eq!(usage.output_text.as_deref(), Some(r#"{"ok":true}"#));
+    assert_eq!(usage.input_tokens, Some(4));
+    assert_eq!(usage.output_tokens, Some(2));
+    assert_eq!(usage.total_tokens, Some(6));
 }
 
 /// 函数 `parse_sse_frame_json_supports_json_lines_without_data_prefix`
@@ -2027,6 +2235,92 @@ fn openai_responses_passthrough_reader_collects_output_item_field_text() {
         Some("hello from output_item")
     );
     assert_eq!(collector.usage.total_tokens, Some(2));
+    assert!(collector.saw_terminal);
+}
+
+#[test]
+fn openai_responses_passthrough_reader_usage_text_not_duplicated_across_delta_item_completed() {
+    let json_text = r#"{"answer":true}"#;
+    let (upstream, server) = open_streaming_mock_http_response(
+        "text/event-stream",
+        &[(
+            "event: response.output_text.delta\n\
+             data: {\"response_id\":\"resp_json_single\",\"delta\":\"{\\\"answer\\\":true}\"}\n\n\
+             event: response.output_item.done\n\
+             data: {\"response_id\":\"resp_json_single\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}}\n\n\
+             event: response.completed\n\
+             data: {\"response\":{\"id\":\"resp_json_single\",\"created\":3,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+            0,
+        )],
+    );
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = OpenAIResponsesPassthroughSseReader::new(
+        upstream,
+        Arc::clone(&usage_collector),
+        SseKeepAliveFrame::OpenAIResponses,
+        std::time::Instant::now(),
+    );
+    let mut mapped = String::new();
+    reader
+        .read_to_string(&mut mapped)
+        .expect("read json mode openai responses stream");
+    server
+        .join()
+        .expect("join json mode openai responses upstream");
+
+    let collector = usage_collector
+        .lock()
+        .expect("lock usage collector")
+        .clone();
+    assert!(mapped.contains("event: response.output_item.done"));
+    assert_eq!(collector.usage.output_text.as_deref(), Some(json_text));
+    assert_eq!(collector.usage.input_tokens, Some(3));
+    assert_eq!(collector.usage.output_tokens, Some(2));
+    assert_eq!(collector.usage.total_tokens, Some(5));
+    assert!(collector.saw_terminal);
+}
+
+#[test]
+fn openai_responses_passthrough_reader_usage_text_dedupes_snapshot_only_events() {
+    let json_text = r#"{"answer":true}"#;
+    let (upstream, server) = open_streaming_mock_http_response(
+        "text/event-stream",
+        &[(
+            "event: response.output_text.done\n\
+             data: {\"response_id\":\"resp_snapshot_single\",\"output_index\":0,\"content_index\":0,\"text\":\"{\\\"answer\\\":true}\"}\n\n\
+             event: response.content_part.done\n\
+             data: {\"response_id\":\"resp_snapshot_single\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}}\n\n\
+             event: response.output_item.done\n\
+             data: {\"response_id\":\"resp_snapshot_single\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}}\n\n\
+             event: response.completed\n\
+             data: {\"response\":{\"id\":\"resp_snapshot_single\",\"created\":3,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+            0,
+        )],
+    );
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = OpenAIResponsesPassthroughSseReader::new(
+        upstream,
+        Arc::clone(&usage_collector),
+        SseKeepAliveFrame::OpenAIResponses,
+        std::time::Instant::now(),
+    );
+    let mut mapped = String::new();
+    reader
+        .read_to_string(&mut mapped)
+        .expect("read snapshot-only openai responses stream");
+    server
+        .join()
+        .expect("join snapshot-only openai responses upstream");
+
+    let collector = usage_collector
+        .lock()
+        .expect("lock usage collector")
+        .clone();
+    assert!(mapped.contains("event: response.output_item.done"));
+    assert_eq!(collector.usage.output_text.as_deref(), Some(json_text));
+    assert_eq!(collector.usage.input_tokens, Some(3));
+    assert_eq!(collector.usage.output_tokens, Some(2));
+    assert_eq!(collector.usage.total_tokens, Some(5));
     assert!(collector.saw_terminal);
 }
 

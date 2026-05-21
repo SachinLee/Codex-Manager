@@ -501,13 +501,17 @@ pub(in super::super) fn collect_output_text_from_event_fields(value: &Value, out
 /// 返回函数执行结果
 fn extract_output_text_from_json(value: &Value) -> Option<String> {
     let mut output = String::new();
-    if let Some(text) = value.get("output_text").and_then(Value::as_str) {
-        append_output_text(&mut output, text);
-    }
     if let Some(response) = value.get("response") {
-        collect_response_output_text(response, &mut output);
-    }
-    if let Some(top_level_output) = value.get("output") {
+        if let Some(text) = response.get("output_text").and_then(Value::as_str) {
+            append_output_text(&mut output, text);
+        } else if let Some(response_output) = response.get("output") {
+            collect_response_output_text(response_output, &mut output);
+        } else {
+            collect_response_output_text(response, &mut output);
+        }
+    } else if let Some(text) = value.get("output_text").and_then(Value::as_str) {
+        append_output_text(&mut output, text);
+    } else if let Some(top_level_output) = value.get("output") {
         collect_response_output_text(top_level_output, &mut output);
     }
     if let Some(choices) = value.get("choices") {

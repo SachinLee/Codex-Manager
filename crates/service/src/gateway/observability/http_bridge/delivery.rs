@@ -618,6 +618,15 @@ fn extract_error_message_from_json_bytes(body: &[u8]) -> Option<String> {
     extract_error_message_from_json(&value)
 }
 
+fn merge_usage_from_body_without_output_text(usage: &mut UpstreamResponseUsage, body: &[u8]) {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return;
+    };
+    let mut parsed_usage = parse_usage_from_json(&value);
+    parsed_usage.output_text = None;
+    merge_usage(usage, parsed_usage);
+}
+
 fn replace_content_type_header(headers: &mut Vec<Header>, content_type: &str) {
     headers.retain(|header| {
         !header
@@ -1370,7 +1379,16 @@ fn build_passthrough_non_success_message(
         auth_error,
         identity_error_code,
     );
-    if let Some(hint) = extract_error_hint_from_body(status_code, body) {
+    if let Some(hint) = extract_error_hint_from_body(status_code, body).or_else(|| {
+        header_only_cloudflare_challenge_hint(
+            status_code,
+            content_type,
+            body,
+            cf_ray,
+            auth_error,
+            identity_error_code,
+        )
+    }) {
         return format!(
             "upstream server error: {hint}{}",
             compact_debug_suffix(
@@ -1392,6 +1410,51 @@ fn build_passthrough_non_success_message(
             identity_error_code
         )
     )
+}
+
+fn header_only_cloudflare_challenge_hint(
+    status_code: u16,
+    content_type: Option<&str>,
+    body: &[u8],
+    cf_ray: Option<&str>,
+    auth_error: Option<&str>,
+    identity_error_code: Option<&str>,
+) -> Option<String> {
+    if status_code < 400 || !body.is_empty() {
+        return None;
+    }
+    if auth_error.is_some_and(looks_like_blocked_marker)
+        || identity_error_code.is_some_and(looks_like_blocked_marker)
+    {
+        return Some("Cloudflare 安全验证页".to_string());
+    }
+    let is_html = content_type
+        .map(crate::gateway::is_html_content_type)
+        .unwrap_or(false);
+    if cf_ray.is_some() || (is_html && matches!(status_code, 401 | 403)) {
+        return Some("Cloudflare 安全验证页".to_string());
+    }
+    None
+}
+
+fn extract_error_hint_from_body_or_headers(
+    status_code: u16,
+    content_type: Option<&str>,
+    body: &[u8],
+    cf_ray: Option<&str>,
+    auth_error: Option<&str>,
+    identity_error_code: Option<&str>,
+) -> Option<String> {
+    extract_error_hint_from_body(status_code, body).or_else(|| {
+        header_only_cloudflare_challenge_hint(
+            status_code,
+            content_type,
+            body,
+            cf_ray,
+            auth_error,
+            identity_error_code,
+        )
+    })
 }
 
 /// 函数 `respond_synthesized_compact_error_body`
@@ -1839,9 +1902,7 @@ pub(crate) fn respond_with_upstream(
                 let (synthesized, mut usage) =
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
-                if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                    merge_usage(&mut usage, parse_usage_from_json(&value));
-                }
+                merge_usage_from_body_without_output_text(&mut usage, &body);
                 (body, usage)
             } else {
                 let usage = serde_json::from_slice::<Value>(upstream_body.as_ref())
@@ -1852,8 +1913,15 @@ pub(crate) fn respond_with_upstream(
             };
             let response_body = if status.0 >= 400 {
                 let message = with_upstream_debug_suffix(
-                    extract_error_hint_from_body(status.0, &body)
-                        .or_else(|| extract_error_message_from_json_bytes(&body)),
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        &body,
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                    .or_else(|| extract_error_message_from_json_bytes(&body)),
                     None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
@@ -1910,8 +1978,15 @@ pub(crate) fn respond_with_upstream(
                 .bytes()
                 .map_err(|err| format!("read upstream body failed: {err}"))?;
             let message = with_upstream_debug_suffix(
-                extract_error_hint_from_body(status.0, upstream_body.as_ref())
-                    .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
+                extract_error_hint_from_body_or_headers(
+                    status.0,
+                    upstream_content_type.as_deref(),
+                    upstream_body.as_ref(),
+                    upstream_cf_ray.as_deref(),
+                    upstream_auth_error.as_deref(),
+                    upstream_identity_error_code.as_deref(),
+                )
+                .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
                 None,
                 upstream_request_id.as_deref(),
                 upstream_cf_ray.as_deref(),
@@ -2163,11 +2238,16 @@ pub(crate) fn respond_with_upstream(
                         collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                     let synthesized_response = synthesized_body.is_some();
                     let body = synthesized_body.unwrap_or_else(|| upstream_body.to_vec());
-                    if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                        merge_usage(&mut usage, parse_usage_from_json(&value));
-                    }
+                    merge_usage_from_body_without_output_text(&mut usage, &body);
                     let upstream_error_hint = with_upstream_debug_suffix(
-                        extract_error_hint_from_body(status.0, &body),
+                        extract_error_hint_from_body_or_headers(
+                            status.0,
+                            upstream_content_type.as_deref(),
+                            &body,
+                            upstream_cf_ray.as_deref(),
+                            upstream_auth_error.as_deref(),
+                            upstream_identity_error_code.as_deref(),
+                        ),
                         None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
@@ -2372,7 +2452,14 @@ pub(crate) fn respond_with_upstream(
                     ));
                 }
                 let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    ),
                     None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
@@ -2470,7 +2557,14 @@ pub(crate) fn respond_with_upstream(
                     ));
                 }
                 let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    ),
                     None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
@@ -2772,9 +2866,7 @@ pub(crate) fn respond_with_stream_upstream(
                 let (synthesized, mut usage) =
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
-                if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                    merge_usage(&mut usage, parse_usage_from_json(&value));
-                }
+                merge_usage_from_body_without_output_text(&mut usage, &body);
                 (body, usage)
             } else {
                 let usage = serde_json::from_slice::<Value>(upstream_body.as_ref())
@@ -2785,8 +2877,15 @@ pub(crate) fn respond_with_stream_upstream(
             };
             let response_body = if status.0 >= 400 {
                 let message = with_upstream_debug_suffix(
-                    extract_error_hint_from_body(status.0, &body)
-                        .or_else(|| extract_error_message_from_json_bytes(&body)),
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        &body,
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                    .or_else(|| extract_error_message_from_json_bytes(&body)),
                     None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
@@ -2843,8 +2942,15 @@ pub(crate) fn respond_with_stream_upstream(
                 .read_all_bytes()
                 .map_err(|err| format!("read upstream body failed: {err}"))?;
             let message = with_upstream_debug_suffix(
-                extract_error_hint_from_body(status.0, upstream_body.as_ref())
-                    .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
+                extract_error_hint_from_body_or_headers(
+                    status.0,
+                    upstream_content_type.as_deref(),
+                    upstream_body.as_ref(),
+                    upstream_cf_ray.as_deref(),
+                    upstream_auth_error.as_deref(),
+                    upstream_identity_error_code.as_deref(),
+                )
+                .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
                 None,
                 upstream_request_id.as_deref(),
                 upstream_cf_ray.as_deref(),
@@ -2941,9 +3047,7 @@ pub(crate) fn respond_with_stream_upstream(
                 let (synthesized, mut usage) =
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
-                if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                    merge_usage(&mut usage, parse_usage_from_json(&value));
-                }
+                merge_usage_from_body_without_output_text(&mut usage, &body);
                 let chat_body =
                     convert_responses_body_to_chat_completions(&body).unwrap_or_else(|| body);
                 let response_body = chat_completion_body_to_single_sse(&chat_body);
@@ -2994,9 +3098,7 @@ pub(crate) fn respond_with_stream_upstream(
                 let (synthesized, mut usage) =
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
-                if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                    merge_usage(&mut usage, parse_usage_from_json(&value));
-                }
+                merge_usage_from_body_without_output_text(&mut usage, &body);
                 let response_body = images_response_body_to_sse(&body, response_format);
                 let len = Some(response_body.len());
                 let response = Response::new(
@@ -3118,11 +3220,16 @@ pub(crate) fn respond_with_stream_upstream(
                         collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                     let synthesized_response = synthesized_body.is_some();
                     let body = synthesized_body.unwrap_or_else(|| upstream_body.to_vec());
-                    if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                        merge_usage(&mut usage, parse_usage_from_json(&value));
-                    }
+                    merge_usage_from_body_without_output_text(&mut usage, &body);
                     let upstream_error_hint = with_upstream_debug_suffix(
-                        extract_error_hint_from_body(status.0, &body),
+                        extract_error_hint_from_body_or_headers(
+                            status.0,
+                            upstream_content_type.as_deref(),
+                            &body,
+                            upstream_cf_ray.as_deref(),
+                            upstream_auth_error.as_deref(),
+                            upstream_identity_error_code.as_deref(),
+                        ),
                         None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
@@ -3290,7 +3397,14 @@ pub(crate) fn respond_with_stream_upstream(
                     ));
                 }
                 let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    ),
                     None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
@@ -3382,7 +3496,14 @@ pub(crate) fn respond_with_stream_upstream(
                     ));
                 }
                 let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    ),
                     None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
@@ -3659,12 +3780,13 @@ fn resolve_stream_keepalive_frame(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_compact_non_success_kind, compact_non_success_body_should_be_normalized,
+        build_passthrough_non_success_message, classify_compact_non_success_kind,
+        collect_non_stream_json_from_sse_bytes, compact_non_success_body_should_be_normalized,
         compact_success_body_is_valid, convert_chat_completions_body_to_compact,
         convert_responses_body_to_chat_completions,
         convert_responses_body_to_gemini_generate_content, convert_responses_body_to_images,
-        force_openai_responses_stream_content_type, gemini_cli_wrap_response_envelope, Header,
-        ImagesResponseFormat, ResponseAdapter,
+        force_openai_responses_stream_content_type, gemini_cli_wrap_response_envelope,
+        merge_usage_from_body_without_output_text, Header, ImagesResponseFormat, ResponseAdapter,
     };
     use serde_json::json;
 
@@ -3820,6 +3942,38 @@ mod tests {
     }
 
     #[test]
+    fn header_only_cloudflare_challenge_uses_stable_hint() {
+        let message = build_passthrough_non_success_message(
+            502,
+            Some("text/html; charset=utf-8"),
+            b"",
+            Some("req-header-only"),
+            Some("ray-header-only"),
+            None,
+            None,
+        );
+
+        assert!(message.contains("Cloudflare 安全验证页"));
+        assert!(message.contains("cf_ray=ray-header-only"));
+    }
+
+    #[test]
+    fn cloudflare_html_preview_keeps_title_hint() {
+        let message = build_passthrough_non_success_message(
+            502,
+            Some("text/html; charset=utf-8"),
+            b"<html><head><title>Just a moment...</title></head><body>Cloudflare</body></html>",
+            Some("req-preview"),
+            Some("ray-preview"),
+            None,
+            None,
+        );
+
+        assert!(message.contains("Cloudflare 安全验证页（title=Just a moment...）"));
+        assert!(message.contains("cf_ray=ray-preview"));
+    }
+
+    #[test]
     fn streaming_responses_passthrough_forces_sse_content_type() {
         let mut headers = vec![
             Header::from_bytes(
@@ -3912,6 +4066,53 @@ mod tests {
             value["usage"]["prompt_tokens"],
             serde_json::Value::Number(2.into())
         );
+    }
+
+    #[test]
+    fn non_stream_chat_responses_sse_json_mode_returns_single_parseable_content() {
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"response_id\":\"resp_non_stream_json\",\"delta\":\"{\\\"answer\\\":true}\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"response_id\":\"resp_non_stream_json\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"response\":{\"id\":\"resp_non_stream_json\",\"created\":3,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (body, _) = collect_non_stream_json_from_sse_bytes(sse.as_bytes());
+        let body = body.expect("synthesized response json");
+        let mapped = convert_responses_body_to_chat_completions(body.as_slice())
+            .expect("convert chat completion body");
+        let value: serde_json::Value =
+            serde_json::from_slice(&mapped).expect("parse chat completion body");
+        let content = value["choices"][0]["message"]["content"]
+            .as_str()
+            .expect("chat message content");
+
+        assert_eq!(content, r#"{"answer":true}"#);
+        let parsed: serde_json::Value =
+            serde_json::from_str(content).expect("chat content is a single json document");
+        assert_eq!(parsed["answer"], true);
+    }
+
+    #[test]
+    fn sse_synthesized_body_usage_merge_does_not_duplicate_output_text() {
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"response_id\":\"resp_usage_no_dup\",\"delta\":\"{\\\"answer\\\":true}\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"response\":{\"id\":\"resp_usage_no_dup\",\"created\":3,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"answer\\\":true}\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (body, mut usage) = collect_non_stream_json_from_sse_bytes(sse.as_bytes());
+        let body = body.expect("synthesized response json");
+
+        merge_usage_from_body_without_output_text(&mut usage, body.as_slice());
+
+        assert_eq!(usage.output_text.as_deref(), Some(r#"{"answer":true}"#));
+        assert_eq!(usage.input_tokens, Some(3));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.total_tokens, Some(5));
     }
 
     #[test]
