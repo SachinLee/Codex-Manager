@@ -337,6 +337,41 @@ fn refresh_token_status_error_uses_header_only_debug_suffix_for_empty_body() {
     assert!(message.contains("cf_ray=cf_refresh_empty"));
 }
 
+#[test]
+fn refresh_token_status_error_detects_region_blocked_header_marker() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-openai-authorization-error",
+        HeaderValue::from_static("unsupported_country_region_territory"),
+    );
+    headers.insert("cf-ray", HeaderValue::from_static("cf_refresh_region"));
+
+    let message = super::format_refresh_token_status_error_with_headers(
+        StatusCode::FORBIDDEN,
+        Some(&headers),
+        "",
+    );
+
+    assert!(message.contains("refresh token failed with status 403 Forbidden"));
+    assert!(message.contains("kind=cloudflare_blocked"));
+    assert!(message.contains("auth_error=unsupported_country_region_territory"));
+    assert!(super::is_region_blocked_error_message(&message));
+    assert!(super::is_refresh_token_region_blocked_error_message(
+        &message
+    ));
+}
+
+#[test]
+fn refresh_token_status_error_plain_forbidden_is_not_region_blocked() {
+    let message = super::format_refresh_token_status_error(StatusCode::FORBIDDEN, "");
+
+    assert_eq!(message, "refresh token failed with status 403 Forbidden");
+    assert!(!super::is_region_blocked_error_message(&message));
+    assert!(!super::is_refresh_token_region_blocked_error_message(
+        &message
+    ));
+}
+
 /// 函数 `refresh_token_auth_error_reason_from_message_tracks_canonical_messages`
 ///
 /// 作者: gaohongshun
@@ -615,6 +650,60 @@ fn refresh_token_url_preserves_custom_issuer_and_override() {
         Some(value) => std::env::set_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE", value),
         None => std::env::remove_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE"),
     }
+}
+
+#[test]
+fn refresh_access_token_mock_region_blocked_response_surfaces_marker() {
+    let _lock = crate::test_env_guard();
+    let previous = std::env::var("CODEX_REFRESH_TOKEN_URL_OVERRIDE").ok();
+    let _ = super::usage_http_client();
+    let server = Server::http("127.0.0.1:0").expect("start mock refresh server");
+    let url = format!("http://{}/oauth/token", server.server_addr());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
+        let mut request = server
+            .recv_timeout(Duration::from_secs(5))
+            .expect("refresh server timeout")
+            .expect("receive refresh request");
+        let mut body = String::new();
+        request
+            .as_reader()
+            .read_to_string(&mut body)
+            .expect("read refresh request body");
+        tx.send(body).expect("send refresh request body");
+        let response = Response::from_string("")
+            .with_status_code(TinyStatusCode(403))
+            .with_header(
+                Header::from_bytes(
+                    "x-openai-authorization-error",
+                    "unsupported_country_region_territory",
+                )
+                .expect("auth error header"),
+            )
+            .with_header(Header::from_bytes("cf-ray", "ray-hkg").expect("cf-ray header"));
+        request.respond(response).expect("respond refresh request");
+    });
+    std::env::set_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &url);
+
+    let err =
+        match super::refresh_access_token("https://auth.openai.com", "client-id", "refresh-old") {
+            Ok(_) => panic!("region blocked refresh should fail"),
+            Err(err) => err,
+        };
+    let body = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive refresh request body");
+    handle.join().expect("join refresh server");
+    match previous {
+        Some(value) => std::env::set_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE", value),
+        None => std::env::remove_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE"),
+    }
+
+    assert!(body.contains("grant_type=refresh_token"));
+    assert!(body.contains("refresh_token=refresh-old"));
+    assert!(err.contains("refresh token failed with status 403 Forbidden"));
+    assert!(err.contains("auth_error=unsupported_country_region_territory"));
+    assert!(super::is_refresh_token_region_blocked_error_message(&err));
 }
 
 /// 函数 `summarize_usage_error_response_stabilizes_html_and_debug_headers`

@@ -5,6 +5,48 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-05-27
+
+### Added
+- Added Linux arm64 as a `release-all.yml` publishing target so it is covered by the unified multi-platform release pipeline.
+
+### Fixed
+- Fixed unstable local account routing for OpenAI-compatible `/v1/responses` requests with `prompt_cache_key`; matching client keys now reuse the same upstream account while preserving the original client key upstream.
+- Fixed short `prompt_cache_key` values, such as `pc_1`, being skipped by local account binding and spread across balanced rotation.
+- Fixed ChatGPT upstream transport errors not continuing failover across candidate accounts.
+- Fixed missing beta marker headers during Responses WebSocket upstream handshakes.
+- Fixed inconsistent `message_stop` terminal detection for `/v1/messages` compatibility streams.
+- Fixed account upserts potentially clearing existing tokens.
+
+### Changed
+- Bumped the release version to `0.3.7` and synchronized workspace, frontend package, Tauri desktop metadata, and lockfiles.
+
+## [0.3.6] - 2026-05-25
+
+### Added
+- Added scheduled account warmup so configured accounts can be warmed periodically, reducing cold-start failures on first use.
+- Added an experimental ChatGPT `/v1/responses` WebSocket upstream transport. When `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM=1` is set, the gateway tries WebSocket first, falls back to HTTP streaming on failure, and keeps upstream proxy, connect-timeout, and protocol-frame validation behavior.
+
+### Changed
+- Request logs now show API key names instead of key IDs in the key column, making call-source debugging easier.
+- Bumped the release version to `0.3.6` and synchronized workspace, frontend package, Tauri desktop metadata, and lockfiles.
+
+## [0.3.5] - 2026-05-24
+
+### Added
+- Added compact model forwarding rules in Settings, scoped to `/v1/responses/compact` requests.
+- Added request-gate wait, first-response latency, and slow-trace stdout diagnostics for high-concurrency streaming investigations.
+
+### Fixed
+- Fixed Anthropic SSE completed snapshots being replayed after tool calls, which could duplicate assistant text in clients.
+- Fixed Chat Completions compatibility when Responses only returns reasoning summaries; streaming and non-streaming responses now expose compatible reasoning fields.
+- Suspended automatic token refresh for region-blocked accounts to avoid repeated background retries.
+- Cleaned stale Aggregate API/model source routes and orphan automatic catalog models after model sync.
+- Added an opt-in request-gate wait cap via `CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS=5000` to avoid long head-of-line blocking for matching key/path/model streaming requests.
+
+### Changed
+- Bumped the release version to `0.3.5` and synchronized workspace, frontend package, Tauri desktop metadata, and lockfiles.
+
 ### Added
 - Aggregate API balance checks now refresh automatically on the same interval as account-pool usage polling, controlled by the Settings usage polling worker.
 - Added Codex image-generation compatibility: `/v1/responses` now auto-injects the official `image_generation` tool by default to match Codex behavior, explicit tools are forwarded unchanged, and compatible `/v1/images/generations` plus `/v1/images/edits` endpoints are available with `gpt-image-2` as the default image tool model.
@@ -256,7 +298,10 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.4...v0.3.5
 [0.2.6]: https://github.com/qxcnm/Codex-Manager/compare/v0.2.3...v0.2.6
 [0.2.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.2.0...v0.2.3
 [0.2.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.2.0

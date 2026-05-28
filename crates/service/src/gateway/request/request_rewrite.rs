@@ -22,20 +22,40 @@ const RETAIN_FN_PROBE_KEY: &str = "__codexmanager_allowlist_probe__";
 /// 返回函数执行结果
 pub(super) fn compute_upstream_url(base: &str, path: &str) -> (String, Option<String>) {
     let base = base.trim_end_matches('/');
-    let url = if base.contains("/backend-api/codex") && path.starts_with("/v1/") {
+    let upstream_path = resolve_upstream_request_path(path);
+    let url = if base.contains("/backend-api/codex") && upstream_path.starts_with("/v1/") {
         // 中文注释：兼容 ChatGPT backend-api/codex 的路径约定；不做映射会导致 /v1/* 请求 404。
-        format!("{}{}", base, path.trim_start_matches("/v1"))
-    } else if base.ends_with("/v1") && path.starts_with("/v1") {
-        format!("{}{}", base.trim_end_matches("/v1"), path)
+        format!("{}{}", base, upstream_path.trim_start_matches("/v1"))
+    } else if base.ends_with("/v1") && upstream_path.starts_with("/v1") {
+        format!("{}{}", base.trim_end_matches("/v1"), upstream_path)
     } else {
-        format!("{}{}", base, path)
+        format!("{}{}", base, upstream_path)
     };
-    let url_alt = if base.contains("/backend-api/codex") && path.starts_with("/v1/") {
-        Some(format!("{}{}", base, path))
+    let url_alt = if base.contains("/backend-api/codex") && upstream_path.starts_with("/v1/") {
+        Some(format!("{}{}", base, upstream_path))
     } else {
         None
     };
     (url, url_alt)
+}
+
+fn resolve_upstream_request_path(path: &str) -> String {
+    if !responses::is_compact_path(path) {
+        return path.to_string();
+    }
+    let compact_api_path = super::current_compact_api_path();
+    rewrite_path_preserving_query(path, compact_api_path.as_str())
+}
+
+fn rewrite_path_preserving_query(path: &str, replacement_path: &str) -> String {
+    let query = path
+        .split_once('?')
+        .map(|(_, query)| query)
+        .filter(|query| !query.trim().is_empty());
+    match query {
+        Some(query) => format!("{replacement_path}?{query}"),
+        None => replacement_path.to_string(),
+    }
 }
 
 /// 函数 `is_codex_backend_base`
@@ -383,11 +403,39 @@ fn apply_model_forward_rule_if_needed(obj: &mut serde_json::Map<String, Value>) 
     true
 }
 
+fn apply_compact_model_forward_rule_if_needed(
+    obj: &mut serde_json::Map<String, Value>,
+) -> bool {
+    let Some(current_model) = obj
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let Some(forwarded_model) = super::resolve_compact_forwarded_model(current_model) else {
+        return false;
+    };
+    if forwarded_model.eq_ignore_ascii_case(current_model) {
+        return false;
+    }
+    obj.insert("model".to_string(), Value::String(forwarded_model));
+    true
+}
+
 fn compact_model_override_for_path(path: &str) -> Option<String> {
     if responses::is_compact_path(path) {
         return super::current_compact_model_override();
     }
     None
+}
+
+fn chat_request_rules_path(path: &str) -> String {
+    if responses::is_compact_path(path) && super::compact_api_path_uses_chat_completions() {
+        return super::current_compact_api_path();
+    }
+    path.to_string()
 }
 
 /// 函数 `apply_request_overrides`
@@ -656,6 +704,7 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
 ) -> Vec<u8> {
     let use_codex_responses_compat = should_apply_codex_responses_compat(path, upstream_base_url);
     let use_codex_compat_rewrite = allow_codex_compat_rewrite && use_codex_responses_compat;
+    let chat_rules_path = chat_request_rules_path(path);
     let normalized_model = model_slug
         .map(str::trim)
         .filter(|v| !v.is_empty())
@@ -683,19 +732,16 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
                     .unwrap_or_else(|| model.to_string());
                 obj.insert("model".to_string(), Value::String(forwarded_model));
                 changed = true;
+            } else if responses::is_compact_path(path) {
+                if apply_compact_model_forward_rule_if_needed(obj) {
+                    changed = true;
+                }
             } else if use_codex_compat_rewrite && apply_model_forward_rule_if_needed(obj) {
-                changed = true;
-            }
-
-            if chat_completions::normalize_responses_payload(path, obj) {
                 changed = true;
             }
 
             if let Some(level) = normalized_reasoning.as_deref() {
                 if responses::apply_reasoning_override(path, obj, Some(level)) {
-                    changed = true;
-                }
-                if chat_completions::apply_reasoning_override(path, obj, Some(level)) {
                     changed = true;
                 }
             }
@@ -706,20 +752,6 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
                     Value::String(service_tier.to_string()),
                 );
                 changed = true;
-            }
-
-            if chat_completions::ensure_reasoning_effort(path, obj) {
-                changed = true;
-            }
-            if chat_completions::ensure_stream_usage_override(path, obj) {
-                changed = true;
-            }
-
-            if super::strict_request_param_allowlist_enabled() {
-                dropped_keys.extend(chat_completions::retain_official_fields(path, obj));
-                if !use_codex_responses_compat {
-                    dropped_keys.extend(responses::retain_official_fields(path, obj));
-                }
             }
 
             if use_codex_responses_compat {
@@ -740,6 +772,34 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
                     changed = true;
                 }
                 dropped_keys.extend(codex_http_result.dropped_keys);
+            }
+
+            if chat_completions::normalize_responses_payload(chat_rules_path.as_str(), obj) {
+                changed = true;
+            }
+
+            if let Some(level) = normalized_reasoning.as_deref() {
+                if chat_completions::apply_reasoning_override(chat_rules_path.as_str(), obj, Some(level))
+                {
+                    changed = true;
+                }
+            }
+
+            if chat_completions::ensure_reasoning_effort(chat_rules_path.as_str(), obj) {
+                changed = true;
+            }
+            if chat_completions::ensure_stream_usage_override(chat_rules_path.as_str(), obj) {
+                changed = true;
+            }
+
+            if super::strict_request_param_allowlist_enabled() {
+                dropped_keys.extend(chat_completions::retain_official_fields(
+                    chat_rules_path.as_str(),
+                    obj,
+                ));
+                if !use_codex_responses_compat {
+                    dropped_keys.extend(responses::retain_official_fields(path, obj));
+                }
             }
 
             if !dropped_keys.is_empty() {

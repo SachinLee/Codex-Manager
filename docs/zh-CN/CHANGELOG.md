@@ -5,6 +5,48 @@
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-05-27
+
+### Added
+- `release-all.yml` 新增 Linux arm64 发布目标，统一进入多平台发版流水线。
+
+### Fixed
+- 修复 OpenAI 兼容 `/v1/responses` 的 `prompt_cache_key` 本地账号路由不稳定问题；相同客户端 key 会绑定复用同一上游账号，并且上游请求继续保留客户端原始 key。
+- 修复短 `prompt_cache_key`（如 `pc_1`）未参与本地账号绑定的问题，避免 balanced 轮询把同一缓存前缀分散到不同账号。
+- 修复 ChatGPT 上游传输错误未按候选账号继续 failover 的问题。
+- 修复 Responses WebSocket 上游握手头缺失 beta 标记的问题。
+- 修复 `/v1/messages` 兼容流对 `message_stop` 终止事件识别不一致的问题。
+- 修复账号 upsert 时已有 token 可能被清空的问题。
+
+### Changed
+- 发布版本提升到 `0.3.7`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
+## [0.3.6] - 2026-05-25
+
+### Added
+- 新增定时账号预热功能，可按配置周期主动预热账号，降低首次请求时的冷启动失败概率。
+- 新增实验性 ChatGPT `/v1/responses` WebSocket 上游传输，设置 `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM=1` 后会优先尝试 WebSocket，失败时回退 HTTP 流式路径，并沿用上游代理、连接超时和协议帧校验。
+
+### Changed
+- 请求日志“密钥”列改为展示密钥名称而不是 ID，便于排查调用来源。
+- 发布版本提升到 `0.3.6`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
+## [0.3.5] - 2026-05-24
+
+### Added
+- 设置页新增 compact 模型转发规则配置，支持仅对 `/v1/responses/compact` 请求按规则改写模型。
+- 网关 trace/error 日志补齐 request gate 等待、首包耗时和慢请求 stdout 诊断，便于定位高并发流式请求延迟。
+
+### Fixed
+- 修复 Anthropic SSE 在工具调用后重复回放 completed 快照，导致客户端重复显示助手文本的问题。
+- 修复 Chat Completions 走 Responses 后 reasoning summary 丢失的问题，流式和非流式响应都会回填兼容 reasoning 字段。
+- 修复 region-blocked token refresh 会被后台轮询反复重试的问题，区域受限账号会暂停自动刷新。
+- 修复 Aggregate API / 模型同步后陈旧 source routes 和孤儿自动目录模型未清理的问题，避免已删除模型重新出现。
+- 为 request gate 提供可选等待上限，设置 `CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS=5000` 后可避免同 key/path/model 高并发流式请求长时间队头阻塞。
+
+### Changed
+- 发布版本提升到 `0.3.5`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
 ### Added
 - 聚合 API 余额检测现在会跟随账号池用量轮询周期自动刷新，刷新间隔和设置页“用量轮询线程”保持一致。
 - 新增 Codex 图片生成兼容链路：默认按官方 Codex 行为为 `/v1/responses` 自动注入 `image_generation` tool，支持显式 tool 透传，并提供 `/v1/images/generations` 与 `/v1/images/edits` 兼容入口，默认图片工具模型为 `gpt-image-2`。
@@ -256,7 +298,10 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.4...v0.3.5
 [0.2.6]: https://github.com/qxcnm/Codex-Manager/compare/v0.2.3...v0.2.6
 [0.2.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.2.0...v0.2.3
 [0.2.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.2.0

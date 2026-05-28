@@ -14,6 +14,8 @@ const DEFAULT_TRACE_QUEUE_CAPACITY: usize = 0;
 const TRACE_FLUSH_WAIT_TIMEOUT_MS: u64 = 200;
 const ENV_TRACE_QUEUE_CAPACITY: &str = "CODEXMANAGER_TRACE_QUEUE_CAPACITY";
 const ENV_GEMINI_TRACE_DIAGNOSTICS: &str = "CODEXMANAGER_GEMINI_TRACE_DIAGNOSTICS";
+const ENV_GATEWAY_TRACE_STDOUT: &str = "CODEXMANAGER_GATEWAY_TRACE_STDOUT";
+const ENV_GATEWAY_TRACE_STDOUT_SLOW_MS: &str = "CODEXMANAGER_GATEWAY_TRACE_STDOUT_SLOW_MS";
 const TRACE_PENDING_LINE_LIMIT: usize = 32;
 
 static TRACE_WRITER: OnceLock<TraceAsyncWriter> = OnceLock::new();
@@ -448,15 +450,41 @@ fn short_fingerprint(value: &str) -> String {
 }
 
 fn gemini_trace_diagnostics_enabled() -> bool {
-    std::env::var(ENV_GEMINI_TRACE_DIAGNOSTICS)
+    env_flag_enabled(ENV_GEMINI_TRACE_DIAGNOSTICS)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
         .ok()
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
+                "1" | "true" | "yes" | "on" | "error" | "errors" | "error_only"
             )
         })
         .unwrap_or(false)
+}
+
+fn gateway_trace_stdout_enabled() -> bool {
+    env_flag_enabled(ENV_GATEWAY_TRACE_STDOUT)
+}
+
+fn gateway_trace_stdout_slow_ms() -> Option<u128> {
+    std::env::var(ENV_GATEWAY_TRACE_STDOUT_SLOW_MS)
+        .ok()
+        .and_then(|value| value.trim().parse::<u128>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn should_flush_success_trace(elapsed_ms: u128) -> bool {
+    gateway_trace_stdout_enabled()
+        && gateway_trace_stdout_slow_ms().is_some_and(|threshold| elapsed_ms >= threshold)
+}
+
+fn mirror_trace_line_to_stdout(line: &str) {
+    if gateway_trace_stdout_enabled() {
+        log::warn!("{line}");
+    }
 }
 
 /// 函数 `append_trace_line`
@@ -616,6 +644,7 @@ fn flush_trace_lines(trace_id: &str) {
         .and_then(|mut pending| pending.remove(trace_id));
     if let Some(lines) = lines {
         for line in lines {
+            mirror_trace_line_to_stdout(&line);
             append_trace_line(line, false);
         }
     }
@@ -920,7 +949,15 @@ pub(crate) fn log_gemini_request_diagnostics(
 /// # 返回
 /// 无
 pub(crate) fn log_request_gate_wait(trace_id: &str, key_id: &str, path: &str, model: Option<&str>) {
-    let _ = (trace_id, key_id, path, model);
+    let line = format!(
+        "ts={} event=REQUEST_GATE_WAIT trace_id={} key_id={} path={} model={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(key_id),
+        sanitize_text(path),
+        sanitize_text(model.unwrap_or("-")),
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 /// 函数 `log_request_gate_acquired`
@@ -941,7 +978,16 @@ pub(crate) fn log_request_gate_acquired(
     model: Option<&str>,
     wait_ms: u128,
 ) {
-    let _ = (trace_id, key_id, path, model, wait_ms);
+    let line = format!(
+        "ts={} event=REQUEST_GATE_ACQUIRED trace_id={} key_id={} path={} model={} wait_ms={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(key_id),
+        sanitize_text(path),
+        sanitize_text(model.unwrap_or("-")),
+        wait_ms,
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 /// 函数 `log_request_gate_skip`
@@ -955,8 +1001,15 @@ pub(crate) fn log_request_gate_acquired(
 ///
 /// # 返回
 /// 无
-pub(crate) fn log_request_gate_skip(trace_id: &str, reason: &str) {
-    let _ = (trace_id, reason);
+pub(crate) fn log_request_gate_skip(trace_id: &str, reason: &str, wait_ms: u128) {
+    let line = format!(
+        "ts={} event=REQUEST_GATE_SKIP trace_id={} reason={} wait_ms={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(reason),
+        wait_ms,
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 /// 函数 `log_candidate_start`
@@ -1124,6 +1177,7 @@ pub(crate) struct BridgeResultLog<'a> {
     pub upstream_identity_error_code: Option<&'a str>,
     pub upstream_content_type: Option<&'a str>,
     pub last_sse_event_type: Option<&'a str>,
+    pub first_response_ms: Option<i64>,
 }
 
 pub(crate) fn log_bridge_result(params: BridgeResultLog<'_>) {
@@ -1145,6 +1199,7 @@ pub(crate) fn log_bridge_result(params: BridgeResultLog<'_>) {
         upstream_identity_error_code,
         upstream_content_type,
         last_sse_event_type,
+        first_response_ms,
     } = params;
     let bridge_has_error = delivery_error.is_some()
         || stream_terminal_error.is_some()
@@ -1156,7 +1211,7 @@ pub(crate) fn log_bridge_result(params: BridgeResultLog<'_>) {
         mark_trace_has_error(trace_id);
     }
     let line = format!(
-        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
+        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} first_response_ms={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
         current_trace_ts(),
         sanitize_text(trace_id),
         sanitize_text(adapter),
@@ -1167,6 +1222,9 @@ pub(crate) fn log_bridge_result(params: BridgeResultLog<'_>) {
         sanitize_text(delivery_error.unwrap_or("-")),
         output_text_len,
         output_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        first_response_ms
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string()),
         delivered_status_code
@@ -1270,7 +1328,10 @@ pub(crate) fn log_request_final(
         mark_trace_has_error(trace_id);
         return;
     }
-    let _ = (final_account_id, upstream_url, elapsed_ms);
+    let _ = (final_account_id, upstream_url);
+    if should_flush_success_trace(elapsed_ms) {
+        flush_trace_lines(trace_id);
+    }
     clear_trace_state(trace_id);
 }
 
@@ -1353,6 +1414,7 @@ pub(crate) fn log_failed_request(params: FailedRequestLog<'_>) {
         sanitize_text(code),
         sanitize_text(error.unwrap_or("-")),
     );
+    mirror_trace_line_to_stdout(&line);
     append_trace_line(line, true);
     if let Some(trace_id) = trace_id {
         clear_trace_state(trace_id);
@@ -1362,8 +1424,9 @@ pub(crate) fn log_failed_request(params: FailedRequestLog<'_>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_trace_error, has_error_text, log_failed_request, mark_trace_has_error, sanitize_text,
-        trace_has_error, trace_queue_capacity,
+        clear_trace_error, gateway_trace_stdout_enabled, has_error_text, log_failed_request,
+        mark_trace_has_error, sanitize_text, should_flush_success_trace, trace_has_error,
+        trace_queue_capacity,
     };
 
     /// 函数 `has_error_text_ignores_empty_and_dash`
@@ -1446,6 +1509,32 @@ mod tests {
         std::env::set_var("CODEXMANAGER_TRACE_QUEUE_CAPACITY", "0");
 
         assert_eq!(trace_queue_capacity(), 0);
+    }
+
+    #[test]
+    fn gateway_trace_stdout_flag_accepts_error_values() {
+        let _guard = crate::test_env_guard();
+        std::env::remove_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT");
+        std::env::remove_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT_SLOW_MS");
+        assert!(!gateway_trace_stdout_enabled());
+
+        std::env::set_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT", "error_only");
+        assert!(gateway_trace_stdout_enabled());
+        std::env::remove_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT");
+    }
+
+    #[test]
+    fn success_trace_flush_requires_stdout_and_slow_threshold() {
+        let _guard = crate::test_env_guard();
+        std::env::remove_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT");
+        std::env::set_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT_SLOW_MS", "1000");
+        assert!(!should_flush_success_trace(1500));
+
+        std::env::set_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT", "1");
+        assert!(!should_flush_success_trace(999));
+        assert!(should_flush_success_trace(1000));
+        std::env::remove_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT");
+        std::env::remove_var("CODEXMANAGER_GATEWAY_TRACE_STDOUT_SLOW_MS");
     }
 
     #[test]

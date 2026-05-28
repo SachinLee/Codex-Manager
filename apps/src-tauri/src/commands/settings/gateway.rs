@@ -151,6 +151,8 @@ pub async fn service_gateway_background_tasks_set(
     http_worker_min: Option<u64>,
     http_stream_worker_factor: Option<u64>,
     http_stream_worker_min: Option<u64>,
+    warmup_cron_enabled: Option<bool>,
+    warmup_cron_expression: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
       "usagePollingEnabled": usage_polling_enabled,
@@ -163,7 +165,9 @@ pub async fn service_gateway_background_tasks_set(
       "httpWorkerFactor": http_worker_factor,
       "httpWorkerMin": http_worker_min,
       "httpStreamWorkerFactor": http_stream_worker_factor,
-      "httpStreamWorkerMin": http_stream_worker_min
+      "httpStreamWorkerMin": http_stream_worker_min,
+      "warmupCronEnabled": warmup_cron_enabled,
+      "warmupCronExpression": warmup_cron_expression
     });
     rpc_call_in_background("gateway/backgroundTasks/set", addr, Some(params)).await
 }

@@ -12,6 +12,7 @@ export interface RequestLog {
   adaptedPath: string;
   method: string;
   requestType: string;
+  gatewayMode: string;
   path: string;
   model: string;
   upstreamModel: string;

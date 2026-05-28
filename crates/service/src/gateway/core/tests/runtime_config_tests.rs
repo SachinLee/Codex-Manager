@@ -112,7 +112,7 @@ fn reload_from_env_updates_timeout_and_proxy() {
     );
 }
 
-/// 函数 `reload_from_env_defaults_limits_to_unbounded_codex_friendly_values`
+/// 函数 `reload_from_env_defaults_keep_request_gate_legacy_unbounded`
 ///
 /// 作者: gaohongshun
 ///
@@ -124,7 +124,7 @@ fn reload_from_env_updates_timeout_and_proxy() {
 /// # 返回
 /// 无
 #[test]
-fn reload_from_env_defaults_limits_to_unbounded_codex_friendly_values() {
+fn reload_from_env_defaults_keep_request_gate_legacy_unbounded() {
     let _guard = crate::test_env_guard();
     let _account_guard = EnvGuard::clear(ENV_ACCOUNT_MAX_INFLIGHT);
     let _strict_guard = EnvGuard::clear(ENV_STRICT_REQUEST_PARAM_ALLOWLIST);
@@ -457,6 +457,40 @@ fn set_model_forward_rules_rejects_invalid_target_auto() {
     let err = set_model_forward_rules("spark*=auto").expect_err("auto target should be rejected");
 
     assert!(err.contains("target model cannot be auto"));
+}
+
+#[test]
+fn set_compact_model_forward_rules_updates_env_cache_and_matching() {
+    let _guard = crate::test_env_guard();
+    let _rules_guard = EnvGuard::clear(ENV_COMPACT_MODEL_FORWARD_RULES);
+
+    let applied =
+        set_compact_model_forward_rules("gpt-5.4=gpt-5.4-openai-compact")
+            .expect("set compact model forward rules");
+
+    assert_eq!(applied, "gpt-5.4=gpt-5.4-openai-compact");
+    assert_eq!(current_compact_model_forward_rules(), applied);
+    assert_eq!(
+        std::env::var(ENV_COMPACT_MODEL_FORWARD_RULES).ok().as_deref(),
+        Some(applied.as_str())
+    );
+    assert_eq!(
+        resolve_compact_forwarded_model("gpt-5.4"),
+        Some("gpt-5.4-openai-compact".to_string())
+    );
+    assert_eq!(resolve_compact_forwarded_model("gpt-5.4-mini"), None);
+    assert_eq!(resolve_forwarded_model("gpt-5.4"), None);
+}
+
+#[test]
+fn compact_api_path_reads_chat_completions_override_from_env() {
+    let _guard = crate::test_env_guard();
+    let _compact_api_path = EnvGuard::set(ENV_COMPACT_API_PATH, "/v1/chat/completions");
+
+    reload_from_env();
+
+    assert_eq!(current_compact_api_path(), "/v1/chat/completions");
+    assert!(compact_api_path_uses_chat_completions());
 }
 
 /// 函数 `set_originator_updates_env_and_dynamic_user_agent`

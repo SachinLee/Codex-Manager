@@ -234,6 +234,7 @@ pub(super) fn finalize_upstream_response(
             delivery_error: bridge.delivery_error.as_deref(),
             output_text_len: bridge_output_text_len,
             output_tokens: bridge.usage.output_tokens,
+            first_response_ms: bridge.usage.first_response_ms,
             delivered_status_code: bridge.delivered_status_code,
             upstream_error_hint: bridge.upstream_error_hint.as_deref(),
             upstream_request_id: bridge.upstream_request_id.as_deref(),

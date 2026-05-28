@@ -12,10 +12,11 @@ use super::author_links::{
 use super::{
     current_background_tasks_snapshot_value, current_close_to_tray_on_close_setting,
     current_codex_cli_guide_dismissed, current_env_overrides, current_gateway_account_max_inflight,
-    current_gateway_free_account_max_model, current_gateway_model_forward_rules,
-    current_gateway_originator, current_gateway_quota_guard, current_gateway_residency_requirement,
-    current_gateway_sse_keepalive_interval_ms, current_gateway_upstream_stream_timeout_ms,
-    current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
+    current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
+    current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
+    current_gateway_residency_requirement, current_gateway_sse_keepalive_interval_ms,
+    current_gateway_upstream_stream_timeout_ms, current_gateway_upstream_total_timeout_ms,
+    current_gateway_user_agent_version,
     current_lightweight_mode_on_close_to_tray_setting, current_saved_service_addr,
     current_service_bind_mode, current_ui_appearance_preset, current_ui_locale,
     current_ui_low_transparency_enabled, current_ui_theme, current_update_auto_check_enabled,
@@ -25,6 +26,7 @@ use super::{
     sync_runtime_settings_from_storage, APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY,
     APP_SETTING_AUTHOR_SPONSORS_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
@@ -117,6 +119,7 @@ pub(super) fn current_app_settings_value(
     let route_strategy = crate::gateway::current_route_strategy().to_string();
     let free_account_max_model = current_gateway_free_account_max_model();
     let model_forward_rules = current_gateway_model_forward_rules();
+    let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
     let account_max_inflight = current_gateway_account_max_inflight();
     let quota_guard = current_gateway_quota_guard();
     let gateway_originator = current_gateway_originator();
@@ -185,6 +188,7 @@ pub(super) fn current_app_settings_value(
         &route_strategy,
         &free_account_max_model,
         &model_forward_rules,
+        &compact_model_forward_rules,
         account_max_inflight,
         &gateway_originator,
         &gateway_user_agent_version,
@@ -230,6 +234,7 @@ pub(super) fn current_app_settings_value(
         "routeStrategyOptions": ["ordered", "balanced"],
         "freeAccountMaxModel": free_account_max_model,
         "modelForwardRules": model_forward_rules,
+        "compactModelForwardRules": compact_model_forward_rules,
         "accountMaxInflight": account_max_inflight,
         "quotaGuard": quota_guard,
         "freeAccountMaxModelOptions": free_account_max_model_options,
@@ -440,6 +445,7 @@ fn persist_current_snapshot(
     route_strategy: &str,
     free_account_max_model: &str,
     model_forward_rules: &str,
+    compact_model_forward_rules: &str,
     account_max_inflight: usize,
     gateway_originator: &str,
     gateway_user_agent_version: &str,
@@ -490,6 +496,14 @@ fn persist_current_snapshot(
             None
         } else {
             Some(model_forward_rules)
+        },
+    );
+    let _ = save_persisted_app_setting(
+        APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+        if compact_model_forward_rules.trim().is_empty() {
+            None
+        } else {
+            Some(compact_model_forward_rules)
         },
     );
     let _ = save_persisted_app_setting(

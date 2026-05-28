@@ -31,6 +31,8 @@ pub(crate) const APP_SETTINGS_ENV_RESERVED_KEYS: &[&str] = &[
     "CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS",
     "CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED",
     "CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS",
+    "CODEXMANAGER_WARMUP_CRON_ENABLED",
+    "CODEXMANAGER_WARMUP_CRON_EXPRESSION",
     "CODEXMANAGER_USAGE_REFRESH_WORKERS",
     "CODEXMANAGER_HTTP_WORKER_FACTOR",
     "CODEXMANAGER_HTTP_WORKER_MIN",
@@ -101,6 +103,13 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         ENV_OVERRIDE_SCOPE_SERVICE,
         ENV_OVERRIDE_APPLY_MODE_RUNTIME,
         "gpt-image-2",
+    ),
+    EnvOverrideCatalogItem::new(
+        "CODEXMANAGER_COMPACT_API_PATH",
+        "Compact 上游路径",
+        ENV_OVERRIDE_SCOPE_SERVICE,
+        ENV_OVERRIDE_APPLY_MODE_RUNTIME,
+        "/v1/responses/compact",
     ),
     EnvOverrideCatalogItem::new(
         "CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES",
@@ -254,7 +263,7 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         "请求闸门等待超时（毫秒）",
         ENV_OVERRIDE_SCOPE_SERVICE,
         ENV_OVERRIDE_APPLY_MODE_RUNTIME,
-        "0",
+        "5000",
     ),
     EnvOverrideCatalogItem::new(
         "CODEXMANAGER_ROUTE_HEALTH_P2C_BALANCED_WINDOW",

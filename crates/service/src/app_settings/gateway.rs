@@ -27,6 +27,7 @@ struct CodexNpmLatestResponse {
 use super::{
     normalize_optional_text, save_persisted_app_setting, save_persisted_bool_setting,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
@@ -50,6 +51,8 @@ pub struct BackgroundTasksInput {
     pub http_worker_min: Option<usize>,
     pub http_stream_worker_factor: Option<usize>,
     pub http_stream_worker_min: Option<usize>,
+    pub warmup_cron_enabled: Option<bool>,
+    pub warmup_cron_expression: Option<String>,
 }
 
 impl BackgroundTasksInput {
@@ -77,6 +80,8 @@ impl BackgroundTasksInput {
             http_worker_min: self.http_worker_min,
             http_stream_worker_factor: self.http_stream_worker_factor,
             http_stream_worker_min: self.http_stream_worker_min,
+            warmup_cron_enabled: self.warmup_cron_enabled,
+            warmup_cron_expression: self.warmup_cron_expression,
         }
     }
 }
@@ -197,6 +202,23 @@ pub fn set_gateway_model_forward_rules(raw: &str) -> Result<String, String> {
 /// 返回函数执行结果
 pub fn current_gateway_model_forward_rules() -> String {
     gateway::current_model_forward_rules()
+}
+
+pub fn set_gateway_compact_model_forward_rules(raw: &str) -> Result<String, String> {
+    let applied = gateway::set_compact_model_forward_rules(raw)?;
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+        if applied.trim().is_empty() {
+            None
+        } else {
+            Some(applied.as_str())
+        },
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_compact_model_forward_rules() -> String {
+    gateway::current_compact_model_forward_rules()
 }
 
 /// 函数 `set_gateway_account_max_inflight`
@@ -604,7 +626,9 @@ pub fn current_gateway_sse_keepalive_interval_ms() -> u64 {
 pub fn set_gateway_background_tasks(
     input: BackgroundTasksInput,
 ) -> Result<serde_json::Value, String> {
-    let applied = usage_refresh::set_background_tasks_settings(input.into_patch());
+    let patch = input.into_patch();
+    usage_refresh::validate_background_tasks_settings_patch(&patch)?;
+    let applied = usage_refresh::set_background_tasks_settings(patch);
     let raw = serde_json::to_string(&applied)
         .map_err(|err| format!("serialize background tasks failed: {err}"))?;
     save_persisted_app_setting(APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, Some(&raw))?;

@@ -1,8 +1,11 @@
 use codexmanager_core::storage::{now_ts, Event, Storage};
 
+pub(crate) const REFRESH_TOKEN_REGION_BLOCKED_REASON: &str = "refresh_token_region_blocked";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AccountAvailabilitySignal {
     RefreshToken(crate::usage_http::RefreshTokenAuthErrorReason),
+    RefreshTokenRegionBlocked,
     Deactivation(&'static str),
     UsageHttp(u16),
 }
@@ -113,6 +116,9 @@ fn should_preserve_manual_account_status(storage: &Storage, account_id: &str) ->
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn classify_account_availability_signal(err: &str) -> Option<AccountAvailabilitySignal> {
+    if crate::usage_http::is_refresh_token_region_blocked_error_message(err) {
+        return Some(AccountAvailabilitySignal::RefreshTokenRegionBlocked);
+    }
     if let Some(reason) = crate::usage_http::refresh_token_auth_error_reason_from_message(err) {
         return Some(AccountAvailabilitySignal::RefreshToken(reason));
     }
@@ -236,6 +242,16 @@ pub(crate) fn is_banned_status_reason(reason: &str) -> bool {
         reason.trim().to_ascii_lowercase().as_str(),
         "account_deactivated" | "workspace_deactivated" | "deactivated_workspace"
     )
+}
+
+pub(crate) fn is_refresh_blocked_status_reason(reason: &str) -> bool {
+    reason
+        .trim()
+        .eq_ignore_ascii_case(REFRESH_TOKEN_REGION_BLOCKED_REASON)
+}
+
+pub(crate) fn is_account_refresh_blocked_status_reason(reason: &str) -> bool {
+    is_banned_status_reason(reason) || is_refresh_blocked_status_reason(reason)
 }
 
 /// 函数 `should_failover_for_deactivation_error`
@@ -394,6 +410,13 @@ pub(crate) fn mark_account_unavailable_for_auth_error(
         return false;
     };
     match signal {
+        AccountAvailabilitySignal::RefreshTokenRegionBlocked => {
+            set_account_unavailable_with_reason(
+                storage,
+                account_id,
+                REFRESH_TOKEN_REGION_BLOCKED_REASON,
+            )
+        }
         AccountAvailabilitySignal::RefreshToken(reason) => {
             let status_reason = format!("refresh_token_invalid:{}", reason.as_code());
             set_account_unavailable_with_reason(storage, account_id, &status_reason)
@@ -421,13 +444,20 @@ pub(crate) fn mark_account_unavailable_for_refresh_token_error(
     account_id: &str,
     err: &str,
 ) -> bool {
-    let Some(AccountAvailabilitySignal::RefreshToken(reason)) =
-        classify_account_availability_signal(err)
-    else {
-        return false;
-    };
-    let status_reason = format!("refresh_token_invalid:{}", reason.as_code());
-    set_account_unavailable_with_reason(storage, account_id, &status_reason)
+    match classify_account_availability_signal(err) {
+        Some(AccountAvailabilitySignal::RefreshTokenRegionBlocked) => {
+            set_account_unavailable_with_reason(
+                storage,
+                account_id,
+                REFRESH_TOKEN_REGION_BLOCKED_REASON,
+            )
+        }
+        Some(AccountAvailabilitySignal::RefreshToken(reason)) => {
+            let status_reason = format!("refresh_token_invalid:{}", reason.as_code());
+            set_account_unavailable_with_reason(storage, account_id, &status_reason)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

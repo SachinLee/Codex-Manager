@@ -492,6 +492,14 @@ pub(crate) fn current_compact_model_override() -> Option<String> {
     runtime_config::current_compact_model_override()
 }
 
+pub(crate) fn current_compact_api_path() -> String {
+    runtime_config::current_compact_api_path()
+}
+
+pub(crate) fn compact_api_path_uses_chat_completions() -> bool {
+    runtime_config::compact_api_path_uses_chat_completions()
+}
+
 /// 函数 `current_model_forward_rules`
 ///
 /// 作者: gaohongshun
@@ -505,6 +513,10 @@ pub(crate) fn current_compact_model_override() -> Option<String> {
 /// 返回函数执行结果
 pub(crate) fn current_model_forward_rules() -> String {
     runtime_config::current_model_forward_rules()
+}
+
+pub(crate) fn current_compact_model_forward_rules() -> String {
+    runtime_config::current_compact_model_forward_rules()
 }
 
 /// 函数 `request_compression_enabled`
@@ -702,6 +714,10 @@ pub(crate) fn set_model_forward_rules(raw: &str) -> Result<String, String> {
     runtime_config::set_model_forward_rules(raw)
 }
 
+pub(crate) fn set_compact_model_forward_rules(raw: &str) -> Result<String, String> {
+    runtime_config::set_compact_model_forward_rules(raw)
+}
+
 /// 函数 `resolve_forwarded_model`
 ///
 /// 作者: gaohongshun
@@ -715,6 +731,10 @@ pub(crate) fn set_model_forward_rules(raw: &str) -> Result<String, String> {
 /// 返回函数执行结果
 pub(crate) fn resolve_forwarded_model(model: &str) -> Option<String> {
     runtime_config::resolve_forwarded_model(model)
+}
+
+pub(crate) fn resolve_compact_forwarded_model(model: &str) -> Option<String> {
+    runtime_config::resolve_compact_forwarded_model(model)
 }
 
 /// 函数 `resolve_builtin_forwarded_model`

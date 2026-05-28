@@ -23,6 +23,8 @@ export interface BackgroundTaskSettings {
   httpWorkerMin: number;
   httpStreamWorkerFactor: number;
   httpStreamWorkerMin: number;
+  warmupCronEnabled: boolean;
+  warmupCronExpression: string;
 }
 
 export interface QuotaGuardSettings {
@@ -56,6 +58,7 @@ export interface AppSettings {
   freeAccountMaxModel: string;
   freeAccountMaxModelOptions: string[];
   modelForwardRules: string;
+  compactModelForwardRules: string;
   accountMaxInflight: number;
   quotaGuard: QuotaGuardSettings;
   gatewayOriginator: string;

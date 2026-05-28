@@ -28,6 +28,8 @@ COPY --from=builder /src/target/release/codexmanager-service /usr/local/bin/code
 ENV CODEXMANAGER_SERVICE_ADDR=0.0.0.0:48760
 ENV CODEXMANAGER_DB_PATH=/data/codexmanager.db
 ENV CODEXMANAGER_RPC_TOKEN_FILE=/data/codexmanager.rpc-token
+ENV CODEXMANAGER_GATEWAY_TRACE_STDOUT=1
+ENV CODEXMANAGER_GATEWAY_ERROR_STDOUT=1
 
 VOLUME ["/data"]
 EXPOSE 48760

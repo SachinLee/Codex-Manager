@@ -4,7 +4,7 @@ use codexmanager_core::usage::parse_usage_snapshot;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,8 @@ mod settings;
 static USAGE_POLLING_STARTED: OnceLock<()> = OnceLock::new();
 static GATEWAY_KEEPALIVE_STARTED: OnceLock<()> = OnceLock::new();
 static TOKEN_REFRESH_POLLING_STARTED: OnceLock<()> = OnceLock::new();
+static WARMUP_CRON_STARTED: OnceLock<()> = OnceLock::new();
+static WARMUP_CRON_SIGNAL: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static BACKGROUND_TASKS_CONFIG_LOADED: OnceLock<()> = OnceLock::new();
 static USAGE_POLL_CURSOR: AtomicUsize = AtomicUsize::new(0);
 static USAGE_POLLING_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -50,6 +52,8 @@ static HTTP_WORKER_FACTOR: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_WORKER_FA
 static HTTP_WORKER_MIN: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_WORKER_MIN);
 static HTTP_STREAM_WORKER_FACTOR: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_STREAM_WORKER_FACTOR);
 static HTTP_STREAM_WORKER_MIN: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_STREAM_WORKER_MIN);
+static WARMUP_CRON_ENABLED: AtomicBool = AtomicBool::new(false);
+static WARMUP_CRON_EXPRESSION: OnceLock<Mutex<String>> = OnceLock::new();
 
 const ENV_DISABLE_POLLING: &str = "CODEXMANAGER_DISABLE_POLLING";
 const ENV_USAGE_POLLING_ENABLED: &str = "CODEXMANAGER_USAGE_POLLING_ENABLED";
@@ -62,6 +66,8 @@ const ENV_GATEWAY_KEEPALIVE_ENABLED: &str = "CODEXMANAGER_GATEWAY_KEEPALIVE_ENAB
 const ENV_GATEWAY_KEEPALIVE_INTERVAL_SECS: &str = "CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS";
 const ENV_TOKEN_REFRESH_POLLING_ENABLED: &str = "CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED";
 const ENV_TOKEN_REFRESH_POLL_INTERVAL_SECS: &str = "CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS";
+const ENV_WARMUP_CRON_ENABLED: &str = "CODEXMANAGER_WARMUP_CRON_ENABLED";
+const ENV_WARMUP_CRON_EXPRESSION: &str = "CODEXMANAGER_WARMUP_CRON_EXPRESSION";
 const ENV_TOKEN_REFRESH_BATCH_LIMIT: &str = "CODEXMANAGER_TOKEN_REFRESH_BATCH_LIMIT";
 const COMMON_POLL_JITTER_ENV: &str = "CODEXMANAGER_POLL_JITTER_SECS";
 const COMMON_POLL_FAILURE_BACKOFF_MAX_ENV: &str = "CODEXMANAGER_POLL_FAILURE_BACKOFF_MAX_SECS";
@@ -157,11 +163,14 @@ use self::errors::{
 #[cfg(test)]
 use self::queue::clear_pending_usage_refresh_tasks_for_tests;
 pub(crate) use self::queue::enqueue_usage_refresh_with_worker;
-use self::runner::{gateway_keepalive_loop, token_refresh_polling_loop, usage_polling_loop};
+use self::runner::{
+    gateway_keepalive_loop, token_refresh_polling_loop, usage_polling_loop, warmup_cron_loop,
+};
 use self::settings::ensure_background_tasks_config_loaded;
 pub(crate) use self::settings::{
     background_tasks_settings, reload_background_tasks_runtime_from_env,
-    set_background_tasks_settings, BackgroundTasksSettingsPatch,
+    set_background_tasks_settings, validate_background_tasks_settings_patch,
+    BackgroundTasksSettingsPatch,
 };
 
 pub fn set_usage_refresh_completed_handler<F>(handler: F)
@@ -259,6 +268,13 @@ pub(crate) fn ensure_token_refresh_polling() {
     ensure_background_tasks_config_loaded();
     TOKEN_REFRESH_POLLING_STARTED.get_or_init(|| {
         spawn_background_loop("token-refresh-polling", token_refresh_polling_loop);
+    });
+}
+
+pub(crate) fn ensure_warmup_cron() {
+    ensure_background_tasks_config_loaded();
+    WARMUP_CRON_STARTED.get_or_init(|| {
+        spawn_background_loop("account-warmup-cron", warmup_cron_loop);
     });
 }
 

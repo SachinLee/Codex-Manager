@@ -220,6 +220,7 @@ export const EN_MESSAGES: MessageCatalog = {
   未设置: "Not set",
   备注: "Notes",
   "账号 ID": "Account ID",
+  "密钥 ID": "Key ID",
   按文件导入: "Import by file",
   选择文件导入: "Choose file to import",
   按文件夹导入: "Import by folder",
@@ -446,6 +447,7 @@ export const EN_MESSAGES: MessageCatalog = {
   服务端错误: "Server errors",
   "5 秒刷新": "refresh every 5s",
   "搜索路径、账号或密钥...": "Search path, account, or key...",
+  "搜索路径、账号或密钥 ID...": "Search path, account, or key ID...",
   快捷时间: "Quick range",
   全部时间: "All time",
   最近30分钟: "Last 30 minutes",
@@ -883,6 +885,17 @@ export const EN_MESSAGES: MessageCatalog = {
   手动: "Manual",
   刷新失败: "Refresh failed",
   停用: "Disable",
+  源模型: "Source model",
+  目标模型: "Target model",
+  新增规则: "Add rule",
+  压缩模型转发规则: "Compact model forwarding rules",
+  "例如：spark*": "e.g. spark*",
+  "例如：gpt-5.4": "e.g. gpt-5.4",
+  "例如：gpt-5.4-openai-compact": "e.g. gpt-5.4-openai-compact",
+  "左边匹配请求模型，右边填写转发目标；支持":
+    "Match the request model on the left and enter the forwarding target on the right. Supports",
+  "仅对 /v1/responses/compact 生效；命中后会在 compact 请求里优先改写模型。":
+    "Applies only to /v1/responses/compact. When matched, the model is rewritten first for compact requests.",
   "通配。平台 Key 没有强绑模型时，会先按这里把请求模型改写，再进入账号路由。":
     "Wildcard. When the platform key doesn't force a model, the request model is rewritten here before account routing.",
   "通配兼容 (Codex / Claude Code / Gemini CLI)":

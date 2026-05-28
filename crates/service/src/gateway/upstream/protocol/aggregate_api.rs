@@ -283,15 +283,10 @@ fn parse_auth_config(
 }
 
 fn resolve_passthrough_sse_protocol(
-    candidate: &AggregateApi,
     path: &str,
     response_adapter: super::super::super::ResponseAdapter,
 ) -> Option<super::super::super::PassthroughSseProtocol> {
     if response_adapter != super::super::super::ResponseAdapter::Passthrough {
-        return None;
-    }
-    let provider_type = normalize_provider_type_value(candidate.provider_type.as_str());
-    if provider_type != AGGREGATE_API_PROVIDER_CLAUDE {
         return None;
     }
     if path == "/v1/messages" || path.starts_with("/v1/messages?") {
@@ -777,6 +772,7 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub body: &'a Bytes,
     pub is_stream: bool,
     pub response_adapter: super::super::super::ResponseAdapter,
+    pub gateway_mode_for_log: Option<&'a str>,
     pub model_for_log: Option<&'a str>,
     pub reasoning_for_log: Option<&'a str>,
     pub effective_service_tier_for_log: Option<&'a str>,
@@ -800,6 +796,7 @@ pub(in super::super) fn proxy_aggregate_request(
         body,
         is_stream,
         response_adapter,
+        gateway_mode_for_log,
         model_for_log,
         reasoning_for_log,
         effective_service_tier_for_log,
@@ -893,6 +890,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         trace_id: Some(trace_id),
                         original_path: Some(original_path),
                         adapted_path: Some(path),
+                        gateway_mode: gateway_mode_for_log,
                         response_adapter: Some(response_adapter),
                         effective_service_tier: effective_service_tier_for_log,
                         aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
@@ -1026,8 +1024,7 @@ pub(in super::super) fn proxy_aggregate_request(
             }
 
             let inflight_guard = super::super::super::acquire_account_inflight(key_id);
-            let passthrough_sse_protocol =
-                resolve_passthrough_sse_protocol(&candidate, path, response_adapter);
+            let passthrough_sse_protocol = resolve_passthrough_sse_protocol(path, response_adapter);
             let bridge = super::super::super::respond_with_upstream(
                 request
                     .take()
@@ -1063,6 +1060,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     delivery_error: bridge.delivery_error.as_deref(),
                     output_text_len: bridge_output_text_len,
                     output_tokens: bridge.usage.output_tokens,
+                    first_response_ms: bridge.usage.first_response_ms,
                     delivered_status_code: bridge.delivered_status_code,
                     upstream_error_hint: bridge.upstream_error_hint.as_deref(),
                     upstream_request_id: bridge.upstream_request_id.as_deref(),
@@ -1111,6 +1109,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     trace_id: Some(trace_id),
                     original_path: Some(original_path),
                     adapted_path: Some(path),
+                    gateway_mode: gateway_mode_for_log,
                     response_adapter: Some(response_adapter),
                     effective_service_tier: effective_service_tier_for_log,
                     aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
@@ -1175,6 +1174,7 @@ pub(in super::super) fn proxy_aggregate_request(
             trace_id: Some(trace_id),
             original_path: Some(original_path),
             adapted_path: Some(path),
+            gateway_mode: gateway_mode_for_log,
             response_adapter: Some(response_adapter),
             effective_service_tier: effective_service_tier_for_log,
             aggregate_api_supplier_name: last_attempt_supplier_name.as_deref(),
@@ -1439,14 +1439,21 @@ mod tests {
     }
 
     #[test]
-    fn claude_messages_passthrough_uses_anthropic_native_terminal_rules() {
-        let api = aggregate_api_with_action(None);
+    fn messages_passthrough_uses_anthropic_native_terminal_rules_without_provider_gate() {
         let protocol = resolve_passthrough_sse_protocol(
-            &api,
             "/v1/messages?beta=true",
             ResponseAdapter::Passthrough,
         );
         assert_eq!(protocol, Some(PassthroughSseProtocol::AnthropicNative));
+    }
+
+    #[test]
+    fn messages_passthrough_protocol_still_requires_passthrough_adapter() {
+        let protocol = resolve_passthrough_sse_protocol(
+            "/v1/messages?beta=true",
+            ResponseAdapter::AnthropicMessagesFromResponses,
+        );
+        assert_eq!(protocol, None);
     }
 
     #[test]

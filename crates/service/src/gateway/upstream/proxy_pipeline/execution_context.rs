@@ -14,6 +14,7 @@ pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     reasoning_for_log: Option<&'a str>,
     service_tier_for_log: Option<&'a str>,
     effective_service_tier_for_log: Option<&'a str>,
+    gateway_mode_for_log: Option<&'a str>,
     candidate_count: usize,
     account_max_inflight: usize,
 }
@@ -44,6 +45,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         reasoning_for_log: Option<&'a str>,
         service_tier_for_log: Option<&'a str>,
         effective_service_tier_for_log: Option<&'a str>,
+        gateway_mode_for_log: Option<&'a str>,
         candidate_count: usize,
         account_max_inflight: usize,
     ) -> Self {
@@ -60,6 +62,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             reasoning_for_log,
             service_tier_for_log,
             effective_service_tier_for_log,
+            gateway_mode_for_log,
             candidate_count,
             account_max_inflight,
         }
@@ -292,6 +295,8 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         attempted_account_ids: Option<&[String]>,
     ) {
         let platform_model_for_log = self.model_for_log.or(model_for_log);
+        let direct_upstream_model =
+            resolve_direct_upstream_model_for_log(platform_model_for_log, model_for_log);
         let mapped_upstream_model = final_account_id.and_then(|account_id| {
             let platform_model = platform_model_for_log?;
             self.storage
@@ -301,21 +306,14 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
                 .map(|mapping| mapping.upstream_model)
                 .filter(|upstream_model| !upstream_model.trim().is_empty())
         });
-        let upstream_model_for_log = final_account_id
-            .and_then(|_| {
-                model_for_log.filter(|candidate_model| {
-                    platform_model_for_log
-                        .map(|platform_model| platform_model != *candidate_model)
-                        .unwrap_or(false)
-                })
-            })
-            .or(mapped_upstream_model.as_deref());
+        let upstream_model_for_log = direct_upstream_model.or(mapped_upstream_model.as_deref());
         super::super::super::request_log::write_request_log_with_attempts(
             self.storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(self.trace_id),
                 original_path: Some(self.original_path),
                 adapted_path: Some(self.path),
+                gateway_mode: self.gateway_mode_for_log,
                 response_adapter: Some(self.response_adapter),
                 request_type: Some("http"),
                 service_tier: self.service_tier_for_log,
@@ -350,6 +348,43 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             self.path,
             status_code,
             Some(self.protocol_type),
+        );
+    }
+}
+
+fn resolve_direct_upstream_model_for_log<'a>(
+    platform_model_for_log: Option<&'a str>,
+    model_for_log: Option<&'a str>,
+) -> Option<&'a str> {
+    let platform_model = platform_model_for_log
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let candidate_model = model_for_log
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    (candidate_model != platform_model).then_some(candidate_model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_direct_upstream_model_for_log;
+
+    #[test]
+    fn direct_upstream_model_is_logged_for_override() {
+        assert_eq!(
+            resolve_direct_upstream_model_for_log(
+                Some("gpt-5"),
+                Some("gpt-5.4-openai-compact"),
+            ),
+            Some("gpt-5.4-openai-compact")
+        );
+    }
+
+    #[test]
+    fn direct_upstream_model_is_ignored_when_same_as_platform_model() {
+        assert_eq!(
+            resolve_direct_upstream_model_for_log(Some("gpt-5"), Some("gpt-5")),
+            None
         );
     }
 }

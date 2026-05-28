@@ -14,6 +14,10 @@ services:
       CODEXMANAGER_WEB_NO_OPEN: "1"
       CODEXMANAGER_DB_PATH: /data/codexmanager.db
       CODEXMANAGER_RPC_TOKEN_FILE: /data/codexmanager.rpc-token
+      CODEXMANAGER_GATEWAY_TRACE_STDOUT: "1"
+      CODEXMANAGER_GATEWAY_ERROR_STDOUT: "1"
+      # Optional mitigation for same key/path/model head-of-line gate waits:
+      # CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS: "5000"
       # If the host machine provides an HTTP proxy, use:
       # CODEXMANAGER_UPSTREAM_PROXY_URL: http://host.docker.internal:7890
     volumes:

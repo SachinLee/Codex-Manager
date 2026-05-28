@@ -76,6 +76,8 @@ const DEFAULT_BACKGROUND_TASKS: BackgroundTaskSettings = {
   httpWorkerMin: 8,
   httpStreamWorkerFactor: 1,
   httpStreamWorkerMin: 2,
+  warmupCronEnabled: false,
+  warmupCronExpression: "",
 };
 
 const DEFAULT_QUOTA_GUARD: QuotaGuardSettings = {
@@ -1550,6 +1552,7 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     adaptedPath: asString(source.adaptedPath ?? source.adapted_path),
     method,
     requestType: asString(source.requestType ?? source.request_type) || "http",
+    gatewayMode: asString(source.gatewayMode ?? source.gateway_mode),
     path: requestPath,
     model: asString(source.model),
     upstreamModel: asString(source.upstreamModel ?? source.upstream_model),
@@ -1761,6 +1764,14 @@ export function normalizeBackgroundTasks(payload: unknown): BackgroundTaskSettin
       DEFAULT_BACKGROUND_TASKS.tokenRefreshPollIntervalSecs,
       1
     ),
+    warmupCronEnabled: asBoolean(
+      source.warmupCronEnabled,
+      DEFAULT_BACKGROUND_TASKS.warmupCronEnabled
+    ),
+    warmupCronExpression: asString(
+      source.warmupCronExpression,
+      DEFAULT_BACKGROUND_TASKS.warmupCronExpression
+    ),
     usageRefreshWorkers: asInteger(
       source.usageRefreshWorkers,
       DEFAULT_BACKGROUND_TASKS.usageRefreshWorkers,
@@ -1906,6 +1917,9 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       asString(item)
     ),
     modelForwardRules: asString(source.modelForwardRules ?? source.model_forward_rules),
+    compactModelForwardRules: asString(
+      source.compactModelForwardRules ?? source.compact_model_forward_rules
+    ),
     accountMaxInflight: asInteger(source.accountMaxInflight, 1, 0),
     quotaGuard: normalizeQuotaGuard(source.quotaGuard ?? source.quota_guard),
     gatewayOriginator:

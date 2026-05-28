@@ -54,7 +54,7 @@ const SETTINGS_SNAPSHOT = {
 test("request logs display total duration and first-response latency", async ({
   page,
 }) => {
-  await page.route("**/api/runtime", async (route) => {
+  await page.route("**/api/runtime*", async (route) => {
     await route.fulfill({
       contentType: "application/json; charset=utf-8",
       body: JSON.stringify({
@@ -70,7 +70,7 @@ test("request logs display total duration and first-response latency", async ({
     });
   });
 
-  await page.route("**/api/rpc", async (route) => {
+  await page.route("**/api/rpc*", async (route) => {
     const payload = route.request().postDataJSON();
     const method = typeof payload?.method === "string" ? payload.method : "";
     const id = payload?.id ?? 1;
@@ -124,9 +124,14 @@ test("request logs display total duration and first-response latency", async ({
             trace_id: "trace-duration-1",
             key_id: "key-duration-1",
             request_path: "/v1/responses",
+            original_path: "/v1/responses",
+            adapted_path: "/v1/chat/completions",
             method: "POST",
             request_type: "http",
+            gateway_mode: "compact",
             model: "gpt-5.3-codex",
+            upstream_model: "gpt-5.4-openai-compact",
+            upstream_url: "https://chatgpt.com/backend-api/codex/responses",
             status_code: 200,
             duration_ms: 2345,
             first_response_ms: 340,
@@ -182,4 +187,11 @@ test("request logs display total duration and first-response latency", async ({
   await expect(page.getByText("2.3s/340ms")).toBeVisible();
   await expect(page.getByText("25%")).toBeVisible();
   await expect(page.getByText("$0.0004")).toBeVisible();
+  await expect(page.getByText("/v1/responses")).toBeVisible();
+  await expect(page.getByText("压缩", { exact: true })).toBeVisible();
+  await expect(page.getByText("-> /v1/chat/completions")).toBeVisible();
+  await expect(
+    page.getByText("=> chatgpt.com/backend-api/codex/responses"),
+  ).toBeVisible();
+  await expect(page.getByText("转发 gpt-5.4-openai-compact")).toBeVisible();
 });

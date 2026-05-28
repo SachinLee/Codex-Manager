@@ -169,6 +169,43 @@ impl Storage {
             self.upsert_model_source_model(&record)?;
             out.push(record);
         }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT upstream_model
+             FROM model_source_models
+             WHERE source_kind = ?1
+               AND source_id = ?2
+               AND discovery_kind = ?3",
+        )?;
+        let existing_rows = stmt
+            .query_map(params![&source_kind, &source_id, &discovery_kind], |row| {
+                row.get::<_, String>(0)
+            })?;
+        let existing_upstream_models: std::collections::BTreeSet<String> = existing_rows
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .collect();
+        let stale_upstream_models = existing_upstream_models
+            .difference(&seen)
+            .cloned()
+            .collect::<Vec<_>>();
+        for upstream_model in stale_upstream_models {
+            self.conn.execute(
+                "DELETE FROM model_source_mappings
+                 WHERE source_kind = ?1
+                   AND source_id = ?2
+                   AND upstream_model = ?3",
+                params![&source_kind, &source_id, &upstream_model],
+            )?;
+            self.conn.execute(
+                "DELETE FROM model_source_models
+                 WHERE source_kind = ?1
+                   AND source_id = ?2
+                   AND upstream_model = ?3
+                   AND discovery_kind = ?4",
+                params![&source_kind, &source_id, &upstream_model, &discovery_kind],
+            )?;
+        }
         Ok(out)
     }
 

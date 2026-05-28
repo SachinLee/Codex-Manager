@@ -5,10 +5,12 @@ use crate::apikey_profile::{
 use crate::gateway::request_helpers::ParsedRequestMetadata;
 use base64::Engine;
 use bytes::Bytes;
-use codexmanager_core::storage::ApiKey;
+use codexmanager_core::storage::{ApiKey, ConversationBinding};
 use reqwest::Method;
+use sha2::{Digest, Sha256};
 use tiny_http::Request;
 
+use super::super::conversation_binding::RouteConversationSource;
 use super::{LocalValidationError, LocalValidationResult};
 
 const ENV_GATEWAY_BLOCKED_PATHS: &str = "CODEXMANAGER_GATEWAY_BLOCKED_PATHS";
@@ -230,6 +232,89 @@ fn is_non_native_openai_responses_api_request(
         && !native_codex_client
 }
 
+fn is_compact_subagent_request(
+    normalized_path: &str,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+) -> bool {
+    if normalized_path == "/v1/responses/compact"
+        || normalized_path.starts_with("/v1/responses/compact?")
+    {
+        return true;
+    }
+    normalized_path.starts_with("/v1/responses")
+        && incoming_headers
+            .subagent()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("compact"))
+}
+
+fn rewrite_path_preserving_query(path: &str, replacement_path: &str) -> String {
+    let query = path
+        .split_once('?')
+        .map(|(_, query)| query)
+        .filter(|query| !query.trim().is_empty());
+    match query {
+        Some(query) => format!("{replacement_path}?{query}"),
+        None => replacement_path.to_string(),
+    }
+}
+
+fn resolve_logical_gateway_request_path(
+    normalized_path: &str,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+) -> String {
+    if is_compact_subagent_request(normalized_path, incoming_headers)
+        && !(normalized_path == "/v1/responses/compact"
+            || normalized_path.starts_with("/v1/responses/compact?"))
+    {
+        return rewrite_path_preserving_query(normalized_path, "/v1/responses/compact");
+    }
+    normalized_path.to_string()
+}
+
+fn resolve_compact_model_override_for_request(
+    normalized_path: &str,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+    base_model: Option<&str>,
+) -> Option<String> {
+    if !is_compact_subagent_request(normalized_path, incoming_headers)
+        || normalized_path == "/v1/responses/compact"
+        || normalized_path.starts_with("/v1/responses/compact?")
+    {
+        return None;
+    }
+    if let Some(explicit_override) = super::super::current_compact_model_override() {
+        return Some(explicit_override);
+    }
+    let model = base_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    super::super::resolve_compact_forwarded_model(model)
+}
+
+fn maybe_wrap_compact_response_adapter(
+    path: &str,
+    response_adapter: super::super::ResponseAdapter,
+) -> super::super::ResponseAdapter {
+    if (path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?"))
+        && super::super::compact_api_path_uses_chat_completions()
+    {
+        return super::super::ResponseAdapter::CompactFromChatCompletions;
+    }
+    response_adapter
+}
+
+fn transport_request_path(path: &str) -> String {
+    if (path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?"))
+        && super::super::compact_api_path_uses_chat_completions()
+    {
+        return rewrite_path_preserving_query(
+            path,
+            super::super::current_compact_api_path().as_str(),
+        );
+    }
+    path.to_string()
+}
+
 fn is_codex_image_tool_model(model: Option<&str>) -> bool {
     let Some(value) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
@@ -415,6 +500,33 @@ fn chat_text_config_with_response_format(
     }
 }
 
+const DEFAULT_CHAT_RESPONSES_REASONING_EFFORT: &str = "medium";
+const DEFAULT_CHAT_RESPONSES_REASONING_SUMMARY: &str = "auto";
+
+fn chat_reasoning_config_for_responses(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(reasoning) = obj.get("reasoning") {
+        let mut reasoning = reasoning.clone();
+        if let Some(reasoning_obj) = reasoning.as_object_mut() {
+            reasoning_obj
+                .entry("summary".to_string())
+                .or_insert_with(|| {
+                    serde_json::Value::String(DEFAULT_CHAT_RESPONSES_REASONING_SUMMARY.to_string())
+                });
+        }
+        return reasoning;
+    }
+
+    let effort = obj.get("reasoning_effort").cloned().unwrap_or_else(|| {
+        serde_json::Value::String(DEFAULT_CHAT_RESPONSES_REASONING_EFFORT.to_string())
+    });
+    serde_json::json!({
+        "effort": effort,
+        "summary": DEFAULT_CHAT_RESPONSES_REASONING_SUMMARY
+    })
+}
+
 fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<u8>, String> {
     let payload = serde_json::from_slice::<serde_json::Value>(&body)
         .map_err(|err| format!("invalid chat completions request json: {err}"))?;
@@ -503,14 +615,10 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
     if let Some(stream) = obj.get("stream") {
         rewritten.insert("stream".to_string(), stream.clone());
     }
-    if let Some(reasoning) = obj.get("reasoning") {
-        rewritten.insert("reasoning".to_string(), reasoning.clone());
-    } else if let Some(reasoning_effort) = obj.get("reasoning_effort") {
-        rewritten.insert(
-            "reasoning".to_string(),
-            serde_json::json!({ "effort": reasoning_effort }),
-        );
-    }
+    rewritten.insert(
+        "reasoning".to_string(),
+        chat_reasoning_config_for_responses(obj),
+    );
     if let Some(tools) = obj.get("tools").and_then(serde_json::Value::as_array) {
         rewritten.insert(
             "tools".to_string(),
@@ -1176,7 +1284,10 @@ fn normalize_compat_service_tier_for_codex_backend(body: Vec<u8>) -> Vec<u8> {
         return body;
     };
 
-    if raw_value.eq_ignore_ascii_case("fast") || raw_value.eq_ignore_ascii_case("priority") {
+    if raw_value.eq_ignore_ascii_case("auto")
+        || raw_value.eq_ignore_ascii_case("fast")
+        || raw_value.eq_ignore_ascii_case("priority")
+    {
         *service_tier = serde_json::Value::String("priority".to_string());
     } else {
         obj.remove("service_tier");
@@ -1248,6 +1359,110 @@ fn resolve_local_conversation_id(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RouteConversationId {
+    id: String,
+    source: RouteConversationSource,
+}
+
+fn prompt_cache_route_binding_enabled(protocol_type: &str, normalized_path: &str) -> bool {
+    protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
+        && super::super::official_responses_http::is_responses_path(normalized_path)
+}
+
+fn normalized_prompt_cache_key_for_route<'a>(
+    initial_request_meta: &'a ParsedRequestMetadata,
+    client_request_meta: &'a ParsedRequestMetadata,
+) -> Option<&'a str> {
+    initial_request_meta
+        .prompt_cache_key
+        .as_deref()
+        .or(client_request_meta.prompt_cache_key.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn prompt_cache_route_id(
+    platform_key_hash: &str,
+    protocol_type: &str,
+    prompt_cache_key: &str,
+) -> String {
+    let digest = Sha256::digest(
+        format!(
+            "pck:v1\0{platform_key_hash}\0{protocol_type}\0{}",
+            prompt_cache_key.trim()
+        )
+        .as_bytes(),
+    );
+    format!(
+        "pck:v1:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]
+    )
+}
+
+fn resolve_route_conversation_id(
+    protocol_type: &str,
+    normalized_path: &str,
+    platform_key_hash: &str,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+    initial_request_meta: &ParsedRequestMetadata,
+    client_request_meta: &ParsedRequestMetadata,
+) -> Option<RouteConversationId> {
+    if let Some(conversation_id) = incoming_headers
+        .conversation_id()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(RouteConversationId {
+            id: conversation_id.to_string(),
+            source: RouteConversationSource::NativeConversation,
+        });
+    }
+
+    if incoming_headers.turn_state().is_some() {
+        return None;
+    }
+
+    if prompt_cache_route_binding_enabled(protocol_type, normalized_path) {
+        if let Some(prompt_cache_key) =
+            normalized_prompt_cache_key_for_route(initial_request_meta, client_request_meta)
+        {
+            let source = if initial_request_meta.has_previous_response_id
+                || client_request_meta.has_previous_response_id
+            {
+                RouteConversationSource::PromptCacheKeyExistingOnly
+            } else {
+                RouteConversationSource::PromptCacheKey
+            };
+            return Some(RouteConversationId {
+                id: prompt_cache_route_id(platform_key_hash, protocol_type, prompt_cache_key),
+                source,
+            });
+        }
+    }
+
+    super::super::resolve_local_conversation_id_with_sticky_fallback(
+        incoming_headers,
+        should_derive_compat_conversation_anchor(protocol_type, normalized_path),
+    )
+    .map(|id| RouteConversationId {
+        id,
+        source: RouteConversationSource::StickyFallback,
+    })
+}
+
+fn conversation_binding_for_thread_anchor<'a>(
+    route_conversation_source: Option<RouteConversationSource>,
+    conversation_binding: Option<&'a ConversationBinding>,
+) -> Option<&'a ConversationBinding> {
+    if route_conversation_source.is_some_and(|source| source.is_prompt_cache_key()) {
+        None
+    } else {
+        conversation_binding
+    }
+}
+
 fn resolve_client_is_stream(
     protocol_type: &str,
     normalized_path: &str,
@@ -1283,6 +1498,7 @@ fn apply_passthrough_request_overrides(
     body: Vec<u8>,
     api_key: &ApiKey,
     explicit_service_tier_for_log: Option<String>,
+    model_override: Option<&str>,
 ) -> (
     Vec<u8>,
     Option<String>,
@@ -1292,8 +1508,11 @@ fn apply_passthrough_request_overrides(
     bool,
     Option<String>,
 ) {
-    let (effective_model, effective_reasoning, effective_service_tier) =
+    let (default_effective_model, effective_reasoning, effective_service_tier) =
         resolve_effective_request_overrides(api_key);
+    let effective_model = model_override
+        .map(str::to_string)
+        .or(default_effective_model);
     let rewritten_body =
         super::super::apply_request_overrides_with_service_tier_and_prompt_cache_key_scope(
             path,
@@ -1305,7 +1524,10 @@ fn apply_passthrough_request_overrides(
             None,
             false,
         );
-    let rewritten_body = super::super::normalize_official_responses_http_body(path, rewritten_body);
+    let rewritten_body = super::super::normalize_official_responses_http_body(
+        transport_request_path(path).as_str(),
+        rewritten_body,
+    );
     let request_meta = super::super::parse_request_metadata(&rewritten_body);
     (
         rewritten_body,
@@ -1359,8 +1581,10 @@ pub(super) fn build_local_validation_result(
             ),
         ));
     }
+    let logical_path =
+        resolve_logical_gateway_request_path(normalized_path.as_str(), &incoming_headers);
     let effective_protocol_type =
-        resolve_gateway_protocol_type(api_key.protocol_type.as_str(), normalized_path.as_str());
+        resolve_gateway_protocol_type(api_key.protocol_type.as_str(), logical_path.as_str());
     let request_method = request.method().as_str().to_string();
     let method = Method::from_bytes(request_method.as_bytes()).map_err(|_| {
         LocalValidationError::new(
@@ -1372,7 +1596,7 @@ pub(super) fn build_local_validation_result(
     super::super::log_client_service_tier(
         trace_id.as_str(),
         "http",
-        normalized_path.as_str(),
+        logical_path.as_str(),
         initial_service_tier_diagnostic.has_field,
         initial_service_tier_diagnostic.raw_value.as_deref(),
         initial_service_tier_diagnostic.normalized_value.as_deref(),
@@ -1380,6 +1604,17 @@ pub(super) fn build_local_validation_result(
     let initial_request_meta = super::super::parse_request_metadata(&body);
     let native_codex_client =
         is_native_codex_client_request(&incoming_headers) || initial_request_meta.has_client_metadata;
+    let compact_gateway_mode =
+        is_compact_subagent_request(normalized_path.as_str(), &incoming_headers)
+            .then_some("compact".to_string());
+    let compact_model_override_for_logical_request = resolve_compact_model_override_for_request(
+        normalized_path.as_str(),
+        &incoming_headers,
+        initial_request_meta
+            .model
+            .as_deref()
+            .or(api_key.model_slug.as_deref()),
+    );
     log::debug!(
         "event=gateway_client_profile trace_id={} path={} originator={} user_agent={} session_affinity={} native_codex={}",
         trace_id.as_str(),
@@ -1395,13 +1630,13 @@ pub(super) fn build_local_validation_result(
     );
     let initial_local_conversation_id = resolve_local_conversation_id(
         effective_protocol_type,
-        normalized_path.as_str(),
+        logical_path.as_str(),
         &incoming_headers,
         initial_request_meta.has_prompt_cache_key,
         native_codex_client,
     );
     ensure_codex_image_tool_model_not_used_for_text_request(
-        normalized_path.as_str(),
+        logical_path.as_str(),
         initial_request_meta
             .model
             .as_deref()
@@ -1418,25 +1653,27 @@ pub(super) fn build_local_validation_result(
             has_prompt_cache_key,
             request_shape,
         ) = apply_passthrough_request_overrides(
-            &normalized_path,
+            &logical_path,
             body,
             &api_key,
             initial_request_meta.service_tier.clone(),
+            compact_model_override_for_logical_request.as_deref(),
         );
         if is_non_native_openai_responses_api_request(
             effective_protocol_type,
-            normalized_path.as_str(),
+            logical_path.as_str(),
             native_codex_client,
         ) {
             rewritten_body = default_omitted_responses_stream_to_true(rewritten_body);
         }
-        super::super::validate_text_input_limit_for_path(&normalized_path, &rewritten_body)
+        let transport_path = transport_request_path(logical_path.as_str());
+        super::super::validate_text_input_limit_for_path(&transport_path, &rewritten_body)
             .map_err(|err| LocalValidationError::new(400, err.message()))?;
         let incoming_headers = incoming_headers
             .with_conversation_id_override(initial_local_conversation_id.as_deref());
         let is_stream = resolve_client_is_stream(
             effective_protocol_type,
-            normalized_path.as_str(),
+            logical_path.as_str(),
             initial_request_meta.is_stream,
             initial_request_meta.stream_specified,
             native_codex_client,
@@ -1446,8 +1683,8 @@ pub(super) fn build_local_validation_result(
             incoming_headers,
             storage,
             original_path: normalized_path.clone(),
-            passthrough_path: normalized_path.clone(),
-            path: normalized_path,
+            passthrough_path: logical_path.clone(),
+            path: logical_path.clone(),
             passthrough_body: Bytes::from(rewritten_body.clone()),
             body: Bytes::from(rewritten_body),
             is_stream,
@@ -1457,39 +1694,50 @@ pub(super) fn build_local_validation_result(
             rotation_strategy: ROTATION_AGGREGATE_API.to_string(),
             aggregate_api_id: api_key.aggregate_api_id,
             account_plan_filter: api_key.account_plan_filter,
-            response_adapter: super::super::ResponseAdapter::Passthrough,
+            response_adapter: maybe_wrap_compact_response_adapter(
+                logical_path.as_str(),
+                super::super::ResponseAdapter::Passthrough,
+            ),
             gemini_stream_output_mode: None,
             tool_name_restore_map: super::super::ToolNameRestoreMap::default(),
             request_method,
             key_id: api_key.id,
             platform_key_hash: api_key.key_hash,
             local_conversation_id: initial_local_conversation_id,
+            route_conversation_id: None,
+            route_conversation_source: None,
             conversation_binding: None,
             model_for_log,
             reasoning_for_log,
             service_tier_for_log,
             effective_service_tier_for_log,
+            gateway_mode_for_log: compact_gateway_mode,
             method,
         });
     }
 
-    let passthrough_path = normalized_path.clone();
+    let passthrough_path = logical_path.clone();
     let mut passthrough_body = apply_passthrough_request_overrides(
-        &normalized_path,
+        &logical_path,
         body.clone(),
         &api_key,
         initial_request_meta.service_tier.clone(),
+        compact_model_override_for_logical_request.as_deref(),
     )
     .0;
     if is_non_native_openai_responses_api_request(
         effective_protocol_type,
-        normalized_path.as_str(),
+        logical_path.as_str(),
         native_codex_client,
     ) {
         passthrough_body = default_omitted_responses_stream_to_true(passthrough_body);
     }
-    super::super::validate_text_input_limit_for_path(&normalized_path, &passthrough_body)
-        .map_err(|err| LocalValidationError::new(400, err.message()))?;
+    let passthrough_transport_path = transport_request_path(logical_path.as_str());
+    super::super::validate_text_input_limit_for_path(
+        &passthrough_transport_path,
+        &passthrough_body,
+    )
+    .map_err(|err| LocalValidationError::new(400, err.message()))?;
     let original_body = body.clone();
     let (mut path, mut response_adapter, mut gemini_stream_output_mode, mut tool_name_restore_map) =
         if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
@@ -1551,7 +1799,7 @@ pub(super) fn build_local_validation_result(
         } else {
             let adapted = super::super::adapt_request_for_protocol(
                 effective_protocol_type,
-                &normalized_path,
+                &logical_path,
                 body,
             )
             .map_err(|err| {
@@ -1584,7 +1832,7 @@ pub(super) fn build_local_validation_result(
     }
     if is_non_native_openai_responses_api_request(
         effective_protocol_type,
-        normalized_path.as_str(),
+        logical_path.as_str(),
         native_codex_client,
     ) {
         body = default_omitted_responses_stream_to_true(body);
@@ -1611,8 +1859,16 @@ pub(super) fn build_local_validation_result(
     // 中文注释：下游调用方的 stream 语义必须来自原始客户端请求；
     // 否则协议适配（例如 Anthropic/Gemini 转 /responses 强制 stream=true）会污染响应模式判断。
     let client_request_meta = initial_request_meta.clone();
-    let (effective_model, effective_reasoning, effective_service_tier) =
+    let (mut effective_model, effective_reasoning, effective_service_tier) =
         resolve_effective_request_overrides(&api_key);
+    effective_model = resolve_compact_model_override_for_request(
+        normalized_path.as_str(),
+        &incoming_headers,
+        effective_model
+            .as_deref()
+            .or(initial_request_meta.model.as_deref()),
+    )
+    .or(effective_model);
     let preferred_prompt_cache_key = resolve_preferred_client_prompt_cache_key(
         effective_protocol_type,
         &incoming_headers,
@@ -1623,19 +1879,33 @@ pub(super) fn build_local_validation_result(
     let local_conversation_id = initial_local_conversation_id.clone();
     let allow_codex_compat_rewrite = allow_codex_compat_rewrite_for_client(
         effective_protocol_type,
-        normalized_path.as_str(),
+        logical_path.as_str(),
         native_codex_client,
     );
+    let route_conversation = resolve_route_conversation_id(
+        effective_protocol_type,
+        logical_path.as_str(),
+        api_key.key_hash.as_str(),
+        &incoming_headers,
+        &initial_request_meta,
+        &client_request_meta,
+    );
+    let route_conversation_id = route_conversation.as_ref().map(|route| route.id.clone());
+    let route_conversation_source = route_conversation.as_ref().map(|route| route.source);
     let conversation_binding = super::super::conversation_binding::load_conversation_binding(
         &storage,
         api_key.key_hash.as_str(),
-        local_conversation_id.as_deref(),
+        route_conversation_id.as_deref(),
     )
     .map_err(|err| LocalValidationError::new(500, err))?;
+    let binding_for_thread_anchor = conversation_binding_for_thread_anchor(
+        route_conversation_source,
+        conversation_binding.as_ref(),
+    );
     let effective_thread_anchor = super::super::resolve_fallback_thread_anchor(
         &incoming_headers,
         local_conversation_id.as_deref(),
-        conversation_binding.as_ref(),
+        binding_for_thread_anchor,
     );
     // 中文注释：保留原始 local conversation_id 作为对外会话标识；
     // 线程世代只参与 prompt_cache_key 与路由绑定，不直接污染对外请求头。
@@ -1644,7 +1914,7 @@ pub(super) fn build_local_validation_result(
     let should_normalize_compat_service_tier =
         should_normalize_compat_service_tier_for_codex_backend(
             effective_protocol_type,
-            normalized_path.as_str(),
+            logical_path.as_str(),
             path.as_str(),
         );
     body = if preferred_prompt_cache_key.is_some() {
@@ -1684,8 +1954,10 @@ pub(super) fn build_local_validation_result(
     if should_normalize_compat_service_tier {
         body = normalize_compat_service_tier_for_codex_backend(body);
     }
-    body = super::super::normalize_official_responses_http_body(&path, body);
-    super::super::validate_text_input_limit_for_path(&path, &body)
+    response_adapter = maybe_wrap_compact_response_adapter(path.as_str(), response_adapter);
+    let normalized_transport_path = transport_request_path(path.as_str());
+    body = super::super::normalize_official_responses_http_body(&normalized_transport_path, body);
+    super::super::validate_text_input_limit_for_path(&normalized_transport_path, &body)
         .map_err(|err| LocalValidationError::new(400, err.message()))?;
 
     let request_meta = super::super::parse_request_metadata(&body);
@@ -1697,7 +1969,7 @@ pub(super) fn build_local_validation_result(
     let effective_service_tier_for_log = request_meta.service_tier;
     let is_stream = resolve_client_is_stream(
         effective_protocol_type,
-        normalized_path.as_str(),
+        logical_path.as_str(),
         client_request_meta.is_stream,
         client_request_meta.stream_specified,
         native_codex_client,
@@ -1727,6 +1999,8 @@ pub(super) fn build_local_validation_result(
         key_id: api_key.id,
         platform_key_hash: api_key.key_hash,
         local_conversation_id,
+        route_conversation_id,
+        route_conversation_source,
         conversation_binding,
         rotation_strategy: api_key.rotation_strategy,
         aggregate_api_id: api_key.aggregate_api_id,
@@ -1735,6 +2009,7 @@ pub(super) fn build_local_validation_result(
         reasoning_for_log,
         service_tier_for_log,
         effective_service_tier_for_log,
+        gateway_mode_for_log: compact_gateway_mode,
         method,
     })
 }

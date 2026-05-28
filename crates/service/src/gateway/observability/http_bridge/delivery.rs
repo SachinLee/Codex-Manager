@@ -1,7 +1,8 @@
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
-use tiny_http::{Header, Request, Response, StatusCode};
+use tiny_http::{HTTPVersion, Header, Request, Response, StatusCode};
 
 use crate::gateway::error_log::GatewayErrorLogInput;
 use crate::gateway::upstream::GatewayStreamResponse;
@@ -9,9 +10,9 @@ use crate::gateway::upstream::GatewayStreamResponse;
 use super::super::{GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap};
 use super::{
     build_images_api_response, collect_image_generation_chat_images,
-    collect_non_stream_json_from_sse_bytes, extract_error_hint_from_body,
-    extract_error_message_from_json, looks_like_sse_payload, merge_usage, parse_usage_from_json,
-    push_trace_id_header, usage_has_signal, AnthropicSseReader,
+    collect_non_stream_json_from_sse_bytes, collect_response_reasoning_summary_text,
+    extract_error_hint_from_body, extract_error_message_from_json, looks_like_sse_payload,
+    merge_usage, parse_usage_from_json, push_trace_id_header, usage_has_signal, AnthropicSseReader,
     ChatCompletionsFromResponsesSseReader, GeminiSseReader, ImagesFromResponsesSseReader,
     ImagesResponseFormat, OpenAIResponsesPassthroughSseReader, PassthroughSseCollector,
     PassthroughSseProtocol, PassthroughSseUsageReader, SseKeepAliveFrame,
@@ -21,6 +22,7 @@ use super::{
 const REQUEST_ID_HEADER_CANDIDATES: &[&str] = &["x-request-id", "x-oai-request-id"];
 const CF_RAY_HEADER_NAME: &str = "cf-ray";
 const AUTH_ERROR_HEADER_NAME: &str = "x-openai-authorization-error";
+const STREAMING_CHUNK_READ_BUF_BYTES: usize = 8 * 1024;
 
 /// 函数 `is_compact_request_path`
 ///
@@ -58,6 +60,97 @@ fn first_upstream_header(headers: &reqwest::header::HeaderMap, names: &[&str]) -
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     })
+}
+
+fn should_skip_streaming_manual_header(header: &Header) -> bool {
+    header.field.equiv("connection")
+        || header.field.equiv("content-length")
+        || header.field.equiv("trailer")
+        || header.field.equiv("transfer-encoding")
+        || header.field.equiv("upgrade")
+}
+
+fn header_name_exists(headers: &[Header], name: &'static str) -> bool {
+    headers.iter().any(|header| header.field.equiv(name))
+}
+
+fn write_streaming_chunked_response<W, R>(
+    writer: &mut W,
+    http_version: &HTTPVersion,
+    status: StatusCode,
+    headers: &[Header],
+    mut body: R,
+    do_not_send_body: bool,
+) -> std::io::Result<()>
+where
+    W: Write,
+    R: Read,
+{
+    write!(
+        writer,
+        "HTTP/{}.{} {} {}\r\n",
+        http_version.0,
+        http_version.1,
+        status.0,
+        status.default_reason_phrase()
+    )?;
+    for header in headers {
+        if should_skip_streaming_manual_header(header) {
+            continue;
+        }
+        writer.write_all(header.field.as_str().as_str().as_bytes())?;
+        writer.write_all(b": ")?;
+        writer.write_all(header.value.as_str().as_bytes())?;
+        writer.write_all(b"\r\n")?;
+    }
+    if !header_name_exists(headers, "x-accel-buffering") {
+        writer.write_all(b"X-Accel-Buffering: no\r\n")?;
+    }
+    writer.write_all(b"Transfer-Encoding: chunked\r\n\r\n")?;
+    writer.flush()?;
+
+    if !do_not_send_body {
+        let mut buffer = vec![0_u8; STREAMING_CHUNK_READ_BUF_BYTES];
+        loop {
+            let read = body.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            write!(writer, "{read:x}\r\n")?;
+            writer.write_all(&buffer[..read])?;
+            writer.write_all(b"\r\n")?;
+            writer.flush()?;
+        }
+    }
+
+    writer.write_all(b"0\r\n\r\n")?;
+    writer.flush()
+}
+
+fn respond_streaming_chunked<R>(
+    request: Request,
+    status: StatusCode,
+    headers: Vec<Header>,
+    body: R,
+) -> std::io::Result<()>
+where
+    R: Read + Send + 'static,
+{
+    if *request.http_version() <= (1, 0) {
+        return request.respond(Response::new(status, headers, body, None, None));
+    }
+
+    let http_version = request.http_version().clone();
+    let do_not_send_body = request.method().as_str().eq_ignore_ascii_case("HEAD");
+    let mut writer = request.into_writer();
+    write_streaming_chunked_response(
+        &mut writer,
+        &http_version,
+        status,
+        &headers,
+        body,
+        do_not_send_body,
+    )
 }
 
 /// 函数 `compact_debug_suffix`
@@ -753,6 +846,8 @@ fn convert_responses_body_to_chat_completions(body: &[u8]) -> Option<Vec<u8>> {
             collect_chat_output_text(output, &mut text);
         }
     }
+    let mut reasoning_text = String::new();
+    collect_response_reasoning_summary_text(response, &mut reasoning_text);
     let id = response
         .get("id")
         .or_else(|| value.get("id"))
@@ -790,6 +885,10 @@ fn convert_responses_body_to_chat_completions(body: &[u8]) -> Option<Vec<u8>> {
     });
     if let Some(usage) = usage {
         completion["usage"] = usage;
+    }
+    if !reasoning_text.trim().is_empty() {
+        completion["choices"][0]["message"]["reasoning"] = Value::String(reasoning_text.clone());
+        completion["choices"][0]["message"]["reasoning_content"] = Value::String(reasoning_text);
     }
     let images = collect_image_generation_chat_images(response);
     if !images.is_empty() {
@@ -2044,8 +2143,10 @@ pub(crate) fn respond_with_upstream(
                         tool_name_restore_map.cloned(),
                         request_started_at,
                     ));
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let usage = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -2081,8 +2182,10 @@ pub(crate) fn respond_with_upstream(
                         Arc::clone(&usage_collector),
                         request_started_at,
                     ));
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let collector = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -2127,8 +2230,10 @@ pub(crate) fn respond_with_upstream(
                         request_started_at,
                         response_format,
                     ));
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let collector = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -2167,8 +2272,10 @@ pub(crate) fn respond_with_upstream(
                     gemini_cli_wrap_response_envelope(response_adapter),
                     request_started_at,
                 ));
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let collector = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -2649,8 +2756,10 @@ pub(crate) fn respond_with_upstream(
                         ))
                     };
                 force_openai_responses_stream_content_type(&mut headers, request_path, is_stream);
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let collector = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -3011,8 +3120,10 @@ pub(crate) fn respond_with_stream_upstream(
                         tool_name_restore_map.cloned(),
                         request_started_at,
                     ));
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let usage = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -3147,8 +3258,10 @@ pub(crate) fn respond_with_stream_upstream(
                         gemini_cli_wrap_response_envelope(response_adapter),
                         request_started_at,
                     ));
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let collector = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -3579,8 +3692,10 @@ pub(crate) fn respond_with_stream_upstream(
                         ));
                     };
                 force_openai_responses_stream_content_type(&mut headers, request_path, is_stream);
-                let response = Response::new(status, headers, response_body, None, None);
-                let delivery_error = request.respond(response).err().map(|err| err.to_string());
+                let delivery_error =
+                    respond_streaming_chunked(request, status, headers, response_body)
+                        .err()
+                        .map(|err| err.to_string());
                 let collector = usage_collector
                     .lock()
                     .map(|guard| guard.clone())
@@ -3786,9 +3901,83 @@ mod tests {
         convert_responses_body_to_chat_completions,
         convert_responses_body_to_gemini_generate_content, convert_responses_body_to_images,
         force_openai_responses_stream_content_type, gemini_cli_wrap_response_envelope,
-        merge_usage_from_body_without_output_text, Header, ImagesResponseFormat, ResponseAdapter,
+        merge_usage_from_body_without_output_text, write_streaming_chunked_response, HTTPVersion,
+        Header, ImagesResponseFormat, ResponseAdapter, StatusCode,
     };
     use serde_json::json;
+    use std::io::{Read, Write};
+
+    struct ChunkedTestReader {
+        chunks: Vec<&'static [u8]>,
+        index: usize,
+    }
+
+    impl ChunkedTestReader {
+        fn new(chunks: Vec<&'static [u8]>) -> Self {
+            Self { chunks, index: 0 }
+        }
+    }
+
+    impl Read for ChunkedTestReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(chunk) = self.chunks.get(self.index) else {
+                return Ok(0);
+            };
+            self.index += 1;
+            let read = chunk.len().min(buf.len());
+            buf[..read].copy_from_slice(&chunk[..read]);
+            Ok(read)
+        }
+    }
+
+    #[derive(Default)]
+    struct FlushCountingWriter {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Write for FlushCountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn streaming_chunked_response_flushes_each_read_chunk() {
+        let mut writer = FlushCountingWriter::default();
+        let headers = vec![
+            Header::from_bytes("Content-Type", "text/event-stream").expect("content-type header"),
+            Header::from_bytes("Content-Length", "999").expect("content-length header"),
+        ];
+        let body = ChunkedTestReader::new(vec![b"data: a\n\n", b"data: b\n\n"]);
+
+        write_streaming_chunked_response(
+            &mut writer,
+            &HTTPVersion(1, 1),
+            StatusCode(200),
+            &headers,
+            body,
+            false,
+        )
+        .expect("write streaming response");
+
+        let output = String::from_utf8(writer.bytes).expect("utf8 response");
+        assert!(output.contains("HTTP/1.1 200 OK\r\n"));
+        assert!(output.contains("Content-Type: text/event-stream\r\n"));
+        assert!(output.contains("X-Accel-Buffering: no\r\n"));
+        assert!(output.contains("Transfer-Encoding: chunked\r\n"));
+        assert!(!output.to_ascii_lowercase().contains("content-length: 999"));
+        assert!(output.contains("9\r\ndata: a\n\n\r\n"));
+        assert!(output.contains("9\r\ndata: b\n\n\r\n"));
+        assert!(output.ends_with("0\r\n\r\n"));
+        assert!(writer.flushes >= 4);
+    }
 
     /// 函数 `compact_header_only_identity_error_is_normalized_and_classified`
     ///
@@ -4065,6 +4254,69 @@ mod tests {
         assert_eq!(
             value["usage"]["prompt_tokens"],
             serde_json::Value::Number(2.into())
+        );
+    }
+
+    #[test]
+    fn non_stream_chat_completion_response_preserves_reasoning_content() {
+        let body = json!({
+            "id": "resp_non_stream_reasoning",
+            "model": "gpt-5.4",
+            "output": [{
+                "type": "reasoning",
+                "id": "rs_non_stream_1",
+                "summary": [{
+                    "type": "summary_text",
+                    "text": "先读配置"
+                }]
+            }],
+            "usage": { "input_tokens": 4, "output_tokens": 2, "total_tokens": 6 }
+        });
+
+        let mapped = convert_responses_body_to_chat_completions(
+            serde_json::to_vec(&body).expect("body").as_slice(),
+        )
+        .expect("convert chat completion body");
+        let value: serde_json::Value = serde_json::from_slice(&mapped).expect("parse mapped body");
+
+        assert_eq!(value["choices"][0]["message"]["content"], "");
+        assert_eq!(
+            value["choices"][0]["message"]["reasoning_content"],
+            "先读配置"
+        );
+        assert_eq!(value["choices"][0]["message"]["reasoning"], "先读配置");
+        assert_eq!(
+            value["usage"]["prompt_tokens"],
+            serde_json::Value::Number(4.into())
+        );
+    }
+
+    #[test]
+    fn non_stream_chat_completion_response_preserves_answer_and_reasoning_content() {
+        let body = json!({
+            "id": "resp_non_stream_text_and_reasoning",
+            "model": "gpt-5.4",
+            "output_text": "OK",
+            "output": [{
+                "type": "reasoning",
+                "id": "rs_non_stream_1",
+                "summary": [{
+                    "type": "summary_text",
+                    "text": "先想一下"
+                }]
+            }]
+        });
+
+        let mapped = convert_responses_body_to_chat_completions(
+            serde_json::to_vec(&body).expect("body").as_slice(),
+        )
+        .expect("convert chat completion body");
+        let value: serde_json::Value = serde_json::from_slice(&mapped).expect("parse mapped body");
+
+        assert_eq!(value["choices"][0]["message"]["content"], "OK");
+        assert_eq!(
+            value["choices"][0]["message"]["reasoning_content"],
+            "先想一下"
         );
     }
 

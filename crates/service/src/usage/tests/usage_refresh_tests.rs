@@ -260,6 +260,27 @@ fn usage_refresh_retry_skips_when_refresh_token_is_empty() {
     ));
 }
 
+#[test]
+fn usage_refresh_retry_skips_region_blocked_errors() {
+    let token = Token {
+        account_id: "acc-region-blocked-retry".to_string(),
+        id_token: "id".to_string(),
+        access_token: "access".to_string(),
+        refresh_token: "refresh".to_string(),
+        api_key_access_token: None,
+        last_refresh: now_ts(),
+    };
+
+    assert!(!should_retry_usage_refresh_with_token(
+        &token,
+        "usage endpoint failed: status=403 Forbidden body=code=unsupported_country_region_territory cf_ray=ray-HKG",
+    ));
+    assert!(should_retry_usage_refresh_with_token(
+        &token,
+        "usage endpoint status 403 Forbidden"
+    ));
+}
+
 /// 函数 `due_cutoff_includes_next_poll_window_and_buffer`
 ///
 /// 作者: gaohongshun

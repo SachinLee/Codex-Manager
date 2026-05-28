@@ -87,6 +87,7 @@ export const useAppStore = create<AppState>((set) => ({
       "gpt-5.4",
     ],
     modelForwardRules: "",
+    compactModelForwardRules: "",
     accountMaxInflight: 1,
     quotaGuard: {
       enabled: true,
@@ -120,6 +121,8 @@ export const useAppStore = create<AppState>((set) => ({
       httpWorkerMin: 8,
       httpStreamWorkerFactor: 1,
       httpStreamWorkerMin: 2,
+      warmupCronEnabled: false,
+      warmupCronExpression: "",
     },
     envOverrides: {},
     envOverrideCatalog: [],

@@ -341,6 +341,9 @@ export function formatAccountStatusReasonLabel(
         return t("Refresh Token 失效，需要重新登录");
     }
   }
+  if (reason === "refresh_token_region_blocked") {
+    return t("代理地区不受支持，已暂停账号刷新");
+  }
 
   const usageHttpStatus = reason.match(/^usage_http_(\d{3})$/);
   if (usageHttpStatus) {

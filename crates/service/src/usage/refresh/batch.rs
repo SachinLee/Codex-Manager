@@ -1,4 +1,4 @@
-use crate::account_status::is_banned_status_reason;
+use crate::account_status::is_account_refresh_blocked_status_reason;
 use codexmanager_core::storage::{Account, AggregateApi, Storage, Token};
 use crossbeam_channel::unbounded;
 use std::collections::HashSet;
@@ -338,7 +338,7 @@ fn load_banned_account_ids(
         .map_err(|err| err.to_string())?;
     Ok(reasons
         .into_iter()
-        .filter(|(_, reason)| is_banned_status_reason(reason))
+        .filter(|(_, reason)| is_account_refresh_blocked_status_reason(reason))
         .map(|(account_id, _)| account_id)
         .collect())
 }

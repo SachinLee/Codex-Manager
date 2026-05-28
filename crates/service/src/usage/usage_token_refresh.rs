@@ -169,6 +169,9 @@ mod tests {
     use base64::Engine;
     use codexmanager_core::storage::Account;
     use std::ffi::OsString;
+    use std::thread;
+    use std::time::Duration;
+    use tiny_http::{Header, Response, Server, StatusCode as TinyStatusCode};
 
     fn jwt_with_json(payload_json: &str) -> String {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_json);
@@ -232,6 +235,40 @@ mod tests {
             .expect("insert account");
     }
 
+    fn start_region_blocked_refresh_server() -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        thread::JoinHandle<()>,
+    ) {
+        let server = Server::http("127.0.0.1:0").expect("start refresh mock server");
+        let url = format!("http://{}/oauth/token", server.server_addr());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut request = server
+                .recv_timeout(Duration::from_secs(5))
+                .expect("refresh mock timeout")
+                .expect("receive refresh request");
+            let mut body = String::new();
+            request
+                .as_reader()
+                .read_to_string(&mut body)
+                .expect("read refresh request body");
+            tx.send(body).expect("send refresh request body");
+            let response = Response::from_string("")
+                .with_status_code(TinyStatusCode(403))
+                .with_header(
+                    Header::from_bytes(
+                        "x-openai-authorization-error",
+                        "unsupported_country_region_territory",
+                    )
+                    .expect("auth error header"),
+                )
+                .with_header(Header::from_bytes("cf-ray", "ray-hkg").expect("cf-ray header"));
+            request.respond(response).expect("respond refresh request");
+        });
+        (url, rx, handle)
+    }
+
     #[test]
     fn recover_refresh_race_uses_latest_token_when_refresh_token_changed() {
         let storage = Storage::open_in_memory().expect("open");
@@ -273,6 +310,59 @@ mod tests {
 
         assert!(!recovered);
         assert_eq!(token.refresh_token, "refresh-old");
+    }
+
+    #[test]
+    fn refresh_and_persist_region_blocked_mock_suspends_account() {
+        let _guard = crate::test_env_guard();
+        let _ = crate::usage_http::usage_http_client();
+        let storage = Storage::open_in_memory().expect("open");
+        storage.init().expect("init");
+        insert_account(&storage, "acc-region-blocked");
+        let mut token = token_with_refresh("acc-region-blocked", "refresh-old");
+        storage.insert_token(&token).expect("insert token");
+        let (url, rx, handle) = start_region_blocked_refresh_server();
+        let _restore = EnvVarRestore::set("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &url);
+
+        let err = refresh_and_persist_access_token(
+            &storage,
+            &mut token,
+            "https://auth.openai.com",
+            "client-id",
+            token_refresh_ahead_secs(),
+        )
+        .expect_err("region blocked refresh should fail");
+        let body = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receive refresh request body");
+        handle.join().expect("join refresh mock server");
+
+        assert!(body.contains("refresh_token=refresh-old"));
+        assert!(err.contains("auth_error=unsupported_country_region_territory"));
+        assert!(
+            crate::account_status::mark_account_unavailable_for_auth_error(
+                &storage,
+                "acc-region-blocked",
+                &err,
+            )
+        );
+        let account = storage
+            .find_account_by_id("acc-region-blocked")
+            .expect("find account")
+            .expect("account exists");
+        assert_eq!(account.status, "unavailable");
+        let reasons = storage
+            .latest_account_status_reasons(&["acc-region-blocked".to_string()])
+            .expect("load reasons");
+        assert_eq!(
+            reasons.get("acc-region-blocked").map(String::as_str),
+            Some(crate::account_status::REFRESH_TOKEN_REGION_BLOCKED_REASON)
+        );
+        let stored = storage
+            .find_token_by_account_id("acc-region-blocked")
+            .expect("load token")
+            .expect("token exists");
+        assert_eq!(stored.refresh_token, "refresh-old");
     }
 
     #[test]

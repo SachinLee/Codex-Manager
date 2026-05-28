@@ -250,6 +250,21 @@ fn looks_like_refresh_token_blocked_marker(value: &str) -> bool {
         || normalized.contains("region_restricted")
 }
 
+pub(crate) fn is_region_blocked_error_message(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("unsupported_country_region_territory")
+        || normalized.contains("unsupported_country")
+        || normalized.contains("region_restricted")
+        || normalized.contains("kind=cloudflare_blocked")
+        || normalized.contains("access blocked by cloudflare")
+        || normalized.contains("country, region, or territory not supported")
+}
+
+pub(crate) fn is_refresh_token_region_blocked_error_message(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("refresh token failed") && is_region_blocked_error_message(message)
+}
+
 /// 函数 `classify_refresh_token_status_error_kind_with_headers`
 ///
 /// 作者: gaohongshun

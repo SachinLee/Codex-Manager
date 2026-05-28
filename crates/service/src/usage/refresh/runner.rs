@@ -1,8 +1,11 @@
+use chrono::Local;
+use croner::parser::{CronParser, Seconds};
 use rand::Rng;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
+use super::settings::{current_mutex_string, warmup_cron_signal_version};
 use super::{
     is_keepalive_error_ignorable, parse_interval_secs,
     refresh_tokens_before_expiry_for_all_accounts,
@@ -15,6 +18,7 @@ use super::{
     TOKEN_REFRESH_FAILURE_BACKOFF_MAX_SECS, TOKEN_REFRESH_POLLING_ENABLED,
     TOKEN_REFRESH_POLL_INTERVAL_SECS_ATOMIC, USAGE_POLLING_ENABLED,
     USAGE_POLL_FAILURE_BACKOFF_MAX_ENV, USAGE_POLL_INTERVAL_SECS, USAGE_POLL_JITTER_ENV,
+    WARMUP_CRON_ENABLED, WARMUP_CRON_EXPRESSION, WARMUP_CRON_SIGNAL,
 };
 
 /// 函数 `usage_polling_loop`
@@ -114,6 +118,60 @@ pub(super) fn token_refresh_polling_loop() {
     );
 }
 
+pub(super) fn warmup_cron_loop() {
+    let mut last_invalid_expression = String::new();
+    let mut signal_version = warmup_cron_signal_version();
+    loop {
+        if !WARMUP_CRON_ENABLED.load(Ordering::Relaxed) {
+            signal_version = wait_for_warmup_cron_change(signal_version, None).0;
+            continue;
+        }
+
+        let expression = current_mutex_string(&WARMUP_CRON_EXPRESSION);
+        let next_run_at = match next_cron_after(expression.as_str(), Local::now()) {
+            Ok(next_run_at) => next_run_at,
+            Err(err) => {
+                if last_invalid_expression != expression {
+                    log::warn!("account warmup cron disabled by invalid expression: {err}");
+                    last_invalid_expression = expression;
+                }
+                signal_version =
+                    wait_for_warmup_cron_change(signal_version, Some(Duration::from_secs(60))).0;
+                continue;
+            }
+        };
+        last_invalid_expression.clear();
+        log::info!(
+            "account warmup cron scheduled: expression=\"{}\" next_run_at={}",
+            expression,
+            next_run_at.to_rfc3339()
+        );
+
+        let delay = delay_until(next_run_at);
+        let (next_signal_version, timed_out) =
+            wait_for_warmup_cron_change(signal_version, Some(delay));
+        signal_version = next_signal_version;
+        if !timed_out {
+            continue;
+        }
+        if !WARMUP_CRON_ENABLED.load(Ordering::Relaxed)
+            || current_mutex_string(&WARMUP_CRON_EXPRESSION) != expression
+        {
+            continue;
+        }
+
+        match crate::account_warmup::warmup_accounts(Vec::new(), "") {
+            Ok(result) => log::info!(
+                "account warmup cron finished: requested={} succeeded={} failed={}",
+                result.requested,
+                result.succeeded,
+                result.failed
+            ),
+            Err(err) => log::warn!("account warmup cron error: {err}"),
+        }
+    }
+}
+
 /// 函数 `parse_interval_with_fallback`
 ///
 /// 作者: gaohongshun
@@ -138,6 +196,94 @@ fn parse_interval_with_fallback(
     let fallback = std::env::var(fallback_env).ok();
     let raw = primary.as_deref().or(fallback.as_deref());
     parse_interval_secs(raw, default_secs, min_secs)
+}
+
+fn delay_until(next: chrono::DateTime<Local>) -> Duration {
+    let millis = next
+        .signed_duration_since(Local::now())
+        .num_milliseconds()
+        .max(1) as u64;
+    Duration::from_millis(millis)
+}
+
+fn wait_for_warmup_cron_change(last_seen: u64, timeout: Option<Duration>) -> (u64, bool) {
+    let (lock, cvar) =
+        WARMUP_CRON_SIGNAL.get_or_init(|| (std::sync::Mutex::new(0), std::sync::Condvar::new()));
+    let guard = crate::lock_utils::lock_recover(lock, "warmup_cron_signal");
+    if *guard != last_seen {
+        return (*guard, false);
+    }
+
+    let (guard, timed_out) = match timeout {
+        Some(duration) => match cvar.wait_timeout(guard, duration) {
+            Ok((guard, result)) => (guard, result.timed_out()),
+            Err(poisoned) => {
+                let (guard, result) = poisoned.into_inner();
+                (guard, result.timed_out())
+            }
+        },
+        None => match cvar.wait(guard) {
+            Ok(guard) => (guard, false),
+            Err(poisoned) => (poisoned.into_inner(), false),
+        },
+    };
+    (*guard, timed_out)
+}
+
+pub(super) fn validate_warmup_cron_expression(expression: &str) -> Result<(), String> {
+    next_cron_after(expression, Local::now()).map(|_| ())
+}
+
+fn next_cron_after(
+    expression: &str,
+    after: chrono::DateTime<Local>,
+) -> Result<chrono::DateTime<Local>, String> {
+    let schedules = parse_cron_schedules(expression)?;
+    let mut next_match: Option<chrono::DateTime<Local>> = None;
+
+    for schedule in schedules {
+        let candidate = next_cron_after_schedule(&schedule, after)?;
+        next_match = match next_match {
+            Some(current) if current <= candidate => Some(current),
+            _ => Some(candidate),
+        };
+    }
+
+    next_match.ok_or_else(|| "cron expression has no schedule".to_string())
+}
+
+fn parse_cron_schedules(expression: &str) -> Result<Vec<CronSchedule>, String> {
+    let mut schedules = Vec::new();
+    for item in expression.split('|') {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let schedule = CronParser::builder()
+            .seconds(Seconds::Optional)
+            .build()
+            .parse(trimmed)
+            .map_err(|err| err.to_string())?;
+        schedules.push(CronSchedule { schedule });
+    }
+    if schedules.is_empty() {
+        return Err("cron expression has no schedule".to_string());
+    }
+    Ok(schedules)
+}
+
+fn next_cron_after_schedule(
+    schedule: &CronSchedule,
+    after: chrono::DateTime<Local>,
+) -> Result<chrono::DateTime<Local>, String> {
+    schedule
+        .schedule
+        .find_next_occurrence(&after, false)
+        .map_err(|err| err.to_string())
+}
+
+struct CronSchedule {
+    schedule: croner::Cron,
 }
 
 /// 函数 `run_dynamic_poll_loop`
@@ -290,3 +436,7 @@ fn next_dynamic_failure_backoff(
         Duration::from_millis(bounded_ms as u64)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/usage_refresh_runner_tests.rs"]
+mod tests;

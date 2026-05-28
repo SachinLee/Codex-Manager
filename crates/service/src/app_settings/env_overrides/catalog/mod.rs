@@ -159,6 +159,7 @@ fn env_override_effect_scope(key: &str) -> &'static str {
     let key = normalized_env_key(key);
     match key.as_str() {
         "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT"
+        | "CODEXMANAGER_COMPACT_API_PATH"
         | "CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL"
         | "CODEXMANAGER_CODEX_IMAGE_GENERATION_ENABLED"
         | "CODEXMANAGER_CODEX_IMAGE_MAIN_MODEL"

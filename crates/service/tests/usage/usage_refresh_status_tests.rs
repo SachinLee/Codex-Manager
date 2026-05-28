@@ -5,7 +5,8 @@ use crate::account_availability::Availability;
 use crate::account_status::{
     deactivation_reason_from_message, mark_account_unavailable_for_auth_error,
     mark_account_unavailable_for_deactivation_error,
-    mark_account_unavailable_for_refresh_token_error,
+    mark_account_unavailable_for_refresh_token_error, set_account_status,
+    REFRESH_TOKEN_REGION_BLOCKED_REASON,
 };
 use crate::usage_snapshot_store::apply_status_from_snapshot;
 use codexmanager_core::storage::{now_ts, Account, Storage, UsageSnapshotRecord};
@@ -538,6 +539,61 @@ fn apply_status_available_preserves_manual_disabled_status() {
     assert_eq!(storage.event_count().expect("count events"), 0);
 }
 
+#[test]
+fn apply_status_available_preserves_region_blocked_status() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let base_updated_at = now_ts() - 10;
+    storage
+        .insert_account(&Account {
+            id: "acc-region-blocked-status".to_string(),
+            label: "main".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: base_updated_at,
+            updated_at: base_updated_at,
+        })
+        .expect("insert");
+    set_account_status(
+        &storage,
+        "acc-region-blocked-status",
+        "unavailable",
+        REFRESH_TOKEN_REGION_BLOCKED_REASON,
+    );
+
+    let available = UsageSnapshotRecord {
+        account_id: "acc-region-blocked-status".to_string(),
+        used_percent: Some(10.0),
+        window_minutes: Some(300),
+        resets_at: None,
+        secondary_used_percent: Some(20.0),
+        secondary_window_minutes: Some(10080),
+        secondary_resets_at: None,
+        credits_json: None,
+        captured_at: now_ts(),
+    };
+
+    let availability = apply_status_from_snapshot(&storage, &available);
+    assert!(matches!(availability, Availability::Available));
+
+    let account = storage
+        .find_account_by_id("acc-region-blocked-status")
+        .expect("find")
+        .expect("exists");
+    assert_eq!(account.status, "unavailable");
+    let reasons = storage
+        .latest_account_status_reasons(&["acc-region-blocked-status".to_string()])
+        .expect("load reasons");
+    assert_eq!(
+        reasons.get("acc-region-blocked-status").map(String::as_str),
+        Some(REFRESH_TOKEN_REGION_BLOCKED_REASON)
+    );
+}
+
 /// 函数 `refresh_token_auth_error_marks_account_unavailable`
 ///
 /// 作者: gaohongshun
@@ -618,6 +674,45 @@ fn refresh_token_forbidden_without_invalid_grant_keeps_account_active() {
         .expect("find")
         .expect("exists");
     assert_eq!(active.status, "active");
+}
+
+#[test]
+fn refresh_token_region_blocked_forbidden_marks_account_unavailable() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let account = Account {
+        id: "acc-refresh-region-blocked".to_string(),
+        label: "main".to_string(),
+        issuer: "issuer".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: None,
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: now_ts(),
+        updated_at: now_ts(),
+    };
+    storage.insert_account(&account).expect("insert");
+
+    assert!(mark_account_unavailable_for_refresh_token_error(
+        &storage,
+        "acc-refresh-region-blocked",
+        "refresh token failed with status 403 Forbidden: code=unsupported_country_region_territory type=request_forbidden Country, region, or territory not supported [cf_ray=ray-HKG, kind=cloudflare_blocked]"
+    ));
+    let unavailable = storage
+        .find_account_by_id("acc-refresh-region-blocked")
+        .expect("find")
+        .expect("exists");
+    assert_eq!(unavailable.status, "unavailable");
+    let reasons = storage
+        .latest_account_status_reasons(&["acc-refresh-region-blocked".to_string()])
+        .expect("load reasons");
+    assert_eq!(
+        reasons
+            .get("acc-refresh-region-blocked")
+            .map(String::as_str),
+        Some(REFRESH_TOKEN_REGION_BLOCKED_REASON)
+    );
 }
 
 /// 函数 `refresh_token_invalid_grant_on_forbidden_keeps_account_active`

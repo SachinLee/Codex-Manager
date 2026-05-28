@@ -80,6 +80,7 @@ impl Storage {
                     OR (
                         latest_status.message NOT LIKE '% reason=account_deactivated'
                         AND latest_status.message NOT LIKE '% reason=workspace_deactivated'
+                        AND latest_status.message NOT LIKE '% reason=refresh_token_region_blocked'
                     )
                )
                AND (

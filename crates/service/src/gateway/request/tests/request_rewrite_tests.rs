@@ -2,7 +2,7 @@ use super::{
     apply_request_overrides, apply_request_overrides_with_forced_prompt_cache_key,
     apply_request_overrides_with_prompt_cache_key, apply_request_overrides_with_service_tier,
     apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope,
-    apply_request_overrides_with_service_tier_and_prompt_cache_key_scope,
+    apply_request_overrides_with_service_tier_and_prompt_cache_key_scope, compute_upstream_url,
 };
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,6 +11,7 @@ const STRICT_REQUEST_PARAM_ALLOWLIST_ENV: &str = "CODEXMANAGER_STRICT_REQUEST_PA
 const CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL_ENV: &str =
     "CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL";
 const COMPACT_MODEL_ENV: &str = "CODEXMANAGER_COMPACT_MODEL";
+const COMPACT_API_PATH_ENV: &str = "CODEXMANAGER_COMPACT_API_PATH";
 const CODEXMANAGER_DB_PATH_ENV: &str = "CODEXMANAGER_DB_PATH";
 
 struct RuntimeEnvGuard {
@@ -1701,6 +1702,30 @@ fn responses_default_path_still_maps_fast_service_tier_to_priority_for_codex_bac
     );
 }
 
+#[test]
+fn responses_default_path_maps_auto_service_tier_to_priority_for_codex_backend() {
+    let _guard = crate::test_env_guard();
+    let body = json!({
+        "model": "gpt-5.4",
+        "input": "hello",
+        "service_tier": "auto"
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert_eq!(
+        value
+            .get("service_tier")
+            .and_then(serde_json::Value::as_str),
+        Some("priority")
+    );
+}
+
 /// 函数 `responses_ignores_unsupported_flex_service_tier_override_for_codex_backend`
 ///
 /// 作者: gaohongshun
@@ -2287,6 +2312,87 @@ fn responses_platform_key_bound_spark_model_keeps_original_slug() {
     );
 
     let _ = crate::gateway::set_model_forward_rules(original_rules.as_str());
+}
+
+#[test]
+fn responses_compact_applies_compact_model_forward_rules() {
+    let _guard = crate::test_env_guard();
+    let original_rules = crate::gateway::current_compact_model_forward_rules();
+    let _ = crate::gateway::set_compact_model_forward_rules("");
+    crate::gateway::set_compact_model_forward_rules(
+        "gpt-5.4=gpt-5.4-openai-compact",
+    )
+    .expect("set compact model forward rules");
+
+    let body = json!({
+        "model": "gpt-5.4",
+        "input": "compact me"
+    });
+    let out = apply_request_overrides(
+        "/v1/responses/compact",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(
+        value.get("model").and_then(serde_json::Value::as_str),
+        Some("gpt-5.4-openai-compact")
+    );
+
+    let _ = crate::gateway::set_compact_model_forward_rules(original_rules.as_str());
+}
+
+#[test]
+fn compact_upstream_url_can_be_mapped_to_chat_completions() {
+    let _guard = crate::test_env_guard();
+    let _compact_api_path = RuntimeEnvGuard::set(COMPACT_API_PATH_ENV, "/v1/chat/completions");
+
+    let (url, url_alt) = compute_upstream_url(
+        "https://chatgpt.com/backend-api/codex",
+        "/v1/responses/compact",
+    );
+
+    assert_eq!(url, "https://chatgpt.com/backend-api/codex/chat/completions");
+    assert_eq!(
+        url_alt.as_deref(),
+        Some("https://chatgpt.com/backend-api/codex/v1/chat/completions")
+    );
+}
+
+#[test]
+fn responses_compact_bridges_body_to_chat_completions_when_configured() {
+    let _guard = crate::test_env_guard();
+    let _compact_api_path = RuntimeEnvGuard::set(COMPACT_API_PATH_ENV, "/v1/chat/completions");
+
+    let body = json!({
+        "model": "gpt-5.4",
+        "instructions": "compress this thread",
+        "input": "hello compact",
+        "tools": [],
+        "parallel_tool_calls": false,
+        "service_tier": "priority"
+    });
+    let out = apply_codex_compat_request_overrides(
+        "/v1/responses/compact",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        Some("low"),
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert!(value.get("messages").and_then(serde_json::Value::as_array).is_some());
+    assert!(value.get("input").is_none());
+    assert!(value.get("instructions").is_none());
+    assert_eq!(
+        value
+            .get("reasoning_effort")
+            .and_then(serde_json::Value::as_str),
+        Some("low")
+    );
 }
 
 /// 函数 `non_matching_endpoint_keeps_non_json_body`

@@ -81,6 +81,9 @@ pub(super) fn mark_usage_unreachable_if_needed(storage: &Storage, account_id: &s
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn should_retry_with_refresh(err: &str) -> bool {
+    if crate::usage_http::is_region_blocked_error_message(err) {
+        return false;
+    }
     err.contains("401") || err.contains("403")
 }
 

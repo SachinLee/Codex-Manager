@@ -6,6 +6,7 @@ use super::{
     persisted_env_overrides_missing_process_env, reload_runtime_after_env_override_apply,
     set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
@@ -94,6 +95,13 @@ pub fn sync_runtime_settings_from_storage() {
         if let Some(raw) = settings.get(APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY) {
             if let Err(err) = gateway::set_model_forward_rules(raw) {
                 log::warn!("sync persisted model forward rules failed: {err}");
+            }
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_COMPACT_MODEL_FORWARD_RULES") {
+        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY) {
+            if let Err(err) = gateway::set_compact_model_forward_rules(raw) {
+                log::warn!("sync persisted compact model forward rules failed: {err}");
             }
         }
     }
@@ -194,6 +202,8 @@ pub fn sync_runtime_settings_from_storage() {
         "CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS",
         "CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED",
         "CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS",
+        "CODEXMANAGER_WARMUP_CRON_ENABLED",
+        "CODEXMANAGER_WARMUP_CRON_EXPRESSION",
         "CODEXMANAGER_USAGE_REFRESH_WORKERS",
         "CODEXMANAGER_HTTP_WORKER_FACTOR",
         "CODEXMANAGER_HTTP_WORKER_MIN",
@@ -203,7 +213,14 @@ pub fn sync_runtime_settings_from_storage() {
         if let Some(raw) = settings.get(APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY) {
             match serde_json::from_str::<BackgroundTasksInput>(raw) {
                 Ok(input) => {
-                    usage_refresh::set_background_tasks_settings(input.into_patch());
+                    let patch = input.into_patch();
+                    if let Err(err) =
+                        usage_refresh::validate_background_tasks_settings_patch(&patch)
+                    {
+                        log::warn!("sync persisted background tasks failed: {err}");
+                    } else {
+                        usage_refresh::set_background_tasks_settings(patch);
+                    }
                 }
                 Err(err) => {
                     log::warn!("parse persisted background tasks failed: {err}");

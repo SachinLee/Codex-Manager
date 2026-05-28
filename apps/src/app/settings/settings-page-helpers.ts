@@ -14,6 +14,8 @@ export const ENV_DESCRIPTION_MAP: Record<string, string> = {
     "控制 Images API 兼容入口内部使用的 Codex 主模型；默认 gpt-5.4-mini。",
   CODEXMANAGER_CODEX_IMAGE_TOOL_MODEL:
     "控制 Images API 兼容入口注入的图片工具模型；默认 gpt-image-2。",
+  CODEXMANAGER_COMPACT_API_PATH:
+    "控制 compact 请求实际转发到哪个上游路径；默认 /v1/responses/compact，可改成 /v1/chat/completions。",
   CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS:
     "控制单次上游请求允许持续的最长时间，单位毫秒；超过后会主动结束请求并返回超时错误。",
   CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS:
@@ -274,6 +276,53 @@ export function parseIntegerInput(value: string, minimum = 0): number | null {
   const rounded = Math.trunc(numeric);
   if (rounded < minimum) return null;
   return rounded;
+}
+
+export type ModelForwardRuleItem = {
+  pattern: string;
+  target: string;
+};
+
+export function createEmptyModelForwardRule(): ModelForwardRuleItem {
+  return { pattern: "", target: "" };
+}
+
+export function parseModelForwardRules(
+  value: string | null | undefined,
+): ModelForwardRuleItem[] {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((rawLine) => rawLine.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const separatorIndex = line.indexOf("=");
+      if (separatorIndex < 0) {
+        return { pattern: line, target: "" };
+      }
+      return {
+        pattern: line.slice(0, separatorIndex).trim(),
+        target: line.slice(separatorIndex + 1).trim(),
+      };
+    });
+}
+
+export function ensureModelForwardRuleRows(
+  items: ModelForwardRuleItem[],
+): ModelForwardRuleItem[] {
+  return items.length > 0 ? items : [createEmptyModelForwardRule()];
+}
+
+export function serializeModelForwardRules(
+  items: ModelForwardRuleItem[],
+): string {
+  return items
+    .map((item) => ({
+      pattern: item.pattern.trim(),
+      target: item.target.trim(),
+    }))
+    .filter((item) => item.pattern.length > 0 || item.target.length > 0)
+    .map((item) => `${item.pattern}=${item.target}`)
+    .join("\n");
 }
 
 export function inferServiceBindPreview(addr: string, mode: string): string {

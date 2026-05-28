@@ -84,6 +84,7 @@
 - `CODEXMANAGER_UPSTREAM_PROXY_URL`
 - `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS`: gateway request total timeout in milliseconds. Default `0` means the service does not cut requests off by total duration.
 - `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS`
+- `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM`: makes ChatGPT `/v1/responses` streaming upstream requests try WebSocket first. Default `0`. This is experimental; failures fall back to HTTP streaming and the path uses the configured upstream proxy and connect timeout.
 - `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS`
 - `CODEXMANAGER_PROXY_LIST`
 - `CODEXMANAGER_ROUTE_STRATEGY`
@@ -131,6 +132,8 @@ Notes:
 - `CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS`
 - `CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED`
 - `CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS`
+- `CODEXMANAGER_WARMUP_CRON_ENABLED`
+- `CODEXMANAGER_WARMUP_CRON_EXPRESSION`
 - `CODEXMANAGER_USAGE_REFRESH_WORKERS`
 - `CODEXMANAGER_HTTP_WORKER_FACTOR`
 - `CODEXMANAGER_HTTP_WORKER_MIN`
@@ -248,8 +251,14 @@ codexmanager-service-bundle/
 `CODEXMANAGER_UPSTREAM_PROXY_URL` / 设置页“OpenAI 上游代理”当前主要接管的是：
 
 - 网关向上游平台发起的请求
+- ChatGPT upstream WebSocket requests when `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM=1` is enabled
 - 用量查询请求
 - `refresh_token` 刷新 access token 的请求
+
+Safety note:
+
+- Login-state refresh paths such as `auth.openai.com` / `oauth/token` must exit from an OpenAI-supported region; do not include restricted locations such as Hong Kong in automatic rotation for this path.
+- If the refresh request returns `unsupported_country_region_territory`, Service marks the account as `refresh_token_region_blocked` and pauses subsequent automatic refresh attempts. Fix the proxy route, then manually restore the account.
 
 默认不接管的是：
 
