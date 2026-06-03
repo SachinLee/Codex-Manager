@@ -515,6 +515,7 @@ fn preferred_client_prompt_cache_key_is_ignored_when_turn_state_has_session_anch
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
+        false,
     );
 
     assert_eq!(actual, None);

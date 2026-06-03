@@ -474,9 +474,18 @@ export function createWebCommandMap(
     service_aggregate_api_supplier_models_import: {
       rpcMethod: "aggregateApi/sourceModels/importSupplier",
     },
+    codex_session_list: { rpcMethod: "codexSession/list" },
     codex_session_delete_many: { rpcMethod: "codexSession/deleteMany" },
+    codex_session_move: { rpcMethod: "codexSession/move" },
+    codex_session_move_many: { rpcMethod: "codexSession/moveMany" },
     codex_session_delete_all_archived: {
       rpcMethod: "codexSession/deleteAllArchived",
+    },
+    codex_configure_cm: { rpcMethod: "codexSession/configureCm" },
+    codex_provider_sync_cm: { rpcMethod: "codexSession/providerSyncCm" },
+    codex_app_bridge_status: { rpcMethod: "codexSession/appBridgeStatus" },
+    codex_app_bridge_enable_remote_control: {
+      rpcMethod: "codexSession/enableRemoteControl",
     },
     service_login_start: {
       rpcMethod: "account/login/start",

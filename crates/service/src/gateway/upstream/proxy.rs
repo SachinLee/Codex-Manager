@@ -224,6 +224,8 @@ fn respond_model_route_error(
     gateway_mode_for_log: Option<&str>,
     model_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    session_id_for_log: Option<&str>,
+    conversation_anchor_for_log: Option<&str>,
     started_at: Instant,
     status_code: u16,
     message: String,
@@ -241,6 +243,8 @@ fn respond_model_route_error(
         storage,
         super::super::request_log::RequestLogTraceContext {
             trace_id: Some(trace_id),
+            session_id: session_id_for_log,
+            conversation_anchor: conversation_anchor_for_log,
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
@@ -366,6 +370,8 @@ fn respond_hybrid_route_error(
     gateway_mode_for_log: Option<&str>,
     model_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    session_id_for_log: Option<&str>,
+    conversation_anchor_for_log: Option<&str>,
     started_at: Instant,
     account_error: Option<&str>,
     aggregate_error: String,
@@ -384,6 +390,8 @@ fn respond_hybrid_route_error(
         gateway_mode_for_log,
         model_for_log,
         reasoning_for_log,
+        session_id_for_log,
+        conversation_anchor_for_log,
         started_at,
         message,
     )
@@ -414,6 +422,8 @@ fn respond_aggregate_route_error(
     gateway_mode_for_log: Option<&str>,
     model_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    session_id_for_log: Option<&str>,
+    conversation_anchor_for_log: Option<&str>,
     started_at: Instant,
     message: String,
 ) -> Result<(), String> {
@@ -430,6 +440,8 @@ fn respond_aggregate_route_error(
         storage,
         super::super::request_log::RequestLogTraceContext {
             trace_id: Some(trace_id),
+            session_id: session_id_for_log,
+            conversation_anchor: conversation_anchor_for_log,
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
@@ -478,6 +490,8 @@ fn proxy_with_aggregate_candidates(
     reasoning_for_log: Option<&str>,
     effective_service_tier_for_log: Option<&str>,
     aggregate_api_id: Option<&str>,
+    session_id_for_log: Option<&str>,
+    conversation_anchor_for_log: Option<&str>,
     request_deadline: Option<Instant>,
     started_at: Instant,
     aggregate_api_candidates: Vec<codexmanager_core::storage::AggregateApi>,
@@ -507,6 +521,8 @@ fn proxy_with_aggregate_candidates(
             model_for_log,
             reasoning_for_log,
             effective_service_tier_for_log,
+            session_id_for_log,
+            conversation_anchor_for_log,
             aggregate_api_candidates,
             request_deadline,
             started_at,
@@ -552,10 +568,11 @@ pub(in super::super) fn proxy_validated_request(
         request_method,
         key_id,
         platform_key_hash,
-        local_conversation_id: _local_conversation_id,
+        local_conversation_id,
         route_conversation_id,
         route_conversation_source,
         conversation_binding,
+        request_log_session_id,
         model_for_log,
         reasoning_for_log,
         service_tier_for_log,
@@ -564,6 +581,12 @@ pub(in super::super) fn proxy_validated_request(
         method,
     } = validated;
     let started_at = Instant::now();
+    let session_id_for_log = request_log_session_id.as_deref();
+    let conversation_anchor_for_log = route_conversation_id
+        .as_deref()
+        .or(local_conversation_id.as_deref())
+        .or(incoming_headers.conversation_id())
+        .or(incoming_headers.session_id());
     let client_is_stream = is_stream;
     // 中文注释：对齐 Codex 上游协议：/v1/responses 固定走 SSE。
     // 下游是否流式仍由客户端 `stream` 参数决定（在 response bridge 层聚合/透传）。
@@ -626,6 +649,8 @@ pub(in super::super) fn proxy_validated_request(
             gateway_mode_for_log.as_deref(),
             model_for_log.as_deref(),
             reasoning_for_log.as_deref(),
+            session_id_for_log,
+            conversation_anchor_for_log,
             started_at,
             status_code,
             message,
@@ -656,6 +681,8 @@ pub(in super::super) fn proxy_validated_request(
                     reasoning_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
                     aggregate_api_id.as_deref(),
+                    session_id_for_log,
+                    conversation_anchor_for_log,
                     request_deadline,
                     started_at,
                     aggregate_api_candidates,
@@ -675,6 +702,8 @@ pub(in super::super) fn proxy_validated_request(
                     gateway_mode_for_log.as_deref(),
                     model_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
+                    session_id_for_log,
+                    conversation_anchor_for_log,
                     started_at,
                     err,
                 );
@@ -700,6 +729,7 @@ pub(in super::super) fn proxy_validated_request(
         &request_method,
         model_for_log.as_deref(),
         reasoning_for_log.as_deref(),
+        session_id_for_log,
         account_plan_filter.as_deref(),
         low_quota_candidate_mode_for_protocol(protocol_type.as_str()),
         respond_when_account_candidates_empty(execution_plan),
@@ -732,6 +762,8 @@ pub(in super::super) fn proxy_validated_request(
                         reasoning_for_log.as_deref(),
                         effective_service_tier_for_log.as_deref(),
                         aggregate_api_id.as_deref(),
+                        session_id_for_log,
+                        conversation_anchor_for_log,
                         request_deadline,
                         started_at,
                         aggregate_api_candidates,
@@ -751,6 +783,8 @@ pub(in super::super) fn proxy_validated_request(
                         gateway_mode_for_log.as_deref(),
                         model_for_log.as_deref(),
                         reasoning_for_log.as_deref(),
+                        session_id_for_log,
+                        conversation_anchor_for_log,
                         started_at,
                         Some("无可用账号(no available account)"),
                         err,
@@ -792,6 +826,8 @@ pub(in super::super) fn proxy_validated_request(
         service_tier_for_log.as_deref(),
         effective_service_tier_for_log.as_deref(),
         gateway_mode_for_log.as_deref(),
+        session_id_for_log,
+        conversation_anchor_for_log,
         setup.candidate_count,
         setup.account_max_inflight,
     );
@@ -887,6 +923,8 @@ pub(in super::super) fn proxy_validated_request(
                     reasoning_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
                     aggregate_api_id.as_deref(),
+                    session_id_for_log,
+                    conversation_anchor_for_log,
                     request_deadline,
                     started_at,
                     aggregate_api_candidates,
@@ -906,6 +944,8 @@ pub(in super::super) fn proxy_validated_request(
                     gateway_mode_for_log.as_deref(),
                     model_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
+                    session_id_for_log,
+                    conversation_anchor_for_log,
                     started_at,
                     Some(final_error.as_str()),
                     err,
@@ -935,10 +975,9 @@ pub(in super::super) fn proxy_validated_request(
 mod tests {
     use super::{
         aggregate_route_should_fallback_to_accounts, exhausted_gateway_error_for_log,
-        hybrid_route_error_message, model_route_error,
-        provider_upstream_hint, request_deadline_for_path, resolve_upstream_is_stream,
-        resolve_aggregate_candidates_for_route,
-        respond_when_account_candidates_empty,
+        hybrid_route_error_message, model_route_error, provider_upstream_hint,
+        request_deadline_for_path, resolve_aggregate_candidates_for_route,
+        resolve_upstream_is_stream, respond_when_account_candidates_empty,
         should_fallback_to_aggregate_after_account_exhaustion,
         should_try_provider_executor_aggregate_route,
     };

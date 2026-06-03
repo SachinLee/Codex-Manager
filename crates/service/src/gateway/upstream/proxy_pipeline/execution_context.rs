@@ -15,6 +15,8 @@ pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     service_tier_for_log: Option<&'a str>,
     effective_service_tier_for_log: Option<&'a str>,
     gateway_mode_for_log: Option<&'a str>,
+    session_id_for_log: Option<&'a str>,
+    conversation_anchor_for_log: Option<&'a str>,
     candidate_count: usize,
     account_max_inflight: usize,
 }
@@ -46,6 +48,8 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         service_tier_for_log: Option<&'a str>,
         effective_service_tier_for_log: Option<&'a str>,
         gateway_mode_for_log: Option<&'a str>,
+        session_id_for_log: Option<&'a str>,
+        conversation_anchor_for_log: Option<&'a str>,
         candidate_count: usize,
         account_max_inflight: usize,
     ) -> Self {
@@ -63,6 +67,8 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             service_tier_for_log,
             effective_service_tier_for_log,
             gateway_mode_for_log,
+            session_id_for_log,
+            conversation_anchor_for_log,
             candidate_count,
             account_max_inflight,
         }
@@ -312,6 +318,8 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             self.storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(self.trace_id),
+                session_id: self.session_id_for_log,
+                conversation_anchor: self.conversation_anchor_for_log,
                 original_path: Some(self.original_path),
                 adapted_path: Some(self.path),
                 gateway_mode: self.gateway_mode_for_log,

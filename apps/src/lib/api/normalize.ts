@@ -1533,6 +1533,10 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
   return {
     id,
     traceId,
+    sessionId: asString(source.sessionId ?? source.session_id),
+    conversationAnchor: asString(
+      source.conversationAnchor ?? source.conversation_anchor
+    ),
     keyId,
     accountId,
     initialAccountId: asString(source.initialAccountId ?? source.initial_account_id),

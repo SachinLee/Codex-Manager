@@ -340,6 +340,8 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
     let size_reject_stage = derive_size_reject_stage(item.status_code, item.error.as_deref());
     RequestLogSummary {
         trace_id: item.trace_id,
+        session_id: item.session_id,
+        conversation_anchor: item.conversation_anchor,
         key_id: item.key_id,
         account_id: item.account_id,
         initial_account_id: item.initial_account_id,

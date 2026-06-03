@@ -176,6 +176,8 @@ pub struct ConversationBinding {
 #[derive(Debug, Clone, Default)]
 pub struct RequestLog {
     pub trace_id: Option<String>,
+    pub session_id: Option<String>,
+    pub conversation_anchor: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
     pub initial_account_id: Option<String>,
@@ -1074,6 +1076,16 @@ impl Storage {
             include_str!("../../migrations/065_aggregate_api_daily_spend_limit.sql"),
             |s| s.ensure_aggregate_apis_table(),
         )?;
+        self.apply_sql_or_compat_migration(
+            "066_request_logs_session_id",
+            include_str!("../../migrations/066_request_logs_session_id.sql"),
+            |s| s.ensure_request_log_session_id_column(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "067_request_logs_conversation_anchor",
+            include_str!("../../migrations/067_request_logs_conversation_anchor.sql"),
+            |s| s.ensure_request_log_conversation_anchor_column(),
+        )?;
         self.apply_compat_migration("063_account_subscriptions_account_plan_type", |s| {
             s.ensure_account_subscriptions_table()
         })?;
@@ -1090,6 +1102,8 @@ impl Storage {
         self.ensure_request_log_effective_service_tier_column()?;
         self.ensure_request_log_first_response_column()?;
         self.ensure_request_log_route_detail_columns()?;
+        self.ensure_request_log_session_id_column()?;
+        self.ensure_request_log_conversation_anchor_column()?;
         self.ensure_model_catalog_models_table()?;
         self.ensure_account_subscriptions_table()?;
         self.ensure_quota_pool_tables()?;

@@ -1282,6 +1282,8 @@ pub struct ModelTruncationPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct RequestLogSummary {
     pub trace_id: Option<String>,
+    pub session_id: Option<String>,
+    pub conversation_anchor: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
     pub initial_account_id: Option<String>,

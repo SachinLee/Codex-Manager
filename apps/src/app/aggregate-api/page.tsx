@@ -383,16 +383,6 @@ export default function AggregateApiPage() {
         .map((api) => api.id),
     [filteredAggregateApis],
   );
-  const balanceAutoEnableApis = useMemo(
-    () =>
-      filteredAggregateApis.filter(
-        (api) =>
-          !api.balanceQueryEnabled &&
-          String(api.status || "").trim().toLowerCase() !== "disabled",
-      ),
-    [filteredAggregateApis],
-  );
-
   const defaultCreateSort = useMemo(() => {
     const maxSort = aggregateApis.reduce(
       (max, api) => Math.max(max, Number(api.sort) || 0),
@@ -604,31 +594,9 @@ export default function AggregateApiPage() {
   });
 
   const refreshAllBalancesMutation = useMutation({
-    mutationFn: async ({
-      apiIds,
-      autoEnableApis,
-    }: {
-      apiIds: string[];
-      autoEnableApis?: AggregateApi[];
-    }) => {
-      const enabledIds = [...apiIds];
-      if (autoEnableApis?.length) {
-        await Promise.all(
-          autoEnableApis.map((api) =>
-            accountClient.updateAggregateApi(api.id, {
-              supplierName: api.supplierName || api.url,
-              balanceQueryEnabled: true,
-              balanceQueryTemplate: api.balanceQueryTemplate || "generic",
-              balanceQueryBaseUrl: api.balanceQueryBaseUrl || "",
-              balanceQueryUserId: api.balanceQueryUserId || "",
-              balanceQueryConfigJson: api.balanceQueryConfigJson || "",
-            }),
-          ),
-        );
-        enabledIds.push(...autoEnableApis.map((api) => api.id));
-      }
+    mutationFn: async ({ apiIds }: { apiIds: string[] }) => {
       const results = await Promise.allSettled(
-        enabledIds.map((id) => accountClient.refreshAggregateApiBalance(id))
+        apiIds.map((id) => accountClient.refreshAggregateApiBalance(id))
       );
       return results;
     },
@@ -1115,19 +1083,12 @@ export default function AggregateApiPage() {
                   variant="outline"
                   className="h-10 gap-2"
                   onClick={() => {
-                    if (
-                      balanceEnabledApiIds.length === 0 &&
-                      balanceAutoEnableApis.length === 0
-                    ) {
+                    if (balanceEnabledApiIds.length === 0) {
                       toast.info(t("暂无已启用余额检测的聚合 API"));
                       return;
                     }
                     refreshAllBalancesMutation.mutate({
                       apiIds: balanceEnabledApiIds,
-                      autoEnableApis:
-                        balanceEnabledApiIds.length === 0
-                          ? balanceAutoEnableApis
-                          : [],
                     });
                   }}
                   disabled={!isServiceReady || refreshingBalances}

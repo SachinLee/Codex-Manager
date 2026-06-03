@@ -186,11 +186,35 @@ test("createWebCommandMap 为模型来源映射命令提供 Web RPC 映射", () 
 });
 
 test("createWebCommandMap 暴露 Codex 会话批量删除 RPC", () => {
+  assert.deepEqual(commandMap.codex_session_list, {
+    rpcMethod: "codexSession/list",
+  });
   assert.deepEqual(commandMap.codex_session_delete_many, {
     rpcMethod: "codexSession/deleteMany",
   });
+  assert.deepEqual(commandMap.codex_session_move, {
+    rpcMethod: "codexSession/move",
+  });
+  assert.deepEqual(commandMap.codex_session_move_many, {
+    rpcMethod: "codexSession/moveMany",
+  });
   assert.deepEqual(commandMap.codex_session_delete_all_archived, {
     rpcMethod: "codexSession/deleteAllArchived",
+  });
+});
+
+test("createWebCommandMap 暴露 Codex App 桥接 RPC", () => {
+  assert.deepEqual(commandMap.codex_configure_cm, {
+    rpcMethod: "codexSession/configureCm",
+  });
+  assert.deepEqual(commandMap.codex_provider_sync_cm, {
+    rpcMethod: "codexSession/providerSyncCm",
+  });
+  assert.deepEqual(commandMap.codex_app_bridge_status, {
+    rpcMethod: "codexSession/appBridgeStatus",
+  });
+  assert.deepEqual(commandMap.codex_app_bridge_enable_remote_control, {
+    rpcMethod: "codexSession/enableRemoteControl",
   });
 });
 

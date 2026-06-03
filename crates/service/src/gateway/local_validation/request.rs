@@ -1723,6 +1723,11 @@ pub(super) fn build_local_validation_result(
             .map_err(|err| LocalValidationError::new(400, err.message()))?;
         let incoming_headers = incoming_headers
             .with_conversation_id_override(initial_local_conversation_id.as_deref());
+        let request_log_session_id = incoming_headers
+            .session_id()
+            .or(incoming_headers.parent_thread_id())
+            .map(str::to_string)
+            .or(initial_request_meta.session_id_candidate.clone());
         let is_stream = resolve_client_is_stream(
             effective_protocol_type,
             logical_path.as_str(),
@@ -1759,6 +1764,7 @@ pub(super) fn build_local_validation_result(
             route_conversation_id: None,
             route_conversation_source: None,
             conversation_binding: None,
+            request_log_session_id,
             model_for_log,
             reasoning_for_log,
             service_tier_for_log,
@@ -2024,6 +2030,13 @@ pub(super) fn build_local_validation_result(
     let reasoning_for_log = request_meta
         .reasoning_effort
         .or(api_key.reasoning_effort.clone());
+    let request_log_session_id = incoming_headers
+        .session_id()
+        .or(incoming_headers.parent_thread_id())
+        .map(str::to_string)
+        .or(client_request_meta.session_id_candidate)
+        .or(initial_request_meta.session_id_candidate)
+        .or(request_meta.session_id_candidate);
     let service_tier_for_log = client_request_meta.service_tier;
     let effective_service_tier_for_log = request_meta.service_tier;
     let is_stream = resolve_client_is_stream(
@@ -2061,6 +2074,7 @@ pub(super) fn build_local_validation_result(
         route_conversation_id,
         route_conversation_source,
         conversation_binding,
+        request_log_session_id,
         rotation_strategy: api_key.rotation_strategy,
         aggregate_api_id: api_key.aggregate_api_id,
         account_plan_filter: api_key.account_plan_filter,

@@ -58,22 +58,18 @@ impl BackupToken {
 
     pub fn save(&self) -> Result<String, String> {
         let dir = backup_dir();
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("创建备份目录失败: {e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建备份目录失败: {e}"))?;
         let path = dir.join(format!("{}.json", self.token_id));
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("序列化备份令牌失败: {e}"))?;
-        std::fs::write(&path, json)
-            .map_err(|e| format!("写入备份文件失败: {e}"))?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| format!("序列化备份令牌失败: {e}"))?;
+        std::fs::write(&path, json).map_err(|e| format!("写入备份文件失败: {e}"))?;
         Ok(self.token_id.clone())
     }
 
     pub fn load(token_id: &str) -> Result<Self, String> {
         let path = backup_dir().join(format!("{token_id}.json"));
-        let json = std::fs::read_to_string(&path)
-            .map_err(|e| format!("读取备份文件失败: {e}"))?;
-        serde_json::from_str(&json)
-            .map_err(|e| format!("解析备份令牌失败: {e}"))
+        let json = std::fs::read_to_string(&path).map_err(|e| format!("读取备份文件失败: {e}"))?;
+        serde_json::from_str(&json).map_err(|e| format!("解析备份令牌失败: {e}"))
     }
 
     pub fn delete_file(&self) {

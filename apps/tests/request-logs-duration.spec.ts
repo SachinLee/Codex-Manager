@@ -51,7 +51,7 @@ const SETTINGS_SNAPSHOT = {
   appearancePreset: "classic",
 };
 
-test("request logs display total duration and first-response latency", async ({
+test("request logs display session title, total duration, first-response latency, and output rate", async ({
   page,
 }) => {
   await page.route("**/api/runtime*", async (route) => {
@@ -117,11 +117,27 @@ test("request logs display total duration and first-response latency", async ({
       await ok({ items: [] });
       return;
     }
+    if (method === "codexSession/list") {
+      await ok([
+        {
+          sessionId: "session-duration-1",
+          title:
+            "请求日志会话标题展示和长标题截断验证用的非常长会话标题",
+          createdAt: 1769999000,
+          updatedAt: 1770000000,
+          cwd: "D:/my-works/codex-extends/Codex-Manager",
+          archived: false,
+        },
+      ]);
+      return;
+    }
     if (method === "requestlog/list") {
       await ok({
         items: [
           {
             trace_id: "trace-duration-1",
+            session_id: "session-duration-1",
+            conversation_anchor: "pck:v1:47cafe1234567890",
             key_id: "key-duration-1",
             request_path: "/v1/responses",
             original_path: "/v1/responses",
@@ -181,12 +197,17 @@ test("request logs display total duration and first-response latency", async ({
 
   await page.goto("/logs/");
 
-  await expect(page.getByRole("columnheader", { name: "用时 / 首响" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "会话" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "用时 / 首响 / 输出速率" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "缓存率" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "费用" })).toBeVisible();
-  await expect(page.getByText("2.3s/340ms")).toBeVisible();
+  await expect(page.getByText("2.3s/340ms/14.50 tok/s")).toBeVisible();
   await expect(page.getByText("25%")).toBeVisible();
   await expect(page.getByText("$0.0004")).toBeVisible();
+  await expect(
+    page.getByText("请求日志会话标题展示和长标题截断验证用的非常长会话标题"),
+  ).toBeVisible();
+  await expect(page.getByText("session-duration-1")).toBeVisible();
   await expect(page.getByText("/v1/responses")).toBeVisible();
   await expect(page.getByText("压缩", { exact: true })).toBeVisible();
   await expect(page.getByText("-> /v1/chat/completions")).toBeVisible();

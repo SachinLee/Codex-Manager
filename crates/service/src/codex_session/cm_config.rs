@@ -59,6 +59,7 @@ fn configure_cm_for_codex_home(
 
     let next_auth = merge_auth_json(
         read_json_object(&auth_path)?,
+        &selected_account.account,
         &selected_account.token,
         selected_account.account.label.as_str(),
     )?;
@@ -244,20 +245,29 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>, String> {
 
 fn merge_auth_json(
     mut object: Map<String, Value>,
+    account: &Account,
     token: &Token,
     account_label: &str,
 ) -> Result<Value, String> {
+    let account_id = first_non_empty([
+        account.chatgpt_account_id.as_deref(),
+        account.workspace_id.as_deref(),
+        Some(token.account_id.as_str()),
+        Some(account.id.as_str()),
+    ])
+    .unwrap_or_else(|| token.account_id.clone());
     object.insert(
         "auth_mode".to_string(),
         Value::String("chatgpt".to_string()),
     );
+    object.insert("OPENAI_API_KEY".to_string(), Value::Null);
     object.insert(
         "tokens".to_string(),
         json!({
             "access_token": token.access_token,
             "id_token": token.id_token,
             "refresh_token": token.refresh_token,
-            "account_id": token.account_id,
+            "account_id": account_id,
             "account_label": account_label,
             "last_refresh": token.last_refresh,
         }),
@@ -324,6 +334,7 @@ fn upsert_cm_provider_config(contents: &str, base_url: &str, bearer_token: &str)
         &updated,
         &[("model_provider", toml_string(TARGET_PROVIDER))],
     );
+    updated = super::remote_control::upsert_remote_connections_feature(&updated);
     updated = remove_table(&updated, &format!("model_providers.{TARGET_PROVIDER}"));
 
     let mut lines = updated.lines().map(ToString::to_string).collect::<Vec<_>>();
@@ -333,6 +344,7 @@ fn upsert_cm_provider_config(contents: &str, base_url: &str, bearer_token: &str)
         "name = \"CodexManager\"".to_string(),
         "wire_api = \"responses\"".to_string(),
         "requires_openai_auth = true".to_string(),
+        "supports_websockets = false".to_string(),
         format!("base_url = {}", toml_string(base_url)),
         format!("experimental_bearer_token = {}", toml_string(bearer_token)),
         String::new(),
@@ -452,6 +464,15 @@ fn normalize_eol(value: &str) -> String {
     value.replace("\r\n", "\n")
 }
 
+fn first_non_empty<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn timestamp_name() -> String {
     chrono::Local::now().format("%Y%m%d%H%M%S").to_string()
 }
@@ -461,12 +482,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn merge_auth_json_preserves_existing_openai_api_key() {
+    fn merge_auth_json_sets_chatgpt_bridge_auth_shape() {
         let mut existing = Map::new();
         existing.insert(
             "OPENAI_API_KEY".to_string(),
             Value::String("platform-key".to_string()),
         );
+        existing.insert(
+            "last_refresh".to_string(),
+            Value::String("2026-05-28T03:29:51.350905300Z".to_string()),
+        );
+        let account = Account {
+            id: "local-acc-1".to_string(),
+            label: "Main".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("chatgpt-acc-1".to_string()),
+            workspace_id: Some("workspace-1".to_string()),
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        };
         let token = Token {
             account_id: "acc-1".to_string(),
             id_token: "id-token".to_string(),
@@ -476,10 +513,12 @@ mod tests {
             last_refresh: 123,
         };
 
-        let merged = merge_auth_json(existing, &token, "Main").expect("merge");
+        let merged = merge_auth_json(existing, &account, &token, "Main").expect("merge");
 
-        assert_eq!(merged["OPENAI_API_KEY"], "platform-key");
+        assert!(merged["OPENAI_API_KEY"].is_null());
         assert_eq!(merged["auth_mode"], "chatgpt");
+        assert_eq!(merged["last_refresh"], "2026-05-28T03:29:51.350905300Z");
+        assert_eq!(merged["tokens"]["account_id"], "chatgpt-acc-1");
         assert_eq!(merged["tokens"]["access_token"], "access-token");
         assert_eq!(merged["tokens"]["refresh_token"], "refresh-token");
     }
@@ -502,7 +541,10 @@ model = "gpt-5"
         assert!(!after.contains("service_tier = \"fast\""));
         assert!(after.contains("[model_providers.cm]"));
         assert!(after.contains("requires_openai_auth = true"));
+        assert!(after.contains("supports_websockets = false"));
         assert!(after.contains("experimental_bearer_token = \"cm-key\""));
+        assert!(after.contains("[features]"));
+        assert!(after.contains("remote_connections = true"));
         assert!(after.contains("[model_providers.openai]"));
         assert!(after.contains("[profiles.work]"));
     }
@@ -553,7 +595,10 @@ model = "gpt-5"
             .find_api_key_by_id(&selected.id)
             .expect("read key")
             .expect("key exists");
-        assert_eq!(key.rotation_strategy, crate::apikey_profile::ROTATION_HYBRID);
+        assert_eq!(
+            key.rotation_strategy,
+            crate::apikey_profile::ROTATION_HYBRID
+        );
         let _ = std::fs::remove_file(db_path);
     }
 

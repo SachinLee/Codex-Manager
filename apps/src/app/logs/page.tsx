@@ -49,6 +49,10 @@ import {
   buildStartupSnapshotQueryKey,
   STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
 } from "@/lib/api/startup-snapshot";
+import {
+  codexLauncherClient,
+  type CodexSession,
+} from "@/lib/api/codex-launcher";
 import { serviceClient } from "@/lib/api/service-client";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
@@ -333,6 +337,24 @@ function formatTableTokenAmount(value: number | null | undefined): string {
   return Math.round(normalized).toLocaleString("zh-CN");
 }
 
+function formatOutputRate(
+  outputTokens: number | null | undefined,
+  durationMs: number | null | undefined,
+): string {
+  if (
+    typeof outputTokens !== "number" ||
+    !Number.isFinite(outputTokens) ||
+    typeof durationMs !== "number" ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  ) {
+    return "-";
+  }
+
+  const rate = Math.max(0, outputTokens) / (durationMs / 1000);
+  return `${rate.toFixed(2)} tok/s`;
+}
+
 /**
  * 函数 `fallbackAccountNameFromId`
  *
@@ -390,6 +412,92 @@ function formatCompactKeyLabel(keyId: string): string {
   if (!keyId) return "-";
   if (keyId.length <= 12) return keyId;
   return `${keyId.slice(0, 8)}...`;
+}
+
+function formatSessionIdForTable(sessionId: string): string {
+  const normalized = String(sessionId || "").trim();
+  if (!normalized) return "-";
+  if (normalized.length <= 18) return normalized;
+  return `${normalized.slice(0, 10)}...${normalized.slice(-6)}`;
+}
+
+function SessionInfoCell({
+  sessionId,
+  conversationAnchor,
+  session,
+}: {
+  sessionId: string;
+  conversationAnchor: string;
+  session?: CodexSession;
+}) {
+  const { t } = useI18n();
+  const normalizedSessionId = String(sessionId || "").trim();
+  const normalizedConversationAnchor = String(conversationAnchor || "").trim();
+  if (!normalizedSessionId && !normalizedConversationAnchor) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  const title = String(session?.title || "").trim();
+  const cwd = String(session?.cwd || "").trim();
+  const displayTitle = normalizedSessionId
+    ? title || (session ? t("无标题会话") : t("未匹配会话"))
+    : t("未记录会话 ID");
+  const shortSessionId = normalizedSessionId
+    ? formatSessionIdForTable(normalizedSessionId)
+    : "-";
+
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<div />} className="block min-w-0 text-left">
+        <div className="flex min-w-0 max-w-[220px] flex-col gap-0.5">
+          <div
+            className={cn(
+              "min-w-0 truncate text-[11px] font-medium text-foreground",
+              !title ? "text-muted-foreground italic" : "",
+            )}
+          >
+            {displayTitle}
+          </div>
+          <div className="min-w-0 truncate font-mono text-[9px] text-muted-foreground">
+            session: {shortSessionId}
+          </div>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-md">
+        <div className="flex min-w-[260px] flex-col gap-2">
+          <div className="space-y-0.5">
+            <div className="text-[10px] text-background/70">{t("会话标题")}</div>
+            <div className="break-all text-[11px]">{displayTitle}</div>
+          </div>
+          <div className="space-y-0.5">
+            <div className="text-[10px] text-background/70">{t("会话 ID")}</div>
+            <div className="break-all font-mono text-[11px]">
+              {normalizedSessionId || "-"}
+            </div>
+          </div>
+          {normalizedConversationAnchor ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">{t("路由锚点")}</div>
+              <div className="break-all font-mono text-[11px]">
+                {normalizedConversationAnchor}
+              </div>
+            </div>
+          ) : null}
+          {cwd ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">{t("工作目录")}</div>
+              <div className="break-all font-mono text-[11px]">{cwd}</div>
+            </div>
+          ) : null}
+          {normalizedSessionId && !session ? (
+            <div className="text-[10px] text-background/70">
+              {t("未在本地 Codex 会话列表中找到匹配标题")}
+            </div>
+          ) : null}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 /**
@@ -1473,6 +1581,14 @@ function LogsPageContent() {
     retry: 1,
   });
 
+  const { data: codexSessions = [] } = useQuery({
+    queryKey: ["codex-launcher", "sessions", "request-log-lookup"],
+    queryFn: () => codexLauncherClient.listSessions({ limit: 2000 }),
+    enabled: areLogQueriesEnabled && isPageActive && isAdminMode,
+    staleTime: 60_000,
+    retry: 1,
+  });
+
   const { data: logsResult, isLoading, isError: isLogsError } = useQuery({
     queryKey: ["logs", "list", search, filter, startTs, endTs, page, pageSizeNumber],
     queryFn: () =>
@@ -1587,6 +1703,14 @@ function LogsPageContent() {
       ]),
     );
   }, [aggregateApisResult]);
+
+  const codexSessionMap = useMemo(() => {
+    return new Map(
+      codexSessions
+        .map((session) => [String(session.sessionId || "").trim(), session] as const)
+        .filter(([sessionId]) => sessionId),
+    );
+  }, [codexSessions]);
 
   const logs = logsResult?.items || [];
   const isLogsLoading =
@@ -1984,9 +2108,12 @@ function LogsPageContent() {
               </div>
             </CardHeader>
             <CardContent className="px-0">
-              <Table className="min-w-[1540px] table-fixed">
+              <Table className="min-w-[1970px] table-fixed">
             <TableHeader>
               <TableRow>
+                <TableHead className="h-12 w-[260px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  {t("会话")}
+                </TableHead>
                 <TableHead className="h-12 w-[150px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("时间")}
                 </TableHead>
@@ -2002,8 +2129,8 @@ function LogsPageContent() {
                 <TableHead className="w-[92px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("状态")}
                 </TableHead>
-                <TableHead className="w-[128px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-                  {t("用时 / 首响")}
+                <TableHead className="w-[188px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  {t("用时 / 首响 / 输出速率")}
                 </TableHead>
                 <TableHead className="w-[148px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("Token")}
@@ -2023,6 +2150,9 @@ function LogsPageContent() {
               {isLogsLoading ? (
                 Array.from({ length: 10 }).map((_, index) => (
                   <TableRow key={index}>
+                    <TableCell>
+                      <Skeleton className="h-4 w-28" />
+                    </TableCell>
                     <TableCell>
                       <Skeleton className="h-4 w-32" />
                     </TableCell>
@@ -2058,7 +2188,7 @@ function LogsPageContent() {
               ) : logs.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={10}
+                    colSpan={11}
                     className="h-52 px-4 text-center text-sm text-muted-foreground"
                   >
                     {!serviceStatus.connected
@@ -2072,6 +2202,13 @@ function LogsPageContent() {
                     key={log.id}
                     className="group text-xs hover:bg-muted/20"
                   >
+                    <TableCell className="px-4 py-3 align-top">
+                      <SessionInfoCell
+                        sessionId={log.sessionId}
+                        conversationAnchor={log.conversationAnchor}
+                        session={codexSessionMap.get(String(log.sessionId || "").trim())}
+                      />
+                    </TableCell>
                     <TableCell className="px-4 py-3 font-mono text-[11px] text-muted-foreground">
                       {formatTsFromSeconds(log.createdAt, t("未知时间"))}
                     </TableCell>
@@ -2098,11 +2235,12 @@ function LogsPageContent() {
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top font-mono">
                       <span
-                        className="text-xs text-primary"
-                        title={t("首响表示从请求开始到首个上游响应片段的耗时")}
+                        className="inline-flex whitespace-nowrap text-xs text-primary"
+                        title={t("首响表示从请求开始到首个上游响应片段的耗时；输出速率按输出 Token / 总用时计算")}
                       >
                         {formatDuration(log.durationMs)}/
-                        {formatDuration(log.firstResponseMs)}
+                        {formatDuration(log.firstResponseMs)}/
+                        {formatOutputRate(log.outputTokens, log.durationMs)}
                       </span>
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top">

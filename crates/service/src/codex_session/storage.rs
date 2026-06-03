@@ -1,10 +1,10 @@
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params, params_from_iter, Connection, Row, ToSql};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 use super::backup::{backup_rollout_file, restore_rollout_file, BackupToken};
-use super::types::{DeleteResult, SchemaKind, SessionRef};
+use super::types::{DeleteResult, MoveResult, SchemaKind, SessionListOptions, SessionRef};
 
 /// 默认 Codex 数据库路径：~/.codex/state_5.sqlite
 pub fn default_codex_db_path() -> PathBuf {
@@ -80,22 +80,62 @@ fn table_has_columns(conn: &Connection, table: &str, required: &[&str]) -> bool 
 
 /// 列出所有会话
 pub fn list_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String> {
+    list_sessions_with_options(db_path, &SessionListOptions::default())
+}
+
+pub fn list_sessions_with_options(
+    db_path: &Path,
+    options: &SessionListOptions,
+) -> Result<Vec<SessionRef>, String> {
     let conn = open_codex_db(db_path)?;
     match detect_schema(&conn) {
-        SchemaKind::CodexThreads => list_codex_threads(&conn),
-        SchemaKind::GenericSessions => list_generic_sessions(&conn),
+        SchemaKind::CodexThreads => list_codex_threads(&conn, options),
+        SchemaKind::GenericSessions => list_generic_sessions(&conn, options),
     }
 }
 
-fn list_codex_threads(conn: &Connection) -> Result<Vec<SessionRef>, String> {
+fn normalize_session_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(500).clamp(1, 2000)
+}
+
+fn append_session_filters(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn ToSql>>,
+    options: &SessionListOptions,
+) {
+    let mut clauses = Vec::new();
+    if let Some(updated_from) = options.updated_from {
+        clauses.push("updated_at >= ?");
+        params.push(Box::new(updated_from));
+    }
+    if let Some(updated_to) = options.updated_to {
+        clauses.push("updated_at < ?");
+        params.push(Box::new(updated_to));
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(clauses.join(" AND ").as_str());
+    }
+}
+
+fn list_codex_threads(
+    conn: &Connection,
+    options: &SessionListOptions,
+) -> Result<Vec<SessionRef>, String> {
+    let mut sql =
+        "SELECT id, title, created_at, updated_at, cwd, archived FROM threads".to_string();
+    let mut values: Vec<Box<dyn ToSql>> = Vec::new();
+    append_session_filters(&mut sql, &mut values, options);
+    sql.push_str(" ORDER BY updated_at DESC LIMIT ?");
+    values.push(Box::new(normalize_session_limit(options.limit)));
+
     let mut stmt = conn
-        .prepare(
-            "SELECT id, title, created_at, updated_at, cwd, archived FROM threads ORDER BY updated_at DESC LIMIT 500",
-        )
+        .prepare(sql.as_str())
         .map_err(|e| format!("查询 threads 失败: {e}"))?;
+    let params = params_from_iter(values.iter().map(|value| value.as_ref()));
 
     let sessions = stmt
-        .query_map([], |row| {
+        .query_map(params, |row| {
             Ok(SessionRef {
                 session_id: row.get::<_, String>(0)?,
                 title: row.get(1)?,
@@ -112,13 +152,23 @@ fn list_codex_threads(conn: &Connection) -> Result<Vec<SessionRef>, String> {
     Ok(sessions)
 }
 
-fn list_generic_sessions(conn: &Connection) -> Result<Vec<SessionRef>, String> {
+fn list_generic_sessions(
+    conn: &Connection,
+    options: &SessionListOptions,
+) -> Result<Vec<SessionRef>, String> {
+    let mut sql = "SELECT id, title, created_at, updated_at FROM sessions".to_string();
+    let mut values: Vec<Box<dyn ToSql>> = Vec::new();
+    append_session_filters(&mut sql, &mut values, options);
+    sql.push_str(" ORDER BY updated_at DESC LIMIT ?");
+    values.push(Box::new(normalize_session_limit(options.limit)));
+
     let mut stmt = conn
-        .prepare("SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 500")
+        .prepare(sql.as_str())
         .map_err(|e| format!("查询 sessions 失败: {e}"))?;
+    let params = params_from_iter(values.iter().map(|value| value.as_ref()));
 
     let sessions = stmt
-        .query_map([], |row| {
+        .query_map(params, |row| {
             Ok(SessionRef {
                 session_id: row.get::<_, String>(0)?,
                 title: row.get(1)?,
@@ -141,7 +191,10 @@ pub fn list_archived_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String>
     if detect_schema(&conn) != SchemaKind::CodexThreads {
         return Ok(vec![]);
     }
-    if !table_columns(&conn, "threads").iter().any(|c| c == "archived") {
+    if !table_columns(&conn, "threads")
+        .iter()
+        .any(|c| c == "archived")
+    {
         return Ok(vec![]);
     }
 
@@ -187,6 +240,90 @@ pub fn delete_session(db_path: &Path, session_id: &str) -> Result<DeleteResult, 
         SchemaKind::CodexThreads => delete_codex_thread(&conn, session_id),
         SchemaKind::GenericSessions => delete_generic_session(&conn, session_id),
     }
+}
+
+/// 将单条会话移动到目标工作目录。`target_cwd = None` 表示移出项目目录。
+pub fn move_session(
+    db_path: &Path,
+    session_id: &str,
+    target_cwd: Option<&str>,
+) -> Result<MoveResult, String> {
+    let conn = open_codex_db(db_path)?;
+    let schema = detect_schema(&conn);
+    let normalized_target = normalize_cwd(target_cwd);
+
+    match schema {
+        SchemaKind::CodexThreads => move_codex_thread(&conn, session_id, normalized_target),
+        SchemaKind::GenericSessions => Ok(MoveResult::unsupported(session_id, normalized_target)),
+    }
+}
+
+pub fn move_sessions(
+    db_path: &Path,
+    session_ids: &[String],
+    target_cwd: Option<&str>,
+) -> Result<Vec<MoveResult>, String> {
+    let mut results = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        let trimmed = session_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        results.push(move_session(db_path, trimmed, target_cwd)?);
+    }
+    Ok(results)
+}
+
+fn normalize_cwd(target_cwd: Option<&str>) -> Option<String> {
+    target_cwd
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(|cwd| cwd.replace('\\', "/").trim_end_matches('/').to_string())
+        .filter(|cwd| !cwd.is_empty())
+}
+
+fn move_codex_thread(
+    conn: &Connection,
+    session_id: &str,
+    target_cwd: Option<String>,
+) -> Result<MoveResult, String> {
+    if !table_has_columns(conn, "threads", &["id", "cwd"]) {
+        return Ok(MoveResult::unsupported(session_id, target_cwd));
+    }
+
+    let normalized_id = session_id.strip_prefix("local:").unwrap_or(session_id);
+    let Some(previous_cwd) = conn
+        .query_row(
+            "SELECT cwd FROM \"threads\" WHERE id = ?1",
+            params![normalized_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| format!("查询 threads.cwd 失败: {e}"))?
+    else {
+        return Ok(MoveResult::not_found(session_id, target_cwd));
+    };
+
+    let normalized_previous = normalize_cwd(previous_cwd.as_deref());
+    if normalized_previous == target_cwd {
+        return Ok(MoveResult::unchanged(
+            session_id,
+            normalized_previous,
+            target_cwd,
+        ));
+    }
+
+    conn.execute(
+        "UPDATE \"threads\" SET cwd = ?1 WHERE id = ?2",
+        params![target_cwd.as_deref(), normalized_id],
+    )
+    .map_err(|e| format!("更新 threads.cwd 失败: {e}"))?;
+
+    Ok(MoveResult::moved(
+        session_id,
+        normalized_previous,
+        target_cwd,
+    ))
 }
 
 /// 与 CodexPlusPlus 等价：备份 threads + 关联表行 + rollout 文件，
@@ -272,15 +409,30 @@ fn delete_codex_thread(conn: &Connection, session_id: &str) -> Result<DeleteResu
     };
 
     // 执行删除（关联表 → 主表）
-    delete_related(conn, "thread_dynamic_tools", "thread_id = ?1", params![normalized_id])?;
-    delete_related(conn, "thread_goals", "thread_id = ?1", params![normalized_id])?;
+    delete_related(
+        conn,
+        "thread_dynamic_tools",
+        "thread_id = ?1",
+        params![normalized_id],
+    )?;
+    delete_related(
+        conn,
+        "thread_goals",
+        "thread_id = ?1",
+        params![normalized_id],
+    )?;
     delete_related(
         conn,
         "thread_spawn_edges",
         "parent_thread_id = ?1 OR child_thread_id = ?2",
         params![normalized_id, normalized_id],
     )?;
-    delete_related(conn, "stage1_outputs", "thread_id = ?1", params![normalized_id])?;
+    delete_related(
+        conn,
+        "stage1_outputs",
+        "thread_id = ?1",
+        params![normalized_id],
+    )?;
     if table_has_columns(conn, "agent_job_items", &["assigned_thread_id"]) {
         conn.execute(
             "UPDATE \"agent_job_items\" SET assigned_thread_id = NULL WHERE assigned_thread_id = ?1",
@@ -288,8 +440,11 @@ fn delete_codex_thread(conn: &Connection, session_id: &str) -> Result<DeleteResu
         )
         .map_err(|e| format!("更新 agent_job_items 失败: {e}"))?;
     }
-    conn.execute("DELETE FROM \"threads\" WHERE id = ?1", params![normalized_id])
-        .map_err(|e| format!("删除 threads 行失败: {e}"))?;
+    conn.execute(
+        "DELETE FROM \"threads\" WHERE id = ?1",
+        params![normalized_id],
+    )
+    .map_err(|e| format!("删除 threads 行失败: {e}"))?;
 
     // 删除 rollout 原始文件
     for (orig, _) in &rollout_backups {
@@ -460,7 +615,9 @@ fn sqlite_value_to_json(v: ValueRef<'_>) -> Value {
     match v {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => Value::from(i),
-        ValueRef::Real(f) => serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null),
+        ValueRef::Real(f) => serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
         ValueRef::Text(t) => match std::str::from_utf8(t) {
             Ok(s) => Value::String(s.to_string()),
             Err(_) => Value::String(format!("__b64:{}", base64_encode(t))),
@@ -645,4 +802,117 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         out.push(((n >> 8) & 0xff) as u8);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("codexmanager-{name}-{nanos}.sqlite"))
+    }
+
+    fn create_codex_threads_db() -> PathBuf {
+        let db_path = temp_db_path("codex-session-move");
+        let conn = Connection::open(&db_path).expect("open temp db");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at INTEGER,
+                updated_at INTEGER,
+                cwd TEXT,
+                archived INTEGER,
+                rollout_path TEXT
+            )",
+            [],
+        )
+        .expect("create threads");
+        conn.execute(
+            "INSERT INTO threads (id, title, created_at, updated_at, cwd, archived, rollout_path)
+             VALUES ('thread-1', 'One', 1, 2, 'D:\\work\\old\\', 0, '')",
+            [],
+        )
+        .expect("insert thread one");
+        conn.execute(
+            "INSERT INTO threads (id, title, created_at, updated_at, cwd, archived, rollout_path)
+             VALUES ('thread-2', 'Two', 1, 3, NULL, 0, '')",
+            [],
+        )
+        .expect("insert thread two");
+        db_path
+    }
+
+    #[test]
+    fn move_session_updates_codex_thread_cwd() {
+        let db_path = create_codex_threads_db();
+        let result = move_session(&db_path, "local:thread-1", Some("D:\\work\\new\\"))
+            .expect("move session");
+
+        assert_eq!(result.status, super::super::types::MoveStatus::Moved);
+        assert_eq!(result.previous_cwd.as_deref(), Some("D:/work/old"));
+        assert_eq!(result.target_cwd.as_deref(), Some("D:/work/new"));
+
+        let sessions = list_sessions(&db_path).expect("list sessions");
+        let moved = sessions
+            .iter()
+            .find(|session| session.session_id == "thread-1")
+            .expect("moved session");
+        assert_eq!(moved.cwd.as_deref(), Some("D:/work/new"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn move_session_reports_unchanged_and_not_found() {
+        let db_path = create_codex_threads_db();
+        let unchanged =
+            move_session(&db_path, "thread-1", Some("D:/work/old")).expect("move unchanged");
+        let missing = move_session(&db_path, "missing", Some("D:/work/new")).expect("move missing");
+
+        assert_eq!(unchanged.status, super::super::types::MoveStatus::Unchanged);
+        assert_eq!(missing.status, super::super::types::MoveStatus::NotFound);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn move_sessions_moves_multiple_threads() {
+        let db_path = create_codex_threads_db();
+        let ids = vec!["thread-1".to_string(), "thread-2".to_string()];
+        let results = move_sessions(&db_path, &ids, Some("D:/work/target")).expect("move sessions");
+
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| result.status == super::super::types::MoveStatus::Moved));
+
+        let sessions = list_sessions(&db_path).expect("list sessions");
+        assert!(sessions
+            .iter()
+            .all(|session| session.cwd.as_deref() == Some("D:/work/target")));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn list_sessions_filters_by_updated_range() {
+        let db_path = create_codex_threads_db();
+        let options = SessionListOptions {
+            updated_from: Some(3),
+            updated_to: Some(4),
+            limit: Some(500),
+        };
+        let sessions = list_sessions_with_options(&db_path, &options).expect("list sessions");
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "thread-2");
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }

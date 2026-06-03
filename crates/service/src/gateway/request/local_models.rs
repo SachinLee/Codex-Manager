@@ -115,6 +115,8 @@ pub(super) fn maybe_respond_local_models(
     request_method: &str,
     model_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    session_id_for_log: Option<&str>,
+    conversation_anchor_for_log: Option<&str>,
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<Option<tiny_http::Request>, String> {
     let is_models_list = request_method.eq_ignore_ascii_case("GET")
@@ -132,6 +134,8 @@ pub(super) fn maybe_respond_local_models(
         request_method,
         model_for_log,
         reasoning_for_log,
+        session_id_for_log,
+        conversation_anchor_for_log,
         storage,
         log_request: false,
     };

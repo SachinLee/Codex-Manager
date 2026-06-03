@@ -35,6 +35,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
     request_method: &str,
     model_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    session_id_for_log: Option<&str>,
     account_plan_filter: Option<&str>,
     low_quota_mode: super::super::super::LowQuotaCandidateMode,
     respond_when_empty: bool,
@@ -55,6 +56,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
                 storage,
                 super::super::super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
+                    session_id: session_id_for_log,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     response_adapter: Some(response_adapter),
@@ -102,6 +104,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
             storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(trace_id),
+                session_id: session_id_for_log,
                 original_path: Some(original_path),
                 adapted_path: Some(path),
                 response_adapter: Some(response_adapter),

@@ -56,6 +56,18 @@ impl Storage {
             "CREATE INDEX IF NOT EXISTS idx_request_logs_trace_id_created_at ON request_logs(trace_id, created_at DESC)",
             [],
         )?;
+        if self.has_column("request_logs", "session_id")? {
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_session_id_created_at ON request_logs(session_id, created_at DESC)",
+                [],
+            )?;
+        }
+        if self.has_column("request_logs", "conversation_anchor")? {
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_conversation_anchor_created_at ON request_logs(conversation_anchor, created_at DESC)",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -74,12 +86,14 @@ impl Storage {
     pub fn insert_request_log(&self, log: &RequestLog) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO request_logs (
-                trace_id, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
                 method, request_type, gateway_mode, transparent_mode, enhanced_mode, model, upstream_model, actual_source_kind, actual_source_id, reasoning_effort, service_tier, effective_service_tier, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 &log.trace_id,
+                &log.session_id,
+                &log.conversation_anchor,
                 &log.key_id,
                 &log.account_id,
                 &log.initial_account_id,
@@ -136,12 +150,14 @@ impl Storage {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO request_logs (
-                trace_id, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
                 method, request_type, gateway_mode, transparent_mode, enhanced_mode, model, upstream_model, actual_source_kind, actual_source_id, reasoning_effort, service_tier, effective_service_tier, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 &log.trace_id,
+                &log.session_id,
+                &log.conversation_anchor,
                 &log.key_id,
                 &log.account_id,
                 &log.initial_account_id,
@@ -273,7 +289,7 @@ impl Storage {
         );
         let sql = format!(
             "SELECT
-                r.trace_id, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
+                r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.request_type, r.gateway_mode, r.transparent_mode, r.enhanced_mode, r.model, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.reasoning_effort, r.service_tier, r.effective_service_tier, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
                 t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
@@ -324,7 +340,7 @@ impl Storage {
         );
         let sql = format!(
             "SELECT
-                r.trace_id, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
+                r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.request_type, r.gateway_mode, r.transparent_mode, r.enhanced_mode, r.model, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.reasoning_effort, r.service_tier, r.effective_service_tier, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
                 t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
@@ -672,6 +688,8 @@ impl Storage {
             "CREATE TABLE IF NOT EXISTS request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trace_id TEXT,
+                session_id TEXT,
+                conversation_anchor TEXT,
                 key_id TEXT,
                 account_id TEXT,
                 initial_account_id TEXT,
@@ -706,6 +724,24 @@ impl Storage {
             [],
         )?;
         self.ensure_request_logs_indexes()?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_log_session_id_column(&self) -> Result<()> {
+        self.ensure_column("request_logs", "session_id", "TEXT")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_session_id_created_at ON request_logs(session_id, created_at DESC)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_log_conversation_anchor_column(&self) -> Result<()> {
+        self.ensure_column("request_logs", "conversation_anchor", "TEXT")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_conversation_anchor_created_at ON request_logs(conversation_anchor, created_at DESC)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -925,6 +961,8 @@ impl Storage {
              CREATE TABLE request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trace_id TEXT,
+                session_id TEXT,
+                conversation_anchor TEXT,
                 key_id TEXT,
                 account_id TEXT,
                 initial_account_id TEXT,
@@ -957,12 +995,12 @@ impl Storage {
                 created_at INTEGER NOT NULL
              );
              INSERT INTO request_logs (
-                id, trace_id, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                id, trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
                 method, request_type, gateway_mode, transparent_mode, enhanced_mode, model, upstream_model, actual_source_kind, actual_source_id, reasoning_effort, service_tier, effective_service_tier, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
              )
              SELECT
-                id, trace_id, key_id, account_id, NULL, NULL, NULL, NULL, request_path, original_path, adapted_path,
+                id, trace_id, NULL, NULL, key_id, account_id, NULL, NULL, NULL, NULL, request_path, original_path, adapted_path,
                 method, NULL, NULL, NULL, NULL, model, NULL, NULL, NULL, reasoning_effort, NULL, NULL, response_adapter, upstream_url, NULL, NULL, status_code, NULL, NULL, error, created_at
              FROM request_logs_legacy_028;
              DROP TABLE request_logs_legacy_028;",
@@ -988,42 +1026,44 @@ impl Storage {
 fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
     Ok(RequestLog {
         trace_id: row.get(0)?,
-        key_id: row.get(1)?,
-        account_id: row.get(2)?,
-        initial_account_id: row.get(3)?,
-        attempted_account_ids_json: row.get(4)?,
-        initial_aggregate_api_id: row.get(5)?,
-        attempted_aggregate_api_ids_json: row.get(6)?,
-        request_path: row.get(7)?,
-        original_path: row.get(8)?,
-        adapted_path: row.get(9)?,
-        method: row.get(10)?,
-        request_type: row.get(11)?,
-        gateway_mode: row.get(12)?,
-        transparent_mode: row.get(13)?,
-        enhanced_mode: row.get(14)?,
-        model: row.get(15)?,
-        upstream_model: row.get(16)?,
-        actual_source_kind: row.get(17)?,
-        actual_source_id: row.get(18)?,
-        reasoning_effort: row.get(19)?,
-        service_tier: row.get(20)?,
-        effective_service_tier: row.get(21)?,
-        response_adapter: row.get(22)?,
-        upstream_url: row.get(23)?,
-        aggregate_api_supplier_name: row.get(24)?,
-        aggregate_api_url: row.get(25)?,
-        status_code: row.get(26)?,
-        duration_ms: row.get(27)?,
-        first_response_ms: row.get(28)?,
-        input_tokens: row.get(29)?,
-        cached_input_tokens: row.get(30)?,
-        output_tokens: row.get(31)?,
-        total_tokens: row.get(32)?,
-        reasoning_output_tokens: row.get(33)?,
-        estimated_cost_usd: row.get(34)?,
-        error: row.get(35)?,
-        created_at: row.get(36)?,
+        session_id: row.get(1)?,
+        conversation_anchor: row.get(2)?,
+        key_id: row.get(3)?,
+        account_id: row.get(4)?,
+        initial_account_id: row.get(5)?,
+        attempted_account_ids_json: row.get(6)?,
+        initial_aggregate_api_id: row.get(7)?,
+        attempted_aggregate_api_ids_json: row.get(8)?,
+        request_path: row.get(9)?,
+        original_path: row.get(10)?,
+        adapted_path: row.get(11)?,
+        method: row.get(12)?,
+        request_type: row.get(13)?,
+        gateway_mode: row.get(14)?,
+        transparent_mode: row.get(15)?,
+        enhanced_mode: row.get(16)?,
+        model: row.get(17)?,
+        upstream_model: row.get(18)?,
+        actual_source_kind: row.get(19)?,
+        actual_source_id: row.get(20)?,
+        reasoning_effort: row.get(21)?,
+        service_tier: row.get(22)?,
+        effective_service_tier: row.get(23)?,
+        response_adapter: row.get(24)?,
+        upstream_url: row.get(25)?,
+        aggregate_api_supplier_name: row.get(26)?,
+        aggregate_api_url: row.get(27)?,
+        status_code: row.get(28)?,
+        duration_ms: row.get(29)?,
+        first_response_ms: row.get(30)?,
+        input_tokens: row.get(31)?,
+        cached_input_tokens: row.get(32)?,
+        output_tokens: row.get(33)?,
+        total_tokens: row.get(34)?,
+        reasoning_output_tokens: row.get(35)?,
+        estimated_cost_usd: row.get(36)?,
+        error: row.get(37)?,
+        created_at: row.get(38)?,
     })
 }
 
@@ -1223,6 +1263,8 @@ fn append_request_log_query_clause(
                 "IFNULL(r.error,'') LIKE ?",
                 "IFNULL(r.key_id,'') LIKE ?",
                 "IFNULL(r.trace_id,'') LIKE ?",
+                "IFNULL(r.session_id,'') LIKE ?",
+                "IFNULL(r.conversation_anchor,'') LIKE ?",
                 "IFNULL(r.upstream_url,'') LIKE ?",
                 "IFNULL(CAST(r.status_code AS TEXT),'') LIKE ?",
                 "IFNULL(CAST(t.input_tokens AS TEXT),'') LIKE ?",

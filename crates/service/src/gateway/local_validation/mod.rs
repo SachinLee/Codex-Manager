@@ -35,6 +35,7 @@ pub(super) struct LocalValidationResult {
     pub(super) route_conversation_id: Option<String>,
     pub(super) route_conversation_source: Option<RouteConversationSource>,
     pub(super) conversation_binding: Option<ConversationBinding>,
+    pub(super) request_log_session_id: Option<String>,
     pub(super) model_for_log: Option<String>,
     pub(super) reasoning_for_log: Option<String>,
     pub(super) service_tier_for_log: Option<String>,

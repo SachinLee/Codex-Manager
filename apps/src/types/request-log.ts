@@ -1,6 +1,8 @@
 export interface RequestLog {
   id: string;
   traceId: string;
+  sessionId: string;
+  conversationAnchor: string;
   keyId: string;
   accountId: string;
   initialAccountId: string;

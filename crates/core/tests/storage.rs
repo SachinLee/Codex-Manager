@@ -1138,6 +1138,7 @@ fn request_logs_support_prefixed_query_filters() {
     storage
         .insert_request_log(&RequestLog {
             trace_id: Some("trc-alpha-extra".to_string()),
+            session_id: Some("session-alpha-extra".to_string()),
             key_id: Some("key-alpha-extra".to_string()),
             account_id: Some("acc-1".to_string()),
             initial_account_id: Some("acc-1".to_string()),
@@ -1171,6 +1172,7 @@ fn request_logs_support_prefixed_query_filters() {
     storage
         .insert_request_log(&RequestLog {
             trace_id: Some("trc-alpha".to_string()),
+            session_id: Some("session-alpha".to_string()),
             key_id: Some("key-alpha".to_string()),
             account_id: Some("acc-1".to_string()),
             initial_account_id: Some("acc-1".to_string()),
@@ -1203,6 +1205,7 @@ fn request_logs_support_prefixed_query_filters() {
     storage
         .insert_request_log(&RequestLog {
             trace_id: Some("trc-beta".to_string()),
+            session_id: Some("session-beta".to_string()),
             key_id: Some("key-beta".to_string()),
             account_id: Some("acc-2".to_string()),
             initial_account_id: Some("acc-2".to_string()),
@@ -1260,6 +1263,15 @@ fn request_logs_support_prefixed_query_filters() {
         .expect("filter by trace id");
     assert_eq!(trace_filtered.len(), 1);
     assert_eq!(trace_filtered[0].trace_id.as_deref(), Some("trc-alpha"));
+
+    let session_filtered = storage
+        .list_request_logs(Some("session:=session-alpha"), 100)
+        .expect("filter by session id");
+    assert_eq!(session_filtered.len(), 1);
+    assert_eq!(
+        session_filtered[0].session_id.as_deref(),
+        Some("session-alpha")
+    );
 
     let original_path_filtered = storage
         .list_request_logs(Some("original:=/v1/chat/completions"), 100)

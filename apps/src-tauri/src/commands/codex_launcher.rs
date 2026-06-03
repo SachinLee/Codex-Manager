@@ -121,9 +121,18 @@ pub async fn codex_launcher_resolve_path(
 
 /// 列出 Codex 会话（直接调用 Service 层，不经过 RPC）
 #[tauri::command]
-pub async fn codex_session_list() -> Result<serde_json::Value, String> {
+pub async fn codex_session_list(
+    updated_from: Option<i64>,
+    updated_to: Option<i64>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
     let db = codexmanager_service::codex_session::default_codex_db_path();
-    codexmanager_service::codex_session::list_sessions(&db)
+    let options = codexmanager_service::codex_session::SessionListOptions {
+        updated_from,
+        updated_to,
+        limit,
+    };
+    codexmanager_service::codex_session::list_sessions_with_options(&db, &options)
         .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Array(vec![])))
 }
 
@@ -158,6 +167,28 @@ pub async fn codex_session_delete_many(
         }
     }
     Ok(serde_json::to_value(results).unwrap_or_default())
+}
+
+/// 移动单条 Codex 会话到目标工作目录；target_cwd 为空表示移出项目目录
+#[tauri::command]
+pub async fn codex_session_move(
+    session_id: String,
+    target_cwd: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let db = codexmanager_service::codex_session::default_codex_db_path();
+    codexmanager_service::codex_session::move_session(&db, &session_id, target_cwd.as_deref())
+        .map(|r| serde_json::to_value(r).unwrap_or_default())
+}
+
+/// 批量移动 Codex 会话到目标工作目录
+#[tauri::command]
+pub async fn codex_session_move_many(
+    session_ids: Vec<String>,
+    target_cwd: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let db = codexmanager_service::codex_session::default_codex_db_path();
+    codexmanager_service::codex_session::move_sessions(&db, &session_ids, target_cwd.as_deref())
+        .map(|r| serde_json::to_value(r).unwrap_or_default())
 }
 
 /// 删除全部已归档 Codex 会话
@@ -200,5 +231,29 @@ pub async fn codex_provider_sync_cm() -> Result<serde_json::Value, String> {
 #[tauri::command]
 pub async fn codex_configure_cm() -> Result<serde_json::Value, String> {
     codexmanager_service::codex_session::configure_cm_for_codex_app()
+        .map(|v| serde_json::to_value(v).unwrap_or_default())
+}
+
+/// 检查 Codex App 桥接状态：ChatGPT 登录态、CM provider、手机远程控制开关
+#[tauri::command]
+pub async fn codex_app_bridge_status() -> Result<serde_json::Value, String> {
+    let db = codexmanager_service::codex_session::default_codex_db_path();
+    let home = db
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    codexmanager_service::codex_session::codex_app_bridge_status(&home)
+        .map(|v| serde_json::to_value(v).unwrap_or_default())
+}
+
+/// 启用 Codex App 手机远程控制特性，保留实际模型请求走 CodexManager 网关
+#[tauri::command]
+pub async fn codex_app_bridge_enable_remote_control() -> Result<serde_json::Value, String> {
+    let db = codexmanager_service::codex_session::default_codex_db_path();
+    let home = db
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    codexmanager_service::codex_session::enable_codex_mobile_remote_control(&home)
         .map(|v| serde_json::to_value(v).unwrap_or_default())
 }

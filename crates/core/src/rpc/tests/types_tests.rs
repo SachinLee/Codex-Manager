@@ -146,6 +146,8 @@ fn account_list_result_serialization_includes_pagination_fields() {
 fn request_log_summary_serialization_includes_trace_route_fields() {
     let summary = RequestLogSummary {
         trace_id: Some("trc_1".to_string()),
+        session_id: Some("session_1".to_string()),
+        conversation_anchor: Some("pck:v1:anchor".to_string()),
         key_id: Some("gk_1".to_string()),
         account_id: Some("acc_1".to_string()),
         initial_account_id: Some("acc_free".to_string()),
@@ -183,6 +185,8 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
     let obj = value.as_object().expect("request log summary object");
     for key in [
         "traceId",
+        "sessionId",
+        "conversationAnchor",
         "initialAccountId",
         "attemptedAccountIds",
         "originalPath",

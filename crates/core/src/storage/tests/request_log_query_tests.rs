@@ -125,3 +125,27 @@ fn prefixed_route_detail_queries_are_supported() {
         } if pattern == "%ag_123%"
     ));
 }
+
+#[test]
+fn prefixed_session_query_is_supported() {
+    let session_query = parse_request_log_query(Some("session:=session-alpha"));
+    assert!(matches!(
+        session_query,
+        RequestLogQuery::FieldExact {
+            column: "session_id",
+            value
+        } if value == "session-alpha"
+    ));
+}
+
+#[test]
+fn prefixed_anchor_query_is_supported() {
+    let anchor_query = parse_request_log_query(Some("anchor:=pck:v1:abc"));
+    assert!(matches!(
+        anchor_query,
+        RequestLogQuery::FieldExact {
+            column: "conversation_anchor",
+            value
+        } if value == "pck:v1:abc"
+    ));
+}

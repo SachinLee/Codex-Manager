@@ -1280,10 +1280,25 @@ fn finalize_ws_request_log(
     if usage.first_response_ms.is_none() {
         usage.first_response_ms = pending.first_response_ms;
     }
+    let prompt_cache_session_id = context.prompt_cache_key.as_deref().and_then(|prompt_cache_key| {
+        crate::gateway::request_log_session_id_candidate_from_value(
+            &serde_json::json!({ "prompt_cache_key": prompt_cache_key }),
+        )
+    });
     crate::gateway::write_request_log(
         &storage,
         crate::gateway::RequestLogTraceContext {
             trace_id: Some(pending.trace_id.as_str()),
+            session_id: context
+                .incoming_headers
+                .session_id()
+                .or(context.incoming_headers.parent_thread_id())
+                .or(prompt_cache_session_id.as_deref()),
+            conversation_anchor: context
+                .incoming_headers
+                .conversation_id()
+                .or(context.prompt_cache_key.as_deref())
+                .or(context.incoming_headers.session_id()),
             original_path: Some(RESPONSES_ENDPOINT),
             adapted_path: Some(RESPONSES_ENDPOINT),
             request_type: Some("ws"),

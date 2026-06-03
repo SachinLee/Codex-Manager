@@ -133,6 +133,8 @@ pub(super) fn maybe_respond_local_count_tokens(
     body: &[u8],
     model_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    session_id_for_log: Option<&str>,
+    conversation_anchor_for_log: Option<&str>,
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<Option<tiny_http::Request>, String> {
     let is_anthropic_count_tokens = protocol_type == PROTOCOL_ANTHROPIC_NATIVE
@@ -163,6 +165,8 @@ pub(super) fn maybe_respond_local_count_tokens(
         request_method,
         model_for_log,
         reasoning_for_log,
+        session_id_for_log,
+        conversation_anchor_for_log,
         storage,
         log_request: true,
     };

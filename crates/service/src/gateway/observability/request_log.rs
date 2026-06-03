@@ -14,6 +14,8 @@ pub(crate) struct RequestLogUsage {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RequestLogTraceContext<'a> {
     pub trace_id: Option<&'a str>,
+    pub session_id: Option<&'a str>,
+    pub conversation_anchor: Option<&'a str>,
     pub original_path: Option<&'a str>,
     pub adapted_path: Option<&'a str>,
     pub request_type: Option<&'a str>,
@@ -504,6 +506,8 @@ pub(crate) fn write_request_log_with_attempts(
     let (request_log_id, token_stat_error) = match storage.insert_request_log_with_token_stat(
         &RequestLog {
             trace_id: trace_context.trace_id.map(|v| v.to_string()),
+            session_id: trace_context.session_id.map(|v| v.to_string()),
+            conversation_anchor: trace_context.conversation_anchor.map(|v| v.to_string()),
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
             initial_account_id: initial_account_id.map(str::to_string),

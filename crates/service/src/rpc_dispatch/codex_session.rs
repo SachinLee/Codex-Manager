@@ -16,7 +16,15 @@ fn codex_home() -> std::path::PathBuf {
 pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
     let result = match req.method.as_str() {
         "codexSession/list" => {
-            super::value_or_error(codex_session::list_sessions(&db_path()))
+            let options = codex_session::SessionListOptions {
+                updated_from: super::i64_param(req, "updatedFrom"),
+                updated_to: super::i64_param(req, "updatedTo"),
+                limit: super::i64_param(req, "limit"),
+            };
+            super::value_or_error(codex_session::list_sessions_with_options(
+                &db_path(),
+                &options,
+            ))
         }
         "codexSession/listArchived" => {
             super::value_or_error(codex_session::list_archived_sessions(&db_path()))
@@ -54,6 +62,38 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             }
             super::as_json(results).into()
         }
+        "codexSession/move" => {
+            let session_id = super::str_param(req, "sessionId").unwrap_or("");
+            let target_cwd = super::str_param(req, "targetCwd");
+            super::value_or_error(codex_session::move_session(
+                &db_path(),
+                session_id,
+                target_cwd,
+            ))
+        }
+        "codexSession/moveMany" => {
+            let session_ids = req
+                .params
+                .as_ref()
+                .and_then(|params| params.get("sessionIds"))
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let target_cwd = super::str_param(req, "targetCwd");
+            super::value_or_error(codex_session::move_sessions(
+                &db_path(),
+                &session_ids,
+                target_cwd,
+            ))
+        }
         "codexSession/undo" => {
             let token = super::str_param(req, "undoToken").unwrap_or("");
             super::ok_or_error(codex_session::undo_delete(&db_path(), token))
@@ -74,6 +114,12 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "codexSession/configureCm" => {
             super::value_or_error(codex_session::configure_cm_for_codex_app())
         }
+        "codexSession/appBridgeStatus" => {
+            super::value_or_error(codex_session::codex_app_bridge_status(&codex_home()))
+        }
+        "codexSession/enableRemoteControl" => super::value_or_error(
+            codex_session::enable_codex_mobile_remote_control(&codex_home()),
+        ),
         _ => return None,
     };
 

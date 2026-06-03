@@ -88,6 +88,10 @@ fn parse_prefixed_request_log_query(raw: &str) -> Option<RequestLogQuery> {
         "error" => Some(parse_field_query("error", is_exact, needle)),
         "key" | "key_id" => Some(parse_field_query("key_id", is_exact, needle)),
         "trace" | "trace_id" => Some(parse_field_query("trace_id", is_exact, needle)),
+        "session" | "session_id" => Some(parse_field_query("session_id", is_exact, needle)),
+        "anchor" | "conversation_anchor" | "conversation" => {
+            Some(parse_field_query("conversation_anchor", is_exact, needle))
+        }
         "upstream" | "url" => Some(parse_field_query("upstream_url", is_exact, needle)),
         "status" => parse_status_query(needle),
         _ => None,

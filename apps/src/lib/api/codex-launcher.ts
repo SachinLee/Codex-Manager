@@ -22,6 +22,12 @@ export interface CodexSession {
   archived: boolean | null;
 }
 
+export interface CodexSessionListOptions {
+  updatedFrom?: number | null;
+  updatedTo?: number | null;
+  limit?: number | null;
+}
+
 export type ProviderSyncStatus = "skipped" | "synced";
 
 export interface ProviderSyncResult {
@@ -47,13 +53,57 @@ export interface CmConfigResult {
   providerSync: ProviderSyncResult;
 }
 
+export interface CodexAppBridgeStatus {
+  codexHome: string;
+  authPath: string;
+  configPath: string;
+  appDbPath: string;
+  authModeChatgpt: boolean;
+  hasAccessToken: boolean;
+  hasIdToken: boolean;
+  hasRefreshToken: boolean;
+  lastRefresh: number | null;
+  provider: string | null;
+  providerBaseUrl: string | null;
+  providerWireApi: string | null;
+  providerRequiresOpenaiAuth: boolean;
+  providerIsCm: boolean;
+  remoteConnectionsEnabled: boolean;
+  legacyRemoteControlPresent: boolean;
+  dbExists: boolean;
+  dbTableExists: boolean;
+  dbRemoteControlEnabled: boolean;
+  dbUpdatedAt: number | null;
+  logEnablementSeen: boolean;
+  desktopSignInRequired: boolean;
+  remoteControlLogError: string | null;
+  remoteControlLogPath: string | null;
+  issues: string[];
+}
+
+export interface CodexRemoteControlEnablement {
+  codexHome: string;
+  configUpdated: boolean;
+  dbUpdated: boolean;
+  backupDir: string | null;
+  status: CodexAppBridgeStatus;
+}
+
 /** 后端 serde camelCase 序列化：deleted / notFound / backupFailed */
 export type DeleteStatus = "deleted" | "notFound" | "backupFailed";
+export type MoveStatus = "moved" | "unchanged" | "notFound" | "unsupported";
 
 export interface DeleteResult {
   sessionId: string;
   status: DeleteStatus;
   undoToken: string | null;
+}
+
+export interface MoveResult {
+  sessionId: string;
+  status: MoveStatus;
+  previousCwd: string | null;
+  targetCwd: string | null;
 }
 
 export const codexLauncherClient = {
@@ -77,8 +127,15 @@ export const codexLauncherClient = {
     return invoke("codex_launcher_resolve_path", withAddr({ customPath }));
   },
 
-  async listSessions(): Promise<CodexSession[]> {
-    return invoke("codex_session_list", withAddr({}));
+  async listSessions(options?: CodexSessionListOptions): Promise<CodexSession[]> {
+    return invoke(
+      "codex_session_list",
+      withAddr({
+        updatedFrom: options?.updatedFrom ?? null,
+        updatedTo: options?.updatedTo ?? null,
+        limit: options?.limit ?? null,
+      })
+    );
   },
 
   async deleteSession(sessionId: string): Promise<DeleteResult> {
@@ -87,6 +144,14 @@ export const codexLauncherClient = {
 
   async deleteSessions(sessionIds: string[]): Promise<DeleteResult[]> {
     return invoke("codex_session_delete_many", withAddr({ sessionIds }));
+  },
+
+  async moveSession(sessionId: string, targetCwd: string | null): Promise<MoveResult> {
+    return invoke("codex_session_move", withAddr({ sessionId, targetCwd }));
+  },
+
+  async moveSessions(sessionIds: string[], targetCwd: string | null): Promise<MoveResult[]> {
+    return invoke("codex_session_move_many", withAddr({ sessionIds, targetCwd }));
   },
 
   async deleteAllArchivedSessions(): Promise<DeleteResult[]> {
@@ -107,5 +172,13 @@ export const codexLauncherClient = {
 
   async configureCm(): Promise<CmConfigResult> {
     return invoke("codex_configure_cm", withAddr({}));
+  },
+
+  async appBridgeStatus(): Promise<CodexAppBridgeStatus> {
+    return invoke("codex_app_bridge_status", withAddr({}));
+  },
+
+  async enableRemoteControl(): Promise<CodexRemoteControlEnablement> {
+    return invoke("codex_app_bridge_enable_remote_control", withAddr({}));
   },
 };

@@ -141,6 +141,7 @@ pub(super) use request_helpers::{
     is_upstream_challenge_response, normalize_models_path, parse_request_metadata,
     validate_text_input_limit_for_path,
 };
+pub(crate) use request_helpers::request_log_session_id_candidate_from_value;
 #[cfg(test)]
 use request_helpers::{should_drop_incoming_header, should_drop_incoming_header_for_failover};
 pub(crate) use request_log::{RequestLogTraceContext, RequestLogUsage};

@@ -2,10 +2,15 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { codexLauncherClient, LaunchOptions } from "@/lib/api/codex-launcher";
+import {
+  codexLauncherClient,
+  type CodexSessionListOptions,
+  LaunchOptions,
+} from "@/lib/api/codex-launcher";
 
 const KEYS = {
   status: ["codex-launcher", "status"] as const,
+  appBridgeStatus: ["codex-launcher", "app-bridge-status"] as const,
   sessions: ["codex-launcher", "sessions"] as const,
   archived: ["codex-launcher", "archived"] as const,
 };
@@ -18,10 +23,10 @@ export function useCodexLauncherStatus() {
   });
 }
 
-export function useCodexSessions() {
+export function useCodexSessions(options?: CodexSessionListOptions) {
   return useQuery({
-    queryKey: KEYS.sessions,
-    queryFn: () => codexLauncherClient.listSessions(),
+    queryKey: [...KEYS.sessions, options?.updatedFrom ?? null, options?.updatedTo ?? null, options?.limit ?? null],
+    queryFn: () => codexLauncherClient.listSessions(options),
   });
 }
 
@@ -29,6 +34,14 @@ export function useCodexArchivedSessions() {
   return useQuery({
     queryKey: KEYS.archived,
     queryFn: () => codexLauncherClient.listArchived(),
+  });
+}
+
+export function useCodexAppBridgeStatus() {
+  return useQuery({
+    queryKey: KEYS.appBridgeStatus,
+    queryFn: () => codexLauncherClient.appBridgeStatus(),
+    refetchInterval: 5000,
   });
 }
 
@@ -115,6 +128,61 @@ export function useCodexSessionsDeleteMany() {
   });
 }
 
+export function useCodexSessionMove() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      targetCwd,
+    }: {
+      sessionId: string;
+      targetCwd: string | null;
+    }) => codexLauncherClient.moveSession(sessionId, targetCwd),
+    onSuccess: (result) => {
+      if (result.status === "moved") {
+        toast.success("会话已移动");
+      } else if (result.status === "unchanged") {
+        toast.info("会话已在目标目录中");
+      } else if (result.status === "notFound") {
+        toast.error("会话不存在或已被删除");
+      } else {
+        toast.error("当前 Codex 会话结构不支持移动");
+      }
+      qc.invalidateQueries({ queryKey: KEYS.sessions });
+      qc.invalidateQueries({ queryKey: KEYS.archived });
+    },
+    onError: (e: Error) => toast.error(`移动失败: ${e.message}`),
+  });
+}
+
+export function useCodexSessionsMoveMany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sessionIds,
+      targetCwd,
+    }: {
+      sessionIds: string[];
+      targetCwd: string | null;
+    }) => codexLauncherClient.moveSessions(sessionIds, targetCwd),
+    onSuccess: (results) => {
+      const moved = results.filter((result) => result.status === "moved").length;
+      const unchanged = results.filter((result) => result.status === "unchanged").length;
+      const failed = results.length - moved - unchanged;
+      if (failed > 0) {
+        toast.warning(`已移动 ${moved} 个会话，${failed} 个未移动`);
+      } else if (moved > 0) {
+        toast.success(`已移动 ${moved} 个会话`);
+      } else {
+        toast.info("选中会话已在目标目录中");
+      }
+      qc.invalidateQueries({ queryKey: KEYS.sessions });
+      qc.invalidateQueries({ queryKey: KEYS.archived });
+    },
+    onError: (e: Error) => toast.error(`批量移动失败: ${e.message}`),
+  });
+}
+
 export function useCodexArchivedSessionsDeleteAll() {
   const qc = useQueryClient();
   return useMutation({
@@ -131,5 +199,33 @@ export function useCodexArchivedSessionsDeleteAll() {
       qc.invalidateQueries({ queryKey: KEYS.archived });
     },
     onError: (e: Error) => toast.error(`删除已归档会话失败: ${e.message}`),
+  });
+}
+
+export function useCodexConfigureCm() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => codexLauncherClient.configureCm(),
+    onSuccess: () => {
+      toast.success("Codex App 桥接配置已写入");
+      qc.invalidateQueries({ queryKey: KEYS.appBridgeStatus });
+    },
+    onError: (e: Error) => toast.error(`配置失败: ${e.message}`),
+  });
+}
+
+export function useCodexEnableRemoteControl() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => codexLauncherClient.enableRemoteControl(),
+    onSuccess: (result) => {
+      if (result.dbUpdated || result.configUpdated) {
+        toast.success("手机远程控制已启用");
+      } else {
+        toast.info("手机远程控制已是启用状态");
+      }
+      qc.invalidateQueries({ queryKey: KEYS.appBridgeStatus });
+    },
+    onError: (e: Error) => toast.error(`启用手机远控失败: ${e.message}`),
   });
 }
