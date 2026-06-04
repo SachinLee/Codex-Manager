@@ -4,6 +4,7 @@ import type {
   DashboardAdminUsageSummary,
   DashboardDailyUsagePoint,
   DashboardSourceUsageSummary,
+  DashboardTokenActivity,
   DashboardTokenUsage,
   DashboardUserUsageSummary,
   MemberDashboardAlert,
@@ -131,6 +132,16 @@ function readAdminUsageSummary(value: unknown): DashboardAdminUsageSummary {
     aggregateApis: asArray(source.aggregateApis ?? source.aggregate_apis)
       .map(readSourceUsageSummary)
       .filter((item): item is DashboardSourceUsageSummary => Boolean(item)),
+  };
+}
+
+function readTokenActivity(value: unknown): DashboardTokenActivity {
+  const source = asRecord(value);
+  return {
+    rangeStartTs: asNumber(source.rangeStartTs ?? source.range_start_ts),
+    rangeEndTs: asNumber(source.rangeEndTs ?? source.range_end_ts),
+    totalTokens: asNumber(source.totalTokens ?? source.total_tokens),
+    days: asArray(source.days).map(readDailyUsagePoint),
   };
 }
 
@@ -286,6 +297,19 @@ export const dashboardClient = {
       }),
     );
     return readAdminUsageSummary(result);
+  },
+  async getTokenActivity(params?: {
+    startTs?: number | null;
+    endTs?: number | null;
+  }): Promise<DashboardTokenActivity> {
+    const result = await invoke<unknown>(
+      "service_dashboard_token_activity",
+      withAddr({
+        startTs: params?.startTs ?? null,
+        endTs: params?.endTs ?? null,
+      }),
+    );
+    return readTokenActivity(result);
   },
   async getMemberSummary(params?: {
     userId?: string | null;

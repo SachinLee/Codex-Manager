@@ -1086,6 +1086,11 @@ impl Storage {
             include_str!("../../migrations/067_request_logs_conversation_anchor.sql"),
             |s| s.ensure_request_log_conversation_anchor_column(),
         )?;
+        self.apply_sql_or_compat_migration(
+            "068_request_token_daily_rollups",
+            include_str!("../../migrations/068_request_token_daily_rollups.sql"),
+            |s| s.ensure_request_token_daily_rollups_table(),
+        )?;
         self.apply_compat_migration("063_account_subscriptions_account_plan_type", |s| {
             s.ensure_account_subscriptions_table()
         })?;
@@ -1111,6 +1116,7 @@ impl Storage {
         self.ensure_model_source_tables()?;
         self.ensure_aggregate_api_supplier_model_tables()?;
         self.ensure_model_group_tables()?;
+        self.ensure_request_token_daily_rollups_table()?;
         Ok(())
     }
 

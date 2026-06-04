@@ -62,6 +62,8 @@ import {
 } from "@/components/ui/table";
 import { useDashboardStats } from "@/hooks/useDashboardStats";
 import { useDashboardAdminUsageSummary } from "@/hooks/useDashboardAdminUsageSummary";
+import { TokenActivityHeatmapCard } from "@/components/dashboard/token-activity-heatmap-card";
+import { useDashboardTokenActivity } from "@/hooks/useDashboardTokenActivity";
 import { resolveSessionRole, useAppSession } from "@/hooks/useAppSession";
 import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { useMemberDashboardSummary } from "@/hooks/useMemberDashboardSummary";
@@ -984,6 +986,11 @@ function AdminDashboard() {
     },
     true,
   );
+  const {
+    data: tokenActivity,
+    isLoading: isTokenActivityLoading,
+    isError: isTokenActivityError,
+  } = useDashboardTokenActivity(true);
   const { data: quotaModelPools, isLoading: isQuotaModelPoolsLoading } = useQuery({
     queryKey: ["quota", "model-pools"],
     queryFn: () => quotaClient.modelPools(),
@@ -1086,6 +1093,12 @@ function AdminDashboard() {
           </>
         )}
       </div>
+
+      <TokenActivityHeatmapCard
+        activity={tokenActivity}
+        isLoading={isLoading || isTokenActivityLoading}
+        isError={isTokenActivityError}
+      />
 
       <AdminUsageAnalyticsCard
         summary={adminUsageSummary}

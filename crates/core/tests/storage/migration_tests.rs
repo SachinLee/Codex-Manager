@@ -313,6 +313,18 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         )
         .expect("count 067 migration");
     assert_eq!(applied_067, 1);
+    let applied_068: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM schema_migrations WHERE version = '068_request_token_daily_rollups'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count 068 migration");
+    assert_eq!(applied_068, 1);
+    assert!(storage
+        .has_table("request_token_daily_rollups")
+        .expect("check request_token_daily_rollups table"));
 
     assert!(!storage
         .has_column("accounts", "note")

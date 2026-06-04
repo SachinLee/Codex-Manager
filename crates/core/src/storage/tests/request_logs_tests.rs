@@ -498,6 +498,82 @@ fn request_token_stats_total_includes_current_rows_and_rollups() {
 }
 
 #[test]
+fn request_token_activity_daily_survives_stats_rollup() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    for (index, created_at, total_tokens) in [
+        (0_i64, 1_700_000_000_i64, 30_i64),
+        (1_i64, 1_700_086_900_i64, 70_i64),
+    ] {
+        let request_log_id = storage
+            .insert_request_log(&RequestLog {
+                trace_id: Some(format!("trc-activity-{index}")),
+                key_id: Some("gk-activity".to_string()),
+                account_id: Some("acc-activity".to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code: Some(200),
+                duration_ms: Some(1000 + index),
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert request log");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                key_id: Some("gk-activity".to_string()),
+                account_id: Some("acc-activity".to_string()),
+                model: Some("gpt-5".to_string()),
+                input_tokens: Some(total_tokens),
+                output_tokens: Some(0),
+                total_tokens: Some(total_tokens),
+                estimated_cost_usd: Some(total_tokens as f64 / 1000.0),
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert token stat");
+    }
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 98_001,
+            key_id: Some("gk-activity".to_string()),
+            account_id: Some("acc-activity".to_string()),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(5),
+            output_tokens: Some(0),
+            total_tokens: Some(5),
+            estimated_cost_usd: Some(0.005),
+            created_at: 1_700_000_120,
+            ..Default::default()
+        })
+        .expect("insert orphan token stat");
+
+    storage
+        .rollup_all_request_token_stats()
+        .expect("rollup token stats");
+
+    let remaining_current_rows: i64 = storage
+        .conn
+        .query_row("SELECT COUNT(1) FROM request_token_stats", [], |row| {
+            row.get(0)
+        })
+        .expect("count current stats");
+    assert_eq!(remaining_current_rows, 0);
+
+    let days = storage
+        .summarize_request_token_activity_daily(1_699_900_000, 1_700_200_000, 86_400)
+        .expect("summarize token activity");
+    let totals = days
+        .iter()
+        .map(|item| item.usage.total_tokens)
+        .collect::<Vec<_>>();
+    assert_eq!(totals, vec![35, 70]);
+    assert_eq!(days[0].usage.request_count, 1);
+    assert_eq!(days[1].usage.request_count, 1);
+}
+
+#[test]
 fn request_logs_support_time_range_filters() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");

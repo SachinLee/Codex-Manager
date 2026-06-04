@@ -53,6 +53,13 @@ export interface DashboardAdminUsageSummary {
   aggregateApis: DashboardSourceUsageSummary[];
 }
 
+export interface DashboardTokenActivity {
+  rangeStartTs: number;
+  rangeEndTs: number;
+  totalTokens: number;
+  days: DashboardDailyUsagePoint[];
+}
+
 export interface MemberDashboardWallet {
   id: string;
   balanceCreditMicros: number;

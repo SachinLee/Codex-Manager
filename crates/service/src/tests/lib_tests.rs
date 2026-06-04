@@ -898,6 +898,94 @@ fn admin_usage_summary_daily_trend_includes_token_stats_without_request_logs() {
 }
 
 #[test]
+fn token_activity_requires_admin_and_returns_daily_points() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-token-activity");
+    let day_start = 1_700_000_000;
+    let day_end = day_start + 2 * 86_400;
+    let user = create_test_member("token-activity-member", Some(2_000_000));
+    let key_id = create_owned_test_api_key(&user.id, "token activity key", "gpt-5-mini");
+
+    insert_test_request_log(
+        &key_id,
+        "trace-token-activity-one",
+        "gpt-5-mini",
+        200,
+        20,
+        0,
+        10,
+        0.03,
+        day_start + 120,
+    );
+    insert_test_request_log(
+        &key_id,
+        "trace-token-activity-two",
+        "gpt-5-mini",
+        200,
+        30,
+        0,
+        20,
+        0.05,
+        day_start + 86_400 + 120,
+    );
+
+    let member_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "dashboard/tokenActivity",
+            serde_json::json!({
+                "startTs": day_start,
+                "endTs": day_end
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&user.id)),
+    ));
+    assert!(rpc_error(&member_resp).contains("permission_denied"));
+
+    let admin_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "dashboard/tokenActivity",
+            serde_json::json!({
+                "startTs": day_start,
+                "endTs": day_end
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        admin_resp.result.get("error").is_none(),
+        "{:?}",
+        admin_resp.result
+    );
+    assert_eq!(admin_resp.result["rangeStartTs"], day_start);
+    assert_eq!(admin_resp.result["rangeEndTs"], day_end);
+    assert_eq!(admin_resp.result["totalTokens"], 80);
+    assert_eq!(admin_resp.result["days"].as_array().unwrap().len(), 2);
+    assert_eq!(admin_resp.result["days"][0]["usage"]["totalTokens"], 30);
+    assert_eq!(admin_resp.result["days"][1]["usage"]["totalTokens"], 50);
+
+    let wide_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "dashboard/tokenActivity",
+            serde_json::json!({
+                "startTs": 1,
+                "endTs": day_end
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        wide_resp.result.get("error").is_none(),
+        "{:?}",
+        wide_resp.result
+    );
+    let wide_start = wide_resp.result["rangeStartTs"].as_i64().unwrap();
+    let wide_end = wide_resp.result["rangeEndTs"].as_i64().unwrap();
+    assert!(wide_end - wide_start <= 365 * 86_400);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
 fn member_cannot_read_or_mutate_other_user_api_key() {
     let _guard = test_env_guard();
     let db_path = setup_dashboard_test_db("codexmanager-member-apikey-cross-user-deny");

@@ -1620,6 +1620,16 @@ pub struct DashboardAdminUsageSummaryResult {
     pub aggregate_apis: Vec<DashboardSourceUsageSummary>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardTokenActivityResult {
+    pub range_start_ts: i64,
+    pub range_end_ts: i64,
+    pub total_tokens: i64,
+    #[serde(default)]
+    pub days: Vec<DashboardDailyUsagePoint>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberDashboardWalletResult {

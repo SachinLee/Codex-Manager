@@ -13,6 +13,7 @@ const DEFAULT_OBSERVABILITY_MAINTENANCE_INTERVAL_SECS: i64 = 900;
 const REQUEST_TOKEN_STATS_RETAIN_DAYS_ENV: &str = "CODEXMANAGER_REQUEST_TOKEN_STATS_RETENTION_DAYS";
 const OBSERVABILITY_MAINTENANCE_INTERVAL_SECS_ENV: &str =
     "CODEXMANAGER_OBSERVABILITY_MAINTENANCE_INTERVAL_SECS";
+const DAY_SECONDS: i64 = 86_400;
 
 static LAST_OBSERVABILITY_MAINTENANCE_AT: AtomicI64 = AtomicI64::new(0);
 
@@ -59,6 +60,12 @@ fn token_total_sql_expr_for(prefix: &str) -> String {
                 ELSE 0
             END
      END"
+    )
+}
+
+fn local_day_start_sql_expr(created_at_expr: &str) -> String {
+    format!(
+        "CAST(strftime('%s', datetime({created_at_expr}, 'unixepoch', 'localtime', 'start of day'), 'utc') AS INTEGER)"
     )
 }
 
@@ -224,6 +231,55 @@ impl Storage {
     pub fn rollup_request_token_stats_before(&self, cutoff_ts: i64) -> Result<usize> {
         let now = now_ts();
         let tx = self.conn.unchecked_transaction()?;
+        let created_at_expr = "COALESCE(r.created_at, t.created_at)";
+        let day_start_expr = local_day_start_sql_expr(created_at_expr);
+        tx.execute(
+            &format!(
+                "INSERT INTO request_token_daily_rollups (
+                    day_start_ts, source_kind, source_id,
+                    input_tokens, cached_input_tokens, output_tokens, total_tokens,
+                    reasoning_output_tokens, estimated_cost_usd, request_count, success_count,
+                    error_count, max_duration_ms, updated_at
+                 )
+                 SELECT
+                    {day_start_expr} AS day_start_ts,
+                    'global',
+                    '',
+                    IFNULL(SUM(CASE WHEN t.input_tokens > 0 THEN t.input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.cached_input_tokens > 0 THEN t.cached_input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.output_tokens > 0 THEN t.output_tokens ELSE 0 END), 0),
+                    IFNULL(SUM({token_total}), 0),
+                    IFNULL(SUM(CASE WHEN t.reasoning_output_tokens > 0 THEN t.reasoning_output_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.estimated_cost_usd > 0 THEN t.estimated_cost_usd ELSE 0 END), 0.0),
+                    COUNT(DISTINCT r.id),
+                    COUNT(DISTINCT CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN r.id END),
+                    COUNT(DISTINCT CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN r.id END),
+                    MAX(CASE WHEN r.duration_ms > 0 THEN r.duration_ms ELSE NULL END),
+                    ?2
+                 FROM request_token_stats t
+                 LEFT JOIN request_logs r ON r.id = t.request_log_id
+                 WHERE t.created_at < ?1
+                 GROUP BY day_start_ts
+                 ON CONFLICT(day_start_ts, source_kind, source_id) DO UPDATE SET
+                    input_tokens = request_token_daily_rollups.input_tokens + excluded.input_tokens,
+                    cached_input_tokens = request_token_daily_rollups.cached_input_tokens + excluded.cached_input_tokens,
+                    output_tokens = request_token_daily_rollups.output_tokens + excluded.output_tokens,
+                    total_tokens = request_token_daily_rollups.total_tokens + excluded.total_tokens,
+                    reasoning_output_tokens = request_token_daily_rollups.reasoning_output_tokens + excluded.reasoning_output_tokens,
+                    estimated_cost_usd = request_token_daily_rollups.estimated_cost_usd + excluded.estimated_cost_usd,
+                    request_count = request_token_daily_rollups.request_count + excluded.request_count,
+                    success_count = request_token_daily_rollups.success_count + excluded.success_count,
+                    error_count = request_token_daily_rollups.error_count + excluded.error_count,
+                    max_duration_ms = CASE
+                        WHEN request_token_daily_rollups.max_duration_ms IS NULL THEN excluded.max_duration_ms
+                        WHEN excluded.max_duration_ms IS NULL THEN request_token_daily_rollups.max_duration_ms
+                        ELSE MAX(request_token_daily_rollups.max_duration_ms, excluded.max_duration_ms)
+                    END,
+                    updated_at = excluded.updated_at",
+                token_total = token_total_sql_expr_for("t."),
+            ),
+            (cutoff_ts, now),
+        )?;
         tx.execute(
             &format!(
                 "INSERT INTO request_token_stat_rollups (
@@ -274,6 +330,113 @@ impl Storage {
         )?;
         tx.commit()?;
         Ok(deleted)
+    }
+
+    fn summarize_request_token_daily_rollups(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<DailyTokenUsageRollup>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                day_start_ts,
+                MIN(day_start_ts + ?3, ?2) AS day_end_ts,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                reasoning_output_tokens,
+                total_tokens,
+                estimated_cost_usd,
+                request_count,
+                success_count,
+                error_count
+             FROM request_token_daily_rollups
+             WHERE source_kind = 'global'
+               AND source_id = ''
+               AND day_start_ts >= ?1
+               AND day_start_ts < ?2
+             ORDER BY day_start_ts ASC",
+        )?;
+        let mut rows = stmt.query(params![start_ts, end_ts, DAY_SECONDS])?;
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            items.push(DailyTokenUsageRollup {
+                day_start_ts: row.get(0)?,
+                day_end_ts: row.get(1)?,
+                usage: TokenUsageRollup {
+                    input_tokens: row.get::<_, i64>(2)?.max(0),
+                    cached_input_tokens: row.get::<_, i64>(3)?.max(0),
+                    output_tokens: row.get::<_, i64>(4)?.max(0),
+                    reasoning_output_tokens: row.get::<_, i64>(5)?.max(0),
+                    total_tokens: row.get::<_, i64>(6)?.max(0),
+                    estimated_cost_usd: row.get::<_, f64>(7)?.max(0.0),
+                    request_count: row.get::<_, i64>(8)?.max(0),
+                    success_count: row.get::<_, i64>(9)?.max(0),
+                    error_count: row.get::<_, i64>(10)?.max(0),
+                },
+            });
+        }
+        Ok(items)
+    }
+
+    pub fn summarize_request_token_activity_daily(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+        bucket_seconds: i64,
+    ) -> Result<Vec<DailyTokenUsageRollup>> {
+        if end_ts <= start_ts {
+            return Ok(Vec::new());
+        }
+
+        let mut by_day = self
+            .summarize_request_token_daily_rollups(start_ts, end_ts)?
+            .into_iter()
+            .map(|item| (item.day_start_ts, item))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        for item in self.summarize_request_token_stats_daily(start_ts, end_ts, bucket_seconds)? {
+            by_day
+                .entry(item.day_start_ts)
+                .and_modify(|existing| {
+                    existing.usage.input_tokens = existing
+                        .usage
+                        .input_tokens
+                        .saturating_add(item.usage.input_tokens);
+                    existing.usage.cached_input_tokens = existing
+                        .usage
+                        .cached_input_tokens
+                        .saturating_add(item.usage.cached_input_tokens);
+                    existing.usage.output_tokens = existing
+                        .usage
+                        .output_tokens
+                        .saturating_add(item.usage.output_tokens);
+                    existing.usage.reasoning_output_tokens = existing
+                        .usage
+                        .reasoning_output_tokens
+                        .saturating_add(item.usage.reasoning_output_tokens);
+                    existing.usage.total_tokens = existing
+                        .usage
+                        .total_tokens
+                        .saturating_add(item.usage.total_tokens);
+                    existing.usage.estimated_cost_usd += item.usage.estimated_cost_usd;
+                    existing.usage.request_count = existing
+                        .usage
+                        .request_count
+                        .saturating_add(item.usage.request_count);
+                    existing.usage.success_count = existing
+                        .usage
+                        .success_count
+                        .saturating_add(item.usage.success_count);
+                    existing.usage.error_count = existing
+                        .usage
+                        .error_count
+                        .saturating_add(item.usage.error_count);
+                })
+                .or_insert(item);
+        }
+
+        Ok(by_day.into_values().collect())
     }
 
     pub fn summarize_request_token_stats_between(
@@ -962,6 +1125,7 @@ impl Storage {
         self.ensure_column("request_token_stats", "aggregate_api_id", "TEXT")?;
         self.ensure_column("request_token_stats", "aggregate_api_supplier_name", "TEXT")?;
         self.ensure_column("request_token_stats", "aggregate_api_url", "TEXT")?;
+        self.ensure_request_token_daily_rollups_table()?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_token_stats_aggregate_api_id_created_at
              ON request_token_stats(aggregate_api_id, created_at DESC)",
@@ -1007,6 +1171,35 @@ impl Storage {
             self.conn.execute(backfill_sql.as_str(), [])?;
         }
         self.backfill_request_token_stats_aggregate_api_context()?;
+        Ok(())
+    }
+
+    pub fn ensure_request_token_daily_rollups_table(&self) -> Result<()> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS request_token_daily_rollups (
+                day_start_ts INTEGER NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'global',
+                source_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                max_duration_ms INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (day_start_ts, source_kind, source_id)
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_daily_rollups_source_day
+             ON request_token_daily_rollups(source_kind, source_id, day_start_ts)",
+            [],
+        )?;
         Ok(())
     }
 

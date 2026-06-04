@@ -331,6 +331,16 @@ export function createWebCommandMap(
         };
       },
     },
+    service_dashboard_token_activity: {
+      rpcMethod: "dashboard/tokenActivity",
+      mapParams: (params) => {
+        const source = asRecord(params) ?? {};
+        return {
+          startTs: source.start_ts ?? source.startTs,
+          endTs: source.end_ts ?? source.endTs,
+        };
+      },
+    },
     service_dashboard_member_summary: {
       rpcMethod: "dashboard/memberSummary",
       mapParams: (params) => {

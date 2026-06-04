@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use chrono::{Duration, Local, LocalResult, TimeZone};
 use codexmanager_core::rpc::types::{
     ApiKeySummary, DashboardAdminUsageSummaryResult, DashboardDailyUsagePoint,
-    DashboardSourceUsageSummary, DashboardTokenUsageResult, DashboardUserUsageSummary,
-    MemberDashboardAlert, MemberDashboardApiKeySummary, MemberDashboardKeyUsage,
-    MemberDashboardModelUsage, MemberDashboardSummaryResult, MemberDashboardUsagePoint,
-    MemberDashboardUsageToday, MemberDashboardWalletResult, ModelInfo, RequestLogListParams,
+    DashboardSourceUsageSummary, DashboardTokenActivityResult, DashboardTokenUsageResult,
+    DashboardUserUsageSummary, MemberDashboardAlert, MemberDashboardApiKeySummary,
+    MemberDashboardKeyUsage, MemberDashboardModelUsage, MemberDashboardSummaryResult,
+    MemberDashboardUsagePoint, MemberDashboardUsageToday, MemberDashboardWalletResult, ModelInfo,
+    RequestLogListParams,
 };
 use codexmanager_core::storage::{
     DailyTokenUsageRollup, SourceTokenUsageRollup, TokenUsageRollup, UserTokenUsageRollup,
@@ -24,6 +25,7 @@ const MEMBER_RECENT_LOG_LIMIT: i64 = 8;
 const LOW_WALLET_CREDIT_MICROS: i64 = 1_000_000;
 const DAY_SECONDS: i64 = 24 * 60 * 60;
 const ADMIN_USAGE_RANGE_DAYS: i64 = 7;
+const TOKEN_ACTIVITY_RANGE_DAYS: i64 = 365;
 
 pub(crate) fn read_admin_usage_summary(
     actor: &RpcActor,
@@ -120,6 +122,69 @@ pub(crate) fn read_admin_usage_summary(
         openai_accounts,
         aggregate_apis,
     })
+}
+
+pub(crate) fn read_token_activity(
+    actor: &RpcActor,
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+) -> Result<DashboardTokenActivityResult, String> {
+    if !actor.is_admin() {
+        return Err("permission_denied: token activity requires admin session".to_string());
+    }
+    crate::initialize_storage_if_needed()?;
+    let storage =
+        storage_helpers::open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let (today_start, today_end) = local_day_bounds_ts()?;
+    let (range_start, range_end) =
+        resolve_token_activity_range(today_start, today_end, start_ts, end_ts);
+    let total_usage = storage
+        .summarize_request_token_stats_total()
+        .map_err(|err| format!("summarize total token activity failed: {err}"))?;
+    let days = fill_daily_usage(
+        range_start,
+        range_end,
+        DAY_SECONDS,
+        storage
+            .summarize_request_token_activity_daily(range_start, range_end, DAY_SECONDS)
+            .map_err(|err| format!("summarize token activity days failed: {err}"))?,
+    );
+
+    Ok(DashboardTokenActivityResult {
+        range_start_ts: range_start,
+        range_end_ts: range_end,
+        total_tokens: total_usage.total_tokens.max(0),
+        days,
+    })
+}
+
+fn resolve_token_activity_range(
+    today_start: i64,
+    today_end: i64,
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+) -> (i64, i64) {
+    let default_start = today_start.saturating_sub((TOKEN_ACTIVITY_RANGE_DAYS - 1) * DAY_SECONDS);
+    let requested_end = end_ts
+        .filter(|value| *value > 0)
+        .map(|value| value.min(today_end))
+        .unwrap_or(today_end);
+    let mut range_end = requested_end;
+    let mut range_start = start_ts
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| range_end.saturating_sub((TOKEN_ACTIVITY_RANGE_DAYS - 1) * DAY_SECONDS));
+
+    if range_end <= range_start {
+        range_end = today_end;
+        range_start = default_start;
+    }
+
+    let max_span = TOKEN_ACTIVITY_RANGE_DAYS * DAY_SECONDS;
+    if range_end.saturating_sub(range_start) > max_span {
+        range_start = range_end.saturating_sub(max_span);
+    }
+
+    (range_start, range_end)
 }
 
 #[derive(Debug, Clone, Default)]

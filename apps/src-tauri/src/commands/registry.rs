@@ -9,6 +9,7 @@ macro_rules! invoke_handler {
             crate::commands::service::service_sync_codex_models_cache,
             crate::commands::startup::service_startup_snapshot,
             crate::commands::dashboard::service_dashboard_admin_usage_summary,
+            crate::commands::dashboard::service_dashboard_token_activity,
             crate::commands::dashboard::service_dashboard_member_summary,
             // account
             crate::commands::account::remote::service_account_list,
