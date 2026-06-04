@@ -1,6 +1,8 @@
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::backup::{backup_rollout_file, restore_rollout_file, BackupToken};
@@ -89,7 +91,7 @@ pub fn list_sessions_with_options(
 ) -> Result<Vec<SessionRef>, String> {
     let conn = open_codex_db(db_path)?;
     match detect_schema(&conn) {
-        SchemaKind::CodexThreads => list_codex_threads(&conn, options),
+        SchemaKind::CodexThreads => list_codex_threads(&conn, db_path, options),
         SchemaKind::GenericSessions => list_generic_sessions(&conn, options),
     }
 }
@@ -120,6 +122,7 @@ fn append_session_filters(
 
 fn list_codex_threads(
     conn: &Connection,
+    db_path: &Path,
     options: &SessionListOptions,
 ) -> Result<Vec<SessionRef>, String> {
     let mut sql =
@@ -134,7 +137,7 @@ fn list_codex_threads(
         .map_err(|e| format!("查询 threads 失败: {e}"))?;
     let params = params_from_iter(values.iter().map(|value| value.as_ref()));
 
-    let sessions = stmt
+    let mut sessions = stmt
         .query_map(params, |row| {
             Ok(SessionRef {
                 session_id: row.get::<_, String>(0)?,
@@ -147,9 +150,64 @@ fn list_codex_threads(
         })
         .map_err(|e| format!("遍历 threads 结果失败: {e}"))?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Vec<_>>();
 
+    apply_session_index_titles(db_path, &mut sessions);
     Ok(sessions)
+}
+
+fn session_index_path_for_db(db_path: &Path) -> Option<PathBuf> {
+    db_path.parent().map(|parent| parent.join("session_index.jsonl"))
+}
+
+fn read_session_index_titles(db_path: &Path) -> HashMap<String, String> {
+    let Some(index_path) = session_index_path_for_db(db_path) else {
+        return HashMap::new();
+    };
+    let Ok(contents) = fs::read_to_string(index_path) else {
+        return HashMap::new();
+    };
+
+    let mut titles = HashMap::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let Some(id) = value
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let Some(thread_name) = value
+            .get("thread_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        titles.insert(id.to_string(), thread_name.to_string());
+    }
+    titles
+}
+
+fn apply_session_index_titles(db_path: &Path, sessions: &mut [SessionRef]) {
+    let titles = read_session_index_titles(db_path);
+    if titles.is_empty() {
+        return;
+    }
+    for session in sessions {
+        if let Some(title) = titles.get(session.session_id.as_str()) {
+            session.title = Some(title.clone());
+        }
+    }
 }
 
 fn list_generic_sessions(
@@ -204,7 +262,7 @@ pub fn list_archived_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String>
         )
         .map_err(|e| format!("查询归档 threads 失败: {e}"))?;
 
-    let sessions = stmt
+    let mut sessions = stmt
         .query_map([], |row| {
             Ok(SessionRef {
                 session_id: row.get::<_, String>(0)?,
@@ -217,8 +275,9 @@ pub fn list_archived_sessions(db_path: &Path) -> Result<Vec<SessionRef>, String>
         })
         .map_err(|e| format!("遍历归档结果失败: {e}"))?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Vec<_>>();
 
+    apply_session_index_titles(db_path, &mut sessions);
     Ok(sessions)
 }
 
@@ -814,7 +873,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("codexmanager-{name}-{nanos}.sqlite"))
+        let dir = std::env::temp_dir().join(format!("codexmanager-{name}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join("state_5.sqlite")
     }
 
     fn create_codex_threads_db() -> PathBuf {
@@ -913,6 +974,39 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "thread-2");
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn list_sessions_prefers_session_index_thread_name() {
+        let db_path = create_codex_threads_db();
+        let index_path = db_path
+            .parent()
+            .expect("db parent")
+            .join("session_index.jsonl");
+        std::fs::write(
+            &index_path,
+            r#"{"id":"thread-1","thread_name":"评估并新增会话ID列","updated_at":"2026-05-28T08:04:18.4410395Z"}
+{"id":"thread-2","thread_name":"","updated_at":"2026-05-28T08:05:18.4410395Z"}
+not json
+"#,
+        )
+        .expect("write session index");
+
+        let sessions = list_sessions(&db_path).expect("list sessions");
+        let renamed = sessions
+            .iter()
+            .find(|session| session.session_id == "thread-1")
+            .expect("thread one");
+        let fallback = sessions
+            .iter()
+            .find(|session| session.session_id == "thread-2")
+            .expect("thread two");
+
+        assert_eq!(renamed.title.as_deref(), Some("评估并新增会话ID列"));
+        assert_eq!(fallback.title.as_deref(), Some("Two"));
+
+        let _ = std::fs::remove_file(index_path);
         let _ = std::fs::remove_file(db_path);
     }
 }

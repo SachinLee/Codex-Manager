@@ -67,8 +67,9 @@ import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
+import { formatTokenAmountZh } from "@/lib/dashboard/format";
 import { formatCacheRate, formatUsdAmount } from "@/lib/utils/billing";
-import { formatCompactNumber, formatTsFromSeconds } from "@/lib/utils/usage";
+import { formatTsFromSeconds } from "@/lib/utils/usage";
 import { cn } from "@/lib/utils";
 import {
   AccountListResult,
@@ -270,50 +271,6 @@ function formatDuration(value: number | null): string {
   if (value >= 10_000) return `${Math.round(value / 1000)}s`;
   if (value >= 1000) return `${(value / 1000).toFixed(1).replace(/\.0$/, "")}s`;
   return `${Math.round(value)}ms`;
-}
-
-/**
- * 函数 `formatTokenAmount`
- *
- * 作者: gaohongshun
- *
- * 时间: 2026-04-02
- *
- * # 参数
- * - value: 参数 value
- *
- * # 返回
- * 返回函数执行结果
- */
-function formatTokenAmount(value: number | null | undefined): string {
-  const normalized =
-    typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
-  return normalized.toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-/**
- * 函数 `formatCompactTokenAmount`
- *
- * 作者: gaohongshun
- *
- * 时间: 2026-04-02
- *
- * # 参数
- * - value: 参数 value
- *
- * # 返回
- * 返回函数执行结果
- */
-function formatCompactTokenAmount(value: number | null | undefined): string {
-  const normalized =
-    typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
-  if (normalized < 1000) {
-    return formatTokenAmount(normalized);
-  }
-  return formatCompactNumber(normalized, "0.00", 2, true);
 }
 
 /**
@@ -2078,7 +2035,7 @@ function LogsPageContent() {
             />
             <SummaryCard
               title={t("累计Token")}
-              value={formatCompactTokenAmount(summary.totalTokens)}
+              value={formatTokenAmountZh(summary.totalTokens)}
               description={t("当前筛选结果中的总Token")}
               icon={Database}
               toneClass="bg-amber-500/12 text-amber-500"
