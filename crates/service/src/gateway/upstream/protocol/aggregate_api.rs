@@ -15,6 +15,7 @@ use crate::gateway::request_log::RequestLogUsage;
 use serde_json::Value;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
+const AGGREGATE_API_LARGE_REQUEST_BODY_BYTES: usize = 20 * 1024 * 1024;
 pub(crate) const AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED: &str =
     "aggregate_api_daily_spend_limit_exhausted";
 
@@ -532,6 +533,61 @@ fn aggregate_api_failure_message(
     }
 }
 
+fn aggregate_api_terminal_failure_status(status_code: u16, message: &str) -> Option<u16> {
+    if status_code == 413 {
+        return Some(413);
+    }
+
+    let normalized = message.trim().to_ascii_lowercase();
+    let mentions_size = normalized.contains("too large")
+        || normalized.contains("payload large")
+        || normalized.contains("payload size")
+        || normalized.contains("content length")
+        || normalized.contains("content-length")
+        || normalized.contains("max 20971520")
+        || normalized.contains("maximum request body");
+    let mentions_request_body = normalized.contains("request body")
+        || normalized.contains("body")
+        || normalized.contains("payload");
+
+    if matches!(status_code, 400 | 413) && mentions_size && mentions_request_body {
+        Some(413)
+    } else {
+        None
+    }
+}
+
+fn aggregate_api_large_body_transport_failure_status(body_len: usize, err: &str) -> Option<u16> {
+    if body_len <= AGGREGATE_API_LARGE_REQUEST_BODY_BYTES {
+        return None;
+    }
+
+    let normalized = err.trim().to_ascii_lowercase();
+    if normalized.contains("request or response body error")
+        || normalized.contains("request body")
+        || normalized.contains("response body")
+        || normalized.contains("body error")
+    {
+        Some(413)
+    } else {
+        None
+    }
+}
+
+fn aggregate_api_terminal_failure_message(status_code: u16, message: &str) -> String {
+    if status_code != 413 {
+        return message.to_string();
+    }
+
+    let trimmed = message.trim();
+    if let Some((head, tail)) = trimmed.rsplit_once(" (") {
+        if let Some(tail) = tail.strip_suffix(')') {
+            return format!("{}: {}", head.trim(), tail.trim());
+        }
+    }
+    trimmed.to_string()
+}
+
 /// 函数 `build_aggregate_api_request`
 ///
 /// 作者: gaohongshun
@@ -833,6 +889,7 @@ pub(in super::super) fn proxy_aggregate_request(
     let mut last_attempt_supplier_name: Option<String> = None;
     let mut last_attempt_error: Option<String> = None;
     let mut last_failure_status = 502u16;
+    let mut terminal_failure = false;
 
     let total_candidates = aggregate_api_candidates.len();
     for (candidate_idx, candidate) in aggregate_api_candidates.into_iter().enumerate() {
@@ -988,6 +1045,14 @@ pub(in super::super) fn proxy_aggregate_request(
                     let message = format!("aggregate api upstream error: {err}");
                     last_attempt_url = Some(url.as_str().to_string());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
+                    if let Some(status) =
+                        aggregate_api_large_body_transport_failure_status(body.len(), &message)
+                    {
+                        last_attempt_error = Some("request body too large".to_string());
+                        last_failure_status = status;
+                        terminal_failure = true;
+                        break;
+                    }
                     last_attempt_error = Some(message);
                     last_failure_status = 502;
                     if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
@@ -1021,6 +1086,13 @@ pub(in super::super) fn proxy_aggregate_request(
                 );
                 last_attempt_url = Some(url.as_str().to_string());
                 last_attempt_supplier_name = candidate_supplier_name.clone();
+                if let Some(status) = aggregate_api_terminal_failure_status(status_code, &message) {
+                    last_attempt_error =
+                        Some(aggregate_api_terminal_failure_message(status, &message));
+                    last_failure_status = status;
+                    terminal_failure = true;
+                    break;
+                }
                 last_attempt_error = Some(message);
                 last_failure_status = 502;
                 if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
@@ -1154,6 +1226,10 @@ pub(in super::super) fn proxy_aggregate_request(
 
         if succeeded {
             return Ok(());
+        }
+
+        if terminal_failure {
+            break;
         }
 
         if candidate_idx + 1 < total_candidates {
@@ -1399,9 +1475,10 @@ mod tests {
     use codexmanager_core::storage::{now_ts, AggregateApi, RequestTokenStat, Storage};
 
     use super::{
+        aggregate_api_large_body_transport_failure_status, aggregate_api_terminal_failure_status,
         build_upstream_url, effective_action_path, filter_daily_spend_limited_candidates,
         resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
-        rewrite_body_model_override,
+        rewrite_body_model_override, AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
     };
     use crate::aggregate_api::{
         AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -1499,6 +1576,50 @@ mod tests {
             serde_json::from_slice(rewritten.as_ref()).expect("parse rewritten body");
         assert_eq!(value["model"], "qwen3.5-plus");
         assert_eq!(value["messages"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn aggregate_api_body_too_large_failure_is_terminal_413() {
+        assert_eq!(
+            aggregate_api_terminal_failure_status(
+                400,
+                "code=invalid_request_error type=invalid_request_error Request body too large (max 20971520 bytes)",
+            ),
+            Some(413)
+        );
+        assert_eq!(
+            aggregate_api_terminal_failure_status(413, "payload too large"),
+            Some(413)
+        );
+        assert_eq!(
+            aggregate_api_terminal_failure_status(400, "unsupported model"),
+            None
+        );
+    }
+
+    #[test]
+    fn aggregate_api_large_body_transport_error_is_terminal_413() {
+        assert_eq!(
+            aggregate_api_large_body_transport_failure_status(
+                AGGREGATE_API_LARGE_REQUEST_BODY_BYTES + 1,
+                "aggregate api upstream error: request or response body error",
+            ),
+            Some(413)
+        );
+        assert_eq!(
+            aggregate_api_large_body_transport_failure_status(
+                AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
+                "aggregate api upstream error: request or response body error",
+            ),
+            None
+        );
+        assert_eq!(
+            aggregate_api_large_body_transport_failure_status(
+                AGGREGATE_API_LARGE_REQUEST_BODY_BYTES + 1,
+                "aggregate api upstream error: connection reset",
+            ),
+            None
+        );
     }
 
     #[test]

@@ -1,4 +1,172 @@
 use super::*;
+use codexmanager_core::storage::AggregateApi;
+
+fn aggregate_api_for_test(id: &str, sort: i64, url: String, now: i64) -> AggregateApi {
+    AggregateApi {
+        id: id.to_string(),
+        provider_type: "codex".to_string(),
+        supplier_name: Some(id.to_string()),
+        sort,
+        url,
+        auth_type: "apikey".to_string(),
+        auth_params_json: None,
+        action: None,
+        model_override: None,
+        cost_multiplier: 1.0,
+        daily_spend_limit_usd: None,
+        status: "active".to_string(),
+        created_at: now,
+        updated_at: now,
+        last_test_at: None,
+        last_test_status: None,
+        last_test_error: None,
+        balance_query_enabled: false,
+        balance_query_template: None,
+        balance_query_base_url: None,
+        balance_query_user_id: None,
+        balance_query_config_json: None,
+        last_balance_at: None,
+        last_balance_status: None,
+        last_balance_error: None,
+        last_balance_json: None,
+    }
+}
+
+#[test]
+fn aggregate_api_body_too_large_does_not_retry_or_failover() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-aggregate-body-too-large-terminal");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let upstream_error = serde_json::json!({
+        "error": {
+            "message": "Request body too large (max 20971520 bytes)",
+            "type": "invalid_request_error"
+        }
+    });
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence_lenient(
+        vec![(
+            400,
+            serde_json::to_string(&upstream_error).expect("serialize upstream error"),
+        )],
+        Duration::from_secs(3),
+    );
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.5"]);
+    let now = now_ts();
+    for (id, sort) in [("agg_large_body_primary", 0), ("agg_large_body_backup", 1)] {
+        storage
+            .insert_aggregate_api(&aggregate_api_for_test(
+                id,
+                sort,
+                format!("http://{upstream_addr}"),
+                now,
+            ))
+            .expect("insert aggregate api");
+        storage
+            .upsert_aggregate_api_secret(id, "upstream-secret")
+            .expect("insert aggregate secret");
+        storage
+            .upsert_model_source_model(&ModelSourceModel {
+                source_kind: "aggregate_api".to_string(),
+                source_id: id.to_string(),
+                upstream_model: "gpt-5.5".to_string(),
+                display_name: Some("GPT 5.5".to_string()),
+                status: "available".to_string(),
+                discovery_kind: "manual".to_string(),
+                last_synced_at: Some(now),
+                extra_json: "{}".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert aggregate source model");
+        storage
+            .upsert_model_source_mapping(&ModelSourceMapping {
+                id: format!("mapping_{id}"),
+                platform_model_slug: "gpt-5.5".to_string(),
+                source_kind: "aggregate_api".to_string(),
+                source_id: id.to_string(),
+                upstream_model: "gpt-5.5".to_string(),
+                enabled: true,
+                priority: sort,
+                weight: 1,
+                billing_model_slug: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert aggregate source mapping");
+    }
+
+    let platform_key = "pk_aggregate_body_too_large";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk_aggregate_body_too_large".to_string(),
+            name: Some("aggregate-body-too-large".to_string()),
+            model_slug: Some("gpt-5.5".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            rotation_strategy: "aggregate_api_rotation".to_string(),
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "codex".to_string(),
+            protocol_type: "openai_compat".to_string(),
+            auth_scheme: "authorization_bearer".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let req_body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": [{
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "analyze these images" },
+                { "type": "input_image", "image_url": "data:image/png;base64,aGVsbG8=" },
+                { "type": "input_image", "image_url": "data:image/png;base64,d29ybGQ=" }
+            ]
+        }],
+        "stream": true
+    })
+    .to_string();
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/responses",
+        &req_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+        ],
+    );
+    server.join();
+
+    assert_eq!(status, 413, "gateway response: {response_body}");
+    assert!(
+        response_body.contains("Request body too large"),
+        "gateway should return upstream payload-size message, got {response_body}"
+    );
+
+    let captured = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive first upstream request");
+    assert_eq!(captured.path, "/v1/responses");
+    assert!(
+        upstream_rx
+            .recv_timeout(Duration::from_millis(700))
+            .is_err(),
+        "body-too-large must not retry the same supplier or fail over to the backup"
+    );
+    upstream_join.join().expect("join mock upstream");
+}
 
 #[test]
 fn gateway_images_generation_wraps_codex_sse_as_openai_images_json() {

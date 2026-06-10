@@ -550,6 +550,13 @@ mod tests {
         assert!(ws_usage_limit.should_failover);
         assert!(ws_usage_limit.should_mark_account_unavailable);
         assert!(ws_usage_limit.should_mark_default_cooldown);
+
+        let request_too_large =
+            analyze_gateway_error("Request body too large: max 20971520 bytes", true);
+        assert_eq!(request_too_large.kind, GatewayErrorKind::Other);
+        assert!(!request_too_large.should_failover);
+        assert!(!request_too_large.should_mark_account_unavailable);
+        assert!(!request_too_large.should_mark_default_cooldown);
     }
 
     /// 函数 `gateway_usage_limit_error_marks_account_limited_immediately`

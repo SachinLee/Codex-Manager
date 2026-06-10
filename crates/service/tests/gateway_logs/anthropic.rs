@@ -193,6 +193,8 @@ fn gateway_aggregate_messages_passthrough_accepts_message_stop_for_non_claude_pr
             auth_params_json: None,
             action: None,
             model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
