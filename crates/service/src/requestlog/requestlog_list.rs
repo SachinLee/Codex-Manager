@@ -354,9 +354,13 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         method: item.method,
         request_type: item.request_type,
         gateway_mode: item.gateway_mode,
+        route_strategy: item.route_strategy,
+        route_source: item.route_source,
         transparent_mode: item.transparent_mode,
         enhanced_mode: item.enhanced_mode,
+        client_model: item.client_model,
         model: item.model,
+        model_source: item.model_source,
         upstream_model: include_route_details
             .then_some(item.upstream_model)
             .flatten(),
@@ -366,9 +370,12 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         actual_source_id: include_route_details
             .then_some(item.actual_source_id)
             .flatten(),
+        client_reasoning_effort: item.client_reasoning_effort,
         reasoning_effort: item.reasoning_effort,
+        reasoning_source: item.reasoning_source,
         service_tier: item.service_tier,
         effective_service_tier: item.effective_service_tier,
+        service_tier_source: item.service_tier_source,
         response_adapter: item.response_adapter,
         canonical_source: Some(canonical_source),
         size_reject_stage: Some(size_reject_stage),

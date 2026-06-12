@@ -20,10 +20,9 @@ import {
   AppSettings,
   BackgroundTaskSettings,
   QuotaGuardSettings,
+  RuntimeTimeZone,
   DeviceAuthInfo,
   EnvOverrideCatalogItem,
-  GatewayErrorLog,
-  GatewayErrorLogListResult,
   InstalledPluginSummary,
   LoginStartResult,
   ManagedModelCatalog,
@@ -85,6 +84,12 @@ const DEFAULT_QUOTA_GUARD: QuotaGuardSettings = {
   primaryMinRemainingPercent: 5,
   secondaryMinRemainingPercent: 10,
   allowAllLowQuotaFallback: true,
+};
+
+const DEFAULT_RUNTIME_TIME_ZONE: RuntimeTimeZone = {
+  name: "Local",
+  offset: "",
+  source: "system",
 };
 
 /**
@@ -617,9 +622,9 @@ function normalizeModelReasoningLevels(payload: unknown): ModelReasoningLevel[] 
       const effort = asString(current.effort);
       if (!effort) return null;
       return {
+        ...current,
         effort,
         description: asString(current.description),
-        ...current,
       };
     })
     .filter((item): item is ModelReasoningLevel => Boolean(item));
@@ -630,10 +635,28 @@ function normalizeModelTruncationPolicy(payload: unknown): ModelTruncationPolicy
   const mode = asString(source.mode);
   if (!mode) return null;
   return {
+    ...source,
     mode,
     limit: toNullableNumber(source.limit) ?? 0,
-    ...source,
   };
+}
+
+function normalizeModelServiceTiers(payload: unknown): ModelInfo["serviceTiers"] {
+  const seen = new Set<string>();
+  return asArray(payload)
+    .map((item) => {
+      const current = asObject(item);
+      const id = asString(current.id);
+      if (!id || seen.has(id)) return null;
+      seen.add(id);
+      return {
+        ...current,
+        id,
+        name: asString(current.name) || id,
+        description: asString(current.description),
+      };
+    })
+    .filter((item): item is ModelInfo["serviceTiers"][number] => Boolean(item));
 }
 
 function normalizeModelVisibility(value: unknown): string | null {
@@ -653,6 +676,7 @@ function normalizeModelInfo(payload: unknown): ModelInfo | null {
     source.input_modalities ?? source.inputModalities ?? ["text", "image"];
 
   return {
+    ...source,
     slug,
     displayName: asString(source.display_name ?? source.displayName) || slug,
     description: asString(source.description) || null,
@@ -668,8 +692,12 @@ function normalizeModelInfo(payload: unknown): ModelInfo | null {
     additionalSpeedTiers: asArray(
       source.additional_speed_tiers ?? source.additionalSpeedTiers,
     ).map((item) => asString(item)),
+    serviceTiers: normalizeModelServiceTiers(source.service_tiers ?? source.serviceTiers),
+    defaultServiceTier:
+      asString(source.default_service_tier ?? source.defaultServiceTier) || null,
     availabilityNux: toNullableObject(source.availability_nux ?? source.availabilityNux),
     upgrade: toNullableObject(source.upgrade),
+    upgradeInfo: toNullableObject(source.upgrade_info ?? source.upgradeInfo),
     baseInstructions:
       asString(source.base_instructions ?? source.baseInstructions) || null,
     modelMessages: toNullableObject(source.model_messages ?? source.modelMessages),
@@ -714,7 +742,6 @@ function normalizeModelInfo(payload: unknown): ModelInfo | null {
     availableInPlans: asArray(source.available_in_plans ?? source.availableInPlans).map((item) =>
       asString(item),
     ),
-    ...source,
   };
 }
 
@@ -1557,17 +1584,28 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     method,
     requestType: asString(source.requestType ?? source.request_type) || "http",
     gatewayMode: asString(source.gatewayMode ?? source.gateway_mode),
+    routeStrategy: asString(source.routeStrategy ?? source.route_strategy),
+    routeSource: asString(source.routeSource ?? source.route_source),
     path: requestPath,
+    clientModel: asString(source.clientModel ?? source.client_model),
     model: asString(source.model),
+    modelSource: asString(source.modelSource ?? source.model_source),
     upstreamModel: asString(source.upstreamModel ?? source.upstream_model),
     actualSourceKind: asString(
       source.actualSourceKind ?? source.actual_source_kind
     ),
     actualSourceId: asString(source.actualSourceId ?? source.actual_source_id),
+    clientReasoningEffort: asString(
+      source.clientReasoningEffort ?? source.client_reasoning_effort
+    ),
     reasoningEffort: asString(source.reasoningEffort ?? source.reasoning_effort),
+    reasoningSource: asString(source.reasoningSource ?? source.reasoning_source),
     serviceTier: asString(source.serviceTier ?? source.service_tier),
     effectiveServiceTier: asString(
       source.effectiveServiceTier ?? source.effective_service_tier
+    ),
+    serviceTierSource: asString(
+      source.serviceTierSource ?? source.service_tier_source
     ),
     responseAdapter: asString(source.responseAdapter ?? source.response_adapter),
     canonicalSource:
@@ -1643,58 +1681,6 @@ export function normalizeRequestLogListResult(payload: unknown): RequestLogListR
     total: asInteger(source.total, items.length, 0),
     page: asInteger(source.page, 1, 1),
     pageSize: asInteger(source.pageSize, items.length || 20, 1),
-  };
-}
-
-export function normalizeGatewayErrorLogs(payload: unknown): GatewayErrorLog[] {
-  const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return items.reduce<GatewayErrorLog[]>((result, item) => {
-    const record = asObject(item);
-    const stage = asString(record.stage);
-    const method = asString(record.method);
-    const requestPath = asString(record.requestPath ?? record.request_path);
-    const createdAt = toNullableNumber(record.createdAt ?? record.created_at);
-    if (!stage || !method || !requestPath) {
-      return result;
-    }
-    result.push({
-      traceId: asString(record.traceId ?? record.trace_id),
-      keyId: asString(record.keyId ?? record.key_id),
-      accountId: asString(record.accountId ?? record.account_id),
-      requestPath,
-      method,
-      stage,
-      errorKind: asString(record.errorKind ?? record.error_kind),
-      upstreamUrl: asString(record.upstreamUrl ?? record.upstream_url),
-      cfRay: asString(record.cfRay ?? record.cf_ray),
-      statusCode: toNullableNumber(record.statusCode ?? record.status_code),
-      compressionEnabled: asBoolean(
-        record.compressionEnabled ?? record.compression_enabled,
-        false
-      ),
-      compressionRetryAttempted: asBoolean(
-        record.compressionRetryAttempted ?? record.compression_retry_attempted,
-        false
-      ),
-      message: asString(record.message),
-      createdAt,
-    });
-    return result;
-  }, []);
-}
-
-export function normalizeGatewayErrorLogListResult(
-  payload: unknown
-): GatewayErrorLogListResult {
-  const source = asObject(payload);
-  const items = normalizeGatewayErrorLogs(source.items ?? payload);
-  return {
-    items,
-    total: asInteger(source.total, items.length, 0),
-    page: asInteger(source.page, 1, 1),
-    pageSize: asInteger(source.pageSize, items.length || 10, 1),
-    stages: asArray(source.stages).map((item) => asString(item)).filter(Boolean),
   };
 }
 
@@ -1848,6 +1834,15 @@ export function normalizeQuotaGuard(payload: unknown): QuotaGuardSettings {
   };
 }
 
+export function normalizeRuntimeTimeZone(payload: unknown): RuntimeTimeZone {
+  const source = asObject(payload);
+  return {
+    name: asString(source.name) || DEFAULT_RUNTIME_TIME_ZONE.name,
+    offset: asString(source.offset),
+    source: asString(source.source) || DEFAULT_RUNTIME_TIME_ZONE.source,
+  };
+}
+
 export function normalizeEnvOverrideCatalog(payload: unknown): EnvOverrideCatalogItem[] {
   return asArray(payload).reduce<EnvOverrideCatalogItem[]>((result, item) => {
     const source = asObject(item);
@@ -1954,6 +1949,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     upstreamTotalTimeoutMs: asInteger(source.upstreamTotalTimeoutMs, 0, 0),
     sseKeepaliveIntervalMs: asInteger(source.sseKeepaliveIntervalMs, 15_000, 1),
     backgroundTasks: normalizeBackgroundTasks(source.backgroundTasks),
+    runtimeTimeZone: normalizeRuntimeTimeZone(source.runtimeTimeZone),
     envOverrides: normalizeStringRecord(source.envOverrides),
     envOverrideCatalog: normalizeEnvOverrideCatalog(source.envOverrideCatalog),
     envOverrideReservedKeys: asArray(source.envOverrideReservedKeys).map((item) =>

@@ -1296,6 +1296,56 @@ fn normalize_compat_service_tier_for_codex_backend(body: Vec<u8>) -> Vec<u8> {
     serde_json::to_vec(&payload).unwrap_or(body)
 }
 
+fn resolve_service_tier_source_for_log(
+    client_service_tier: Option<&str>,
+    effective_service_tier: Option<&str>,
+    api_key_service_tier: Option<&str>,
+) -> Option<String> {
+    match (client_service_tier, effective_service_tier) {
+        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+            Some("client_request".to_string())
+        }
+        (Some(_), Some(_)) => Some("gateway_override".to_string()),
+        (None, Some(_)) => {
+            if api_key_service_tier
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            {
+                Some("api_key_profile".to_string())
+            } else {
+                Some("gateway_config".to_string())
+            }
+        }
+        (Some(_), None) => Some("client_request".to_string()),
+        (None, None) => Some("unset".to_string()),
+    }
+}
+
+fn resolve_override_source_for_log(
+    client_value: Option<&str>,
+    effective_value: Option<&str>,
+    api_key_profile_value: Option<&str>,
+) -> Option<String> {
+    match (client_value, effective_value) {
+        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+            Some("client_request".to_string())
+        }
+        (Some(_), Some(_)) => Some("gateway_override".to_string()),
+        (None, Some(_)) => {
+            if api_key_profile_value
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            {
+                Some("api_key_profile".to_string())
+            } else {
+                Some("gateway_config".to_string())
+            }
+        }
+        (Some(_), None) => Some("client_request".to_string()),
+        (None, None) => Some("unset".to_string()),
+    }
+}
+
 fn resolve_preferred_client_prompt_cache_key(
     protocol_type: &str,
     incoming_headers: &super::super::IncomingHeaderSnapshot,
@@ -1574,7 +1624,7 @@ fn apply_passthrough_request_overrides(
             effective_service_tier.as_deref(),
             api_key.upstream_base_url.as_deref(),
             None,
-            false,
+            true,
         );
     let rewritten_body = super::super::normalize_official_responses_http_body(
         transport_request_path(path).as_str(),
@@ -1711,6 +1761,23 @@ pub(super) fn build_local_validation_result(
             initial_request_meta.service_tier.clone(),
             compact_model_override_for_logical_request.as_deref(),
         );
+        let client_model_for_log = initial_request_meta.model.clone();
+        let model_source_for_log = resolve_override_source_for_log(
+            client_model_for_log.as_deref(),
+            model_for_log.as_deref(),
+            api_key.model_slug.as_deref(),
+        );
+        let client_reasoning_for_log = initial_request_meta.reasoning_effort.clone();
+        let reasoning_source_for_log = resolve_override_source_for_log(
+            client_reasoning_for_log.as_deref(),
+            reasoning_for_log.as_deref(),
+            api_key.reasoning_effort.as_deref(),
+        );
+        let service_tier_source_for_log = resolve_service_tier_source_for_log(
+            service_tier_for_log.as_deref(),
+            effective_service_tier_for_log.as_deref(),
+            api_key.service_tier.as_deref(),
+        );
         if is_non_native_openai_responses_api_request(
             effective_protocol_type,
             logical_path.as_str(),
@@ -1765,10 +1832,15 @@ pub(super) fn build_local_validation_result(
             route_conversation_source: None,
             conversation_binding: None,
             request_log_session_id,
+            client_model_for_log,
             model_for_log,
+            model_source_for_log,
+            client_reasoning_for_log,
             reasoning_for_log,
+            reasoning_source_for_log,
             service_tier_for_log,
             effective_service_tier_for_log,
+            service_tier_source_for_log,
             gateway_mode_for_log: compact_gateway_mode,
             method,
         });
@@ -2026,7 +2098,14 @@ pub(super) fn build_local_validation_result(
         .map_err(|err| LocalValidationError::new(400, err.message()))?;
 
     let request_meta = super::super::parse_request_metadata(&body);
+    let client_model_for_log = client_request_meta.model.clone();
     let model_for_log = request_meta.model.or(api_key.model_slug.clone());
+    let model_source_for_log = resolve_override_source_for_log(
+        client_model_for_log.as_deref(),
+        model_for_log.as_deref(),
+        api_key.model_slug.as_deref(),
+    );
+    let client_reasoning_for_log = client_request_meta.reasoning_effort.clone();
     let reasoning_for_log = request_meta
         .reasoning_effort
         .or(api_key.reasoning_effort.clone());
@@ -2037,8 +2116,18 @@ pub(super) fn build_local_validation_result(
         .or(client_request_meta.session_id_candidate)
         .or(initial_request_meta.session_id_candidate)
         .or(request_meta.session_id_candidate);
+    let reasoning_source_for_log = resolve_override_source_for_log(
+        client_reasoning_for_log.as_deref(),
+        reasoning_for_log.as_deref(),
+        api_key.reasoning_effort.as_deref(),
+    );
     let service_tier_for_log = client_request_meta.service_tier;
     let effective_service_tier_for_log = request_meta.service_tier;
+    let service_tier_source_for_log = resolve_service_tier_source_for_log(
+        service_tier_for_log.as_deref(),
+        effective_service_tier_for_log.as_deref(),
+        api_key.service_tier.as_deref(),
+    );
     let is_stream = resolve_client_is_stream(
         effective_protocol_type,
         logical_path.as_str(),
@@ -2078,10 +2167,15 @@ pub(super) fn build_local_validation_result(
         rotation_strategy: api_key.rotation_strategy,
         aggregate_api_id: api_key.aggregate_api_id,
         account_plan_filter: api_key.account_plan_filter,
+        client_model_for_log,
         model_for_log,
+        model_source_for_log,
+        client_reasoning_for_log,
         reasoning_for_log,
+        reasoning_source_for_log,
         service_tier_for_log,
         effective_service_tier_for_log,
+        service_tier_source_for_log,
         gateway_mode_for_log: compact_gateway_mode,
         method,
     })

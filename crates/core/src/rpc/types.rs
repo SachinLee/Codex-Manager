@@ -198,67 +198,6 @@ pub struct AccountSummary {
     pub quota_capacity_secondary_window_tokens: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct AccountListParams {
-    pub page: i64,
-    pub page_size: i64,
-    pub query: Option<String>,
-    pub filter: Option<String>,
-    pub group_filter: Option<String>,
-}
-
-impl Default for AccountListParams {
-    /// 函数 `default`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn default() -> Self {
-        Self {
-            page: 1,
-            page_size: 5,
-            query: None,
-            filter: None,
-            group_filter: None,
-        }
-    }
-}
-
-impl AccountListParams {
-    /// 函数 `normalized`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - self: 参数 self
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    pub fn normalized(self) -> Self {
-        // 中文注释：分页参数小于 1 时回退到默认值，避免出现负偏移或零页大小。
-        Self {
-            page: if self.page < 1 { 1 } else { self.page },
-            page_size: if self.page_size < 1 {
-                5
-            } else {
-                self.page_size
-            },
-            query: self.query,
-            filter: self.filter,
-            group_filter: self.group_filter,
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountListResult {
@@ -1177,10 +1116,16 @@ pub struct ModelInfo {
     pub priority: i64,
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability_nux: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrade: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_info: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1236,8 +1181,11 @@ impl Default for ModelInfo {
             supported_in_api: default_supported_in_api(),
             priority: 0,
             additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
             availability_nux: None,
             upgrade: None,
+            upgrade_info: None,
             base_instructions: None,
             model_messages: None,
             supports_reasoning_summaries: None,
@@ -1260,6 +1208,18 @@ impl Default for ModelInfo {
             extra: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelServiceTier {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1298,15 +1258,22 @@ pub struct RequestLogSummary {
     pub method: String,
     pub request_type: Option<String>,
     pub gateway_mode: Option<String>,
+    pub route_strategy: Option<String>,
+    pub route_source: Option<String>,
     pub transparent_mode: Option<bool>,
     pub enhanced_mode: Option<bool>,
+    pub client_model: Option<String>,
     pub model: Option<String>,
+    pub model_source: Option<String>,
     pub upstream_model: Option<String>,
     pub actual_source_kind: Option<String>,
     pub actual_source_id: Option<String>,
+    pub client_reasoning_effort: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub reasoning_source: Option<String>,
     pub service_tier: Option<String>,
     pub effective_service_tier: Option<String>,
+    pub service_tier_source: Option<String>,
     pub response_adapter: Option<String>,
     pub canonical_source: Option<String>,
     pub size_reject_stage: Option<String>,
@@ -1396,68 +1363,6 @@ pub struct RequestLogListResult {
     pub total: i64,
     pub page: i64,
     pub page_size: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GatewayErrorLogSummary {
-    pub trace_id: Option<String>,
-    pub key_id: Option<String>,
-    pub account_id: Option<String>,
-    pub request_path: String,
-    pub method: String,
-    pub stage: String,
-    pub error_kind: Option<String>,
-    pub upstream_url: Option<String>,
-    pub cf_ray: Option<String>,
-    pub status_code: Option<i64>,
-    pub compression_enabled: bool,
-    pub compression_retry_attempted: bool,
-    pub message: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct GatewayErrorLogListParams {
-    pub page: i64,
-    pub page_size: i64,
-    pub stage_filter: Option<String>,
-}
-
-impl Default for GatewayErrorLogListParams {
-    fn default() -> Self {
-        Self {
-            page: 1,
-            page_size: 10,
-            stage_filter: None,
-        }
-    }
-}
-
-impl GatewayErrorLogListParams {
-    pub fn normalized(self) -> Self {
-        Self {
-            page: if self.page < 1 { 1 } else { self.page },
-            page_size: if self.page_size < 1 {
-                10
-            } else {
-                self.page_size
-            },
-            stage_filter: self.stage_filter,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GatewayErrorLogListResult {
-    pub items: Vec<GatewayErrorLogSummary>,
-    pub total: i64,
-    pub page: i64,
-    pub page_size: i64,
-    #[serde(default)]
-    pub stages: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -1727,6 +1632,60 @@ pub struct MemberDashboardSummaryResult {
     pub recent_logs: Vec<RequestLogSummary>,
     #[serde(default)]
     pub alerts: Vec<MemberDashboardAlert>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceRuleEntry {
+    pub id: String,
+    pub provider: String,
+    pub model_pattern: String,
+    pub match_type: String,
+    #[serde(default)]
+    pub input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub cached_input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub output_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceRuleListResult {
+    #[serde(default)]
+    pub items: Vec<ModelPriceRuleEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceRuleUpsertInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    pub model_pattern: String,
+    #[serde(default)]
+    pub match_type: Option<String>,
+    #[serde(default)]
+    pub input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub cached_input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub output_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub priority: Option<i64>,
 }
 
 #[cfg(test)]

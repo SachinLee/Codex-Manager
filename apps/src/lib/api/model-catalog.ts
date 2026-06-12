@@ -17,9 +17,15 @@ const KNOWN_MODEL_FIELD_KEYS = new Set([
   "priority",
   "additionalSpeedTiers",
   "additional_speed_tiers",
+  "serviceTiers",
+  "service_tiers",
+  "defaultServiceTier",
+  "default_service_tier",
   "availabilityNux",
   "availability_nux",
   "upgrade",
+  "upgradeInfo",
+  "upgrade_info",
   "baseInstructions",
   "base_instructions",
   "modelMessages",
@@ -105,6 +111,33 @@ function serializeTruncationPolicy(
   };
 }
 
+function serializeServiceTiers(
+  tiers: ModelInfo["serviceTiers"]
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return tiers.reduce<Array<Record<string, unknown>>>((result, tier) => {
+    const source = tier as Record<string, unknown>;
+    const extra = Object.fromEntries(
+      Object.entries(source).filter(
+        ([key]) => key !== "id" && key !== "name" && key !== "description"
+      )
+    );
+    const id = String(tier.id || "").trim();
+    if (!id || seen.has(id)) {
+      return result;
+    }
+    seen.add(id);
+    result.push({
+      ...extra,
+      id,
+      name: String(tier.name || "").trim() || id,
+      description:
+        typeof tier.description === "string" ? tier.description.trim() : "",
+    });
+    return result;
+  }, []);
+}
+
 export function extractManagedModelExtraFields(
   model: Partial<ManagedModelInfo> | Partial<ModelInfo> | null | undefined
 ): Record<string, unknown> {
@@ -120,8 +153,18 @@ export function serializeManagedModelForRpc(
   model: ManagedModelInfo | ModelInfo
 ): Record<string, unknown> {
   const extra = extractManagedModelExtraFields(model);
+  const source = model as Record<string, unknown>;
   const slug = String(model.slug || "").trim();
   const displayName = String(model.displayName || "").trim() || slug;
+  const serviceTiers = Array.isArray(model.serviceTiers)
+    ? model.serviceTiers
+    : Array.isArray(source.service_tiers)
+      ? (source.service_tiers as ModelInfo["serviceTiers"])
+      : [];
+  const defaultServiceTier =
+    normalizeNullableString(model.defaultServiceTier) ??
+    normalizeNullableString(source.default_service_tier);
+  const upgradeInfo = model.upgradeInfo ?? source.upgrade_info ?? null;
 
   return {
     ...extra,
@@ -135,8 +178,11 @@ export function serializeManagedModelForRpc(
     supported_in_api: Boolean(model.supportedInApi),
     priority: Number.isFinite(model.priority) ? model.priority : 0,
     additional_speed_tiers: model.additionalSpeedTiers,
+    service_tiers: serializeServiceTiers(serviceTiers),
+    default_service_tier: normalizeNullableString(defaultServiceTier),
     availability_nux: model.availabilityNux,
     upgrade: model.upgrade,
+    upgrade_info: upgradeInfo,
     base_instructions: normalizeNullableString(model.baseInstructions),
     model_messages: model.modelMessages,
     supports_reasoning_summaries: model.supportsReasoningSummaries,
@@ -200,6 +246,9 @@ function serializeModelForCodexCache(
         : 0,
     additional_speed_tiers: Array.isArray(serialized.additional_speed_tiers)
       ? serialized.additional_speed_tiers
+      : [],
+    service_tiers: Array.isArray(serialized.service_tiers)
+      ? serialized.service_tiers
       : [],
     base_instructions:
       typeof serialized.base_instructions === "string" ? serialized.base_instructions : "",

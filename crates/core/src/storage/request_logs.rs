@@ -1,5 +1,6 @@
 use rusqlite::{params, params_from_iter, types::Value, Result, Row};
 
+use super::key_id_filters::KeyIdSqlFilter;
 use super::{
     request_log_query, RequestLog, RequestLogQuerySummary, RequestLogTodaySummary,
     RequestTokenStat, Storage,
@@ -88,8 +89,8 @@ impl Storage {
             "INSERT INTO request_logs (
                 trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
-                method, request_type, gateway_mode, transparent_mode, enhanced_mode, model, upstream_model, actual_source_kind, actual_source_id, reasoning_effort, service_tier, effective_service_tier, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
             params![
                 &log.trace_id,
                 &log.session_id,
@@ -106,15 +107,22 @@ impl Storage {
                 &log.method,
                 &log.request_type,
                 &log.gateway_mode,
+                &log.route_strategy,
+                &log.route_source,
                 log.transparent_mode,
                 log.enhanced_mode,
+                &log.client_model,
                 &log.model,
+                &log.model_source,
                 &log.upstream_model,
                 &log.actual_source_kind,
                 &log.actual_source_id,
+                &log.client_reasoning_effort,
                 &log.reasoning_effort,
+                &log.reasoning_source,
                 &log.service_tier,
                 &log.effective_service_tier,
+                &log.service_tier_source,
                 &log.response_adapter,
                 &log.upstream_url,
                 &log.aggregate_api_supplier_name,
@@ -152,8 +160,8 @@ impl Storage {
             "INSERT INTO request_logs (
                 trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
-                method, request_type, gateway_mode, transparent_mode, enhanced_mode, model, upstream_model, actual_source_kind, actual_source_id, reasoning_effort, service_tier, effective_service_tier, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
             params![
                 &log.trace_id,
                 &log.session_id,
@@ -170,15 +178,22 @@ impl Storage {
                 &log.method,
                 &log.request_type,
                 &log.gateway_mode,
+                &log.route_strategy,
+                &log.route_source,
                 log.transparent_mode,
                 log.enhanced_mode,
+                &log.client_model,
                 &log.model,
+                &log.model_source,
                 &log.upstream_model,
                 &log.actual_source_kind,
                 &log.actual_source_id,
+                &log.client_reasoning_effort,
                 &log.reasoning_effort,
+                &log.reasoning_source,
                 &log.service_tier,
                 &log.effective_service_tier,
+                &log.service_tier_source,
                 &log.response_adapter,
                 &log.upstream_url,
                 &log.aggregate_api_supplier_name,
@@ -291,7 +306,7 @@ impl Storage {
             "SELECT
                 r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
-                r.method, r.request_type, r.gateway_mode, r.transparent_mode, r.enhanced_mode, r.model, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.reasoning_effort, r.service_tier, r.effective_service_tier, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
+                r.method, r.request_type, r.gateway_mode, r.route_strategy, r.route_source, r.transparent_mode, r.enhanced_mode, r.client_model, r.model, r.model_source, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.client_reasoning_effort, r.reasoning_effort, r.reasoning_source, r.service_tier, r.effective_service_tier, r.service_tier_source, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
                 t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                 r.error, r.created_at
              FROM request_logs r
@@ -326,6 +341,9 @@ impl Storage {
         limit: i64,
         key_ids: &[String],
     ) -> Result<Vec<RequestLog>> {
+        let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
+            return Ok(Vec::new());
+        };
         let normalized_limit = normalize_request_log_limit(limit);
         let normalized_offset = offset.max(0);
         let include_account_lookup = self.has_table("accounts")?;
@@ -335,14 +353,14 @@ impl Storage {
             start_ts,
             end_ts,
             include_account_lookup,
-            Some(key_ids),
+            Some(&key_filter),
             false,
         );
         let sql = format!(
             "SELECT
                 r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
-                r.method, r.request_type, r.gateway_mode, r.transparent_mode, r.enhanced_mode, r.model, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.reasoning_effort, r.service_tier, r.effective_service_tier, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
+                r.method, r.request_type, r.gateway_mode, r.route_strategy, r.route_source, r.transparent_mode, r.enhanced_mode, r.client_model, r.model, r.model_source, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.client_reasoning_effort, r.reasoning_effort, r.reasoning_source, r.service_tier, r.effective_service_tier, r.service_tier_source, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
                 t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                 r.error, r.created_at
              FROM request_logs r
@@ -420,6 +438,9 @@ impl Storage {
         end_ts: Option<i64>,
         key_ids: &[String],
     ) -> Result<i64> {
+        let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
+            return Ok(0);
+        };
         let include_account_lookup = self.has_table("accounts")?;
         let filters = build_request_log_filters(
             query,
@@ -427,7 +448,7 @@ impl Storage {
             start_ts,
             end_ts,
             include_account_lookup,
-            Some(key_ids),
+            Some(&key_filter),
             false,
         );
         let sql = format!(
@@ -520,6 +541,9 @@ impl Storage {
         end_ts: Option<i64>,
         key_ids: &[String],
     ) -> Result<RequestLogQuerySummary> {
+        let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
+            return Ok(empty_request_log_query_summary());
+        };
         let include_account_lookup = self.has_table("accounts")?;
         let filters = build_request_log_filters(
             query,
@@ -527,7 +551,7 @@ impl Storage {
             start_ts,
             end_ts,
             include_account_lookup,
-            Some(key_ids),
+            Some(&key_filter),
             false,
         );
         let sql = format!(
@@ -631,35 +655,26 @@ impl Storage {
         end_ts: i64,
         key_ids: &[String],
     ) -> Result<RequestLogTodaySummary> {
-        if key_ids.is_empty() {
-            return Ok(RequestLogTodaySummary {
-                input_tokens: 0,
-                cached_input_tokens: 0,
-                output_tokens: 0,
-                reasoning_output_tokens: 0,
-                estimated_cost_usd: 0.0,
-            });
-        }
-        let placeholders = std::iter::repeat("?")
-            .take(key_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let Some(key_filter) = KeyIdSqlFilter::create(self, "s.key_id", key_ids)? else {
+            return Ok(empty_request_log_today_summary());
+        };
         let sql = format!(
             "SELECT
-                IFNULL(SUM(input_tokens), 0),
-                IFNULL(SUM(cached_input_tokens), 0),
-                IFNULL(SUM(output_tokens), 0),
-                IFNULL(SUM(reasoning_output_tokens), 0),
-                IFNULL(SUM(estimated_cost_usd), 0.0)
-             FROM request_token_stats
-             WHERE created_at >= ?
-               AND created_at < ?
-               AND IFNULL(key_id, '') IN ({placeholders})"
+                IFNULL(SUM(s.input_tokens), 0),
+                IFNULL(SUM(s.cached_input_tokens), 0),
+                IFNULL(SUM(s.output_tokens), 0),
+                IFNULL(SUM(s.reasoning_output_tokens), 0),
+                IFNULL(SUM(s.estimated_cost_usd), 0.0)
+             FROM request_token_stats s
+             WHERE s.created_at >= ?
+               AND s.created_at < ?
+               AND {}",
+            key_filter.condition()
         );
-        let mut params = Vec::with_capacity(key_ids.len() + 2);
+        let mut params = Vec::with_capacity(key_filter.params().len() + 2);
         params.push(Value::Integer(start_ts));
         params.push(Value::Integer(end_ts));
-        params.extend(key_ids.iter().cloned().map(Value::Text));
+        params.extend_from_slice(key_filter.params());
         self.conn
             .query_row(&sql, params_from_iter(params.iter()), |row| {
                 Ok(RequestLogTodaySummary {
@@ -702,15 +717,22 @@ impl Storage {
                 method TEXT NOT NULL,
                 request_type TEXT,
                 gateway_mode TEXT,
+                route_strategy TEXT,
+                route_source TEXT,
                 transparent_mode INTEGER,
                 enhanced_mode INTEGER,
+                client_model TEXT,
                 model TEXT,
+                model_source TEXT,
                 upstream_model TEXT,
                 actual_source_kind TEXT,
                 actual_source_id TEXT,
+                client_reasoning_effort TEXT,
                 reasoning_effort TEXT,
+                reasoning_source TEXT,
                 service_tier TEXT,
                 effective_service_tier TEXT,
+                service_tier_source TEXT,
                 response_adapter TEXT,
                 upstream_url TEXT,
                 aggregate_api_supplier_name TEXT,
@@ -915,8 +937,27 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) fn ensure_request_log_route_strategy_columns(&self) -> Result<()> {
+        self.ensure_column("request_logs", "route_strategy", "TEXT")?;
+        self.ensure_column("request_logs", "route_source", "TEXT")?;
+        Ok(())
+    }
+
     pub(super) fn ensure_request_log_effective_service_tier_column(&self) -> Result<()> {
         self.ensure_column("request_logs", "effective_service_tier", "TEXT")?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_log_service_tier_source_column(&self) -> Result<()> {
+        self.ensure_column("request_logs", "service_tier_source", "TEXT")?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_log_model_reasoning_source_columns(&self) -> Result<()> {
+        self.ensure_column("request_logs", "client_model", "TEXT")?;
+        self.ensure_column("request_logs", "model_source", "TEXT")?;
+        self.ensure_column("request_logs", "client_reasoning_effort", "TEXT")?;
+        self.ensure_column("request_logs", "reasoning_source", "TEXT")?;
         Ok(())
     }
 
@@ -975,15 +1016,22 @@ impl Storage {
                 method TEXT NOT NULL,
                 request_type TEXT,
                 gateway_mode TEXT,
+                route_strategy TEXT,
+                route_source TEXT,
                 transparent_mode INTEGER,
                 enhanced_mode INTEGER,
+                client_model TEXT,
                 model TEXT,
+                model_source TEXT,
                 upstream_model TEXT,
                 actual_source_kind TEXT,
                 actual_source_id TEXT,
+                client_reasoning_effort TEXT,
                 reasoning_effort TEXT,
+                reasoning_source TEXT,
                 service_tier TEXT,
                 effective_service_tier TEXT,
+                service_tier_source TEXT,
                 response_adapter TEXT,
                 upstream_url TEXT,
                 aggregate_api_supplier_name TEXT,
@@ -997,11 +1045,11 @@ impl Storage {
              INSERT INTO request_logs (
                 id, trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
-                method, request_type, gateway_mode, transparent_mode, enhanced_mode, model, upstream_model, actual_source_kind, actual_source_id, reasoning_effort, service_tier, effective_service_tier, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
+                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
              )
              SELECT
                 id, trace_id, NULL, NULL, key_id, account_id, NULL, NULL, NULL, NULL, request_path, original_path, adapted_path,
-                method, NULL, NULL, NULL, NULL, model, NULL, NULL, NULL, reasoning_effort, NULL, NULL, response_adapter, upstream_url, NULL, NULL, status_code, NULL, NULL, error, created_at
+                method, NULL, NULL, NULL, NULL, NULL, NULL, model, NULL, NULL, NULL, NULL, NULL, reasoning_effort, NULL, NULL, NULL, NULL, response_adapter, upstream_url, NULL, NULL, status_code, NULL, NULL, error, created_at
              FROM request_logs_legacy_028;
              DROP TABLE request_logs_legacy_028;",
         )?;
@@ -1040,30 +1088,37 @@ fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
         method: row.get(12)?,
         request_type: row.get(13)?,
         gateway_mode: row.get(14)?,
-        transparent_mode: row.get(15)?,
-        enhanced_mode: row.get(16)?,
-        model: row.get(17)?,
-        upstream_model: row.get(18)?,
-        actual_source_kind: row.get(19)?,
-        actual_source_id: row.get(20)?,
-        reasoning_effort: row.get(21)?,
-        service_tier: row.get(22)?,
-        effective_service_tier: row.get(23)?,
-        response_adapter: row.get(24)?,
-        upstream_url: row.get(25)?,
-        aggregate_api_supplier_name: row.get(26)?,
-        aggregate_api_url: row.get(27)?,
-        status_code: row.get(28)?,
-        duration_ms: row.get(29)?,
-        first_response_ms: row.get(30)?,
-        input_tokens: row.get(31)?,
-        cached_input_tokens: row.get(32)?,
-        output_tokens: row.get(33)?,
-        total_tokens: row.get(34)?,
-        reasoning_output_tokens: row.get(35)?,
-        estimated_cost_usd: row.get(36)?,
-        error: row.get(37)?,
-        created_at: row.get(38)?,
+        route_strategy: row.get(15)?,
+        route_source: row.get(16)?,
+        transparent_mode: row.get(17)?,
+        enhanced_mode: row.get(18)?,
+        client_model: row.get(19)?,
+        model: row.get(20)?,
+        model_source: row.get(21)?,
+        upstream_model: row.get(22)?,
+        actual_source_kind: row.get(23)?,
+        actual_source_id: row.get(24)?,
+        client_reasoning_effort: row.get(25)?,
+        reasoning_effort: row.get(26)?,
+        reasoning_source: row.get(27)?,
+        service_tier: row.get(28)?,
+        effective_service_tier: row.get(29)?,
+        service_tier_source: row.get(30)?,
+        response_adapter: row.get(31)?,
+        upstream_url: row.get(32)?,
+        aggregate_api_supplier_name: row.get(33)?,
+        aggregate_api_url: row.get(34)?,
+        status_code: row.get(35)?,
+        duration_ms: row.get(36)?,
+        first_response_ms: row.get(37)?,
+        input_tokens: row.get(38)?,
+        cached_input_tokens: row.get(39)?,
+        output_tokens: row.get(40)?,
+        total_tokens: row.get(41)?,
+        reasoning_output_tokens: row.get(42)?,
+        estimated_cost_usd: row.get(43)?,
+        error: row.get(44)?,
+        created_at: row.get(45)?,
     })
 }
 
@@ -1109,7 +1164,7 @@ fn build_request_log_filters(
     start_ts: Option<i64>,
     end_ts: Option<i64>,
     include_account_lookup: bool,
-    key_ids: Option<&[String]>,
+    key_filter: Option<&KeyIdSqlFilter<'_>>,
     include_route_detail_fields: bool,
 ) -> RequestLogSqlFilters {
     let mut clauses = Vec::new();
@@ -1124,7 +1179,7 @@ fn build_request_log_filters(
     );
     append_status_filter_clause(status_filter, &mut clauses, &mut params);
     append_time_range_clause(start_ts, end_ts, &mut clauses, &mut params);
-    append_key_ids_clause(key_ids, &mut clauses, &mut params);
+    append_key_filter_clause(key_filter, &mut clauses, &mut params);
 
     RequestLogSqlFilters {
         where_clause: if clauses.is_empty() {
@@ -1136,33 +1191,36 @@ fn build_request_log_filters(
     }
 }
 
-fn append_key_ids_clause(
-    key_ids: Option<&[String]>,
+fn append_key_filter_clause(
+    key_filter: Option<&KeyIdSqlFilter<'_>>,
     clauses: &mut Vec<String>,
     params: &mut Vec<Value>,
 ) {
-    let Some(key_ids) = key_ids else {
+    let Some(key_filter) = key_filter else {
         return;
     };
-    let normalized = key_ids
-        .iter()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    if normalized.is_empty() {
-        clauses.push("1 = 0".to_string());
-        return;
+    clauses.push(key_filter.condition().to_string());
+    params.extend_from_slice(key_filter.params());
+}
+
+fn empty_request_log_today_summary() -> RequestLogTodaySummary {
+    RequestLogTodaySummary {
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        output_tokens: 0,
+        reasoning_output_tokens: 0,
+        estimated_cost_usd: 0.0,
     }
-    let placeholders = std::iter::repeat("?")
-        .take(normalized.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    clauses.push(format!("IFNULL(r.key_id, '') IN ({placeholders})"));
-    params.extend(
-        normalized
-            .into_iter()
-            .map(|value| Value::Text(value.to_string())),
-    );
+}
+
+fn empty_request_log_query_summary() -> RequestLogQuerySummary {
+    RequestLogQuerySummary {
+        count: 0,
+        success_count: 0,
+        error_count: 0,
+        total_tokens: 0,
+        estimated_cost_usd: 0.0,
+    }
 }
 
 fn is_route_detail_query_column(column: &str) -> bool {
@@ -1254,11 +1312,18 @@ fn append_request_log_query_clause(
                 "IFNULL(r.adapted_path,'') LIKE ?",
                 "r.method LIKE ?",
                 "IFNULL(r.request_type,'') LIKE ?",
+                "IFNULL(r.route_strategy,'') LIKE ?",
+                "IFNULL(r.route_source,'') LIKE ?",
                 "IFNULL(r.account_id,'') LIKE ?",
+                "IFNULL(r.client_model,'') LIKE ?",
                 "IFNULL(r.model,'') LIKE ?",
+                "IFNULL(r.model_source,'') LIKE ?",
+                "IFNULL(r.client_reasoning_effort,'') LIKE ?",
                 "IFNULL(r.reasoning_effort,'') LIKE ?",
+                "IFNULL(r.reasoning_source,'') LIKE ?",
                 "IFNULL(r.service_tier,'') LIKE ?",
                 "IFNULL(r.effective_service_tier,'') LIKE ?",
+                "IFNULL(r.service_tier_source,'') LIKE ?",
                 "IFNULL(r.response_adapter,'') LIKE ?",
                 "IFNULL(r.error,'') LIKE ?",
                 "IFNULL(r.key_id,'') LIKE ?",

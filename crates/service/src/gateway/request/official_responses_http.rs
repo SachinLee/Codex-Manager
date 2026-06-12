@@ -794,7 +794,7 @@ mod tests {
                 "role": "developer",
                 "content": [{"type":"input_text","text":"follow rules"}]
             }],
-            "reasoning": {"effort":"high"}
+            "reasoning": {"effort":"high","summary":"auto","context":"current_turn"}
         })
         .as_object()
         .cloned()
@@ -817,6 +817,20 @@ mod tests {
         assert_eq!(obj.get("stream").and_then(Value::as_bool), Some(true));
         assert_eq!(obj.get("store").and_then(Value::as_bool), Some(false));
         assert_eq!(obj.get("tool_choice").and_then(Value::as_str), Some("auto"));
+        assert_eq!(
+            obj.get("reasoning")
+                .and_then(Value::as_object)
+                .and_then(|reasoning| reasoning.get("context"))
+                .and_then(Value::as_str),
+            Some("current_turn")
+        );
+        assert_eq!(
+            obj.get("reasoning")
+                .and_then(Value::as_object)
+                .and_then(|reasoning| reasoning.get("summary"))
+                .and_then(Value::as_str),
+            Some("auto")
+        );
         assert_eq!(
             obj.get("prompt_cache_key").and_then(Value::as_str),
             Some("thread-1")

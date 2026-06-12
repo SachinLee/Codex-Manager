@@ -17,7 +17,6 @@ import {
   normalizeAccountDailyUsageStats,
   normalizeAggregateApiDailyUsageStats,
   normalizeBackgroundTasks,
-  normalizeGatewayErrorLogListResult,
   normalizeRequestLogFilterSummary,
   normalizeRequestLogListResult,
   normalizeStartupSnapshot,
@@ -27,7 +26,6 @@ import {
   BackgroundTaskSettings,
   AccountDailyUsageStat,
   AggregateApiDailyUsageStat,
-  GatewayErrorLogListResult,
   RequestLogFilterSummary,
   RequestLogListResult,
   RequestLogTodaySummary,
@@ -173,23 +171,6 @@ export const serviceClient = {
     );
     return normalizeRequestLogFilterSummary(result);
   },
-  async listGatewayErrorLogs(params?: {
-    page?: number;
-    pageSize?: number;
-    stageFilter?: string;
-  }): Promise<GatewayErrorLogListResult> {
-    const result = await invoke<unknown>(
-      "service_requestlog_error_list",
-      withAddr({
-        page: params?.page ?? 1,
-        pageSize: params?.pageSize ?? 10,
-        stageFilter: params?.stageFilter || "all",
-      })
-    );
-    return normalizeGatewayErrorLogListResult(result);
-  },
-  clearGatewayErrorLogs: () =>
-    invoke("service_requestlog_error_clear", withAddr()),
   clearRequestLogs: () => invoke("service_requestlog_clear", withAddr()),
   async getTodaySummary(params?: {
     dayStartTs?: number;

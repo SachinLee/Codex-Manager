@@ -7,6 +7,7 @@ use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -41,10 +42,15 @@ struct WsRequestContext {
 #[derive(Clone)]
 struct PreparedClientFrame {
     text: String,
+    client_model: Option<String>,
     model: Option<String>,
+    model_source: Option<String>,
+    client_reasoning_effort: Option<String>,
     reasoning_effort: Option<String>,
+    reasoning_source: Option<String>,
     service_tier: Option<String>,
     effective_service_tier: Option<String>,
+    service_tier_source: Option<String>,
     raw_service_tier: Option<String>,
     has_service_tier_field: bool,
 }
@@ -59,6 +65,46 @@ struct ConnectedUpstreamWebsocket {
     stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
     account_id: String,
     upstream_url: String,
+    route_strategy: &'static str,
+    route_source: &'static str,
+}
+
+#[derive(Debug)]
+pub(crate) struct WsConnectError {
+    message: String,
+    status_code: Option<u16>,
+}
+
+impl WsConnectError {
+    fn from_message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status_code: None,
+        }
+    }
+
+    fn from_tungstenite(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        let status_code = match &err {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                Some(response.status().as_u16())
+            }
+            _ => None,
+        };
+        Self {
+            message: err.to_string(),
+            status_code,
+        }
+    }
+
+    fn is_unauthorized(&self) -> bool {
+        self.status_code == Some(401)
+    }
+}
+
+impl fmt::Display for WsConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 struct WebsocketTarget {
@@ -69,10 +115,17 @@ struct WebsocketTarget {
 
 struct PendingWsRequestLog {
     trace_id: String,
+    route_strategy: Option<String>,
+    route_source: Option<String>,
+    client_model: Option<String>,
     model: Option<String>,
+    model_source: Option<String>,
+    client_reasoning_effort: Option<String>,
     reasoning_effort: Option<String>,
+    reasoning_source: Option<String>,
     service_tier: Option<String>,
     effective_service_tier: Option<String>,
+    service_tier_source: Option<String>,
     started_at: Instant,
     first_response_ms: Option<i64>,
 }
@@ -207,7 +260,12 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
             }
         };
     let first_pending = PendingWsRequestState {
-        log: begin_ws_request_log(&context, &prepared_first),
+        log: begin_ws_request_log(
+            &context,
+            &prepared_first,
+            upstream.route_strategy,
+            upstream.route_source,
+        ),
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
     };
@@ -270,7 +328,12 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     );
                                 }
                                 let current_pending = PendingWsRequestState {
-                                    log: begin_ws_request_log(&context, &prepared),
+                                    log: begin_ws_request_log(
+                                        &context,
+                                        &prepared,
+                                        upstream.route_strategy,
+                                        upstream.route_source,
+                                    ),
                                     prepared,
                                     forwarded_upstream_event: false,
                                 };
@@ -583,6 +646,15 @@ fn rewrite_client_frame(
     let service_tier_diagnostic =
         crate::gateway::inspect_service_tier_value(object.get("service_tier"));
     let explicit_service_tier_for_log = service_tier_diagnostic.normalized_value.clone();
+    let client_model_for_log = object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let client_reasoning_for_log = object
+        .get("reasoning")
+        .and_then(|value| value.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let previous_response_id = object.remove("previous_response_id");
     let generate = object.remove("generate");
     let client_metadata = object.remove("client_metadata");
@@ -637,12 +709,27 @@ fn rewrite_client_frame(
         .as_deref()
         .and_then(crate::apikey::service_tier::normalize_service_tier_for_log)
         .map(str::to_string);
+    let service_tier_source = resolve_ws_service_tier_source_for_log(
+        explicit_service_tier_for_log.as_deref(),
+        effective_service_tier.as_deref(),
+        context.api_key.service_tier.as_deref(),
+    );
+    let model_source = resolve_ws_override_source_for_log(
+        client_model_for_log.as_deref(),
+        Some(request.model.as_str()),
+        context.api_key.model_slug.as_deref(),
+    );
     let reasoning_effort = request
         .reasoning
         .as_ref()
         .and_then(|value| value.get("effort"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let reasoning_source = resolve_ws_override_source_for_log(
+        client_reasoning_for_log.as_deref(),
+        reasoning_effort.as_deref(),
+        context.api_key.reasoning_effort.as_deref(),
+    );
     let text = serde_json::to_string(&ResponsesWsRequest::ResponseCreate(request.clone()))
         .map_err(|err| {
             WsSessionError::bad_request_bilingual(
@@ -653,13 +740,68 @@ fn rewrite_client_frame(
 
     Ok(PreparedClientFrame {
         text,
+        client_model: client_model_for_log,
         model: Some(request.model),
+        model_source,
+        client_reasoning_effort: client_reasoning_for_log,
         reasoning_effort,
+        reasoning_source,
         service_tier: explicit_service_tier_for_log,
         effective_service_tier,
+        service_tier_source,
         raw_service_tier: service_tier_diagnostic.raw_value,
         has_service_tier_field: service_tier_diagnostic.has_field,
     })
+}
+
+fn resolve_ws_service_tier_source_for_log(
+    client_service_tier: Option<&str>,
+    effective_service_tier: Option<&str>,
+    api_key_service_tier: Option<&str>,
+) -> Option<String> {
+    match (client_service_tier, effective_service_tier) {
+        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+            Some("client_request".to_string())
+        }
+        (Some(_), Some(_)) => Some("gateway_override".to_string()),
+        (None, Some(_)) => {
+            if api_key_service_tier
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            {
+                Some("api_key_profile".to_string())
+            } else {
+                Some("gateway_config".to_string())
+            }
+        }
+        (Some(_), None) => Some("client_request".to_string()),
+        (None, None) => Some("unset".to_string()),
+    }
+}
+
+fn resolve_ws_override_source_for_log(
+    client_value: Option<&str>,
+    effective_value: Option<&str>,
+    api_key_profile_value: Option<&str>,
+) -> Option<String> {
+    match (client_value, effective_value) {
+        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+            Some("client_request".to_string())
+        }
+        (Some(_), Some(_)) => Some("gateway_override".to_string()),
+        (None, Some(_)) => {
+            if api_key_profile_value
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            {
+                Some("api_key_profile".to_string())
+            } else {
+                Some("gateway_config".to_string())
+            }
+        }
+        (Some(_), None) => Some("client_request".to_string()),
+        (None, None) => Some("unset".to_string()),
+    }
 }
 
 fn merge_metadata_value(mapped: &mut HashMap<String, String>, client_metadata: Option<Value>) {
@@ -723,9 +865,12 @@ async fn connect_upstream_websocket(
     let storage = open_storage().ok_or_else(|| {
         WsSessionError::service_unavailable_bilingual("存储不可用", "storage unavailable")
     })?;
-    let candidates =
-        crate::gateway::gateway_collect_routed_candidates(&storage, &context.api_key.id, model)?;
-    if candidates.is_empty() {
+    let routed = crate::gateway::gateway_collect_routed_candidates_with_log_source(
+        &storage,
+        &context.api_key.id,
+        model,
+    )?;
+    if routed.candidates.is_empty() {
         return Err(WsSessionError::service_unavailable_bilingual(
             "没有可用的上游账号",
             "no available upstream accounts",
@@ -735,9 +880,12 @@ async fn connect_upstream_websocket(
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
     let mut last_error = None;
     ensure_rustls_crypto_provider();
-    for (account, token) in candidates {
+    for (account, mut token) in routed.candidates {
         let bearer = match resolve_bearer_token_for_websocket(account.clone(), token).await {
-            Ok(token) => token,
+            Ok((bearer, resolved_token)) => {
+                token = resolved_token;
+                bearer
+            }
             Err(err) => {
                 last_error = Some(format!(
                     "resolve bearer token for account {} failed: {err}",
@@ -749,17 +897,77 @@ async fn connect_upstream_websocket(
         let request =
             build_upstream_websocket_request(ws_url.as_str(), &account, bearer.as_str(), context)?;
         let proxy_url = crate::gateway::current_upstream_proxy_url_for_account(account.id.as_str());
-        match connect_upstream_websocket_request(request, ws_url.as_str(), proxy_url.as_deref())
-            .await
+        match connect_upstream_websocket_request_detailed(
+            request,
+            ws_url.as_str(),
+            proxy_url.as_deref(),
+        )
+        .await
         {
             Ok((stream, _)) => {
                 return Ok(ConnectedUpstreamWebsocket {
                     stream,
                     account_id: account.id,
                     upstream_url: ws_url.clone(),
+                    route_strategy: routed.route_strategy,
+                    route_source: routed.route_source,
                 });
             }
             Err(err) => {
+                if err.is_unauthorized() {
+                    match try_refresh_websocket_bearer(&storage, context, &account, &mut token) {
+                        Ok(Some(refreshed_bearer)) => {
+                            log::warn!(
+                                "event=responses_ws_unauthorized_refresh_retry account_id={}",
+                                account.id
+                            );
+                            let retry_request = build_upstream_websocket_request(
+                                ws_url.as_str(),
+                                &account,
+                                refreshed_bearer.as_str(),
+                                context,
+                            )?;
+                            match connect_upstream_websocket_request_detailed(
+                                retry_request,
+                                ws_url.as_str(),
+                                proxy_url.as_deref(),
+                            )
+                            .await
+                            {
+                                Ok((stream, _)) => {
+                                    return Ok(ConnectedUpstreamWebsocket {
+                                        stream,
+                                        account_id: account.id,
+                                        upstream_url: ws_url.clone(),
+                                        route_strategy: routed.route_strategy,
+                                        route_source: routed.route_source,
+                                    });
+                                }
+                                Err(retry_err) => {
+                                    last_error = Some(format!(
+                                        "connect upstream websocket for account {} failed after token refresh: {retry_err}",
+                                        account.id
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(refresh_err) => {
+                            let _ =
+                                crate::account_status::mark_account_unavailable_for_refresh_token_error(
+                                    &storage,
+                                    &account.id,
+                                    &refresh_err,
+                                );
+                            log::warn!(
+                                "event=responses_ws_unauthorized_refresh_failed account_id={} err={}",
+                                account.id,
+                                refresh_err
+                            );
+                        }
+                    }
+                }
                 last_error = Some(format!(
                     "connect upstream websocket for account {} failed: {err}",
                     account.id
@@ -777,12 +985,14 @@ async fn connect_upstream_websocket(
 async fn resolve_bearer_token_for_websocket(
     account: codexmanager_core::storage::Account,
     token: codexmanager_core::storage::Token,
-) -> Result<String, String> {
+) -> Result<(String, codexmanager_core::storage::Token), String> {
     let join_result = tokio::task::spawn_blocking(move || {
         let storage = open_storage()
             .ok_or_else(|| crate::gateway::bilingual_error("存储不可用", "storage unavailable"))?;
         let mut token = token;
-        crate::gateway::gateway_resolve_openai_bearer_token(&storage, &account, &mut token)
+        let bearer =
+            crate::gateway::gateway_resolve_openai_bearer_token(&storage, &account, &mut token)?;
+        Ok((bearer, token))
     })
     .await;
 
@@ -793,6 +1003,46 @@ async fn resolve_bearer_token_for_websocket(
             format!("bearer token task join failed: {err}"),
         )),
     }
+}
+
+fn try_refresh_websocket_bearer(
+    storage: &codexmanager_core::storage::Storage,
+    context: &WsRequestContext,
+    account: &codexmanager_core::storage::Account,
+    token: &mut codexmanager_core::storage::Token,
+) -> Result<Option<String>, String> {
+    if crate::gateway::gateway_is_openai_api_base(context.effective_upstream_base.as_str()) {
+        return Ok(None);
+    }
+    if token.refresh_token.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let previous_api_key_access_token = token.api_key_access_token.clone();
+    let issuer = if account.issuer.trim().is_empty() {
+        crate::gateway::gateway_token_exchange_default_issuer()
+    } else {
+        account.issuer.clone()
+    };
+    let client_id = crate::gateway::gateway_token_exchange_client_id();
+    crate::usage_token_refresh::refresh_and_persist_access_token(
+        storage,
+        token,
+        issuer.as_str(),
+        client_id.as_str(),
+        crate::usage_token_refresh::token_refresh_ahead_secs(),
+    )?;
+
+    if token.api_key_access_token == previous_api_key_access_token {
+        token.api_key_access_token = None;
+        storage.insert_token(token).map_err(|err| err.to_string())?;
+    }
+
+    let bearer = crate::gateway::gateway_resolve_openai_bearer_token(storage, account, token)?;
+    if bearer.trim().is_empty() {
+        return Err("refreshed websocket bearer token is empty".to_string());
+    }
+    Ok(Some(bearer))
 }
 
 fn build_upstream_websocket_url(upstream_base: &str) -> Result<String, WsSessionError> {
@@ -833,17 +1083,35 @@ pub(crate) async fn connect_upstream_websocket_request(
     ),
     String,
 > {
+    connect_upstream_websocket_request_detailed(request, ws_url, proxy_url)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+pub(crate) async fn connect_upstream_websocket_request_detailed(
+    request: WsClientRequest,
+    ws_url: &str,
+    proxy_url: Option<&str>,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+        WsClientResponse,
+    ),
+    WsConnectError,
+> {
     ensure_rustls_crypto_provider();
     let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) else {
         return connect_async_tls_with_config(request, None, false, None)
             .await
-            .map_err(|err| err.to_string());
+            .map_err(WsConnectError::from_tungstenite);
     };
 
-    let stream = connect_websocket_proxy_tcp(ws_url, proxy_url).await?;
+    let stream = connect_websocket_proxy_tcp(ws_url, proxy_url)
+        .await
+        .map_err(WsConnectError::from_message)?;
     client_async_tls_with_config(request, stream, None, None)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(WsConnectError::from_tungstenite)
 }
 
 async fn connect_websocket_proxy_tcp(ws_url: &str, proxy_url: &str) -> Result<TcpStream, String> {
@@ -1214,6 +1482,8 @@ fn build_upstream_websocket_request(
 fn begin_ws_request_log(
     context: &WsRequestContext,
     prepared: &PreparedClientFrame,
+    route_strategy: &'static str,
+    route_source: &'static str,
 ) -> PendingWsRequestLog {
     let trace_id = crate::gateway::next_trace_id();
     let effective_protocol_type = crate::apikey_profile::resolve_gateway_protocol_type(
@@ -1242,10 +1512,17 @@ fn begin_ws_request_log(
     );
     PendingWsRequestLog {
         trace_id,
+        route_strategy: Some(route_strategy.to_string()),
+        route_source: Some(route_source.to_string()),
+        client_model: prepared.client_model.clone(),
         model: prepared.model.clone(),
+        model_source: prepared.model_source.clone(),
+        client_reasoning_effort: prepared.client_reasoning_effort.clone(),
         reasoning_effort: prepared.reasoning_effort.clone(),
+        reasoning_source: prepared.reasoning_source.clone(),
         service_tier: prepared.service_tier.clone(),
         effective_service_tier: prepared.effective_service_tier.clone(),
+        service_tier_source: prepared.service_tier_source.clone(),
         started_at: Instant::now(),
         first_response_ms: None,
     }
@@ -1302,8 +1579,15 @@ fn finalize_ws_request_log(
             original_path: Some(RESPONSES_ENDPOINT),
             adapted_path: Some(RESPONSES_ENDPOINT),
             request_type: Some("ws"),
+            route_strategy: pending.route_strategy.as_deref(),
+            route_source: pending.route_source.as_deref(),
+            client_model: pending.client_model.as_deref(),
+            model_source: pending.model_source.as_deref(),
+            client_reasoning_effort: pending.client_reasoning_effort.as_deref(),
+            reasoning_source: pending.reasoning_source.as_deref(),
             service_tier: pending.service_tier.as_deref(),
             effective_service_tier: pending.effective_service_tier.as_deref(),
+            service_tier_source: pending.service_tier_source.as_deref(),
             ..Default::default()
         },
         Some(context.api_key.id.as_str()),
@@ -1367,6 +1651,8 @@ async fn try_retry_ws_request_after_terminal(
         }
         if upstream.account_id != previous_account_id {
             retry_text = strip_previous_response_id_from_ws_text(pending.prepared.text.as_str());
+            pending.log.route_strategy = Some(upstream.route_strategy.to_string());
+            pending.log.route_source = Some(upstream.route_source.to_string());
         }
     }
     let retry_text = retry_text.unwrap_or_else(|| pending.prepared.text.clone());
@@ -1417,12 +1703,12 @@ async fn try_rotate_ws_upstream_after_terminal(
         Some(storage) => storage,
         None => return false,
     };
-    let candidates = match crate::gateway::gateway_collect_routed_candidates(
+    let routed = match crate::gateway::gateway_collect_routed_candidates_with_log_source(
         &storage,
         &context.api_key.id,
         model,
     ) {
-        Ok(candidates) => candidates,
+        Ok(routed) => routed,
         Err(err) => {
             log::warn!(
                 "event=responses_ws_failover_candidates_failed account_id={} status={} err={}",
@@ -1433,7 +1719,8 @@ async fn try_rotate_ws_upstream_after_terminal(
             return false;
         }
     };
-    let Some((account, token)) = candidates
+    let Some((account, token)) = routed
+        .candidates
         .into_iter()
         .find(|(account, _)| account.id != current_account_id)
     else {
@@ -1441,7 +1728,7 @@ async fn try_rotate_ws_upstream_after_terminal(
     };
 
     let bearer = match resolve_bearer_token_for_websocket(account.clone(), token).await {
-        Ok(token) => token,
+        Ok((bearer, _token)) => bearer,
         Err(err) => {
             log::warn!(
                 "event=responses_ws_failover_bearer_failed account_id={} next_account_id={} status={} err={}",
@@ -1485,6 +1772,8 @@ async fn try_rotate_ws_upstream_after_terminal(
             stream,
             account_id: account.id,
             upstream_url: upstream.upstream_url.clone(),
+            route_strategy: routed.route_strategy,
+            route_source: routed.route_source,
         },
         Err(err) => {
             log::warn!(
@@ -1524,6 +1813,12 @@ fn inspect_ws_terminal_event(text: &str) -> Option<WsTerminalEvent> {
                 error,
             })
         }
+        "response.incomplete" => Some(WsTerminalEvent {
+            status_code: 502,
+            usage: parse_ws_usage(&value),
+            error: extract_ws_error_message(&value)
+                .or_else(|| Some("连接中断（可能是网络波动或客户端主动取消）".to_string())),
+        }),
         _ => None,
     }
 }
@@ -1594,6 +1889,12 @@ fn parse_ws_usage(value: &Value) -> crate::gateway::RequestLogUsage {
             .and_then(Value::as_i64)
             .or_else(|| {
                 usage
+                    .and_then(|map| map.get("prompt_tokens_details"))
+                    .and_then(|details| details.get("cached_tokens"))
+                    .and_then(Value::as_i64)
+            })
+            .or_else(|| {
+                usage
                     .and_then(|map| map.get("cached_input_tokens"))
                     .and_then(Value::as_i64)
             }),
@@ -1614,6 +1915,12 @@ fn parse_ws_usage(value: &Value) -> crate::gateway::RequestLogUsage {
             .and_then(Value::as_i64)
             .or_else(|| {
                 usage
+                    .and_then(|map| map.get("completion_tokens_details"))
+                    .and_then(|details| details.get("reasoning_tokens"))
+                    .and_then(Value::as_i64)
+            })
+            .or_else(|| {
+                usage
                     .and_then(|map| map.get("reasoning_output_tokens"))
                     .and_then(Value::as_i64)
             }),
@@ -1632,6 +1939,17 @@ fn extract_ws_error_message(value: &Value) -> Option<String> {
         .or_else(|| {
             value
                 .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("status_details"))
+                .and_then(|details| details.get("error"))
+                .and_then(|error| error.get("message"))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|message| !message.is_empty())
@@ -1704,7 +2022,7 @@ mod tests {
     use super::{
         build_socks5_connect_request, build_upstream_websocket_request, infer_ws_terminal_status,
         inspect_ws_terminal_event, is_previous_response_not_found_terminal, merge_client_metadata,
-        parse_websocket_target, proxy_basic_auth_header, rewrite_client_frame,
+        parse_websocket_target, parse_ws_usage, proxy_basic_auth_header, rewrite_client_frame,
         strip_previous_response_id_from_ws_text, WsRequestContext,
     };
     use axum::http::{HeaderMap, HeaderValue};
@@ -1820,6 +2138,18 @@ mod tests {
     }
 
     #[test]
+    fn websocket_connect_error_preserves_http_unauthorized_status() {
+        let mut response = super::WsClientResponse::new(None);
+        *response.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+        let err = super::WsConnectError::from_tungstenite(
+            tokio_tungstenite::tungstenite::Error::Http(Box::new(response)),
+        );
+
+        assert!(err.is_unauthorized());
+        assert_eq!(err.status_code, Some(401));
+    }
+
+    #[test]
     fn inspect_ws_terminal_event_infers_usage_limit_status_without_explicit_status() {
         let event = inspect_ws_terminal_event(
             r#"{"type":"error","error":{"message":"You've hit your usage limit."}}"#,
@@ -1842,6 +2172,44 @@ mod tests {
             infer_ws_terminal_status(&payload, payload["error"]["message"].as_str()),
             403
         );
+    }
+
+    #[test]
+    fn parse_ws_usage_reads_chat_completion_compat_details() {
+        let payload = json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "prompt_tokens_details": { "cached_tokens": 75 },
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "completion_tokens_details": { "reasoning_tokens": 9 }
+                }
+            }
+        });
+
+        let usage = parse_ws_usage(&payload);
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.cached_input_tokens, Some(75));
+        assert_eq!(usage.output_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(120));
+        assert_eq!(usage.reasoning_output_tokens, Some(9));
+    }
+
+    #[test]
+    fn inspect_ws_terminal_event_maps_incomplete_to_terminal_error() {
+        let event = inspect_ws_terminal_event(
+            r#"{"type":"response.incomplete","response":{"status":"incomplete","status_details":{"error":{"message":"stream timeout at upstream","code":"stream_timeout"}},"usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14}}}"#,
+        )
+        .expect("terminal event");
+
+        assert_eq!(event.status_code, 502);
+        assert_eq!(event.error.as_deref(), Some("stream timeout at upstream"));
+        assert_eq!(event.usage.input_tokens, Some(11));
+        assert_eq!(event.usage.output_tokens, Some(3));
+        assert_eq!(event.usage.total_tokens, Some(14));
     }
 
     #[test]
@@ -1991,7 +2359,7 @@ mod tests {
                 "tools": [{ "type": "function", "name": "ping", "parameters": { "type": "object", "properties": {} } }],
                 "tool_choice": "auto",
                 "parallel_tool_calls": true,
-                "reasoning": { "effort": "medium" },
+                "reasoning": { "effort": "medium", "summary": "auto", "context": "current_turn" },
                 "store": false,
                 "stream": true,
                 "include": ["reasoning.encrypted_content"],
@@ -2050,6 +2418,8 @@ mod tests {
         assert_eq!(value["type"], "response.create");
         assert_eq!(value["previous_response_id"], "resp_previous");
         assert_eq!(value["generate"], false);
+        assert_eq!(value["reasoning"]["context"], "current_turn");
+        assert_eq!(value["reasoning"]["summary"], "auto");
         assert_eq!(value["client_metadata"]["source"], "ws-snapshot");
         assert_eq!(
             value["client_metadata"]["traceparent"],

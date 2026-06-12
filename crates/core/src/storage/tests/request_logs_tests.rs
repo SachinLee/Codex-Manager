@@ -109,13 +109,20 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
         adapted_path: Some("/v1/responses".to_string()),
         method: "POST".to_string(),
         request_type: Some("http".to_string()),
+        route_strategy: Some("balanced".to_string()),
+        route_source: Some("conversation_bound".to_string()),
+        client_model: Some("gpt-5-client".to_string()),
         model: Some("gpt-5".to_string()),
+        model_source: Some("gateway_override".to_string()),
         upstream_model: Some("gpt-provider-5".to_string()),
         actual_source_kind: Some("openai_account".to_string()),
         actual_source_id: Some("acc_1".to_string()),
+        client_reasoning_effort: Some("low".to_string()),
         reasoning_effort: Some("medium".to_string()),
+        reasoning_source: Some("api_key_profile".to_string()),
         service_tier: Some("fast".to_string()),
         effective_service_tier: Some("priority".to_string()),
+        service_tier_source: Some("gateway_override".to_string()),
         response_adapter: Some("OpenAIChatCompletionsJson".to_string()),
         upstream_url: Some("https://example.test".to_string()),
         aggregate_api_supplier_name: None,
@@ -169,12 +176,20 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
     assert_eq!(row.original_path.as_deref(), Some("/v1/chat/completions"));
     assert_eq!(row.adapted_path.as_deref(), Some("/v1/responses"));
     assert_eq!(row.request_type.as_deref(), Some("http"));
+    assert_eq!(row.route_strategy.as_deref(), Some("balanced"));
+    assert_eq!(row.route_source.as_deref(), Some("conversation_bound"));
+    assert_eq!(row.client_model.as_deref(), Some("gpt-5-client"));
     assert_eq!(row.model.as_deref(), Some("gpt-5"));
+    assert_eq!(row.model_source.as_deref(), Some("gateway_override"));
     assert_eq!(row.upstream_model.as_deref(), Some("gpt-provider-5"));
     assert_eq!(row.actual_source_kind.as_deref(), Some("openai_account"));
     assert_eq!(row.actual_source_id.as_deref(), Some("acc_1"));
+    assert_eq!(row.client_reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(row.reasoning_effort.as_deref(), Some("medium"));
+    assert_eq!(row.reasoning_source.as_deref(), Some("api_key_profile"));
     assert_eq!(row.service_tier.as_deref(), Some("fast"));
     assert_eq!(row.effective_service_tier.as_deref(), Some("priority"));
+    assert_eq!(row.service_tier_source.as_deref(), Some("gateway_override"));
     assert_eq!(row.first_response_ms, Some(456));
     assert_eq!(
         row.response_adapter.as_deref(),
@@ -933,4 +948,90 @@ fn token_stats_aggregate_api_backfill_falls_back_to_initial_when_attempts_invali
         .expect("summarize aggregate api daily usage");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].aggregate_api_id, "ag-initial");
+}
+
+#[test]
+fn request_logs_for_empty_key_sets_return_empty_results() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let empty_keys = vec![" ".to_string(), String::new()];
+
+    let logs = storage
+        .list_request_logs_paginated_for_keys(None, None, None, None, 0, 20, &empty_keys)
+        .expect("list logs for empty keys");
+    assert!(logs.is_empty());
+
+    let total = storage
+        .count_request_logs_for_keys(None, None, None, None, &empty_keys)
+        .expect("count logs for empty keys");
+    assert_eq!(total, 0);
+
+    let filtered = storage
+        .summarize_request_logs_filtered_for_keys(None, None, None, None, &empty_keys)
+        .expect("summarize logs for empty keys");
+    assert_eq!(filtered.count, 0);
+    assert_eq!(filtered.total_tokens, 0);
+
+    let today = storage
+        .summarize_request_logs_between_for_keys(0, 10_000, &empty_keys)
+        .expect("summarize today for empty keys");
+    assert_eq!(today.input_tokens, 0);
+    assert_eq!(today.estimated_cost_usd, 0.0);
+}
+
+#[test]
+fn request_logs_for_large_key_sets_use_temp_filter() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trc-large-key-filter".to_string()),
+            key_id: Some("key-0949".to_string()),
+            account_id: Some("acc-large-key-filter".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 5_000,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            key_id: Some("key-0949".to_string()),
+            account_id: Some("acc-large-key-filter".to_string()),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(30),
+            cached_input_tokens: Some(5),
+            output_tokens: Some(10),
+            total_tokens: Some(40),
+            reasoning_output_tokens: Some(2),
+            estimated_cost_usd: Some(0.04),
+            created_at: 5_000,
+            ..Default::default()
+        })
+        .expect("insert token stat");
+
+    let key_ids = (0..950)
+        .map(|index| format!("key-{index:04}"))
+        .collect::<Vec<_>>();
+
+    let total = storage
+        .count_request_logs_for_keys(None, None, None, None, &key_ids)
+        .expect("count logs for large key set");
+    assert_eq!(total, 1);
+
+    let logs = storage
+        .list_request_logs_paginated_for_keys(None, None, None, None, 0, 20, &key_ids)
+        .expect("list logs for large key set");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].trace_id.as_deref(), Some("trc-large-key-filter"));
+
+    let summary = storage
+        .summarize_request_logs_between_for_keys(4_000, 6_000, &key_ids)
+        .expect("summarize today for large key set");
+    assert_eq!(summary.input_tokens, 30);
+    assert_eq!(summary.output_tokens, 10);
+    assert_eq!(summary.estimated_cost_usd, 0.04);
 }

@@ -176,11 +176,6 @@ test("request logs display session title, total duration, first-response latency
       });
       return;
     }
-    if (method === "requestlog/error_list") {
-      await ok({ items: [], total: 0, page: 1, pageSize: 10, stages: [] });
-      return;
-    }
-
     await route.fulfill({
       status: 500,
       contentType: "application/json; charset=utf-8",

@@ -140,6 +140,11 @@ impl CandidateExecutionState {
                     || setup.conversation_routing.is_some();
                 let should_force_prompt_cache_key =
                     effective_prompt_cache_key.is_some() && has_local_thread_anchor;
+                let prompt_cache_key_for_rewrite = if should_force_prompt_cache_key {
+                    effective_prompt_cache_key
+                } else {
+                    None
+                };
                 let rewritten = if should_force_prompt_cache_key {
                     super::super::super::apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope(
                         path,
@@ -148,7 +153,7 @@ impl CandidateExecutionState {
                         None,
                         None,
                         Some(setup.upstream_base.as_str()),
-                        effective_prompt_cache_key,
+                        prompt_cache_key_for_rewrite,
                         false,
                     )
                 } else {
@@ -159,7 +164,7 @@ impl CandidateExecutionState {
                         None,
                         None,
                         Some(setup.upstream_base.as_str()),
-                        effective_prompt_cache_key,
+                        prompt_cache_key_for_rewrite,
                         false,
                     )
                 };
@@ -283,6 +288,8 @@ mod tests {
             has_sticky_fallback_conversation: false,
             has_body_encrypted_content: false,
             conversation_routing: None,
+            route_strategy_for_log: "ordered",
+            route_source_for_log: "route_strategy",
         }
     }
 

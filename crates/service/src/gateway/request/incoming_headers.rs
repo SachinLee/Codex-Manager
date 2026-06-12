@@ -182,6 +182,7 @@ impl IncomingHeaderSnapshot {
                 }
             }
         }
+        snapshot.derive_session_id_from_turn_metadata();
         snapshot
     }
 
@@ -352,7 +353,18 @@ impl IncomingHeaderSnapshot {
                 }
             }
         }
+        snapshot.derive_session_id_from_turn_metadata();
         snapshot
+    }
+
+    fn derive_session_id_from_turn_metadata(&mut self) {
+        if self.session_id.is_some() {
+            return;
+        }
+        let Some(turn_metadata) = self.turn_metadata.as_deref() else {
+            return;
+        };
+        self.session_id = session_id_from_turn_metadata(turn_metadata);
     }
 
     /// 函数 `platform_key`
@@ -384,8 +396,9 @@ impl IncomingHeaderSnapshot {
     /// # 返回
     /// 返回函数执行结果
     pub(crate) fn sticky_key_material(&self) -> Option<&str> {
-        self.x_api_key
+        self.session_id
             .as_deref()
+            .or(self.x_api_key.as_deref())
             .or(self.authorization_bearer_case_insensitive.as_deref())
     }
 
@@ -712,6 +725,23 @@ fn remember_passthrough_header(headers: &mut Vec<(String, String)>, name: &str, 
         return;
     }
     headers.push((name.to_string(), value.to_string()));
+}
+
+fn session_id_from_turn_metadata(turn_metadata: &str) -> Option<String> {
+    let payload = serde_json::from_str::<serde_json::Value>(turn_metadata).ok()?;
+    let session_id = payload.get("session_id")?.as_str()?.trim();
+    if is_safe_derived_session_id(session_id) {
+        Some(session_id.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_safe_derived_session_id(value: &str) -> bool {
+    if value.is_empty() || value.len() > 256 {
+        return false;
+    }
+    value.bytes().all(|byte| matches!(byte, b'!'..=b'~'))
 }
 
 /// 函数 `strict_bearer_token`

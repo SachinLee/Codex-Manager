@@ -67,7 +67,17 @@ fn parse_prefixed_request_log_query(raw: &str) -> Option<RequestLogQuery> {
         "adapted" | "adapted_path" => Some(parse_field_query("adapted_path", is_exact, needle)),
         "method" => Some(parse_field_query("method", is_exact, needle)),
         "type" | "request_type" => Some(parse_field_query("request_type", is_exact, needle)),
+        "route_strategy" | "strategy" => {
+            Some(parse_field_query("route_strategy", is_exact, needle))
+        }
+        "route_source" | "route_reason" => {
+            Some(parse_field_query("route_source", is_exact, needle))
+        }
+        "client_model" | "original_model" => {
+            Some(parse_field_query("client_model", is_exact, needle))
+        }
         "model" => Some(parse_field_query("model", is_exact, needle)),
+        "model_source" => Some(parse_field_query("model_source", is_exact, needle)),
         "upstream_model" | "source_model" => {
             Some(parse_field_query("upstream_model", is_exact, needle))
         }
@@ -77,13 +87,22 @@ fn parse_prefixed_request_log_query(raw: &str) -> Option<RequestLogQuery> {
         "source_id" | "actual_source_id" => {
             Some(parse_field_query("actual_source_id", is_exact, needle))
         }
+        "client_reasoning" | "client_reasoning_effort" | "original_reasoning" => Some(
+            parse_field_query("client_reasoning_effort", is_exact, needle),
+        ),
         "reasoning" | "reason" => Some(parse_field_query("reasoning_effort", is_exact, needle)),
+        "reasoning_source" | "reason_source" => {
+            Some(parse_field_query("reasoning_source", is_exact, needle))
+        }
         "tier" | "service_tier" => Some(parse_field_query("service_tier", is_exact, needle)),
         "effective_tier" | "effective_service_tier" => Some(parse_field_query(
             "effective_service_tier",
             is_exact,
             needle,
         )),
+        "tier_source" | "service_tier_source" => {
+            Some(parse_field_query("service_tier_source", is_exact, needle))
+        }
         "adapter" => Some(parse_field_query("response_adapter", is_exact, needle)),
         "error" => Some(parse_field_query("error", is_exact, needle)),
         "key" | "key_id" => Some(parse_field_query("key_id", is_exact, needle)),

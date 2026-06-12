@@ -1,4 +1,3 @@
-use crate::gateway::error_log::GatewayErrorLogInput;
 use codexmanager_core::storage::{now_ts, RequestLog, RequestTokenStat, Storage};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -20,8 +19,15 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub adapted_path: Option<&'a str>,
     pub request_type: Option<&'a str>,
     pub gateway_mode: Option<&'a str>,
+    pub route_strategy: Option<&'a str>,
+    pub route_source: Option<&'a str>,
+    pub client_model: Option<&'a str>,
+    pub model_source: Option<&'a str>,
+    pub client_reasoning_effort: Option<&'a str>,
+    pub reasoning_source: Option<&'a str>,
     pub service_tier: Option<&'a str>,
     pub effective_service_tier: Option<&'a str>,
+    pub service_tier_source: Option<&'a str>,
     pub response_adapter: Option<super::ResponseAdapter>,
     pub aggregate_api_supplier_name: Option<&'a str>,
     pub aggregate_api_url: Option<&'a str>,
@@ -256,30 +262,55 @@ fn is_inference_path(path: &str) -> bool {
         || path.starts_with("/v1/messages")
 }
 
-fn should_write_gateway_error_fallback(status_code: Option<u16>, error: Option<&str>) -> bool {
-    let Some(status_code) = status_code else {
-        return false;
-    };
-    if !matches!(status_code, 401 | 403 | 429) {
-        return false;
-    }
-    let Some(error) = error.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let normalized = error.to_ascii_lowercase();
-    normalized.contains("cloudflare")
-        || normalized.contains("cf_ray=")
-        || normalized.contains("cf-ray")
-        || normalized.contains("challenge")
-        || normalized.contains("just a moment")
-        || normalized.contains("usage_limit_reached")
-}
-
 fn normalize_log_text(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn resolve_service_tier_source<'a>(
+    service_tier: Option<&'a str>,
+    effective_service_tier: Option<&'a str>,
+    explicit_source: Option<&'a str>,
+) -> Option<&'a str> {
+    if let Some(source) = explicit_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(source);
+    }
+    match (service_tier, effective_service_tier) {
+        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+            Some("client_request")
+        }
+        (Some(_), Some(_)) => Some("gateway_override"),
+        (None, Some(_)) => Some("gateway_config"),
+        (Some(_), None) => Some("client_request"),
+        (None, None) => Some("unset"),
+    }
+}
+
+fn resolve_value_source<'a>(
+    client_value: Option<&'a str>,
+    effective_value: Option<&'a str>,
+    explicit_source: Option<&'a str>,
+) -> Option<&'a str> {
+    if let Some(source) = explicit_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(source);
+    }
+    match (client_value, effective_value) {
+        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+            Some("client_request")
+        }
+        (Some(_), Some(_)) => Some("gateway_override"),
+        (None, Some(_)) => Some("gateway_config"),
+        (Some(_), None) => Some("client_request"),
+        (None, None) => Some("unset"),
+    }
 }
 
 fn resolve_route_details(
@@ -323,6 +354,7 @@ fn response_adapter_label(value: super::ResponseAdapter) -> &'static str {
     match value {
         super::ResponseAdapter::Passthrough => "Passthrough",
         super::ResponseAdapter::AnthropicMessagesFromResponses => "AnthropicMessagesFromResponses",
+        super::ResponseAdapter::ResponsesFromAnthropicMessages => "ResponsesFromAnthropicMessages",
         super::ResponseAdapter::ChatCompletionsFromResponses => "ChatCompletionsFromResponses",
         super::ResponseAdapter::CompactFromChatCompletions => "CompactFromChatCompletions",
         super::ResponseAdapter::ImagesB64JsonFromResponses => "ImagesB64JsonFromResponses",
@@ -453,6 +485,25 @@ pub(crate) fn write_request_log_with_attempts(
         .effective_service_tier
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let service_tier_source = resolve_service_tier_source(
+        service_tier,
+        effective_service_tier,
+        trace_context.service_tier_source,
+    );
+    let client_model = trace_context
+        .client_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let model_source = resolve_value_source(client_model, model, trace_context.model_source);
+    let client_reasoning_effort = trace_context
+        .client_reasoning_effort
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let reasoning_source = resolve_value_source(
+        client_reasoning_effort,
+        reasoning_effort,
+        trace_context.reasoning_source,
+    );
     let (upstream_model, actual_source_kind, actual_source_id) =
         resolve_route_details(storage, &trace_context, account_id, model);
     let token_stat_aggregate_api_id = actual_source_id
@@ -520,15 +571,22 @@ pub(crate) fn write_request_log_with_attempts(
             method: method.to_string(),
             request_type: Some(request_type.to_string()),
             gateway_mode: trace_context.gateway_mode.map(str::to_string),
+            route_strategy: normalize_log_text(trace_context.route_strategy),
+            route_source: normalize_log_text(trace_context.route_source),
             transparent_mode: None,
             enhanced_mode: None,
+            client_model: client_model.map(str::to_string),
             model: model.map(|v| v.to_string()),
+            model_source: model_source.map(str::to_string),
             upstream_model,
             actual_source_kind,
             actual_source_id,
+            client_reasoning_effort: client_reasoning_effort.map(str::to_string),
             reasoning_effort: reasoning_effort.map(|v| v.to_string()),
+            reasoning_source: reasoning_source.map(str::to_string),
             service_tier: service_tier.map(str::to_string),
             effective_service_tier: effective_service_tier.map(str::to_string),
+            service_tier_source: service_tier_source.map(str::to_string),
             response_adapter: trace_context
                 .response_adapter
                 .map(response_adapter_label)
@@ -637,23 +695,6 @@ pub(crate) fn write_request_log_with_attempts(
             request_log_id,
             err_text
         );
-    }
-
-    if should_write_gateway_error_fallback(status_code, error) {
-        crate::gateway::write_gateway_error_log(GatewayErrorLogInput {
-            trace_id: trace_context.trace_id,
-            key_id,
-            account_id,
-            request_path,
-            method,
-            stage: "request_log_fallback_non_success",
-            upstream_url,
-            status_code,
-            compression_enabled: false,
-            compression_retry_attempted: false,
-            message: error.unwrap_or("gateway non-success"),
-            ..GatewayErrorLogInput::default()
-        });
     }
 }
 

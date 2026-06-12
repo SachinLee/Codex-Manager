@@ -145,6 +145,17 @@ fn refresh_token_status_error_includes_body_snippet() {
 }
 
 #[test]
+fn refresh_token_status_error_maps_app_session_terminated_400_to_official_message() {
+    assert_eq!(
+        super::format_refresh_token_status_error(
+            StatusCode::BAD_REQUEST,
+            r#"{"code":"app_session_terminated","type":"invalid_request_error","message":"Your session has ended. Please log in again."}"#
+        ),
+        "refresh token failed with status 400 Bad Request: Your session has ended. Please log in again."
+    );
+}
+
+#[test]
 fn refresh_token_body_matches_codex_refresh_scope() {
     assert_eq!(
         super::build_refresh_token_body("client-id", "refresh-token"),
@@ -410,6 +421,22 @@ fn refresh_token_auth_error_reason_from_message_tracks_canonical_messages() {
     assert_eq!(
         super::refresh_token_auth_error_reason_from_message(&invalid_grant),
         Some(super::RefreshTokenAuthErrorReason::InvalidGrant)
+    );
+
+    let app_session_terminated = super::format_refresh_token_status_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"code":"app_session_terminated","type":"invalid_request_error","message":"Your session has ended. Please log in again."}"#,
+    );
+    assert_eq!(
+        super::refresh_token_auth_error_reason_from_message(&app_session_terminated),
+        Some(super::RefreshTokenAuthErrorReason::AppSessionTerminated)
+    );
+
+    let legacy_app_session_terminated =
+        "refresh token failed with status 400 Bad Request: code=app_session_terminated type=invalid_request_error Your session has ended. Please log in again.";
+    assert_eq!(
+        super::refresh_token_auth_error_reason_from_message(legacy_app_session_terminated),
+        Some(super::RefreshTokenAuthErrorReason::AppSessionTerminated)
     );
 }
 

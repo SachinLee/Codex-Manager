@@ -12,7 +12,7 @@ mod api_key_quota_limits;
 mod api_keys;
 mod conversation_bindings;
 mod events;
-mod gateway_error_logs;
+mod key_id_filters;
 mod model_groups;
 mod model_options;
 mod model_price_rules;
@@ -93,6 +93,15 @@ pub struct ModelSourceMapping {
     pub weight: i64,
     pub billing_model_slug: Option<String>,
     pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelSourceMappingPreference {
+    pub source_kind: String,
+    pub source_id: String,
+    pub upstream_model: String,
+    pub preference: String,
     pub updated_at: i64,
 }
 
@@ -190,15 +199,22 @@ pub struct RequestLog {
     pub method: String,
     pub request_type: Option<String>,
     pub gateway_mode: Option<String>,
+    pub route_strategy: Option<String>,
+    pub route_source: Option<String>,
     pub transparent_mode: Option<bool>,
     pub enhanced_mode: Option<bool>,
+    pub client_model: Option<String>,
     pub model: Option<String>,
+    pub model_source: Option<String>,
     pub upstream_model: Option<String>,
     pub actual_source_kind: Option<String>,
     pub actual_source_id: Option<String>,
+    pub client_reasoning_effort: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub reasoning_source: Option<String>,
     pub service_tier: Option<String>,
     pub effective_service_tier: Option<String>,
+    pub service_tier_source: Option<String>,
     pub response_adapter: Option<String>,
     pub upstream_url: Option<String>,
     pub aggregate_api_supplier_name: Option<String>,
@@ -250,24 +266,6 @@ pub struct RequestLogQuerySummary {
     pub error_count: i64,
     pub total_tokens: i64,
     pub estimated_cost_usd: f64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct GatewayErrorLog {
-    pub trace_id: Option<String>,
-    pub key_id: Option<String>,
-    pub account_id: Option<String>,
-    pub request_path: String,
-    pub method: String,
-    pub stage: String,
-    pub error_kind: Option<String>,
-    pub upstream_url: Option<String>,
-    pub cf_ray: Option<String>,
-    pub status_code: Option<i64>,
-    pub compression_enabled: bool,
-    pub compression_retry_attempted: bool,
-    pub message: String,
-    pub created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -951,11 +949,6 @@ impl Storage {
             include_str!("../../migrations/040_plugins.sql"),
         )?;
         self.apply_sql_or_compat_migration(
-            "041_gateway_error_logs",
-            include_str!("../../migrations/041_gateway_error_logs.sql"),
-            |s| s.ensure_gateway_error_logs_table(),
-        )?;
-        self.apply_sql_or_compat_migration(
             "042_request_logs_request_type_service_tier",
             include_str!("../../migrations/042_request_logs_request_type_service_tier.sql"),
             |s| s.ensure_request_log_request_type_and_service_tier_columns(),
@@ -1094,6 +1087,30 @@ impl Storage {
         self.apply_compat_migration("063_account_subscriptions_account_plan_type", |s| {
             s.ensure_account_subscriptions_table()
         })?;
+        self.apply_sql_migration(
+            "064_drop_gateway_error_logs",
+            include_str!("../../migrations/064_drop_gateway_error_logs.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "065_model_source_mapping_preferences",
+            include_str!("../../migrations/065_model_source_mapping_preferences.sql"),
+            |s| s.ensure_model_source_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "066_request_logs_service_tier_source",
+            include_str!("../../migrations/066_request_logs_service_tier_source.sql"),
+            |s| s.ensure_request_log_service_tier_source_column(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "067_request_logs_model_reasoning_sources",
+            include_str!("../../migrations/067_request_logs_model_reasoning_sources.sql"),
+            |s| s.ensure_request_log_model_reasoning_source_columns(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "068_request_logs_route_strategy_source",
+            include_str!("../../migrations/068_request_logs_route_strategy_source.sql"),
+            |s| s.ensure_request_log_route_strategy_columns(),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_supplier_model_tables()?;
@@ -1102,9 +1119,11 @@ impl Storage {
         self.ensure_api_key_quota_limits_table()?;
         self.ensure_model_price_rules_table()?;
         self.ensure_request_token_stats_table()?;
-        self.ensure_gateway_error_logs_table()?;
         self.ensure_request_log_request_type_and_service_tier_columns()?;
         self.ensure_request_log_effective_service_tier_column()?;
+        self.ensure_request_log_service_tier_source_column()?;
+        self.ensure_request_log_model_reasoning_source_columns()?;
+        self.ensure_request_log_route_strategy_columns()?;
         self.ensure_request_log_first_response_column()?;
         self.ensure_request_log_route_detail_columns()?;
         self.ensure_request_log_session_id_column()?;

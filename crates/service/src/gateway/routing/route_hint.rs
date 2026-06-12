@@ -84,13 +84,33 @@ pub(crate) fn apply_route_strategy(
     key_id: &str,
     model: Option<&str>,
 ) {
+    let _ = apply_route_strategy_with_source(candidates, key_id, model);
+}
+
+pub(crate) struct RouteStrategyApplication {
+    pub(crate) strategy_label: &'static str,
+    pub(crate) source: &'static str,
+}
+
+pub(crate) fn apply_route_strategy_with_source(
+    candidates: &mut [(Account, Token)],
+    key_id: &str,
+    model: Option<&str>,
+) -> RouteStrategyApplication {
     ensure_route_config_loaded();
+    let default_application = RouteStrategyApplication {
+        strategy_label: route_mode_label(route_mode()),
+        source: "route_strategy",
+    };
     if candidates.len() <= 1 {
-        return;
+        return default_application;
     }
 
     if rotate_to_manual_preferred_account(candidates) {
-        return;
+        return RouteStrategyApplication {
+            strategy_label: "manual_preferred_account",
+            source: "manual_preferred_account",
+        };
     }
 
     let mode = route_mode();
@@ -99,6 +119,7 @@ pub(crate) fn apply_route_strategy(
     }
 
     apply_health_p2c(candidates, key_id, model, mode);
+    default_application
 }
 
 /// 函数 `apply_balanced_round_robin`

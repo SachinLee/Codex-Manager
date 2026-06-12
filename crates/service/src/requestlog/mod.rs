@@ -6,8 +6,6 @@ pub(crate) mod aggregate_api_daily_usage;
 pub(crate) mod clear;
 #[path = "requestlog_day_range.rs"]
 pub(crate) mod day_range;
-#[path = "requestlog_error_list.rs"]
-pub(crate) mod error_list;
 #[path = "requestlog_list.rs"]
 pub(crate) mod list;
 #[path = "requestlog_summary.rs"]

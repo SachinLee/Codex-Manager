@@ -2,7 +2,6 @@ use chrono::DateTime;
 use codexmanager_core::usage::{accounts_check_endpoint, usage_endpoint};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::Client;
-use reqwest::Proxy;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{OnceLock, RwLock};
@@ -25,6 +24,8 @@ const REFRESH_TOKEN_INVALIDATED_MESSAGE: &str =
     "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.";
 const REFRESH_TOKEN_INVALID_GRANT_MESSAGE: &str =
     "Your access token could not be refreshed because your refresh token is no longer valid. Please log out and sign in again.";
+const REFRESH_TOKEN_SESSION_TERMINATED_MESSAGE: &str =
+    "Your session has ended. Please log in again.";
 const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
     "Your access token could not be refreshed. Please log out and sign in again.";
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -43,6 +44,7 @@ pub(crate) enum RefreshTokenAuthErrorReason {
     Reused,
     Invalidated,
     InvalidGrant,
+    AppSessionTerminated,
     Unknown401,
 }
 
@@ -64,6 +66,7 @@ impl RefreshTokenAuthErrorReason {
             Self::Reused => "refresh_token_reused",
             Self::Invalidated => "refresh_token_invalidated",
             Self::InvalidGrant => "invalid_grant",
+            Self::AppSessionTerminated => "app_session_terminated",
             Self::Unknown401 => "refresh_token_unknown_401",
         }
     }
@@ -85,11 +88,11 @@ impl RefreshTokenAuthErrorReason {
             Self::Reused => REFRESH_TOKEN_REUSED_MESSAGE,
             Self::Invalidated => REFRESH_TOKEN_INVALIDATED_MESSAGE,
             Self::InvalidGrant => REFRESH_TOKEN_INVALID_GRANT_MESSAGE,
+            Self::AppSessionTerminated => REFRESH_TOKEN_SESSION_TERMINATED_MESSAGE,
             Self::Unknown401 => REFRESH_TOKEN_UNKNOWN_MESSAGE,
         }
     }
 }
-
 #[derive(serde::Deserialize)]
 pub(crate) struct RefreshTokenResponse {
     pub(crate) access_token: String,
@@ -346,6 +349,7 @@ fn classify_refresh_token_auth_error_reason_from_code(
         Some("refresh_token_reused") => RefreshTokenAuthErrorReason::Reused,
         Some("refresh_token_invalidated") => RefreshTokenAuthErrorReason::Invalidated,
         Some("invalid_grant") => RefreshTokenAuthErrorReason::InvalidGrant,
+        Some("app_session_terminated") => RefreshTokenAuthErrorReason::AppSessionTerminated,
         _ => RefreshTokenAuthErrorReason::Unknown401,
     }
 }
@@ -387,12 +391,18 @@ fn classify_refresh_token_auth_error_reason_with_headers(
     _headers: Option<&HeaderMap>,
     body: &str,
 ) -> Option<RefreshTokenAuthErrorReason> {
-    if status != reqwest::StatusCode::UNAUTHORIZED {
-        return None;
+    let code = extract_refresh_token_error_code(body);
+    if status == reqwest::StatusCode::BAD_REQUEST
+        && code.as_deref() == Some("app_session_terminated")
+    {
+        return Some(RefreshTokenAuthErrorReason::AppSessionTerminated);
     }
-    Some(classify_refresh_token_auth_error_reason_from_code(
-        extract_refresh_token_error_code(body).as_deref(),
-    ))
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Some(classify_refresh_token_auth_error_reason_from_code(
+            code.as_deref(),
+        ));
+    }
+    None
 }
 
 /// 函数 `refresh_token_auth_error_reason_from_message`
@@ -413,11 +423,17 @@ pub(crate) fn refresh_token_auth_error_reason_from_message(
     let is_401 = normalized.contains("refresh token failed with status 401");
     let is_400_invalid_grant = normalized.contains("refresh token failed with status 400")
         && normalized.contains("invalid_grant");
-    if !is_401 && !is_400_invalid_grant {
+    let is_400_app_session_terminated = normalized.contains("refresh token failed with status 400")
+        && (normalized.contains("app_session_terminated")
+            || normalized.contains(REFRESH_TOKEN_SESSION_TERMINATED_MESSAGE));
+    if !is_401 && !is_400_invalid_grant && !is_400_app_session_terminated {
         return None;
     }
     if is_400_invalid_grant {
         return Some(RefreshTokenAuthErrorReason::InvalidGrant);
+    }
+    if is_400_app_session_terminated {
+        return Some(RefreshTokenAuthErrorReason::AppSessionTerminated);
     }
     if normalized.contains(REFRESH_TOKEN_EXPIRED_MESSAGE) {
         return Some(RefreshTokenAuthErrorReason::Expired);
@@ -430,6 +446,9 @@ pub(crate) fn refresh_token_auth_error_reason_from_message(
     }
     if normalized.contains(REFRESH_TOKEN_INVALID_GRANT_MESSAGE) {
         return Some(RefreshTokenAuthErrorReason::InvalidGrant);
+    }
+    if normalized.contains(REFRESH_TOKEN_SESSION_TERMINATED_MESSAGE) {
+        return Some(RefreshTokenAuthErrorReason::AppSessionTerminated);
     }
     Some(RefreshTokenAuthErrorReason::Unknown401)
 }
@@ -540,7 +559,7 @@ fn format_refresh_token_status_error_with_headers(
 /// 返回函数执行结果
 fn build_usage_http_client() -> Client {
     let default_headers = build_usage_http_default_headers();
-    let mut builder = Client::builder()
+    let builder = Client::builder()
         // 中文注释：轮询链路复用连接池可降低握手开销；不复用会在多账号刷新时放大短连接抖动。
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
@@ -548,46 +567,26 @@ fn build_usage_http_client() -> Client {
         .pool_idle_timeout(Some(Duration::from_secs(60)))
         .user_agent(crate::gateway::current_codex_user_agent())
         .default_headers(default_headers);
-    if let Some(proxy_url) = current_upstream_proxy_url() {
-        match Proxy::all(proxy_url.as_str()) {
-            Ok(proxy) => {
-                builder = builder.proxy(proxy);
-            }
-            Err(err) => {
-                log::warn!(
-                    "event=usage_http_proxy_invalid proxy={} err={}",
-                    proxy_url,
-                    err
-                );
-            }
-        }
-    }
+    let builder = crate::gateway::apply_async_upstream_proxy(
+        builder,
+        current_upstream_proxy_url().as_deref(),
+        "usage_http_proxy_invalid",
+    );
     builder.build().unwrap_or_else(|_| Client::new())
 }
-
 fn build_subscription_http_client() -> Client {
-    let mut builder = Client::builder()
+    let builder = Client::builder()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(4)
         .pool_idle_timeout(Some(Duration::from_secs(60)));
-    if let Some(proxy_url) = current_upstream_proxy_url() {
-        match Proxy::all(proxy_url.as_str()) {
-            Ok(proxy) => {
-                builder = builder.proxy(proxy);
-            }
-            Err(err) => {
-                log::warn!(
-                    "event=subscription_http_proxy_invalid proxy={} err={}",
-                    proxy_url,
-                    err
-                );
-            }
-        }
-    }
+    let builder = crate::gateway::apply_async_upstream_proxy(
+        builder,
+        current_upstream_proxy_url().as_deref(),
+        "subscription_http_proxy_invalid",
+    );
     builder.build().unwrap_or_else(|_| Client::new())
 }
-
 /// 函数 `build_usage_http_default_headers`
 ///
 /// 作者: gaohongshun

@@ -1,5 +1,4 @@
 use codexmanager_core::storage::{now_ts, Account, ConversationBinding, Storage, Token};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationRoutingContext {
@@ -11,7 +10,6 @@ pub(crate) struct ConversationRoutingContext {
     pub(crate) bound_account_selectable: bool,
     pub(crate) manual_preferred_account_id: Option<String>,
     pub(crate) next_thread_epoch: Option<i64>,
-    pub(crate) next_thread_anchor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +36,7 @@ impl RouteConversationSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CandidateRotationSource {
     ConversationBinding,
+    ManualPreferredAccount,
     RouteStrategy,
 }
 
@@ -56,6 +55,7 @@ impl CandidateRotationSource {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ConversationBinding => "conversation_bound",
+            Self::ManualPreferredAccount => "manual_preferred_account",
             Self::RouteStrategy => "route_strategy",
         }
     }
@@ -196,40 +196,6 @@ fn derive_next_thread_epoch(existing_binding: Option<&ConversationBinding>) -> O
     existing_binding.map(|binding| binding.thread_epoch + 1)
 }
 
-/// 函数 `derive_thread_anchor`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - platform_key_hash: 参数 platform_key_hash
-/// - conversation_id: 参数 conversation_id
-/// - thread_epoch: 参数 thread_epoch
-///
-/// # 返回
-/// 返回函数执行结果
-fn derive_thread_anchor(
-    platform_key_hash: &str,
-    conversation_id: &str,
-    thread_epoch: i64,
-) -> String {
-    let digest =
-        Sha256::digest(format!("{platform_key_hash}:{conversation_id}:{thread_epoch}").as_bytes());
-    format!(
-        "cmgr-thread-{}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        thread_epoch,
-        digest[0],
-        digest[1],
-        digest[2],
-        digest[3],
-        digest[4],
-        digest[5],
-        digest[6],
-        digest[7]
-    )
-}
-
 /// 函数 `switch_reason_for_account`
 ///
 /// 作者: gaohongshun
@@ -310,9 +276,6 @@ pub(crate) fn prepare_conversation_routing_with_source(
             .is_some_and(|binding| rotate_to_bound_account(candidates.as_mut_slice(), binding))
     };
     let next_thread_epoch = derive_next_thread_epoch(existing_binding.as_ref());
-    let next_thread_anchor = next_thread_epoch.map(|thread_epoch| {
-        derive_thread_anchor(platform_key_hash, conversation_id.as_str(), thread_epoch)
-    });
 
     Some(ConversationRoutingContext {
         platform_key_hash: platform_key_hash.to_string(),
@@ -323,7 +286,6 @@ pub(crate) fn prepare_conversation_routing_with_source(
         bound_account_selectable,
         manual_preferred_account_id,
         next_thread_epoch,
-        next_thread_anchor,
     })
 }
 
@@ -354,7 +316,33 @@ pub(crate) fn apply_candidate_rotation(
             strategy_applied: false,
         };
     }
+    if routing
+        .as_ref()
+        .and_then(|routing| routing.manual_preferred_account_id.as_deref())
+        .is_some()
+    {
+        return CandidateRotationPlan {
+            source: CandidateRotationSource::ManualPreferredAccount,
+            strategy_label: "manual_preferred_account",
+            strategy_applied: false,
+        };
+    }
+    let manual_preferred_account_id = super::manual_preferred_account();
     super::apply_route_strategy(candidates, key_id, model_for_log);
+    if manual_preferred_account_id
+        .as_deref()
+        .is_some_and(|account_id| {
+            candidates
+                .iter()
+                .any(|(account, _)| account.id == account_id)
+        })
+    {
+        return CandidateRotationPlan {
+            source: CandidateRotationSource::ManualPreferredAccount,
+            strategy_label: "manual_preferred_account",
+            strategy_applied: false,
+        };
+    }
     CandidateRotationPlan {
         source: CandidateRotationSource::RouteStrategy,
         strategy_label: super::current_route_strategy(),
@@ -388,13 +376,8 @@ pub(crate) fn resolve_attempt_thread(
             reset_session_affinity: false,
         }),
         Some(binding) => Some(ConversationThreadAttempt {
-            thread_anchor: routing.next_thread_anchor.clone().unwrap_or_else(|| {
-                derive_thread_anchor(
-                    routing.platform_key_hash.as_str(),
-                    routing.conversation_id.as_str(),
-                    binding.thread_epoch + 1,
-                )
-            }),
+            // 同一会话的 prompt_cache_key 必须稳定；账号切换只重置 session affinity。
+            thread_anchor: binding.thread_anchor.clone(),
             thread_epoch: routing
                 .next_thread_epoch
                 .unwrap_or(binding.thread_epoch + 1),
@@ -645,7 +628,7 @@ mod tests {
     /// # 返回
     /// 无
     #[test]
-    fn resolve_attempt_thread_uses_next_generation_for_switched_account() {
+    fn resolve_attempt_thread_keeps_anchor_for_switched_account() {
         let binding = sample_binding("acc-1");
         let routing = prepare_conversation_routing(
             "key-hash-1",
@@ -660,7 +643,7 @@ mod tests {
 
         assert!(actual.reset_session_affinity);
         assert_eq!(actual.thread_epoch, 2);
-        assert_ne!(actual.thread_anchor, binding.thread_anchor);
+        assert_eq!(actual.thread_anchor, binding.thread_anchor);
     }
 
     #[test]
@@ -859,7 +842,7 @@ mod tests {
     #[test]
     fn apply_candidate_rotation_reports_binding_source_when_binding_selected() {
         let binding = sample_binding("acc-1");
-        let routing = prepare_conversation_routing(
+        let mut routing = prepare_conversation_routing(
             "key-hash-1",
             Some("conv-1"),
             Some(&binding),
@@ -869,6 +852,7 @@ mod tests {
             ],
         )
         .expect("routing context");
+        routing.manual_preferred_account_id = Some("acc-1".to_string());
         let mut candidates = vec![
             (sample_account("acc-2", 0), sample_token("acc-2")),
             (sample_account("acc-1", 1), sample_token("acc-1")),
@@ -885,6 +869,36 @@ mod tests {
         assert_eq!(plan.strategy_label, "conversation_bound");
         assert!(!plan.strategy_applied);
         assert_eq!(candidates[0].0.id, "acc-2");
+    }
+
+    #[test]
+    fn apply_candidate_rotation_reports_manual_preferred_source() {
+        let mut routing = prepare_conversation_routing(
+            "key-hash-1",
+            Some("conv-1"),
+            None,
+            &mut vec![
+                (sample_account("acc-2", 0), sample_token("acc-2")),
+                (sample_account("acc-1", 1), sample_token("acc-1")),
+            ],
+        )
+        .expect("routing context");
+        routing.manual_preferred_account_id = Some("acc-2".to_string());
+        let mut candidates = vec![
+            (sample_account("acc-2", 0), sample_token("acc-2")),
+            (sample_account("acc-1", 1), sample_token("acc-1")),
+        ];
+
+        let plan = apply_candidate_rotation(
+            &mut candidates,
+            Some(&routing),
+            "key-hash-1",
+            Some("gpt-5.4"),
+        );
+
+        assert_eq!(plan.source, CandidateRotationSource::ManualPreferredAccount);
+        assert_eq!(plan.strategy_label, "manual_preferred_account");
+        assert!(!plan.strategy_applied);
     }
 
     /// 函数 `terminal_response_creates_and_rebinds_conversation_binding_on_success`
@@ -944,7 +958,7 @@ mod tests {
             .expect("binding exists");
         assert_eq!(rebound.account_id, "acc-2");
         assert_eq!(rebound.thread_epoch, 2);
-        assert_ne!(rebound.thread_anchor, created.thread_anchor);
+        assert_eq!(rebound.thread_anchor, created.thread_anchor);
         assert_eq!(rebound.last_model.as_deref(), Some("gpt-5.5"));
         assert_eq!(
             rebound.last_switch_reason.as_deref(),

@@ -51,7 +51,7 @@ const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = false;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_USE_WEBSOCKET_UPSTREAM: bool = false;
 const DEFAULT_CODEX_IMAGE_GENERATION_ENABLED: bool = true;
-const DEFAULT_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL: bool = true;
+const DEFAULT_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL: bool = false;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 0;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 0;
@@ -281,6 +281,41 @@ fn build_async_upstream_client() -> reqwest::Client {
     build_async_upstream_client_with_proxy(proxy_url.as_deref())
 }
 
+pub(crate) fn apply_blocking_upstream_proxy(
+    mut builder: reqwest::blocking::ClientBuilder,
+    proxy_url: Option<&str>,
+    invalid_event: &str,
+) -> reqwest::blocking::ClientBuilder {
+    if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
+        match Proxy::all(proxy_url) {
+            Ok(proxy) => {
+                builder = builder.proxy(proxy);
+            }
+            Err(err) => {
+                log::warn!("event={} proxy={} err={}", invalid_event, proxy_url, err);
+            }
+        }
+    }
+    builder
+}
+
+pub(crate) fn apply_async_upstream_proxy(
+    mut builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+    invalid_event: &str,
+) -> reqwest::ClientBuilder {
+    if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
+        match Proxy::all(proxy_url) {
+            Ok(proxy) => {
+                builder = builder.proxy(proxy);
+            }
+            Err(err) => {
+                log::warn!("event={} proxy={} err={}", invalid_event, proxy_url, err);
+            }
+        }
+    }
+    builder
+}
 /// 函数 `build_upstream_client_with_proxy`
 ///
 /// 作者: gaohongshun

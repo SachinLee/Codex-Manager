@@ -3,7 +3,6 @@ use codexmanager_core::storage::{Account, Storage, Token};
 use std::time::Instant;
 
 use crate::account_status::mark_account_unavailable_for_refresh_token_error;
-use crate::gateway::error_log::GatewayErrorLogInput;
 use crate::usage_token_refresh::token_refresh_ahead_secs;
 
 use super::super::support::backoff;
@@ -227,21 +226,6 @@ fn retry_chatgpt_challenge_without_compression(
             url
         );
     }
-    crate::gateway::write_gateway_error_log(GatewayErrorLogInput {
-        account_id: Some(account.id.as_str()),
-        request_path: request_ctx.request_path,
-        method: method.as_str(),
-        stage: "chatgpt_challenge_retry_without_compression",
-        error_kind: Some("cloudflare_challenge"),
-        upstream_url: Some(url),
-        cf_ray: upstream_cf_ray,
-        status_code: Some(status.as_u16()),
-        compression_enabled: crate::gateway::request_compression_enabled(),
-        compression_retry_attempted: true,
-        message: "chatgpt challenge detected; retrying same request without compression",
-        ..GatewayErrorLogInput::default()
-    });
-
     match super::transport::send_upstream_request_without_compression(
         client,
         method,
@@ -257,20 +241,6 @@ fn retry_chatgpt_challenge_without_compression(
     ) {
         Ok(resp) => Ok(resp.status().is_success().then_some(resp)),
         Err(err) => {
-            let err_text = err.to_string();
-            crate::gateway::write_gateway_error_log(GatewayErrorLogInput {
-                account_id: Some(account.id.as_str()),
-                request_path: request_ctx.request_path,
-                method: method.as_str(),
-                stage: "chatgpt_challenge_retry_without_compression_error",
-                error_kind: Some("transport_error"),
-                upstream_url: Some(url),
-                status_code: Some(502),
-                compression_enabled: crate::gateway::request_compression_enabled(),
-                compression_retry_attempted: true,
-                message: err_text.as_str(),
-                ..GatewayErrorLogInput::default()
-            });
             log::warn!(
                 "event=gateway_chatgpt_challenge_retry_without_compression_error path={} status=502 account_id={} err={}",
                 request_ctx.request_path,

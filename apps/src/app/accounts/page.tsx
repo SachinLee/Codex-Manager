@@ -20,7 +20,13 @@ import { AccountsPageView } from "@/app/accounts/accounts-page-view";
 import { isBannedAccount, isLimitedAccount } from "@/lib/utils/usage";
 import type { Account } from "@/types";
 
-type CleanupStatus = "unavailable" | "banned" | "limited" | "disabled" | "inactive";
+type CleanupStatus =
+  | "unavailable"
+  | "banned"
+  | "limited"
+  | "disabled"
+  | "inactive"
+  | "unknown";
 
 const CLEANUP_STATUSES: CleanupStatus[] = [
   "unavailable",
@@ -28,6 +34,7 @@ const CLEANUP_STATUSES: CleanupStatus[] = [
   "limited",
   "disabled",
   "inactive",
+  "unknown",
 ];
 
 function normalizeCleanupStatus(status: string): CleanupStatus | null {
@@ -207,6 +214,11 @@ export default function AccountsPage() {
           id: "inactive" as const,
           label: t("停用"),
           description: t("手动停用或旧版本标记的账号"),
+        },
+        {
+          id: "unknown" as const,
+          label: t("未知"),
+          description: t("状态字段为 unknown 的账号"),
         },
       ].map((option) => ({
         ...option,

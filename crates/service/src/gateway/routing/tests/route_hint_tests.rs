@@ -566,9 +566,12 @@ fn persisted_preferred_account_rotates_to_head() {
     set_manual_preferred_account("acc-b").expect("set preferred");
 
     let mut candidates = candidate_list();
-    apply_route_strategy(&mut candidates, "gk-preferred", Some("gpt-5.3-codex"));
+    let application =
+        apply_route_strategy_with_source(&mut candidates, "gk-preferred", Some("gpt-5.3-codex"));
 
     assert_eq!(get_manual_preferred_account().as_deref(), Some("acc-b"));
+    assert_eq!(application.strategy_label, "manual_preferred_account");
+    assert_eq!(application.source, "manual_preferred_account");
     assert_eq!(account_ids(&candidates)[0], "acc-b");
 
     if let Some(value) = previous_db_path {

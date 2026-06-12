@@ -1,12 +1,11 @@
 use codexmanager_core::rpc::types::{
-    DailyUsageStatsParams, GatewayErrorLogListParams, JsonRpcRequest, JsonRpcResponse,
-    RequestLogListParams,
+    DailyUsageStatsParams, JsonRpcRequest, JsonRpcResponse, RequestLogListParams,
 };
 
 use crate::RpcActor;
 use crate::{
     requestlog_account_daily_usage, requestlog_aggregate_api_daily_usage, requestlog_clear,
-    requestlog_error_list, requestlog_list, requestlog_summary, requestlog_today_summary,
+    requestlog_list, requestlog_summary, requestlog_today_summary,
 };
 
 fn actor_key_ids(actor: &RpcActor) -> Result<Vec<String>, String> {
@@ -72,20 +71,6 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             }))
         }
         "requestlog/clear" => super::ok_or_error(requestlog_clear::clear_request_logs()),
-        "requestlog/error_clear" => {
-            super::ok_or_error(requestlog_clear::clear_gateway_error_logs())
-        }
-        "requestlog/error_list" => {
-            let params = req
-                .params
-                .clone()
-                .map(serde_json::from_value::<GatewayErrorLogListParams>)
-                .transpose()
-                .map(|params| params.unwrap_or_default())
-                .map(GatewayErrorLogListParams::normalized)
-                .map_err(|err| format!("invalid requestlog/error_list params: {err}"));
-            super::value_or_error(params.and_then(requestlog_error_list::read_gateway_error_logs))
-        }
         "requestlog/today_summary" => {
             let day_start_ts = super::i64_param(req, "dayStartTs");
             let day_end_ts = super::i64_param(req, "dayEndTs");

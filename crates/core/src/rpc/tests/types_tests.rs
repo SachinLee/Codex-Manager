@@ -1,8 +1,8 @@
 use super::{
-    AccountListParams, AccountListResult, AccountSummary, ApiKeyUsageStatSummary,
-    DashboardAdminUsageSummaryResult, DashboardDailyUsagePoint, DashboardSourceUsageSummary,
-    DashboardTokenUsageResult, DashboardUserUsageSummary, RequestLogFilterSummaryResult,
-    RequestLogListParams, RequestLogListResult, RequestLogSummary,
+    AccountListResult, AccountSummary, ApiKeyUsageStatSummary, DashboardAdminUsageSummaryResult,
+    DashboardDailyUsagePoint, DashboardSourceUsageSummary, DashboardTokenUsageResult,
+    DashboardUserUsageSummary, RequestLogFilterSummaryResult, RequestLogListParams,
+    RequestLogListResult, RequestLogSummary,
 };
 
 /// 函数 `account_summary_serialization_matches_compact_contract`
@@ -61,27 +61,6 @@ fn account_summary_serialization_matches_compact_contract() {
     for key in ["workspaceId", "workspaceName", "updatedAt"] {
         assert!(!obj.contains_key(key), "unexpected key: {key}");
     }
-}
-
-/// 函数 `account_list_params_default_to_first_page_with_five_items`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn account_list_params_default_to_first_page_with_five_items() {
-    let params: AccountListParams =
-        serde_json::from_value(serde_json::json!({})).expect("deserialize params");
-    let normalized = params.normalized();
-
-    assert_eq!(normalized.page, 1);
-    assert_eq!(normalized.page_size, 5);
 }
 
 /// 函数 `account_list_result_serialization_includes_pagination_fields`
@@ -156,12 +135,20 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
         original_path: Some("/v1/chat/completions".to_string()),
         adapted_path: Some("/v1/responses".to_string()),
         method: "POST".to_string(),
+        route_strategy: Some("balanced".to_string()),
+        route_source: Some("conversation_bound".to_string()),
+        client_model: Some("gpt-5-client".to_string()),
         model: Some("gpt-5.3-codex".to_string()),
+        model_source: Some("gateway_override".to_string()),
         upstream_model: Some("gpt-upstream".to_string()),
         actual_source_kind: Some("openai_account".to_string()),
         actual_source_id: Some("acc_1".to_string()),
+        client_reasoning_effort: Some("low".to_string()),
         reasoning_effort: Some("high".to_string()),
+        reasoning_source: Some("api_key_profile".to_string()),
+        service_tier: Some("fast".to_string()),
         effective_service_tier: Some("fast".to_string()),
+        service_tier_source: Some("client_request".to_string()),
         response_adapter: Some("OpenAIChatCompletionsJson".to_string()),
         canonical_source: Some("openai_compat".to_string()),
         size_reject_stage: Some("-".to_string()),
@@ -194,7 +181,11 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
         "responseAdapter",
         "canonicalSource",
         "sizeRejectStage",
+        "serviceTier",
         "effectiveServiceTier",
+        "serviceTierSource",
+        "routeStrategy",
+        "routeSource",
         "requestPath",
         "upstreamModel",
         "actualSourceKind",
@@ -252,9 +243,17 @@ fn request_log_list_result_serialization_includes_pagination_fields() {
             original_path: Some("/v1/chat/completions".to_string()),
             adapted_path: Some("/v1/responses".to_string()),
             method: "POST".to_string(),
+            route_strategy: Some("balanced".to_string()),
+            route_source: Some("conversation_bound".to_string()),
+            client_model: Some("gpt-5-client".to_string()),
             model: Some("gpt-5.3-codex".to_string()),
+            model_source: Some("gateway_override".to_string()),
+            client_reasoning_effort: Some("low".to_string()),
             reasoning_effort: Some("high".to_string()),
+            reasoning_source: Some("api_key_profile".to_string()),
+            service_tier: Some("fast".to_string()),
             effective_service_tier: Some("fast".to_string()),
+            service_tier_source: Some("client_request".to_string()),
             response_adapter: Some("OpenAIChatCompletionsJson".to_string()),
             canonical_source: Some("openai_compat".to_string()),
             size_reject_stage: Some("-".to_string()),

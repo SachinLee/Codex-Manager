@@ -10,6 +10,13 @@ export interface ModelTruncationPolicy {
   [key: string]: unknown;
 }
 
+export interface ModelServiceTier {
+  id: string;
+  name: string;
+  description: string;
+  [key: string]: unknown;
+}
+
 export interface ModelInfo {
   slug: string;
   displayName: string;
@@ -21,8 +28,11 @@ export interface ModelInfo {
   supportedInApi: boolean;
   priority: number;
   additionalSpeedTiers: string[];
+  serviceTiers: ModelServiceTier[];
+  defaultServiceTier: string | null;
   availabilityNux: Record<string, unknown> | null;
   upgrade: Record<string, unknown> | null;
+  upgradeInfo: Record<string, unknown> | null;
   baseInstructions: string | null;
   modelMessages: Record<string, unknown> | null;
   supportsReasoningSummaries: boolean | null;

@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState, type WheelEvent as ReactWheelEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -69,12 +75,14 @@ import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { useMemberDashboardSummary } from "@/hooks/useMemberDashboardSummary";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
+import { useCodexProfileModeStatus } from "@/hooks/useCodexProfileModeStatus";
 import {
   estimateChartYAxisWidth,
   formatCompactTokenAmount,
   formatPercent,
 } from "@/lib/dashboard/format";
 import { quotaClient } from "@/lib/api/quota-client";
+import type { AppLocale } from "@/lib/i18n/config";
 import { useI18n } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
 import { buildStaticRouteUrl } from "@/lib/utils/static-routes";
@@ -139,6 +147,25 @@ interface AdminUsageRangeValue {
   endTs: number | null;
   startInput: string;
   endInput: string;
+}
+
+const SUPPORTED_INTL_LOCALES = ["zh-CN", "en-US", "ru-RU", "ko-KR"] as const;
+
+const INTL_LOCALE_BY_APP_LOCALE: Record<Exclude<AppLocale, "zh-CN">, string> = {
+  en: "en-US",
+  ru: "ru-RU",
+  ko: "ko-KR",
+};
+
+function intlLocaleFromAppLocale(locale: string): string {
+  if (
+    SUPPORTED_INTL_LOCALES.includes(
+      locale as (typeof SUPPORTED_INTL_LOCALES)[number],
+    )
+  ) {
+    return locale;
+  }
+  return INTL_LOCALE_BY_APP_LOCALE[locale as Exclude<AppLocale, "zh-CN">] ?? "zh-CN";
 }
 
 function formatDateInputValue(date: Date): string {
@@ -218,11 +245,11 @@ function formatDateTime(value: number | null | undefined): string {
   return formatLocalDateTimeFromSeconds(value, "从未使用");
 }
 
-function formatShortDate(value: number | null | undefined): string {
+function formatShortDate(value: number | null | undefined, locale: AppLocale): string {
   if (!value) return "--";
   const date = new Date(value * 1000);
   if (Number.isNaN(date.getTime())) return "--";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(intlLocaleFromAppLocale(locale), {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
@@ -231,11 +258,12 @@ function formatShortDate(value: number | null | undefined): string {
 function formatShortDateRange(
   startTs: number | null | undefined,
   endTsExclusive: number | null | undefined,
+  locale: AppLocale,
 ): string {
   if (!startTs || !endTsExclusive || endTsExclusive <= startTs) {
     return "--";
   }
-  return `${formatShortDate(startTs)} - ${formatShortDate(endTsExclusive - 1)}`;
+  return `${formatShortDate(startTs, locale)} - ${formatShortDate(endTsExclusive - 1, locale)}`;
 }
 
 function formatDuration(value: number | null | undefined): string {
@@ -418,6 +446,45 @@ function DashboardInitialSkeleton() {
   );
 }
 
+function DirectModeUnavailable({
+  active,
+  children,
+  className,
+}: {
+  active: boolean;
+  children: ReactNode;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  if (!active) return <>{children}</>;
+
+  return (
+    <div className={cn("relative overflow-hidden rounded-xl", className)}>
+      <div className="pointer-events-none select-none opacity-60 blur-[1px] grayscale">
+        {children}
+      </div>
+      <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/45 p-4 backdrop-blur-sm">
+        <div className="grid max-w-md justify-items-center gap-3 rounded-2xl border border-amber-500/40 bg-background/80 px-5 py-4 text-center shadow-lg shadow-amber-500/10">
+          <div>
+            <div className="text-sm font-semibold text-amber-700 dark:text-amber-200">
+              {t("账号直连模式下不可用")}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {t("切换到本地网关后可统计请求日志、Token 和费用")}
+            </div>
+          </div>
+          <a
+            href={buildStaticRouteUrl("/platform-mode")}
+            className="inline-flex h-8 items-center justify-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            {t("去切换为本地网关")}
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function userUsageName(item: DashboardUserUsageSummary): string {
   return item.displayName || item.username || item.userId;
 }
@@ -465,14 +532,15 @@ function DailyTokenLineChart({
   zoomWindow?: { startIndex: number; endIndex: number } | null;
   onZoomWindowChange?: (next: { startIndex: number; endIndex: number } | null) => void;
 }) {
+  const { t, locale } = useI18n();
   const chartConfig = {
     totalTokens: {
-      label: "Token",
+      label: t("Token"),
       color: "var(--primary)",
     },
   } satisfies ChartConfig;
   const chartData = points.map((item) => ({
-    date: formatShortDate(item.dayStartTs),
+    date: formatShortDate(item.dayStartTs, locale),
     totalTokens: item.usage.totalTokens,
     estimatedCostUsd: item.usage.estimatedCostUsd,
     requestCount: item.usage.requestCount,
@@ -546,7 +614,7 @@ function DailyTokenLineChart({
     <div
       className="rounded-xl"
       onWheel={handleWheelZoom}
-      title="在图表区域使用鼠标滚轮缩放时间区间"
+      title={t("在图表区域使用鼠标滚轮缩放时间区间")}
     >
       <ChartContainer
         config={chartConfig}
@@ -709,21 +777,32 @@ function AdminUsageAnalyticsCard({
   onApplyCustomRange: () => void;
   isCustomRangeInvalid: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [zoomWindow, setZoomWindow] = useState<{
     startIndex: number;
     endIndex: number;
   } | null>(null);
 
   useEffect(() => {
+    let active = true;
     if (!summary?.dailyUsage.length) {
-      setZoomWindow(null);
-      return;
+      queueMicrotask(() => {
+        if (active) setZoomWindow(null);
+      });
+      return () => {
+        active = false;
+      };
     }
-    setZoomWindow({
+    const nextZoomWindow = {
       startIndex: 0,
       endIndex: summary.dailyUsage.length - 1,
+    };
+    queueMicrotask(() => {
+      if (active) setZoomWindow(nextZoomWindow);
     });
+    return () => {
+      active = false;
+    };
   }, [summary?.dailyUsage.length, summary?.rangeEndTs, summary?.rangeStartTs]);
 
   if (isLoading) {
@@ -804,7 +883,7 @@ function AdminUsageAnalyticsCard({
               {t("按天、成员、OpenAI 账号和聚合 API 汇总 token 消耗；费用为 API 等价估算")}
             </p>
             <div className="mt-2 text-[11px] text-muted-foreground">
-              {t("当前区间")} {formatShortDateRange(summary.rangeStartTs, summary.rangeEndTs)}
+              {t("当前区间")} {formatShortDateRange(summary.rangeStartTs, summary.rangeEndTs, locale)}
               {" · "}
               {t("图表区域支持鼠标滚轮缩放")}
             </div>
@@ -944,6 +1023,10 @@ function AdminDashboard() {
   const { t } = useI18n();
   const { stats, currentAccount, recommendations, requestLogs, isLoading, isServiceReady } =
     useDashboardStats();
+  const { isDirectAccountMode } = useCodexProfileModeStatus({
+    enabled: true,
+    refetchIntervalMs: 10_000,
+  });
   const localDayRange = useLocalDayRange();
   const [adminUsageRangePreset, setAdminUsageRangePreset] =
     useState<AdminUsageRangePreset>("7d");
@@ -961,14 +1044,21 @@ function AdminDashboard() {
     if (adminUsageRangePreset === "custom") {
       return;
     }
+    let active = true;
     const nextRange = buildAdminUsagePresetRange(
       adminUsageRangePreset,
       localDayRange.dayStartTs,
       localDayRange.dayEndTs,
     );
-    setAdminUsageRangeStartInput(nextRange.startInput);
-    setAdminUsageRangeEndInput(nextRange.endInput);
-    setAdminUsageRangeParams(nextRange);
+    queueMicrotask(() => {
+      if (!active) return;
+      setAdminUsageRangeStartInput(nextRange.startInput);
+      setAdminUsageRangeEndInput(nextRange.endInput);
+      setAdminUsageRangeParams(nextRange);
+    });
+    return () => {
+      active = false;
+    };
   }, [
     adminUsageRangePreset,
     localDayRange.dayEndTs,
@@ -1013,6 +1103,24 @@ function AdminDashboard() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-700">
+      {isDirectAccountMode ? (
+        <Alert className="border-amber-500/30 bg-amber-500/10">
+          <AlertTriangle className="size-4" />
+          <AlertTitle>{t("当前为账号直连模式")}</AlertTitle>
+          <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              {t("CodexManager 无法统计 CLI 请求日志和用量。")}
+            </span>
+            <a
+              href={buildStaticRouteUrl("/platform-mode")}
+              className="inline-flex h-7 w-fit items-center justify-center rounded-md border border-amber-500/40 bg-background/70 px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-background"
+            >
+              {t("去切换为本地网关")}
+            </a>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         {isLoading ? (
           Array.from({ length: 5 }).map((_, index) => (
@@ -1026,7 +1134,11 @@ function AdminDashboard() {
               icon={Users}
               color="text-blue-500"
               sub={t("池中所有配置账号")}
-              badge={`${t("最近日志")} ${requestLogs.length} ${t("条")}`}
+              badge={
+                isDirectAccountMode
+                  ? t("账号直连模式下不可用")
+                  : `${t("最近日志")} ${requestLogs.length} ${t("条")}`
+              }
             />
 
             <MetricCard
@@ -1094,50 +1206,54 @@ function AdminDashboard() {
         )}
       </div>
 
-      <TokenActivityHeatmapCard
-        activity={tokenActivity}
-        isLoading={isLoading || isTokenActivityLoading}
-        isError={isTokenActivityError}
-      />
+      <DirectModeUnavailable active={isDirectAccountMode}>
+        <TokenActivityHeatmapCard
+          activity={tokenActivity}
+          isLoading={isLoading || isTokenActivityLoading}
+          isError={isTokenActivityError}
+        />
+      </DirectModeUnavailable>
 
-      <AdminUsageAnalyticsCard
-        summary={adminUsageSummary}
-        isLoading={isLoading || isAdminUsageLoading}
-        isError={isAdminUsageError}
-        rangePreset={adminUsageRangePreset}
-        rangeStartInput={adminUsageRangeStartInput}
-        rangeEndInput={adminUsageRangeEndInput}
-        onRangePresetChange={(preset) => {
-          setAdminUsageRangePreset(preset);
-          if (preset === "custom") {
-            return;
-          }
-          const nextRange = buildAdminUsagePresetRange(
-            preset,
-            localDayRange.dayStartTs,
-            localDayRange.dayEndTs,
-          );
-          setAdminUsageRangeStartInput(nextRange.startInput);
-          setAdminUsageRangeEndInput(nextRange.endInput);
-          setAdminUsageRangeParams(nextRange);
-        }}
-        onRangeStartInputChange={setAdminUsageRangeStartInput}
-        onRangeEndInputChange={setAdminUsageRangeEndInput}
-        onApplyCustomRange={() => {
-          const startTs = parseDateInputStartTs(adminUsageRangeStartInput);
-          const endTs = parseDateInputEndTs(adminUsageRangeEndInput);
-          if (startTs == null || endTs == null || endTs <= startTs) {
-            return;
-          }
-          setAdminUsageRangeParams({
-            startTs,
-            endTs,
-            startInput: adminUsageRangeStartInput,
-            endInput: adminUsageRangeEndInput,
-          });
-        }}
-        isCustomRangeInvalid={isCustomAdminUsageRangeInvalid}
-      />
+      <DirectModeUnavailable active={isDirectAccountMode}>
+        <AdminUsageAnalyticsCard
+          summary={adminUsageSummary}
+          isLoading={isLoading || isAdminUsageLoading}
+          isError={isAdminUsageError}
+          rangePreset={adminUsageRangePreset}
+          rangeStartInput={adminUsageRangeStartInput}
+          rangeEndInput={adminUsageRangeEndInput}
+          onRangePresetChange={(preset) => {
+            setAdminUsageRangePreset(preset);
+            if (preset === "custom") {
+              return;
+            }
+            const nextRange = buildAdminUsagePresetRange(
+              preset,
+              localDayRange.dayStartTs,
+              localDayRange.dayEndTs,
+            );
+            setAdminUsageRangeStartInput(nextRange.startInput);
+            setAdminUsageRangeEndInput(nextRange.endInput);
+            setAdminUsageRangeParams(nextRange);
+          }}
+          onRangeStartInputChange={setAdminUsageRangeStartInput}
+          onRangeEndInputChange={setAdminUsageRangeEndInput}
+          onApplyCustomRange={() => {
+            const startTs = parseDateInputStartTs(adminUsageRangeStartInput);
+            const endTs = parseDateInputEndTs(adminUsageRangeEndInput);
+            if (startTs == null || endTs == null || endTs <= startTs) {
+              return;
+            }
+            setAdminUsageRangeParams({
+              startTs,
+              endTs,
+              startInput: adminUsageRangeStartInput,
+              endInput: adminUsageRangeEndInput,
+            });
+          }}
+          isCustomRangeInvalid={isCustomAdminUsageRangeInvalid}
+        />
+      </DirectModeUnavailable>
 
       <Card className="glass-card overflow-hidden shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -1224,102 +1340,106 @@ function AdminDashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {[
-          {
-            title: t("今日Token"),
-            value: formatCompactTokenAmount(stats.todayTokens),
-            icon: Zap,
-            color: "text-yellow-500",
-            sub: t("输入 + 输出合计"),
-          },
-          {
-            title: t("缓存Token"),
-            value: formatCompactTokenAmount(stats.cachedTokens),
-            icon: Database,
-            color: "text-indigo-500",
-            sub: t("上下文缓存命中"),
-          },
-          {
-            title: t("推理Token"),
-            value: formatCompactTokenAmount(stats.reasoningTokens),
-            icon: BrainCircuit,
-            color: "text-purple-500",
-            sub: t("大模型思考过程"),
-          },
-          {
-            title: t("API等价费用"),
-            value: formatUsd(stats.todayCost),
-            icon: DollarSign,
-            color: "text-emerald-500",
-            sub: t("按官方 API 价格折算，账号通道不代表真实扣费"),
-          },
-        ].map((card) =>
-          isLoading ? (
-            <Skeleton key={card.title} className="h-32 w-full rounded-xl" />
-          ) : (
-            <MetricCard key={card.title} {...card} />
-          ),
-        )}
-      </div>
+      <DirectModeUnavailable active={isDirectAccountMode}>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {[
+            {
+              title: t("今日Token"),
+              value: formatCompactTokenAmount(stats.todayTokens),
+              icon: Zap,
+              color: "text-yellow-500",
+              sub: t("输入 + 输出合计"),
+            },
+            {
+              title: t("缓存Token"),
+              value: formatCompactTokenAmount(stats.cachedTokens),
+              icon: Database,
+              color: "text-indigo-500",
+              sub: t("上下文缓存命中"),
+            },
+            {
+              title: t("推理Token"),
+              value: formatCompactTokenAmount(stats.reasoningTokens),
+              icon: BrainCircuit,
+              color: "text-purple-500",
+              sub: t("大模型思考过程"),
+            },
+            {
+              title: t("预计费用"),
+              value: formatUsd(stats.todayCost),
+              icon: DollarSign,
+              color: "text-emerald-500",
+              sub: t("按官价估算"),
+            },
+          ].map((card) =>
+            isLoading ? (
+              <Skeleton key={card.title} className="h-32 w-full rounded-xl" />
+            ) : (
+              <MetricCard key={card.title} {...card} />
+            ),
+          )}
+        </div>
+      </DirectModeUnavailable>
 
       <div className="grid gap-6 md:grid-cols-2">
-        <Card className="glass-card min-h-[300px] shadow-sm">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base font-semibold">{t("当前活跃账号")}</CardTitle>
-          </CardHeader>
-          <CardContent className="flex min-h-[200px] flex-col justify-start">
-            {isLoading ? (
-              <div className="space-y-4">
-                <Skeleton className="h-28 w-full rounded-xl" />
-                <div className="grid grid-cols-2 gap-4">
-                  <Skeleton className="h-32 w-full rounded-xl" />
-                  <Skeleton className="h-32 w-full rounded-xl" />
-                </div>
-              </div>
-            ) : currentAccount ? (
-              <div className="space-y-4">
-                <AccountHighlightCard
-                  title={t("当前活跃账号")}
-                  name={currentAccount.name}
-                  subtitle={currentAccount.id}
-                  tone="green"
-                />
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div className="space-y-3 rounded-xl bg-muted/30 p-4">
-                    <p className="text-xs text-muted-foreground">{t("5小时剩余")}</p>
-                    <p className="text-lg font-bold">
-                      {formatPercent(currentAccount.primaryRemainPercent)}
-                    </p>
-                    <PercentBar
-                      label={t("剩余额度")}
-                      value={currentAccount.primaryRemainPercent}
-                      tone="green"
-                    />
-                  </div>
-                  <div className="space-y-3 rounded-xl bg-muted/30 p-4">
-                    <p className="text-xs text-muted-foreground">{t("7天剩余")}</p>
-                    <p className="text-lg font-bold">
-                      {formatPercent(currentAccount.secondaryRemainPercent)}
-                    </p>
-                    <PercentBar
-                      label={t("剩余额度")}
-                      value={currentAccount.secondaryRemainPercent}
-                      tone="blue"
-                    />
+        <DirectModeUnavailable active={isDirectAccountMode}>
+          <Card className="glass-card min-h-[300px] shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-base font-semibold">{t("当前活跃账号")}</CardTitle>
+            </CardHeader>
+            <CardContent className="flex min-h-[200px] flex-col justify-start">
+              {isLoading ? (
+                <div className="space-y-4">
+                  <Skeleton className="h-28 w-full rounded-xl" />
+                  <div className="grid grid-cols-2 gap-4">
+                    <Skeleton className="h-32 w-full rounded-xl" />
+                    <Skeleton className="h-32 w-full rounded-xl" />
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-                <div className="rounded-full bg-accent/30 p-4 animate-pulse">
-                  <Activity className="h-8 w-8 opacity-20" />
+              ) : currentAccount ? (
+                <div className="space-y-4">
+                  <AccountHighlightCard
+                    title={t("当前活跃账号")}
+                    name={currentAccount.name}
+                    subtitle={currentAccount.id}
+                    tone="green"
+                  />
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div className="space-y-3 rounded-xl bg-muted/30 p-4">
+                      <p className="text-xs text-muted-foreground">{t("5小时剩余")}</p>
+                      <p className="text-lg font-bold">
+                        {formatPercent(currentAccount.primaryRemainPercent)}
+                      </p>
+                      <PercentBar
+                        label={t("剩余额度")}
+                        value={currentAccount.primaryRemainPercent}
+                        tone="green"
+                      />
+                    </div>
+                    <div className="space-y-3 rounded-xl bg-muted/30 p-4">
+                      <p className="text-xs text-muted-foreground">{t("7天剩余")}</p>
+                      <p className="text-lg font-bold">
+                        {formatPercent(currentAccount.secondaryRemainPercent)}
+                      </p>
+                      <PercentBar
+                        label={t("剩余额度")}
+                        value={currentAccount.secondaryRemainPercent}
+                        tone="blue"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <p>{isServiceReady ? t("暂无可识别的活跃账号") : t("正在等待服务连接")}</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                  <div className="rounded-full bg-accent/30 p-4 animate-pulse">
+                    <Activity className="h-8 w-8 opacity-20" />
+                  </div>
+                  <p>{isServiceReady ? t("暂无可识别的活跃账号") : t("正在等待服务连接")}</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </DirectModeUnavailable>
 
         <Card className="glass-card min-h-[300px] shadow-sm">
           <CardHeader>
@@ -1441,7 +1561,7 @@ function MemberDashboard() {
           value={`${summary.apiKeySummary.enabledCount}/${summary.apiKeySummary.totalCount}`}
           icon={KeyRound}
           color="text-blue-500"
-          sub={`${t("启用 / 全部")} · ${t("最近")} ${formatDateTime(summary.apiKeySummary.lastUsedAt)}`}
+          sub={`${t("启用 / 全部")} · ${t("最近")} ${t(formatDateTime(summary.apiKeySummary.lastUsedAt))}`}
         />
         <MetricCard
           title={t("可用模型")}
@@ -1484,6 +1604,7 @@ function MemberAlerts({
   alerts: MemberDashboardAlert[];
   onCreateKey: () => void;
 }) {
+  const { t } = useI18n();
   if (alerts.length === 0) return null;
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -1492,14 +1613,14 @@ function MemberAlerts({
           alert.kind === "no_api_key" ? (
             <Button size="xs" variant="outline" onClick={onCreateKey}>
               <Plus className="h-3 w-3" />
-              {alert.actionLabel || "创建 Key"}
+              {alert.actionLabel ? t(alert.actionLabel) : t("创建 Key")}
             </Button>
           ) : alert.actionHref ? (
             <a
               href={buildStaticRouteUrl(alert.actionHref)}
               className="inline-flex h-6 items-center gap-1 rounded-md border border-border/60 bg-background/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >
-              {alert.actionLabel || "查看"}
+              {alert.actionLabel ? t(alert.actionLabel) : t("查看")}
               <ArrowRight className="h-3 w-3" />
             </a>
           ) : null;
@@ -1510,8 +1631,8 @@ function MemberAlerts({
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="font-semibold">{alert.title}</div>
-                <div className="mt-0.5 text-xs opacity-80">{alert.message}</div>
+                <div className="font-semibold">{t(alert.title)}</div>
+                <div className="mt-0.5 text-xs opacity-80">{t(alert.message)}</div>
               </div>
               {action}
             </div>
@@ -1593,7 +1714,7 @@ function MemberKeyUsageCard({
                       <TableCell>{formatCompactTokenAmount(item.todayTokens)}</TableCell>
                       <TableCell>{formatUsd(item.todayCostUsd)}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {formatDateTime(item.lastUsedAt)}
+                        {t(formatDateTime(item.lastUsedAt))}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1613,6 +1734,8 @@ function MemberKeyUsageCard({
 }
 
 function MemberKeyCompactRow({ item }: { item: MemberDashboardKeyUsage }) {
+  const { t } = useI18n();
+
   return (
     <div className="py-3">
       <div className="flex items-start justify-between gap-3">
@@ -1627,7 +1750,7 @@ function MemberKeyCompactRow({ item }: { item: MemberDashboardKeyUsage }) {
       <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
         <span className="text-muted-foreground">{formatCompactTokenAmount(item.todayTokens)}</span>
         <span className="text-muted-foreground">{formatUsd(item.todayCostUsd)}</span>
-        <span className="truncate text-muted-foreground">{formatDateTime(item.lastUsedAt)}</span>
+        <span className="truncate text-muted-foreground">{t(formatDateTime(item.lastUsedAt))}</span>
       </div>
     </div>
   );
@@ -1640,7 +1763,7 @@ function MemberUsageTrendCard({
   summary: MemberDashboardSummary;
   className?: string;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const maxTokens = useMemo(
     () => Math.max(1, ...summary.usageTrend7d.map((item) => item.totalTokens)),
     [summary.usageTrend7d],
@@ -1665,10 +1788,10 @@ function MemberUsageTrendCard({
                 <div
                   className="w-full rounded-t-md bg-primary/75 transition-all"
                   style={{ height }}
-                  title={`${formatShortDate(item.dayStartTs)} ${formatCompactTokenAmount(item.totalTokens)}`}
+                  title={`${formatShortDate(item.dayStartTs, locale)} ${formatCompactTokenAmount(item.totalTokens)}`}
                 />
                 <div className="text-[10px] text-muted-foreground">
-                  {formatShortDate(item.dayStartTs)}
+                  {formatShortDate(item.dayStartTs, locale)}
                 </div>
               </div>
             );
@@ -1788,7 +1911,7 @@ function MemberAvailableModelsCard({
                   </div>
                 </div>
                 <div className="text-left text-xs text-muted-foreground sm:text-right">
-                  <div>{modelPriceSummary(model)}</div>
+                  <div>{t(modelPriceSummary(model))}</div>
                   <div className="mt-1">
                     {model.contextWindow
                       ? `${formatCompactTokenAmount(model.contextWindow)} context`
@@ -1856,7 +1979,7 @@ function MemberRecentLogsCard({
                     </span>
                   </div>
                   <div className="mt-1 truncate text-xs text-muted-foreground">
-                    {formatDateTime(log.createdAt)}
+                    {t(formatDateTime(log.createdAt))}
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground sm:text-right">

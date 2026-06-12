@@ -99,6 +99,7 @@ impl GeminiSseReader {
             {
                 Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
                     self.last_upstream_activity = Instant::now();
+                    mark_first_response_ms(&self.usage_collector, self.request_started_at);
                     let mapped = self.process_sse_frame(&frame);
                     if !mapped.is_empty() {
                         mark_first_response_ms(&self.usage_collector, self.request_started_at);

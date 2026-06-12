@@ -16,6 +16,8 @@ pub(in super::super) struct UpstreamRequestSetup {
     pub(in super::super) has_sticky_fallback_conversation: bool,
     pub(in super::super) has_body_encrypted_content: bool,
     pub(in super::super) conversation_routing: Option<ConversationRoutingContext>,
+    pub(in super::super) route_strategy_for_log: &'static str,
+    pub(in super::super) route_source_for_log: &'static str,
 }
 
 /// 函数 `prepare_request_setup`
@@ -97,5 +99,7 @@ pub(in super::super) fn prepare_request_setup(
         has_body_encrypted_content:
             super::super::support::payload_rewrite::body_has_encrypted_content_hint(body.as_ref()),
         conversation_routing,
+        route_strategy_for_log: rotation_plan.strategy_label,
+        route_source_for_log: rotation_plan.source.as_str(),
     }
 }

@@ -68,8 +68,6 @@ mod concurrency;
 mod conversation_binding;
 #[path = "routing/cooldown.rs"]
 mod cooldown;
-#[path = "observability/error_log.rs"]
-mod error_log;
 mod error_response;
 #[path = "routing/failover.rs"]
 mod failover;
@@ -121,7 +119,6 @@ mod trace_log;
 mod upstream;
 
 pub(crate) use concurrency::current_gateway_concurrency_recommendation;
-pub(crate) use error_log::write_gateway_error_log;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
@@ -387,7 +384,7 @@ use openai_fallback::try_openai_fallback;
 pub(crate) use request_entry::handle_gateway_request;
 use request_gate::{request_gate_lock, RequestGateAcquireError};
 pub(crate) use request_log::write_request_log;
-use route_hint::apply_route_strategy;
+use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::fresh_upstream_client;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
@@ -798,6 +795,22 @@ pub(crate) fn current_upstream_proxy_url() -> Option<String> {
     runtime_config::upstream_proxy_url()
 }
 
+pub(crate) fn apply_blocking_upstream_proxy(
+    builder: reqwest::blocking::ClientBuilder,
+    proxy_url: Option<&str>,
+    invalid_event: &str,
+) -> reqwest::blocking::ClientBuilder {
+    runtime_config::apply_blocking_upstream_proxy(builder, proxy_url, invalid_event)
+}
+
+pub(crate) fn apply_async_upstream_proxy(
+    builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+    invalid_event: &str,
+) -> reqwest::ClientBuilder {
+    runtime_config::apply_async_upstream_proxy(builder, proxy_url, invalid_event)
+}
+
 pub(crate) fn current_upstream_proxy_url_for_account(account_id: &str) -> Option<String> {
     runtime_config::upstream_proxy_url_for_account(account_id)
 }
@@ -1008,20 +1021,27 @@ pub(crate) fn gateway_supports_official_responses_websocket(
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) fn gateway_collect_routed_candidates(
-    storage: &codexmanager_core::storage::Storage,
-    key_id: &str,
-    model: Option<&str>,
-) -> Result<
-    Vec<(
+pub(crate) struct GatewayRoutedCandidates {
+    pub(crate) candidates: Vec<(
         codexmanager_core::storage::Account,
         codexmanager_core::storage::Token,
     )>,
-    String,
-> {
+    pub(crate) route_strategy: &'static str,
+    pub(crate) route_source: &'static str,
+}
+
+pub(crate) fn gateway_collect_routed_candidates_with_log_source(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    model: Option<&str>,
+) -> Result<GatewayRoutedCandidates, String> {
     let mut candidates = collect_gateway_candidates(storage)?;
-    apply_route_strategy(&mut candidates, key_id, model);
-    Ok(candidates)
+    let application = apply_route_strategy_with_source(&mut candidates, key_id, model);
+    Ok(GatewayRoutedCandidates {
+        candidates,
+        route_strategy: application.strategy_label,
+        route_source: application.source,
+    })
 }
 
 /// 函数 `gateway_record_failover_attempt`
@@ -1074,6 +1094,18 @@ pub(crate) fn gateway_resolve_openai_bearer_token(
     token: &mut codexmanager_core::storage::Token,
 ) -> Result<String, String> {
     resolve_openai_bearer_token(storage, account, token)
+}
+
+pub(crate) fn gateway_is_openai_api_base(base: &str) -> bool {
+    is_openai_api_base(base)
+}
+
+pub(crate) fn gateway_token_exchange_default_issuer() -> String {
+    runtime_config::token_exchange_default_issuer()
+}
+
+pub(crate) fn gateway_token_exchange_client_id() -> String {
+    runtime_config::token_exchange_client_id()
 }
 
 pub(crate) fn gateway_resolve_ws_prompt_cache_key(

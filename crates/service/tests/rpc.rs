@@ -623,7 +623,7 @@ fn rpc_account_list_empty_uses_default_pagination() {
     );
 }
 
-/// 函数 `rpc_account_list_supports_pagination`
+/// 函数 `rpc_account_list_returns_all_accounts`
 ///
 /// 作者: gaohongshun
 ///
@@ -635,15 +635,15 @@ fn rpc_account_list_empty_uses_default_pagination() {
 /// # 返回
 /// 无
 #[test]
-fn rpc_account_list_supports_pagination() {
-    let ctx = RpcTestContext::new("rpc-account-list-page");
+fn rpc_account_list_returns_all_accounts() {
+    let ctx = RpcTestContext::new("rpc-account-list-all");
     ctx.seed_accounts(7);
     let server = codexmanager_service::start_one_shot_server().expect("start server");
 
     let req = JsonRpcRequest {
         id: 3.into(),
         method: "account/list".to_string(),
-        params: Some(serde_json::json!({"page": 2, "pageSize": 3})),
+        params: None,
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
@@ -654,15 +654,15 @@ fn rpc_account_list_supports_pagination() {
         .get("items")
         .and_then(|value| value.as_array())
         .expect("items array");
-    assert_eq!(items.len(), 3, "unexpected page size: {result}");
+    assert_eq!(items.len(), 7, "unexpected account count: {result}");
     assert_eq!(
         result.get("total").and_then(|value| value.as_i64()),
         Some(7)
     );
-    assert_eq!(result.get("page").and_then(|value| value.as_i64()), Some(2));
+    assert_eq!(result.get("page").and_then(|value| value.as_i64()), Some(1));
     assert_eq!(
         result.get("pageSize").and_then(|value| value.as_i64()),
-        Some(3)
+        Some(7)
     );
 
     let ids = items
@@ -674,7 +674,10 @@ fn rpc_account_list_supports_pagination() {
                 .expect("item id")
         })
         .collect::<Vec<_>>();
-    assert_eq!(ids, vec!["acc-3", "acc-4", "acc-5"]);
+    assert_eq!(
+        ids,
+        vec!["acc-0", "acc-1", "acc-2", "acc-3", "acc-4", "acc-5", "acc-6"]
+    );
     assert_eq!(
         items[0].get("status").and_then(|value| value.as_str()),
         Some("active")
@@ -1079,99 +1082,6 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
     );
 }
 
-/// 函数 `rpc_account_list_active_filter_uses_backend_filtered_pagination`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn rpc_account_list_active_filter_uses_backend_filtered_pagination() {
-    let ctx = RpcTestContext::new("rpc-account-list-active-filter");
-    let storage = Storage::open(ctx.db_path()).expect("open db");
-    storage.init().expect("init schema");
-    let now = now_ts();
-    let accounts = [
-        ("acc-active-1", "active", 0_i64, Some(20.0)),
-        ("acc-active-2", "healthy", 1_i64, Some(30.0)),
-        ("acc-low-1", "active", 2_i64, Some(85.0)),
-        ("acc-inactive-1", "inactive", 3_i64, Some(10.0)),
-        ("acc-no-snapshot", "active", 4_i64, None),
-    ];
-    for (id, status, sort, used_percent) in accounts {
-        storage
-            .insert_account(&Account {
-                id: id.to_string(),
-                label: id.to_string(),
-                issuer: "https://auth.openai.com".to_string(),
-                chatgpt_account_id: None,
-                workspace_id: None,
-                group_name: Some("group-a".to_string()),
-                sort,
-                status: status.to_string(),
-                created_at: now + sort,
-                updated_at: now + sort,
-            })
-            .expect("insert account");
-        if let Some(used_percent) = used_percent {
-            storage
-                .insert_usage_snapshot(&UsageSnapshotRecord {
-                    account_id: id.to_string(),
-                    used_percent: Some(used_percent),
-                    window_minutes: Some(300),
-                    resets_at: None,
-                    secondary_used_percent: None,
-                    secondary_window_minutes: None,
-                    secondary_resets_at: None,
-                    credits_json: None,
-                    captured_at: now + sort,
-                })
-                .expect("insert usage snapshot");
-        }
-    }
-
-    let server = codexmanager_service::start_one_shot_server().expect("start server");
-    let req = JsonRpcRequest {
-        id: 30.into(),
-        method: "account/list".to_string(),
-        params: Some(serde_json::json!({
-            "page": 1,
-            "pageSize": 2,
-            "filter": "active",
-            "groupFilter": "group-a"
-        })),
-        trace: None,
-    };
-    let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
-    let result = v.get("result").expect("result");
-    let items = result
-        .get("items")
-        .and_then(|value| value.as_array())
-        .expect("items array");
-
-    assert_eq!(items.len(), 2, "unexpected filtered page size: {result}");
-    assert_eq!(
-        result.get("total").and_then(|value| value.as_i64()),
-        Some(4)
-    );
-    let ids = items
-        .iter()
-        .map(|value| {
-            value
-                .get("id")
-                .and_then(|value| value.as_str())
-                .expect("item id")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(ids, vec!["acc-active-1", "acc-active-2"]);
-}
-
 /// 函数 `rpc_account_delete_many_deletes_requested_accounts`
 ///
 /// 作者: gaohongshun
@@ -1485,7 +1395,7 @@ fn rpc_account_delete_by_statuses_deletes_only_selected_statuses() {
     );
 }
 
-/// 函数 `rpc_account_delete_by_statuses_rejects_unknown_status`
+/// 函数 `rpc_account_delete_by_statuses_deletes_unknown_status`
 ///
 /// 作者: gaohongshun
 ///
@@ -1497,8 +1407,31 @@ fn rpc_account_delete_by_statuses_deletes_only_selected_statuses() {
 /// # 返回
 /// 无
 #[test]
-fn rpc_account_delete_by_statuses_rejects_unknown_status() {
-    let _ctx = RpcTestContext::new("rpc-account-delete-by-statuses-unknown");
+fn rpc_account_delete_by_statuses_deletes_unknown_status() {
+    let ctx = RpcTestContext::new("rpc-account-delete-by-statuses-unknown");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    let now = now_ts();
+    for (idx, (id, status)) in [("acc-active", "active"), ("acc-unknown", "unknown")]
+        .into_iter()
+        .enumerate()
+    {
+        storage
+            .insert_account(&Account {
+                id: id.to_string(),
+                label: id.to_string(),
+                issuer: "https://auth.openai.com".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort: idx as i64,
+                status: status.to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+    }
+
     let server = codexmanager_service::start_one_shot_server().expect("start server");
     let req = JsonRpcRequest {
         id: 79.into(),
@@ -1511,12 +1444,28 @@ fn rpc_account_delete_by_statuses_rejects_unknown_status() {
     let json = serde_json::to_string(&req).expect("serialize delete");
     let v = post_rpc(&server.addr, &json);
     let result = v.get("result").expect("result");
-    let message = result
-        .get("error")
-        .and_then(|value| value.as_str())
-        .expect("error message");
 
-    assert!(message.contains("unsupported cleanup statuses"));
+    assert_eq!(
+        result.get("deleted").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    let target_statuses = result
+        .get("targetStatuses")
+        .and_then(|value| value.as_array())
+        .expect("target statuses");
+    assert_eq!(
+        target_statuses
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["unknown"]
+    );
+    let remaining = storage.list_accounts().expect("list accounts");
+    let remaining_ids = remaining
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    assert_eq!(remaining_ids, vec!["acc-active"]);
 }
 
 /// 函数 `rpc_account_update_status_toggles_manual_enable_disable`

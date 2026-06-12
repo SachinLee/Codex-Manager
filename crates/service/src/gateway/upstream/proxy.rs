@@ -170,13 +170,53 @@ fn model_route_error(
     let mappings = storage
         .list_enabled_model_source_mappings_for_platform(model)
         .map_err(|err| (500, format!("model_mapping_read_failed: {err}")))?;
-    if !mappings
+    let has_route_mapping = mappings
         .into_iter()
-        .any(|mapping| source_mapping_matches_route(mapping.source_kind.as_str(), execution_plan))
-    {
+        .any(|mapping| source_mapping_matches_route(mapping.source_kind.as_str(), execution_plan));
+    let has_upstream_source_match = if has_route_mapping {
+        true
+    } else {
+        direct_upstream_model_matches_route(storage, model, execution_plan)
+            .map_err(|err| (500, format!("source_model_read_failed: {err}")))?
+    };
+    if !has_upstream_source_match {
         return Err((503, format!("model_unavailable: {model}")));
     }
     Ok(())
+}
+
+fn direct_upstream_model_matches_route(
+    storage: &codexmanager_core::storage::Storage,
+    model: &str,
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+) -> Result<bool, String> {
+    let matches_source_kind = |source_kind: &str| match execution_plan.route_kind {
+        GatewayUpstreamRouteKind::AccountRotation => source_kind == "openai_account",
+        GatewayUpstreamRouteKind::AggregateApi => source_kind == "aggregate_api",
+        GatewayUpstreamRouteKind::HybridAccountFirst => {
+            source_kind == "openai_account" || source_kind == "aggregate_api"
+        }
+    };
+    for source_kind in ["openai_account", "aggregate_api"] {
+        if !matches_source_kind(source_kind) {
+            continue;
+        }
+        let has_conflicting_mapping = storage
+            .list_enabled_model_source_mappings_for_platform(model)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .any(|m| m.source_kind != source_kind);
+        if has_conflicting_mapping {
+            continue;
+        }
+        let ids = storage
+            .list_available_source_model_ids_by_upstream_model(source_kind, model)
+            .map_err(|err| err.to_string())?;
+        if !ids.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn bootstrap_model_routes_for_plan(
@@ -220,10 +260,16 @@ fn respond_model_route_error(
     path: &str,
     request_method: &str,
     response_adapter: super::super::ResponseAdapter,
+    service_tier_for_log: Option<&str>,
     effective_service_tier_for_log: Option<&str>,
+    service_tier_source_for_log: Option<&str>,
     gateway_mode_for_log: Option<&str>,
+    client_model_for_log: Option<&str>,
     model_for_log: Option<&str>,
+    model_source_for_log: Option<&str>,
+    client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    reasoning_source_for_log: Option<&str>,
     session_id_for_log: Option<&str>,
     conversation_anchor_for_log: Option<&str>,
     started_at: Instant,
@@ -248,8 +294,16 @@ fn respond_model_route_error(
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
+            route_strategy: Some(super::super::current_route_strategy()),
+            route_source: Some("route_strategy"),
+            client_model: client_model_for_log,
+            model_source: model_source_for_log,
+            client_reasoning_effort: client_reasoning_for_log,
+            reasoning_source: reasoning_source_for_log,
             response_adapter: Some(response_adapter),
+            service_tier: service_tier_for_log,
             effective_service_tier: effective_service_tier_for_log,
+            service_tier_source: service_tier_source_for_log,
             ..Default::default()
         },
         Some(key_id),
@@ -366,10 +420,16 @@ fn respond_hybrid_route_error(
     path: &str,
     request_method: &str,
     response_adapter: super::super::ResponseAdapter,
+    service_tier_for_log: Option<&str>,
     effective_service_tier_for_log: Option<&str>,
+    service_tier_source_for_log: Option<&str>,
     gateway_mode_for_log: Option<&str>,
+    client_model_for_log: Option<&str>,
     model_for_log: Option<&str>,
+    model_source_for_log: Option<&str>,
+    client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    reasoning_source_for_log: Option<&str>,
     session_id_for_log: Option<&str>,
     conversation_anchor_for_log: Option<&str>,
     started_at: Instant,
@@ -386,10 +446,16 @@ fn respond_hybrid_route_error(
         path,
         request_method,
         response_adapter,
+        service_tier_for_log,
         effective_service_tier_for_log,
+        service_tier_source_for_log,
         gateway_mode_for_log,
+        client_model_for_log,
         model_for_log,
+        model_source_for_log,
+        client_reasoning_for_log,
         reasoning_for_log,
+        reasoning_source_for_log,
         session_id_for_log,
         conversation_anchor_for_log,
         started_at,
@@ -418,10 +484,16 @@ fn respond_aggregate_route_error(
     path: &str,
     request_method: &str,
     response_adapter: super::super::ResponseAdapter,
+    service_tier_for_log: Option<&str>,
     effective_service_tier_for_log: Option<&str>,
+    service_tier_source_for_log: Option<&str>,
     gateway_mode_for_log: Option<&str>,
+    client_model_for_log: Option<&str>,
     model_for_log: Option<&str>,
+    model_source_for_log: Option<&str>,
+    client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    reasoning_source_for_log: Option<&str>,
     session_id_for_log: Option<&str>,
     conversation_anchor_for_log: Option<&str>,
     started_at: Instant,
@@ -445,8 +517,16 @@ fn respond_aggregate_route_error(
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
+            route_strategy: Some(super::super::current_route_strategy()),
+            route_source: Some("route_strategy"),
+            client_model: client_model_for_log,
+            model_source: model_source_for_log,
+            client_reasoning_effort: client_reasoning_for_log,
+            reasoning_source: reasoning_source_for_log,
             response_adapter: Some(response_adapter),
+            service_tier: service_tier_for_log,
             effective_service_tier: effective_service_tier_for_log,
+            service_tier_source: service_tier_source_for_log,
             ..Default::default()
         },
         Some(key_id),
@@ -486,9 +566,15 @@ fn proxy_with_aggregate_candidates(
     body: &bytes::Bytes,
     client_is_stream: bool,
     gateway_mode_for_log: Option<&str>,
+    client_model_for_log: Option<&str>,
     model_for_log: Option<&str>,
+    model_source_for_log: Option<&str>,
+    client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
+    reasoning_source_for_log: Option<&str>,
+    service_tier_for_log: Option<&str>,
     effective_service_tier_for_log: Option<&str>,
+    service_tier_source_for_log: Option<&str>,
     aggregate_api_id: Option<&str>,
     session_id_for_log: Option<&str>,
     conversation_anchor_for_log: Option<&str>,
@@ -518,9 +604,21 @@ fn proxy_with_aggregate_candidates(
             is_stream: client_is_stream,
             response_adapter: super::super::ResponseAdapter::Passthrough,
             gateway_mode_for_log,
+            route_strategy_for_log: Some(super::super::current_route_strategy()),
+            route_source_for_log: Some(if aggregate_api_id.is_some() {
+                "aggregate_api_preferred"
+            } else {
+                "route_strategy"
+            }),
+            client_model_for_log,
             model_for_log,
+            model_source_for_log,
+            client_reasoning_for_log,
             reasoning_for_log,
+            reasoning_source_for_log,
+            service_tier_for_log,
             effective_service_tier_for_log,
+            service_tier_source_for_log,
             session_id_for_log,
             conversation_anchor_for_log,
             aggregate_api_candidates,
@@ -573,10 +671,15 @@ pub(in super::super) fn proxy_validated_request(
         route_conversation_source,
         conversation_binding,
         request_log_session_id,
+        client_model_for_log,
         model_for_log,
+        model_source_for_log,
+        client_reasoning_for_log,
         reasoning_for_log,
+        reasoning_source_for_log,
         service_tier_for_log,
         effective_service_tier_for_log,
+        service_tier_source_for_log,
         gateway_mode_for_log,
         method,
     } = validated;
@@ -645,10 +748,16 @@ pub(in super::super) fn proxy_validated_request(
             path.as_str(),
             request_method.as_str(),
             response_adapter,
+            service_tier_for_log.as_deref(),
             effective_service_tier_for_log.as_deref(),
+            service_tier_source_for_log.as_deref(),
             gateway_mode_for_log.as_deref(),
+            client_model_for_log.as_deref(),
             model_for_log.as_deref(),
+            model_source_for_log.as_deref(),
+            client_reasoning_for_log.as_deref(),
             reasoning_for_log.as_deref(),
+            reasoning_source_for_log.as_deref(),
             session_id_for_log,
             conversation_anchor_for_log,
             started_at,
@@ -677,9 +786,15 @@ pub(in super::super) fn proxy_validated_request(
                     &body,
                     client_is_stream,
                     gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
                     model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
+                    service_tier_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
                     aggregate_api_id.as_deref(),
                     session_id_for_log,
                     conversation_anchor_for_log,
@@ -698,10 +813,16 @@ pub(in super::super) fn proxy_validated_request(
                     path.as_str(),
                     request_method.as_str(),
                     super::super::ResponseAdapter::Passthrough,
+                    service_tier_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
                     gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
                     model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
                     session_id_for_log,
                     conversation_anchor_for_log,
                     started_at,
@@ -758,9 +879,15 @@ pub(in super::super) fn proxy_validated_request(
                         &passthrough_body,
                         client_is_stream,
                         gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
                         model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
                         reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
+                        service_tier_for_log.as_deref(),
                         effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
                         aggregate_api_id.as_deref(),
                         session_id_for_log,
                         conversation_anchor_for_log,
@@ -779,10 +906,16 @@ pub(in super::super) fn proxy_validated_request(
                         passthrough_path.as_str(),
                         request_method.as_str(),
                         super::super::ResponseAdapter::Passthrough,
+                        service_tier_for_log.as_deref(),
                         effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
                         gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
                         model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
                         reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
                         session_id_for_log,
                         conversation_anchor_for_log,
                         started_at,
@@ -821,13 +954,20 @@ pub(in super::super) fn proxy_validated_request(
         &request_method,
         response_adapter,
         protocol_type.as_str(),
+        client_model_for_log.as_deref(),
         model_for_log.as_deref(),
+        model_source_for_log.as_deref(),
+        client_reasoning_for_log.as_deref(),
         reasoning_for_log.as_deref(),
+        reasoning_source_for_log.as_deref(),
         service_tier_for_log.as_deref(),
         effective_service_tier_for_log.as_deref(),
+        service_tier_source_for_log.as_deref(),
         gateway_mode_for_log.as_deref(),
         session_id_for_log,
         conversation_anchor_for_log,
+        Some(setup.route_strategy_for_log),
+        Some(setup.route_source_for_log),
         setup.candidate_count,
         setup.account_max_inflight,
     );
@@ -919,9 +1059,15 @@ pub(in super::super) fn proxy_validated_request(
                     &passthrough_body,
                     client_is_stream,
                     gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
                     model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
+                    service_tier_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
                     aggregate_api_id.as_deref(),
                     session_id_for_log,
                     conversation_anchor_for_log,
@@ -940,10 +1086,16 @@ pub(in super::super) fn proxy_validated_request(
                     passthrough_path.as_str(),
                     request_method.as_str(),
                     super::super::ResponseAdapter::Passthrough,
+                    service_tier_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
                     gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
                     model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
                     session_id_for_log,
                     conversation_anchor_for_log,
                     started_at,
@@ -988,7 +1140,7 @@ mod tests {
         ManagedModelCatalogEntry, ManagedModelCatalogResult, ModelInfo,
     };
     use codexmanager_core::storage::{
-        now_ts, AggregateApi, ModelSourceMapping, RequestTokenStat, Storage,
+        now_ts, Account, AggregateApi, ModelSourceMapping, RequestTokenStat, Storage,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1536,5 +1688,42 @@ mod tests {
             execution_plan(GatewayUpstreamRouteKind::HybridAccountFirst),
         )
         .expect("hybrid route should accept aggregate mapping");
+    }
+
+    #[test]
+    fn account_route_model_validation_accepts_direct_upstream_source_model() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        storage
+            .insert_account(&Account {
+                id: "acc-direct-route".to_string(),
+                label: "acc-direct-route".to_string(),
+                issuer: "issuer".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort: 0,
+                status: "active".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+        storage
+            .upsert_discovered_model_source_models(
+                "openai_account",
+                "acc-direct-route",
+                &["gpt-5.4-mini".to_string()],
+                "manual",
+            )
+            .expect("seed direct upstream source model");
+
+        model_route_error(
+            &storage,
+            "key-route",
+            Some("gpt-5.4-mini"),
+            execution_plan(GatewayUpstreamRouteKind::AccountRotation),
+        )
+        .expect("account route should accept direct upstream source model");
     }
 }

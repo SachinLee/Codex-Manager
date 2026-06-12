@@ -1,17 +1,64 @@
 "use client";
 
 import type { MessageCatalog } from "./types";
+import { EN_ACCESS_CONTROL_MESSAGES } from "./sections/en-access-control";
+import { EN_ACCOUNT_MANAGER_MESSAGES } from "./sections/en-account-manager";
+import { EN_ACCOUNTS_MESSAGES } from "./sections/en-accounts";
+import { EN_API_KEYS_MESSAGES } from "./sections/en-api-keys";
+import { EN_AGGREGATE_API_MESSAGES } from "./sections/en-aggregate-api";
+import { EN_DASHBOARD_MESSAGES } from "./sections/en-dashboard";
+import { EN_DYNAMIC_UI_MESSAGES } from "./sections/en-dynamic-ui";
+import { EN_MODEL_CATALOG_MESSAGES } from "./sections/en-model-catalog";
+import { EN_MODEL_GROUPS_MESSAGES } from "./sections/en-model-groups";
+import { EN_MODELS_MESSAGES } from "./sections/en-models";
+import { EN_PLATFORM_MODE_MESSAGES } from "./sections/en-platform-mode";
+import { EN_RUNTIME_UI_MESSAGES } from "./sections/en-runtime-ui";
 
 export const EN_MESSAGES: MessageCatalog = {
   仪表盘: "Dashboard",
+  概览: "Overview",
+  平台接入: "Platform Access",
+  平台配置: "Platform Configuration",
+  ...EN_ACCESS_CONTROL_MESSAGES,
+  ...EN_ACCOUNT_MANAGER_MESSAGES,
+  ...EN_ACCOUNTS_MESSAGES,
+  ...EN_API_KEYS_MESSAGES,
+  ...EN_AGGREGATE_API_MESSAGES,
+  ...EN_DASHBOARD_MESSAGES,
+  ...EN_DYNAMIC_UI_MESSAGES,
+  ...EN_MODEL_CATALOG_MESSAGES,
+  ...EN_MODEL_GROUPS_MESSAGES,
+  ...EN_MODELS_MESSAGES,
+  ...EN_PLATFORM_MODE_MESSAGES,
+  ...EN_RUNTIME_UI_MESSAGES,
+  模型与路由: "Models & Routing",
+  成员管理: "Member Management",
+  运行观测: "Observability",
+  系统: "System",
+  资源接入: "Resource Access",
+  模型路由: "Model Routing",
+  用户与密钥: "Users & Keys",
+  用户管理: "User Management",
+  运行监控: "Runtime Monitoring",
+  我的概览: "My Overview",
+  我的密钥: "My Keys",
+  使用记录: "Usage History",
+  账号设置: "Account Settings",
   号池管理: "Account Pool",
   账号管理: "Accounts",
+  "OpenAI 账号池": "OpenAI Account Pool",
+  "聚合 API": "Aggregate APIs",
   聚合API: "Aggregate APIs",
+  "平台模型目录": "Platform Model Catalog",
+  成员账号: "Member Accounts",
   平台密钥: "API Keys",
+  模型组: "Model Groups",
   插件中心: "Plugins",
   请求日志: "Request Logs",
   应用设置: "Settings",
+  系统设置: "System settings",
   设置: "Settings",
+  "赞助与推荐": "Sponsors & Recommendations",
   访问控制: "Access Control",
   退出登录: "Log out",
   账号系统: "Account system",
@@ -72,6 +119,8 @@ export const EN_MESSAGES: MessageCatalog = {
   详情: "Details",
   我知道了: "Got it",
   "账号池 · 用量管理": "Account Pool · Usage Management",
+  "接入模式 · 用量观测": "Access Modes · Usage Observability",
+  "接入配置 · 请求观测": "Access Config · Request Observability",
   收起侧边栏: "Collapse Sidebar",
   展开侧边栏: "Expand Sidebar",
   基础设置: "Basic settings",
@@ -89,6 +138,7 @@ export const EN_MESSAGES: MessageCatalog = {
     "Control how Service and Web bind, either local-only or LAN-accessible.",
   监听地址: "Bind address",
   当前访问地址: "Current access address",
+  默认网关: "Default gateway",
   实际监听地址: "Actual bind address",
   界面语言: "Interface language",
   "切换应用界面语言，设置后会立即生效并持久化保存。":
@@ -98,6 +148,9 @@ export const EN_MESSAGES: MessageCatalog = {
   界面语言已切换: "Interface language updated",
   正在准备环境: "Preparing environment",
   "正在同步本地配置，请稍候...": "Syncing local configuration, please wait...",
+  "正在恢复页面内容，请稍候...": "Restoring page content, please wait...",
+  "页面缓存已命中，正在恢复视图与数据状态":
+    "Page cache hit. Restoring view and data state.",
   "当前 Web 运行方式不受支持": "This web runtime mode is not supported",
   无法同步核心服务状态: "Unable to sync core service status",
   重试: "Retry",
@@ -150,12 +203,16 @@ export const EN_MESSAGES: MessageCatalog = {
   留空则自动生成: "Leave empty to generate automatically",
   "用于复用固定 OPENAI_API_KEY；填写后将按该值创建平台密钥，留空则继续随机生成。":
     "Use this to reuse a fixed OPENAI_API_KEY. When filled, the platform key is created with this value; leave it empty to keep random generation.",
+  "对应环境变量，修改后会应用到相关模块。":
+    "Related environment variables. Changes will be applied to the corresponding modules after editing.",
   "密钥 / ID": "Key / ID",
   名称: "Name",
   账号轮转: "Account rotation",
   聚合API轮转: "Aggregate API rotation",
   "混合轮转（账号优先）": "Hybrid rotation (accounts first)",
   "总使用 Token": "Total token usage",
+  最近调用: "Last called",
+  从未调用: "Never called",
   总费用: "Total cost",
   按全部平台密钥累计: "Aggregated across all API keys",
   协议: "Protocol",
@@ -170,7 +227,13 @@ export const EN_MESSAGES: MessageCatalog = {
   "导入 ccswitch": "Import to ccswitch",
   "已唤起 ccswitch，请在确认窗口完成导入":
     "ccswitch has been opened. Confirm the import in its dialog.",
-  "唤起 ccswitch 失败": "Failed to open ccswitch",
+"唤起 ccswitch 失败": "Failed to open ccswitch",
+  "当前为账号直连，Codex CLI 直连 OpenAI，CodexManager 无法统计 CLI 请求日志和用量。":
+    "Direct account mode is active. Codex CLI connects to OpenAI directly, so CodexManager cannot collect CLI request logs or usage.",
+  "当前为本地网关，Codex CLI 经过 CodexManager 转发，请求日志、Token 和费用统计可用。":
+    "Local gateway mode is active. Codex CLI is routed through CodexManager, so request logs, tokens, and cost analytics are available.",
+  "选择账号直连或本地网关后，CodexManager 会接管该 Codex profile 的 auth.json / config.toml。":
+    "After you choose direct account or local gateway mode, CodexManager will take over auth.json and config.toml for that Codex profile.",
   删除密钥: "Delete key",
   全部: "All",
   低配额: "Low quota",
@@ -397,10 +460,18 @@ export const EN_MESSAGES: MessageCatalog = {
   "已生成登录链接，正在等待授权完成...":
     "Login link generated. Waiting for authorization...",
   登录成功: "Login successful",
+  "登录成功，但账号同步失败": "Login succeeded, but account sync failed",
   "登录失败，请重试": "Login failed, please try again",
   登录失败: "Login failed",
   "登录超时，请重试或使用下方手动解析回调。":
     "Login timed out. Please retry or use manual callback parsing below.",
+  "授权完成，正在同步账号列表...": "Authorization completed. Syncing the account list...",
+  "授权已完成，但账号列表暂未出现该账号":
+    "Authorization completed, but the account is not visible in the account list yet.",
+  "授权已完成，但当前服务没有返回已登录账号":
+    "Authorization completed, but the current service did not return the logged-in account.",
+  "授权已完成，但账号列表暂未同步成功":
+    "Authorization completed, but the account list has not synced successfully yet.",
   开始登录授权: "start login authorization",
   设备验证码: "Device code",
   "正在等待授权完成...": "waiting for authorization...",
@@ -479,11 +550,8 @@ export const EN_MESSAGES: MessageCatalog = {
   "服务未连接，无法获取日志": "Service disconnected, logs unavailable",
   暂无请求日志: "No request logs",
   条匹配日志: "matched logs",
-  "专门记录 challenge、无压缩重试和关键网关错误事件，便于排查 Cloudflare 拦截。":
-    "Records challenge, no-compression retries, and key gateway errors to help diagnose Cloudflare blocks.",
   阶段筛选: "Stage filter",
   全部阶段: "All stages",
-  清空诊断: "Clear diagnostics",
   当前页: "Current page",
   错误事件明细: "Error event details",
   "challenge / retry / transport": "challenge / retry / transport",
@@ -494,20 +562,11 @@ export const EN_MESSAGES: MessageCatalog = {
   方法: "Method",
   路径: "Path",
   上游地址: "Upstream URL",
-  复制诊断: "Copy diagnostic",
-  当前筛选下没有匹配的诊断日志: "No diagnostic logs match the current filter",
-  暂无专门错误诊断日志: "No dedicated diagnostic logs",
-  条匹配诊断日志: "matched diagnostic logs",
   清空请求日志: "Clear request logs",
   "确定清空全部请求日志吗？该操作不可恢复。":
     "Clear all request logs? This cannot be undone.",
   清空: "Clear",
-  清空网关诊断日志: "Clear gateway diagnostic logs",
-  "确定清空全部网关错误诊断日志吗？该操作不可恢复。":
-    "Clear all gateway diagnostic logs? This cannot be undone.",
   日志已清空: "Logs cleared",
-  诊断日志已清空: "Diagnostic logs cleared",
-  诊断信息已复制: "Diagnostic info copied",
   复制失败: "Copy failed",
   "管理应用行为、网关策略及后台任务":
     "Manage app behavior, gateway policies, and background tasks.",
@@ -553,6 +612,9 @@ export const EN_MESSAGES: MessageCatalog = {
   网关保活线程: "Gateway keepalive worker",
   令牌刷新轮询: "Token refresh polling",
   "Worker 并发参数": "Worker concurrency",
+  "计划按服务端时区 {timeZone} 执行。多个计划用 | 分隔。":
+    "Schedule runs in server time zone {timeZone}. Separate multiple schedules with |.",
+  服务端本地时区: "Server local time zone",
   当前档位: "Current preset",
   自定义: "Custom",
   "搜索变量...": "Search variables...",
@@ -901,7 +963,6 @@ export const EN_MESSAGES: MessageCatalog = {
   "通配兼容 (Codex / Claude Code / Gemini CLI)":
     "Wildcard compatible (Codex / Claude Code / Gemini CLI)",
   推理: "Reasoning",
-  网关错误诊断: "Gateway error diagnostics",
   网络访问: "Network access",
   未发现可清理的不可用免费账号: "No unavailable free accounts to clean",
   未知任务: "Unknown task",
@@ -1075,7 +1136,6 @@ export const EN_MESSAGES: MessageCatalog = {
   更新账号顺序: "Update account order",
   调整账号顺序: "Adjust account order",
   更新账号信息: "Update account info",
-  系统设置: "System settings",
   "加载配置中...": "Loading settings...",
   额外额度: "Extra quota",
   "Spark 额度": "Spark quota",
@@ -1355,7 +1415,6 @@ export const EN_MESSAGES: MessageCatalog = {
   "已达上限": "Limit reached",
   "已花费": "Spent",
   "Token / 金额": "Token / Cost",
-  "赞助与推荐": "Sponsors & Recommendations",
   "赞助": "Sponsors",
   "赞助 / 推荐": "Sponsors / Recommendations",
   "联系作者": "Contact author",
@@ -1443,6 +1502,13 @@ export const EN_MESSAGES: MessageCatalog = {
   "按 slug、显示名称或描述快速定位，并结合来源与覆写状态查看当前目录。":
     "Quickly locate entries by slug, display name, or description, and review the current catalog together with source and override status.",
   "远端并入": "Merge remote",
+  "清理远端旧模型": "Prune stale remote models",
+  "远端旧模型已清理": "Stale remote models pruned",
+  "清理远端旧模型失败": "Failed to prune stale remote models",
+  "远端旧模型已清理，但同步 Codex 模型缓存失败":
+    "Stale remote models were pruned, but syncing the Codex model cache failed",
+  "仅删除未本地覆写且不再出现在远端目录中的远端模型，不会删除自定义模型。":
+    "Only deletes remote models that have no local override and no longer appear in the remote catalog. Custom models are not deleted.",
   "新增自定义模型": "Add custom model",
   "模型总数": "Total models",
   "API 可用": "API available",
@@ -1509,4 +1575,40 @@ export const EN_MESSAGES: MessageCatalog = {
   "暂无已启用余额检测的聚合 API":
     "No aggregate APIs with balance query enabled",
   刷新余额: "Refresh balance",
+"个人资料已更新": "Profile updated",
+  "密码已更新": "Password updated",
+  "个人设置": "Personal settings",
+  "管理你的账号资料、登录密码和界面偏好": "Manage your account profile, login password, and interface preferences",
+  "账号资料": "Account profile",
+  "当前登录账号": "Signed-in account",
+  "保存资料": "Save profile",
+  "登录密码": "Login password",
+  "修改当前账号的登录密码": "Change the password for the current account",
+  "当前密码": "Current password",
+  "修改密码": "Change password",
+  "界面偏好": "Interface preferences",
+  "这些偏好只影响当前浏览器会话": "These preferences only affect the current browser session",
+  "请输入 0-100 之间的百分比": "Enter a percentage between 0 and 100",
+  "Cron 表达式需要 5 段，或带秒的 6 段": "Cron expressions must have 5 fields, or 6 fields when including seconds",
+  "额度保护": "Quota protection",
+  "低于保留百分比的账号会从网关路由和远端模型刷新候选中跳过。": "Accounts below the reserved percentage are skipped by gateway routing and remote model refresh candidate selection.",
+  "5 小时窗口保留 (%)": "5-hour window reserve (%)",
+  "周窗口保留 (%)": "Weekly window reserve (%)",
+  "全部低额度时兜底": "Fallback when all quotas are low",
+  "关闭后如果所有账号都低于阈值，网关会返回无可用账号。": "If disabled and all accounts fall below the threshold, the gateway returns no available account.",
+  "请先填写 Cron 表达式": "Fill in the Cron expression first",
+  "定时账号预热": "Scheduled account warmup",
+  "Cron 表达式": "Cron expression",
+  "网关模式": "Gateway mode",
+  "转发路径": "Forwarded path",
+  "上游模型": "Upstream model",
+  "实际来源": "Actual source",
+  "账号直连模式不会产生新的 CodexManager 请求日志": "Direct account mode does not create new CodexManager request logs",
+  "这里仅展示历史网关请求；如需记录请求，请切换到本地网关模式。": "Only historical gateway requests are shown here; switch to local gateway mode if you need request logging.",
+  "去切换为本地网关": "Switch to local gateway",
+  "仅网关流量": "Gateway traffic only",
+  "账号直连模式下不会产生请求日志，如需记录请求请切换到本地网关模式。": "Direct account mode does not generate request logs. Switch to local gateway mode if you need logging.",
+  未分配: "Unassigned",
+  "按我的平台密钥累计": "Accumulated by my platform keys",
+  归属成员: "Owner member",
 };

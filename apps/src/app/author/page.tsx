@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { appClient } from "@/lib/api/app-client";
+import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import {
   normalizeSponsorLinkItems,
@@ -35,6 +36,8 @@ import { toast } from "sonner";
 
 const AUTHOR_WECHAT_ID = "ProsperGao";
 const AUTHOR_TELEGRAM_GROUP_URL = "https://t.me/+OdpFa9GvjxhjMDhl";
+const FALLBACK_AUTHOR_CONTENT_API =
+  "https://author.qxnm.top/api/public/author-content";
 const AUTHOR_SUPPORT_IMAGES = [
   {
     key: "alipay",
@@ -49,6 +52,11 @@ const AUTHOR_SUPPORT_IMAGES = [
     src: "/author-wechat-pay.jpg",
   },
 ] as const;
+
+const AUTHOR_PARTNER_IMAGE_BY_KEY: Record<string, string> = {
+  xingsiyan: "/sponsors/xingsiyan.jpg",
+  racknerd: "/sponsors/racknerd.gif",
+};
 
 function PartnerTable({
   items,
@@ -72,9 +80,9 @@ function PartnerTable({
             >
               <TableCell className="w-[180px] p-5 align-middle">
                 <div className="flex items-center justify-center rounded-xl border border-border/50 bg-white/95 p-4">
-                  {item.imageSrc ? (
+                  {AUTHOR_PARTNER_IMAGE_BY_KEY[item.key] || item.imageSrc ? (
                     <img
-                      src={item.imageSrc}
+                      src={AUTHOR_PARTNER_IMAGE_BY_KEY[item.key] || item.imageSrc}
                       alt={translate(item.imageAlt ?? item.name)}
                       className="max-h-20 w-auto object-contain"
                     />
@@ -120,10 +128,10 @@ function PartnerTable({
   );
 }
 
-const AUTHOR_CONTENT_API = "https://author.qxnm.top/api/public/author-content";
-
 export default function AuthorPage() {
   const { t } = useI18n();
+  const { authorContentUrl } = useRuntimeCapabilities();
+  const contentUrl = authorContentUrl || FALLBACK_AUTHOR_CONTENT_API;
   const [authorContent, setAuthorContent] = useState<{
     authorSponsors: SponsorLinkItem[];
     authorServerRecommendations: SponsorLinkItem[];
@@ -135,7 +143,7 @@ export default function AuthorPage() {
     let cancelled = false;
 
     const loadContent = () => {
-      void fetch(AUTHOR_CONTENT_API, {
+      void fetch(contentUrl, {
         cache: "no-store",
         headers: { Accept: "application/json" },
       })
@@ -160,7 +168,7 @@ export default function AuthorPage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [contentUrl]);
 
   const visibleSponsors = authorContent?.authorSponsors ?? [];
   const visibleServerRecommendations =
@@ -288,10 +296,10 @@ export default function AuthorPage() {
                       {t(item.description)}
                     </p>
                   </div>
-                  <div className="mt-4 overflow-hidden rounded-xl border border-border/50 bg-white p-3">
+                  <div className="mt-4 overflow-hidden rounded-xl border border-border/50 bg-card/80 p-3 shadow-inner">
                     <img
                       src={item.src}
-                      alt={item.title}
+                      alt={t(item.title)}
                       className="mx-auto aspect-square w-full max-w-[220px] rounded-xl object-cover"
                     />
                   </div>
@@ -327,7 +335,7 @@ export default function AuthorPage() {
                 <div className="mt-4 overflow-hidden rounded-xl border border-border/50 bg-white p-3">
                   <img
                     src="/author-wechat.jpg"
-                    alt="作者微信二维码"
+                    alt={t("作者微信二维码")}
                     className="mx-auto aspect-square w-full max-w-[180px] rounded-xl object-cover"
                   />
                 </div>

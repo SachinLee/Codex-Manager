@@ -15,14 +15,21 @@ export interface RequestLog {
   method: string;
   requestType: string;
   gatewayMode: string;
+  routeStrategy: string;
+  routeSource: string;
   path: string;
+  clientModel: string;
   model: string;
+  modelSource: string;
   upstreamModel: string;
   actualSourceKind: string;
   actualSourceId: string;
+  clientReasoningEffort: string;
   reasoningEffort: string;
+  reasoningSource: string;
   serviceTier: string;
   effectiveServiceTier: string;
+  serviceTierSource: string;
   responseAdapter: string;
   canonicalSource: string;
   sizeRejectStage: string;
@@ -47,31 +54,6 @@ export interface RequestLogListResult {
   total: number;
   page: number;
   pageSize: number;
-}
-
-export interface GatewayErrorLog {
-  traceId: string;
-  keyId: string;
-  accountId: string;
-  requestPath: string;
-  method: string;
-  stage: string;
-  errorKind: string;
-  upstreamUrl: string;
-  cfRay: string;
-  statusCode: number | null;
-  compressionEnabled: boolean;
-  compressionRetryAttempted: boolean;
-  message: string;
-  createdAt: number | null;
-}
-
-export interface GatewayErrorLogListResult {
-  items: GatewayErrorLog[];
-  total: number;
-  page: number;
-  pageSize: number;
-  stages: string[];
 }
 
 export interface RequestLogFilterSummary {

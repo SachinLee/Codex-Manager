@@ -47,15 +47,16 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
   const sections = routes.getAllowedTopLevelRouteSections(access);
   assert.deepEqual(
     sections.map((section) => section.label),
-    ["概览", "资源接入", "模型路由", "用户与密钥", "运行监控", "系统设置"]
+    ["概览", "资源接入", "平台配置", "模型路由", "用户管理", "运行监控", "系统设置"]
   );
   assert.deepEqual(
     sections.map((section) => section.routes.map((route) => route.path)),
     [
       ["/"],
       ["/accounts", "/aggregate-api"],
-      ["/models"],
-      ["/account-manager", "/apikeys", "/model-groups"],
+      ["/platform-mode", "/apikeys"],
+      ["/models", "/model-groups"],
+      ["/account-manager"],
       ["/logs"],
       ["/settings", "/plugins", "/codex-launcher", "/author"],
     ]
@@ -67,6 +68,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
   assert.equal(routes.isTopLevelRouteAllowedForRole("/model-groups", access), true);
   assert.equal(routes.getTopLevelRouteLabel("/account-manager", access), "成员账号");
   assert.equal(routes.getTopLevelRouteLabel("/model-groups", access), "模型组");
+  assert.equal(routes.getTopLevelRouteLabel("/platform-mode", access), "平台模式选择");
 });
 
 test("none/password 单人管理员模式隐藏账号体系入口但保留单人管理入口", () => {
@@ -80,8 +82,9 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
         "/",
         "/accounts",
         "/aggregate-api",
-        "/models",
+        "/platform-mode",
         "/apikeys",
+        "/models",
         "/logs",
         "/settings",
         "/plugins",

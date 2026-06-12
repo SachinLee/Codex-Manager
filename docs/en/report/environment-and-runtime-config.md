@@ -78,6 +78,10 @@
 - `CODEXMANAGER_WEB_ROOT`：web 静态资源目录
 - `CODEXMANAGER_LOGIN_ADDR`：本地 OAuth 回调监听地址
 
+### Docker containers
+
+- `TZ`: container time zone. Docker images default to `Asia/Shanghai`; compose examples use `${TZ:-Asia/Shanghai}`, so they pass through `TZ` from the deployment environment and fall back to `Asia/Shanghai` when unset. Change it to your own IANA time zone when deploying elsewhere.
+
 ### 网关与上游
 
 - `CODEXMANAGER_UPSTREAM_BASE_URL`
@@ -92,7 +96,7 @@
 ### Codex image generation
 
 - `CODEXMANAGER_CODEX_IMAGE_GENERATION_ENABLED`: enables the image-generation compatibility path. Default `1`.
-- `CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL`: automatically injects the `image_generation` tool into normal `/v1/responses` requests. Default `1` to match the official Codex client behavior; explicit client-provided tools are not duplicated.
+- `CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL`: controls whether normal `/v1/responses` requests automatically inject the `image_generation` tool. Default `0` disables injection; set `1` to inject it only when the client did not explicitly provide the tool. Explicit client-provided tools are not duplicated.
 - `CODEXMANAGER_CODEX_IMAGE_MAIN_MODEL`: main conversation model used internally by Images API compatibility endpoints. Default `gpt-5.4-mini`.
 - `CODEXMANAGER_CODEX_IMAGE_TOOL_MODEL`: image tool model. Default `gpt-image-2`.
 
@@ -165,7 +169,7 @@ CODEXMANAGER_USAGE_POLL_INTERVAL_SECS=600
 CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS=180
 CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS=0
 CODEXMANAGER_CODEX_IMAGE_GENERATION_ENABLED=1
-CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL=1
+CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL=0
 CODEXMANAGER_CODEX_IMAGE_TOOL_MODEL=gpt-image-2
 # CODEXMANAGER_RPC_TOKEN=replace_with_your_static_token
 ```

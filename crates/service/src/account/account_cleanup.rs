@@ -39,8 +39,14 @@ pub(crate) struct DeleteAccountsByStatusesResult {
     deleted_account_ids: Vec<String>,
 }
 
-const CLEANUP_STATUS_ALLOWLIST: &[&str] =
-    &["unavailable", "banned", "limited", "disabled", "inactive"];
+const CLEANUP_STATUS_ALLOWLIST: &[&str] = &[
+    "unavailable",
+    "banned",
+    "limited",
+    "disabled",
+    "inactive",
+    "unknown",
+];
 
 /// 函数 `delete_unavailable_free_accounts`
 ///
@@ -460,6 +466,7 @@ mod tests {
             ("acc-banned", "banned"),
             ("acc-limited", "limited"),
             ("acc-disabled", "disabled"),
+            ("acc-unknown", "unknown"),
         ]
         .into_iter()
         .enumerate()
@@ -483,18 +490,27 @@ mod tests {
         let result = delete_accounts_by_statuses(vec![
             "banned".to_string(),
             "limited".to_string(),
+            "unknown".to_string(),
             "banned".to_string(),
         ])
         .expect("cleanup result");
 
-        assert_eq!(result.deleted, 2);
+        assert_eq!(result.deleted, 3);
         assert_eq!(
             result.target_statuses,
-            vec!["banned".to_string(), "limited".to_string()]
+            vec![
+                "banned".to_string(),
+                "limited".to_string(),
+                "unknown".to_string()
+            ]
         );
         assert_eq!(
             result.deleted_account_ids,
-            vec!["acc-banned".to_string(), "acc-limited".to_string()]
+            vec![
+                "acc-banned".to_string(),
+                "acc-limited".to_string(),
+                "acc-unknown".to_string()
+            ]
         );
         let remaining = Storage::open(&db_path)
             .expect("reopen db")

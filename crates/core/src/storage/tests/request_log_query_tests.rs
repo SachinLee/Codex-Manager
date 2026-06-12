@@ -94,6 +94,75 @@ fn prefixed_request_type_and_service_tier_queries_are_supported() {
             value
         } if value == "priority"
     ));
+
+    let service_tier_source_query = parse_request_log_query(Some("tier_source:=gateway_override"));
+    assert!(matches!(
+        service_tier_source_query,
+        RequestLogQuery::FieldExact {
+            column: "service_tier_source",
+            value
+        } if value == "gateway_override"
+    ));
+}
+
+#[test]
+fn prefixed_model_and_reasoning_source_queries_are_supported() {
+    let client_model_query = parse_request_log_query(Some("client_model:gpt-client"));
+    assert!(matches!(
+        client_model_query,
+        RequestLogQuery::FieldLike {
+            column: "client_model",
+            pattern
+        } if pattern == "%gpt-client%"
+    ));
+
+    let model_source_query = parse_request_log_query(Some("model_source:=gateway_override"));
+    assert!(matches!(
+        model_source_query,
+        RequestLogQuery::FieldExact {
+            column: "model_source",
+            value
+        } if value == "gateway_override"
+    ));
+
+    let client_reasoning_query = parse_request_log_query(Some("client_reasoning:minimal"));
+    assert!(matches!(
+        client_reasoning_query,
+        RequestLogQuery::FieldLike {
+            column: "client_reasoning_effort",
+            pattern
+        } if pattern == "%minimal%"
+    ));
+
+    let reasoning_source_query = parse_request_log_query(Some("reasoning_source:=api_key_profile"));
+    assert!(matches!(
+        reasoning_source_query,
+        RequestLogQuery::FieldExact {
+            column: "reasoning_source",
+            value
+        } if value == "api_key_profile"
+    ));
+}
+
+#[test]
+fn prefixed_route_strategy_queries_are_supported() {
+    let route_strategy_query = parse_request_log_query(Some("route_strategy:=balanced"));
+    assert!(matches!(
+        route_strategy_query,
+        RequestLogQuery::FieldExact {
+            column: "route_strategy",
+            value
+        } if value == "balanced"
+    ));
+
+    let route_source_query = parse_request_log_query(Some("route_source:conversation"));
+    assert!(matches!(
+        route_source_query,
+        RequestLogQuery::FieldLike {
+            column: "route_source",
+            pattern
+        } if pattern == "%conversation%"
+    ));
 }
 
 #[test]

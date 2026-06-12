@@ -29,6 +29,16 @@ impl RuntimeEnvGuard {
             previous_value,
         }
     }
+
+    fn clear(name: &'static str) -> Self {
+        let previous_value = std::env::var(name).ok();
+        std::env::remove_var(name);
+        crate::gateway::reload_runtime_config_from_env();
+        Self {
+            name,
+            previous_value,
+        }
+    }
 }
 
 impl Drop for RuntimeEnvGuard {
@@ -568,6 +578,28 @@ fn responses_default_path_auto_injects_image_generation_tool_for_codex_backend()
     assert_eq!(tools[0]["type"], "image_generation");
     assert_eq!(tools[0]["output_format"], "png");
     assert!(tools[0].get("model").is_none());
+}
+
+#[test]
+fn responses_default_path_does_not_auto_inject_image_generation_tool_by_default() {
+    let _guard = crate::test_env_guard();
+    let _inject_guard = RuntimeEnvGuard::clear(CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL_ENV);
+    let body = json!({
+        "model": "gpt-5.4",
+        "input": "帮我生成一个现场作业中台 logo",
+        "stream": true
+    });
+
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert!(value.get("tools").is_none());
 }
 
 #[test]
@@ -1326,7 +1358,7 @@ fn responses_codex_backend_keeps_conservative_field_snapshot() {
         "tools": [{ "type": "function", "name": "ping", "parameters": { "type": "object", "properties": {} } }],
         "tool_choice": "auto",
         "parallel_tool_calls": true,
-        "reasoning": { "effort": "medium" },
+        "reasoning": { "effort": "medium", "summary": "auto", "context": "current_turn" },
         "service_tier": "priority",
         "store": false,
         "stream": true,
@@ -1378,6 +1410,8 @@ fn responses_codex_backend_keeps_conservative_field_snapshot() {
     .collect::<std::collections::BTreeSet<_>>();
 
     assert_eq!(keys, expected);
+    assert_eq!(value["reasoning"]["context"], "current_turn");
+    assert_eq!(value["reasoning"]["summary"], "auto");
     assert!(object.get("max_output_tokens").is_none());
     assert!(object.get("metadata").is_none());
     assert!(object.get("temperature").is_none());
@@ -2242,18 +2276,18 @@ fn responses_apply_global_model_forward_rules_when_platform_key_not_bound() {
         "model": "spark",
         "input": "hello"
     });
-    let out = apply_request_overrides(
+    let out = apply_codex_compat_request_overrides(
         "/v1/responses",
         serde_json::to_vec(&body).expect("serialize request body"),
         None,
         None,
-        Some("https://api.openai.com/v1"),
+        Some("https://chatgpt.com/backend-api/codex"),
     );
     let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
 
     assert_eq!(
         value.get("model").and_then(serde_json::Value::as_str),
-        Some("spark")
+        Some("gpt-5.4-mini")
     );
 
     let _ = crate::gateway::set_model_forward_rules(original_rules.as_str());

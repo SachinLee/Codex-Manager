@@ -89,7 +89,7 @@ const SETTINGS_SNAPSHOT = {
 };
 
 async function mockRuntimeAndRpc(page: Page) {
-  await page.route("**/api/runtime", async (route) => {
+  await page.route(/\/api\/runtime(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       contentType: "application/json; charset=utf-8",
       body: JSON.stringify({
@@ -181,7 +181,7 @@ async function mockRuntimeAndRpc(page: Page) {
       body: JSON.stringify({
         jsonrpc: "2.0",
         id,
-        result: resultByMethod[method],
+        result: resultByMethod[method as keyof typeof resultByMethod],
       }),
     });
   });
