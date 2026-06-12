@@ -67,6 +67,19 @@ where
         return from_follow_up_action(follow_up_action(true, has_more_candidates));
     }
 
+    if matches!(status.as_u16(), 408 | 504) {
+        super::super::super::mark_account_cooldown(
+            account_id,
+            super::super::super::CooldownReason::Network,
+        );
+        log_gateway_result(
+            Some(url),
+            status.as_u16(),
+            Some("upstream request timed out"),
+        );
+        return from_follow_up_action(follow_up_action(true, has_more_candidates));
+    }
+
     if is_official_target && status.as_u16() == 429 {
         super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
         let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(account_id);

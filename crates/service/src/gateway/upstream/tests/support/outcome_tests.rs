@@ -221,6 +221,38 @@ fn challenge_on_last_candidate_keeps_upstream_response() {
     assert!(matches!(decision, UpstreamOutcomeDecision::RespondUpstream));
 }
 
+#[test]
+fn official_status_504_with_more_candidates_triggers_failover() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let decision = decide_upstream_outcome(
+        &storage,
+        "acc-504",
+        reqwest::StatusCode::GATEWAY_TIMEOUT,
+        None,
+        "https://chatgpt.com/backend-api/codex/responses",
+        true,
+        |_, _, _| {},
+    );
+    assert!(matches!(decision, UpstreamOutcomeDecision::Failover));
+}
+
+#[test]
+fn official_status_504_on_last_candidate_keeps_upstream_response() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let decision = decide_upstream_outcome(
+        &storage,
+        "acc-504-last",
+        reqwest::StatusCode::GATEWAY_TIMEOUT,
+        None,
+        "https://chatgpt.com/backend-api/codex/responses",
+        false,
+        |_, _, _| {},
+    );
+    assert!(matches!(decision, UpstreamOutcomeDecision::RespondUpstream));
+}
+
 /// 函数 `official_status_500_with_more_candidates_keeps_upstream_response`
 ///
 /// 作者: gaohongshun

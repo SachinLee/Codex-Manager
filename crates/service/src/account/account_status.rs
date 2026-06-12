@@ -13,6 +13,7 @@ pub(crate) enum AccountAvailabilitySignal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayErrorKind {
     Deactivation,
+    Timeout,
     UsageLimit,
     Other,
 }
@@ -22,6 +23,7 @@ pub(crate) struct GatewayErrorFollowUp {
     pub kind: GatewayErrorKind,
     pub should_failover: bool,
     pub should_mark_account_unavailable: bool,
+    pub should_mark_network_cooldown: bool,
     pub should_mark_default_cooldown: bool,
 }
 
@@ -207,9 +209,26 @@ pub(crate) fn usage_limit_reason_from_message(message: &str) -> Option<&'static 
     None
 }
 
+fn timeout_reason_from_message(message: &str) -> Option<&'static str> {
+    let normalized = message.trim().to_ascii_lowercase();
+    if normalized == "upstream total timeout exceeded"
+        || normalized == "upstream request timed out"
+        || normalized == "stream idle timeout"
+        || normalized == "上游请求超时"
+        || normalized == "上游流式空闲超时"
+        || normalized.contains("stream_timeout")
+        || normalized.contains("连接超时")
+    {
+        return Some("upstream_timeout");
+    }
+    None
+}
+
 pub(crate) fn analyze_gateway_error(err: &str, has_more_candidates: bool) -> GatewayErrorFollowUp {
     let kind = if deactivation_reason_from_message(err).is_some() {
         GatewayErrorKind::Deactivation
+    } else if timeout_reason_from_message(err).is_some() {
+        GatewayErrorKind::Timeout
     } else if usage_limit_reason_from_message(err).is_some() {
         GatewayErrorKind::UsageLimit
     } else {
@@ -220,7 +239,11 @@ pub(crate) fn analyze_gateway_error(err: &str, has_more_candidates: bool) -> Gat
     GatewayErrorFollowUp {
         kind,
         should_failover,
-        should_mark_account_unavailable: is_actionable,
+        should_mark_account_unavailable: matches!(
+            kind,
+            GatewayErrorKind::Deactivation | GatewayErrorKind::UsageLimit
+        ),
+        should_mark_network_cooldown: matches!(kind, GatewayErrorKind::Timeout) && should_failover,
         should_mark_default_cooldown: matches!(kind, GatewayErrorKind::UsageLimit)
             && should_failover,
     }
@@ -542,6 +565,7 @@ mod tests {
         assert_eq!(usage_limit_last.kind, GatewayErrorKind::UsageLimit);
         assert!(!usage_limit_last.should_failover);
         assert!(usage_limit_last.should_mark_account_unavailable);
+        assert!(!usage_limit_last.should_mark_network_cooldown);
         assert!(!usage_limit_last.should_mark_default_cooldown);
 
         // Regression: backend-native WS upstream phrasing.
@@ -549,13 +573,37 @@ mod tests {
         assert_eq!(ws_usage_limit.kind, GatewayErrorKind::UsageLimit);
         assert!(ws_usage_limit.should_failover);
         assert!(ws_usage_limit.should_mark_account_unavailable);
+        assert!(!ws_usage_limit.should_mark_network_cooldown);
         assert!(ws_usage_limit.should_mark_default_cooldown);
+
+        let timeout = analyze_gateway_error("upstream total timeout exceeded", true);
+        assert_eq!(timeout.kind, GatewayErrorKind::Timeout);
+        assert!(timeout.should_failover);
+        assert!(!timeout.should_mark_account_unavailable);
+        assert!(timeout.should_mark_network_cooldown);
+        assert!(!timeout.should_mark_default_cooldown);
+
+        let stream_timeout =
+            analyze_gateway_error("code=stream_timeout stream timeout at upstream", true);
+        assert_eq!(stream_timeout.kind, GatewayErrorKind::Timeout);
+        assert!(stream_timeout.should_failover);
+        assert!(!stream_timeout.should_mark_account_unavailable);
+        assert!(stream_timeout.should_mark_network_cooldown);
+        assert!(!stream_timeout.should_mark_default_cooldown);
+
+        let timeout_last = analyze_gateway_error("upstream request timed out", false);
+        assert_eq!(timeout_last.kind, GatewayErrorKind::Timeout);
+        assert!(!timeout_last.should_failover);
+        assert!(!timeout_last.should_mark_account_unavailable);
+        assert!(!timeout_last.should_mark_network_cooldown);
+        assert!(!timeout_last.should_mark_default_cooldown);
 
         let request_too_large =
             analyze_gateway_error("Request body too large: max 20971520 bytes", true);
         assert_eq!(request_too_large.kind, GatewayErrorKind::Other);
         assert!(!request_too_large.should_failover);
         assert!(!request_too_large.should_mark_account_unavailable);
+        assert!(!request_too_large.should_mark_network_cooldown);
         assert!(!request_too_large.should_mark_default_cooldown);
     }
 

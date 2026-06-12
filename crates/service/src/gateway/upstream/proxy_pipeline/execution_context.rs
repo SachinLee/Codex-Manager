@@ -239,6 +239,12 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
                 super::super::super::CooldownReason::Default,
             );
         }
+        if follow_up.should_mark_network_cooldown {
+            super::super::super::mark_account_cooldown(
+                account_id,
+                super::super::super::CooldownReason::Network,
+            );
+        }
         if follow_up.should_mark_account_unavailable {
             let _ = self.mark_account_unavailable_for_gateway_error(account_id, err);
         }

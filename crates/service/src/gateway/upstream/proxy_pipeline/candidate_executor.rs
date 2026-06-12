@@ -267,7 +267,8 @@ pub(in super::super) fn execute_candidate_sequence(
             attempt_prompt_cache_key,
         );
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
-        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, is_bound_account) {
+        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, is_bound_account)
+        {
             context.log_candidate_skip(&account.id, idx, skip_reason);
             match skip_reason {
                 super::super::support::candidates::CandidateSkipReason::Cooldown => {
@@ -513,6 +514,17 @@ pub(in super::super) fn execute_candidate_sequence(
                             status_code,
                             message,
                         } => {
+                            if should_failover_terminal_gateway_error(
+                                context,
+                                &account.id,
+                                context.has_more_candidates(idx),
+                                &message,
+                                &mut attempt_trace,
+                                &mut last_attempt_url,
+                                &mut last_attempt_error,
+                            ) {
+                                continue;
+                            }
                             let request = request
                                 .take()
                                 .expect("request should be available before terminal response");
