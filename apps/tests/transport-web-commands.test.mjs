@@ -13,6 +13,7 @@ const modulePaths = [
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "aggregate-api.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "apikey.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "browser-direct.ts"),
+  path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "codex-session.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "codex-profile.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "gateway.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "login.ts"),
@@ -27,6 +28,7 @@ function rewriteImports(outputText) {
     .replaceAll('./transport-web-commands/aggregate-api', './transport-web-commands/aggregate-api.js')
     .replaceAll('./transport-web-commands/apikey', './transport-web-commands/apikey.js')
     .replaceAll('./transport-web-commands/browser-direct', './transport-web-commands/browser-direct.js')
+    .replaceAll('./transport-web-commands/codex-session', './transport-web-commands/codex-session.js')
     .replaceAll('./transport-web-commands/codex-profile', './transport-web-commands/codex-profile.js')
     .replaceAll('./transport-web-commands/gateway', './transport-web-commands/gateway.js')
     .replaceAll('./transport-web-commands/login', './transport-web-commands/login.js')
@@ -220,6 +222,9 @@ test("createWebCommandMap 暴露 Codex 会话批量删除 RPC", () => {
   assert.deepEqual(commandMap.codex_session_list, {
     rpcMethod: "codexSession/list",
   });
+  assert.deepEqual(commandMap.codex_session_delete, {
+    rpcMethod: "codexSession/delete",
+  });
   assert.deepEqual(commandMap.codex_session_delete_many, {
     rpcMethod: "codexSession/deleteMany",
   });
@@ -231,6 +236,12 @@ test("createWebCommandMap 暴露 Codex 会话批量删除 RPC", () => {
   });
   assert.deepEqual(commandMap.codex_session_delete_all_archived, {
     rpcMethod: "codexSession/deleteAllArchived",
+  });
+  assert.deepEqual(commandMap.codex_session_undo, {
+    rpcMethod: "codexSession/undo",
+  });
+  assert.deepEqual(commandMap.codex_session_list_archived, {
+    rpcMethod: "codexSession/listArchived",
   });
 });
 

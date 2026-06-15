@@ -336,22 +336,19 @@ export function RequestLogsTabContent({
           </div>
         </CardHeader>
         <CardContent className="px-0">
-          <Table className="min-w-[1970px] table-fixed">
+          <Table className="min-w-[1870px] table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className="h-12 w-[260px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                <TableHead className="h-12 w-[200px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("会话")}
                 </TableHead>
                 <TableHead className="h-12 w-[150px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("时间")}
                 </TableHead>
-                <TableHead className="w-[240px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-                  {t("类型 / 方法 / 路径")}
-                </TableHead>
                 <TableHead className="w-[224px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("账号 / 密钥")}
                 </TableHead>
-                <TableHead className="w-[220px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                <TableHead className="w-[180px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("模型 / 推理 / 等级")}
                 </TableHead>
                 <TableHead className="w-[92px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
@@ -370,6 +367,9 @@ export function RequestLogsTabContent({
                   {t("费用")}
                 </TableHead>
                 <TableHead className="w-[240px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  {t("类型 / 方法 / 路径")}
+                </TableHead>
+                <TableHead className="w-[240px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("错误")}
                 </TableHead>
               </TableRow>
@@ -380,14 +380,14 @@ export function RequestLogsTabContent({
                   <TableRow key={index}>
                     <TableCell><Skeleton className="h-4 w-28" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-32" /></TableCell>
-                    <TableCell><Skeleton className="h-4 w-40" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-32" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                     <TableCell><Skeleton className="h-6 w-12 rounded-full" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-12" /></TableCell>
-                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-12" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-40" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-full" /></TableCell>
                   </TableRow>
                 ))
@@ -416,9 +416,6 @@ export function RequestLogsTabContent({
                     </TableCell>
                     <TableCell className="px-4 py-3 font-mono text-[11px] text-muted-foreground">
                       {formatTsFromSeconds(log.createdAt, t("未知时间"))}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-top">
-                      <RequestRouteInfoCell log={log} />
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top">
                       <AccountKeyInfoCell
@@ -459,6 +456,9 @@ export function RequestLogsTabContent({
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top font-mono text-xs text-foreground">
                       {formatUsdAmount(log.estimatedCostUsd)}
+                    </TableCell>
+                    <TableCell className="px-4 py-3 align-top">
+                      <RequestRouteInfoCell log={log} />
                     </TableCell>
                     <TableCell className="px-4 py-3 text-left align-top">
                       <ErrorInfoCell error={log.error} />
