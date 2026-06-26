@@ -1,18 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
 import { AlertCircle, Play, RefreshCw } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { serviceClient } from "@/lib/api/service-client";
-import {
-  buildStartupSnapshotQueryKey,
-  STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
-  STARTUP_SNAPSHOT_STALE_TIME,
-} from "@/lib/api/startup-snapshot";
 import { appClient } from "@/lib/api/app-client";
 import { loadRuntimeCapabilities } from "@/lib/api/transport";
 import { Button } from "@/components/ui/button";
@@ -20,7 +14,6 @@ import { Input } from "@/components/ui/input";
 import { CodexCliOnboardingDialog } from "@/components/layout/codex-cli-onboarding-dialog";
 import { applyAppearancePreset } from "@/lib/appearance";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
-import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { isTrayPreviewPath } from "@/components/layout/app-frame";
 import {
   formatServiceError,
@@ -29,15 +22,12 @@ import {
   normalizeServiceAddr,
 } from "@/lib/utils/service";
 import { useI18n } from "@/lib/i18n/provider";
-import {
-  getCanonicalStaticRouteUrl,
-  normalizeRoutePath,
-} from "@/lib/utils/static-routes";
+import { getCanonicalStaticRouteUrl } from "@/lib/utils/static-routes";
 import { withTimeout } from "@/lib/utils/timeout";
 
 const DEFAULT_SERVICE_ADDR = "localhost:48760";
-const STARTUP_WARMUP_LABEL = "[startup warmup]";
 const STARTUP_STEP_TIMEOUT_MS = 15_000;
+const WEB_GATEWAY_SETTINGS_TIMEOUT_MS = 60_000;
 const CODEX_CLI_GUIDE_SESSION_DISMISSED_KEY =
   "codexmanager.codexCliGuide.sessionDismissed";
 const UNSUPPORTED_RUNTIME_AUTO_RETRY_LIMIT = 8;
@@ -101,6 +91,12 @@ function isValidServicePort(value: string): boolean {
   return Number.isInteger(port) && port >= 1 && port <= 65535;
 }
 
+export function startupAppSettingsTimeoutMs(runtimeMode?: string | null): number {
+  return runtimeMode === "web-gateway"
+    ? WEB_GATEWAY_SETTINGS_TIMEOUT_MS
+    : STARTUP_STEP_TIMEOUT_MS;
+}
+
 /**
  * 函数 `AppBootstrap`
  *
@@ -127,8 +123,6 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
   } = useAppStore();
   const { setTheme } = useTheme();
   const { t } = useI18n();
-  const localDayRange = useLocalDayRange();
-  const queryClient = useQueryClient();
   const pathname = usePathname();
   const isTrayPreview = isTrayPreviewPath(pathname);
   const { canManageService, isDesktopRuntime, isUnsupportedWebRuntime } =
@@ -220,40 +214,11 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
     [initializeService]
   );
 
-  const prefetchStartupSnapshot = useCallback(
-    async (addr: string) => {
-      await queryClient.prefetchQuery({
-        queryKey: buildStartupSnapshotQueryKey(
-          addr,
-          STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
-          localDayRange.dayStartTs,
-        ),
-        queryFn: () =>
-          serviceClient.getStartupSnapshot({
-            requestLogLimit: STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
-            dayStartTs: localDayRange.dayStartTs,
-            dayEndTs: localDayRange.dayEndTs,
-          }),
-        staleTime: STARTUP_SNAPSHOT_STALE_TIME,
-      });
-    },
-    [localDayRange.dayEndTs, localDayRange.dayStartTs, queryClient]
-  );
-
-  const shouldBlockOnInitialDashboardSnapshot = useCallback(
-    (desktopRuntime: boolean) =>
-      desktopRuntime &&
-      !hasInitializedOnce.current &&
-      normalizeRoutePath(pathname) === "/",
-    [pathname],
-  );
-
   const applyConnectedServiceState = useCallback(
     (
       addr: string,
       version: string,
       lowTransparency: boolean,
-      options?: { blockOnDashboardSnapshot?: boolean },
     ) => {
       setServiceStatus({
         addr,
@@ -263,21 +228,17 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
       applyLowTransparency(lowTransparency);
       setIsInitializing(false);
       hasInitializedOnce.current = true;
-
-      if (options?.blockOnDashboardSnapshot) {
-        void withTimeout(
-          prefetchStartupSnapshot(addr),
-          STARTUP_STEP_TIMEOUT_MS,
-          `Startup dashboard snapshot prefetch timed out after ${STARTUP_STEP_TIMEOUT_MS / 1000}s`,
-        ).catch((warmupError) => {
-          console.warn(
-            `${STARTUP_WARMUP_LABEL} initial dashboard snapshot prefetch failed`,
-            warmupError,
-          );
-        });
-      }
     },
-    [prefetchStartupSnapshot, setServiceStatus],
+    [setServiceStatus],
+  );
+
+  const markDesktopShellReady = useCallback(
+    (lowTransparency: boolean) => {
+      applyLowTransparency(lowTransparency);
+      setIsInitializing(false);
+      hasInitializedOnce.current = true;
+    },
+    [],
   );
 
   const init = useCallback(async () => {
@@ -297,8 +258,6 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
       );
       setRuntimeCapabilities(detectedRuntimeCapabilities);
       const desktopRuntime = detectedRuntimeCapabilities.mode === "desktop-tauri";
-      const shouldBlockOnDashboardSnapshot =
-        shouldBlockOnInitialDashboardSnapshot(desktopRuntime);
 
       if (detectedRuntimeCapabilities.mode === "unsupported-web") {
         if (!hasInitializedOnce.current) {
@@ -313,10 +272,13 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
       }
       unsupportedRuntimeRetryCountRef.current = 0;
 
+      const appSettingsTimeoutMs = startupAppSettingsTimeoutMs(
+        detectedRuntimeCapabilities.mode,
+      );
       const settings = await withTimeout(
         appClient.getSettings(),
-        STARTUP_STEP_TIMEOUT_MS,
-        `Loading app settings timed out after ${STARTUP_STEP_TIMEOUT_MS / 1000}s`,
+        appSettingsTimeoutMs,
+        `Loading app settings timed out after ${appSettingsTimeoutMs / 1000}s`,
       );
       const addr = normalizeServiceAddr(settings.serviceAddr || DEFAULT_SERVICE_ADDR);
       setRecoveryPort(readPortFromServiceAddr(addr));
@@ -336,25 +298,26 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
         setServiceStatus({ addr, connected: false, version: "" });
       }
 
+      if (desktopRuntime) {
+        markDesktopShellReady(settings.lowTransparency);
+        void startAndInitializeService(addr)
+          .then(() => {
+            applyConnectedServiceState(addr, "", settings.lowTransparency);
+          })
+          .catch((serviceError: unknown) => {
+            setServiceStatus({ addr, connected: false, version: "" });
+            setError(formatServiceError(serviceError));
+          });
+        return;
+      }
+
       try {
-        try {
-          await initializeService(addr, 0);
-        } catch (initializeError) {
-          if (!desktopRuntime) {
-            throw initializeError;
-          }
-          await startAndInitializeService(addr);
-        }
-        await applyConnectedServiceState(
-          addr,
-          "",
-          settings.lowTransparency,
-          { blockOnDashboardSnapshot: shouldBlockOnDashboardSnapshot },
-        );
+        await initializeService(addr, 0);
+        await applyConnectedServiceState(addr, "", settings.lowTransparency);
       } catch (serviceError: unknown) {
         if (!hasInitializedOnce.current) {
-           setServiceStatus({ addr, connected: false, version: "" });
-           setError(formatServiceError(serviceError));
+          setServiceStatus({ addr, connected: false, version: "" });
+          setError(formatServiceError(serviceError));
         }
         setIsInitializing(false);
       }
@@ -368,12 +331,12 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
   }, [
     applyConnectedServiceState,
     initializeService,
+    markDesktopShellReady,
     setAppSettings,
     setRuntimeCapabilities,
     setServiceStatus,
     setTheme,
     startAndInitializeService,
-    shouldBlockOnInitialDashboardSnapshot,
     t,
   ]);
 
@@ -414,10 +377,6 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
         addr,
         "",
         settings.lowTransparency,
-        {
-          blockOnDashboardSnapshot:
-            shouldBlockOnInitialDashboardSnapshot(true),
-        },
       );
       toast.success(t("服务已连接"));
     } catch (startError: unknown) {
@@ -458,10 +417,6 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
         nextAddr,
         "",
         settings.lowTransparency,
-        {
-          blockOnDashboardSnapshot:
-            shouldBlockOnInitialDashboardSnapshot(true),
-        },
       );
       toast.success(t("服务已连接"));
     } catch (recoverError: unknown) {

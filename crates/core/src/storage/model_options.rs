@@ -1,19 +1,197 @@
 use std::collections::BTreeMap;
 
-use rusqlite::params;
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, OptionalExtension, Row};
 use serde_json::Value;
 
 use crate::rpc::types::{ModelInfo, ModelReasoningLevel};
 
+use super::key_id_filters::{text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
 use super::{
     now_ts, ModelCatalogModelRecord, ModelCatalogReasoningLevelRecord, ModelCatalogScopeRecord,
-    ModelCatalogStringItemRecord, Storage,
+    ModelCatalogStorageSnapshot, ModelCatalogStringItemRecord, Storage,
 };
 
 const STRING_ITEM_KIND_ADDITIONAL_SPEED_TIERS: &str = "additional_speed_tiers";
 const STRING_ITEM_KIND_EXPERIMENTAL_SUPPORTED_TOOLS: &str = "experimental_supported_tools";
 const STRING_ITEM_KIND_INPUT_MODALITIES: &str = "input_modalities";
 const STRING_ITEM_KIND_AVAILABLE_IN_PLANS: &str = "available_in_plans";
+const MODEL_CATALOG_MODEL_ORDER_CLAUSE: &str = "ORDER BY sort_index ASC, updated_at DESC, slug ASC";
+const MODEL_CATALOG_API_AVAILABLE_CONDITION: &str = "TRIM(slug) <> ''
+               AND COALESCE(supported_in_api, 1) = 1
+               AND LOWER(TRIM(COALESCE(visibility, ''))) NOT IN ('hide', 'hidden', 'disabled', 'unavailable')";
+
+fn normalize_model_catalog_slugs(slugs: &[String]) -> Vec<String> {
+    let mut normalized = slugs
+        .iter()
+        .map(|slug| slug.trim().to_string())
+        .filter(|slug| !slug.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn model_catalog_model_select_sql() -> &'static str {
+    "SELECT
+        scope, slug, display_name, source_kind, user_edited,
+        description, default_reasoning_level, shell_type, visibility, supported_in_api, priority,
+        availability_nux_json, upgrade_json, base_instructions,
+        model_messages_json, supports_reasoning_summaries,
+        default_reasoning_summary, support_verbosity,
+        default_verbosity_json, apply_patch_tool_type,
+        web_search_tool_type, truncation_mode, truncation_limit,
+        truncation_extra_json, supports_parallel_tool_calls,
+        supports_image_detail_original, context_window,
+        auto_compact_token_limit, effective_context_window_percent,
+        minimal_client_version_json, supports_search_tool,
+        extra_json, sort_index, updated_at
+     FROM model_catalog_models"
+}
+fn model_catalog_scope_by_scope_sql() -> &'static str {
+    "SELECT scope, extra_json, updated_at
+     FROM model_catalog_scopes
+     WHERE scope = ?1
+     LIMIT 1"
+}
+
+fn model_catalog_models_for_scope_sql() -> String {
+    format!(
+        "{select_sql}
+         WHERE scope = ?1
+         {order_clause}",
+        select_sql = model_catalog_model_select_sql(),
+        order_clause = MODEL_CATALOG_MODEL_ORDER_CLAUSE,
+    )
+}
+
+fn model_catalog_ordered_slug_sql(extra_conditions: &[&str], limit: Option<i64>) -> String {
+    let mut sql = "SELECT slug
+         FROM model_catalog_models
+         WHERE scope = ?1"
+        .to_string();
+    for condition in extra_conditions {
+        sql.push_str("\n           AND ");
+        sql.push_str(condition);
+    }
+    sql.push('\n');
+    sql.push_str("         ");
+    sql.push_str(MODEL_CATALOG_MODEL_ORDER_CLAUSE);
+    if let Some(limit) = limit {
+        sql.push_str(&format!("\n         LIMIT {limit}"));
+    }
+    sql
+}
+
+fn existing_model_catalog_slugs_chunk_sql(slug_condition: &str) -> String {
+    format!(
+        "SELECT slug
+         FROM model_catalog_models
+         WHERE scope = ?1
+           AND {slug_condition}"
+    )
+}
+
+fn remote_unedited_model_catalog_models_for_slugs_chunk_sql(slug_condition: &str) -> String {
+    format!(
+        "{select_sql}
+         WHERE scope = ?1
+           AND {slug_condition}
+           AND source_kind = 'remote'
+           AND COALESCE(user_edited, 0) = 0",
+        select_sql = model_catalog_model_select_sql(),
+    )
+}
+
+fn model_catalog_reasoning_levels_list_sql() -> &'static str {
+    "SELECT scope, slug, effort, description, extra_json, sort_index, updated_at
+     FROM model_catalog_reasoning_levels
+     WHERE scope = ?1
+     ORDER BY slug ASC, sort_index ASC, effort ASC"
+}
+
+fn model_catalog_string_items_list_sql() -> &'static str {
+    "SELECT scope, slug, value, sort_index, updated_at
+     FROM model_catalog_string_items
+     WHERE scope = ?1 AND item_kind = ?2
+     ORDER BY slug ASC, sort_index ASC, value ASC"
+}
+
+fn model_catalog_string_items_for_kinds_sql(placeholders: &str) -> String {
+    format!(
+        "SELECT item_kind, scope, slug, value, sort_index, updated_at
+         FROM model_catalog_string_items
+         WHERE scope = ?1 AND item_kind IN ({placeholders})
+         ORDER BY item_kind ASC, slug ASC, sort_index ASC, value ASC"
+    )
+}
+
+fn count_available_model_catalog_models_sql() -> String {
+    format!(
+        "SELECT COUNT(1)
+         FROM model_catalog_models
+         WHERE scope = ?1
+           AND {MODEL_CATALOG_API_AVAILABLE_CONDITION}"
+    )
+}
+
+fn delete_model_catalog_model_sql() -> &'static str {
+    "DELETE FROM model_catalog_models WHERE scope = ?1 AND slug = ?2"
+}
+
+fn delete_model_catalog_reasoning_levels_sql() -> &'static str {
+    "DELETE FROM model_catalog_reasoning_levels WHERE scope = ?1 AND slug = ?2"
+}
+
+fn delete_model_catalog_string_items_sql() -> &'static str {
+    "DELETE FROM model_catalog_string_items
+     WHERE scope = ?1 AND slug = ?2 AND item_kind = ?3"
+}
+
+fn delete_model_catalog_string_item_kinds_sql(condition: &str) -> String {
+    format!(
+        "DELETE FROM model_catalog_string_items
+         WHERE scope = ?1 AND slug = ?2 AND {condition}"
+    )
+}
+
+fn map_model_catalog_model_record(row: &Row<'_>) -> rusqlite::Result<ModelCatalogModelRecord> {
+    Ok(ModelCatalogModelRecord {
+        scope: row.get(0)?,
+        slug: row.get(1)?,
+        display_name: row.get(2)?,
+        source_kind: row.get(3)?,
+        user_edited: row.get(4)?,
+        description: row.get(5)?,
+        default_reasoning_level: row.get(6)?,
+        shell_type: row.get(7)?,
+        visibility: row.get(8)?,
+        supported_in_api: row.get(9)?,
+        priority: row.get(10)?,
+        availability_nux_json: row.get(11)?,
+        upgrade_json: row.get(12)?,
+        base_instructions: row.get(13)?,
+        model_messages_json: row.get(14)?,
+        supports_reasoning_summaries: row.get(15)?,
+        default_reasoning_summary: row.get(16)?,
+        support_verbosity: row.get(17)?,
+        default_verbosity_json: row.get(18)?,
+        apply_patch_tool_type: row.get(19)?,
+        web_search_tool_type: row.get(20)?,
+        truncation_mode: row.get(21)?,
+        truncation_limit: row.get(22)?,
+        truncation_extra_json: row.get(23)?,
+        supports_parallel_tool_calls: row.get(24)?,
+        supports_image_detail_original: row.get(25)?,
+        context_window: row.get(26)?,
+        auto_compact_token_limit: row.get(27)?,
+        effective_context_window_percent: row.get(28)?,
+        minimal_client_version_json: row.get(29)?,
+        supports_search_tool: row.get(30)?,
+        extra_json: row.get(31)?,
+        sort_index: row.get(32)?,
+        updated_at: row.get(33)?,
+    })
+}
 
 impl Storage {
     pub fn upsert_model_catalog_scope(
@@ -35,12 +213,7 @@ impl Storage {
         &self,
         scope: &str,
     ) -> rusqlite::Result<Option<ModelCatalogScopeRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT scope, extra_json, updated_at
-             FROM model_catalog_scopes
-             WHERE scope = ?1
-             LIMIT 1",
-        )?;
+        let mut stmt = self.conn.prepare(model_catalog_scope_by_scope_sql())?;
         let mut rows = stmt.query([scope])?;
         if let Some(row) = rows.next()? {
             return Ok(Some(ModelCatalogScopeRecord {
@@ -205,62 +378,9 @@ impl Storage {
         &self,
         scope: &str,
     ) -> rusqlite::Result<Vec<ModelCatalogModelRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT
-                scope, slug, display_name, source_kind, user_edited,
-                description, default_reasoning_level, shell_type, visibility, supported_in_api, priority,
-                availability_nux_json, upgrade_json, base_instructions,
-                model_messages_json, supports_reasoning_summaries,
-                default_reasoning_summary, support_verbosity,
-                default_verbosity_json, apply_patch_tool_type,
-                web_search_tool_type, truncation_mode, truncation_limit,
-                truncation_extra_json, supports_parallel_tool_calls,
-                supports_image_detail_original, context_window,
-                auto_compact_token_limit, effective_context_window_percent,
-                minimal_client_version_json, supports_search_tool,
-                extra_json, sort_index, updated_at
-             FROM model_catalog_models
-             WHERE scope = ?1
-             ORDER BY sort_index ASC, updated_at DESC, slug ASC",
-        )?;
-        let rows = stmt.query_map([scope], |row| {
-            Ok(ModelCatalogModelRecord {
-                scope: row.get(0)?,
-                slug: row.get(1)?,
-                display_name: row.get(2)?,
-                source_kind: row.get(3)?,
-                user_edited: row.get(4)?,
-                description: row.get(5)?,
-                default_reasoning_level: row.get(6)?,
-                shell_type: row.get(7)?,
-                visibility: row.get(8)?,
-                supported_in_api: row.get(9)?,
-                priority: row.get(10)?,
-                availability_nux_json: row.get(11)?,
-                upgrade_json: row.get(12)?,
-                base_instructions: row.get(13)?,
-                model_messages_json: row.get(14)?,
-                supports_reasoning_summaries: row.get(15)?,
-                default_reasoning_summary: row.get(16)?,
-                support_verbosity: row.get(17)?,
-                default_verbosity_json: row.get(18)?,
-                apply_patch_tool_type: row.get(19)?,
-                web_search_tool_type: row.get(20)?,
-                truncation_mode: row.get(21)?,
-                truncation_limit: row.get(22)?,
-                truncation_extra_json: row.get(23)?,
-                supports_parallel_tool_calls: row.get(24)?,
-                supports_image_detail_original: row.get(25)?,
-                context_window: row.get(26)?,
-                auto_compact_token_limit: row.get(27)?,
-                effective_context_window_percent: row.get(28)?,
-                minimal_client_version_json: row.get(29)?,
-                supports_search_tool: row.get(30)?,
-                extra_json: row.get(31)?,
-                sort_index: row.get(32)?,
-                updated_at: row.get(33)?,
-            })
-        })?;
+        let sql = model_catalog_models_for_scope_sql();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([scope], map_model_catalog_model_record)?;
         let mut items = Vec::new();
         for row in rows {
             items.push(row?);
@@ -268,11 +388,192 @@ impl Storage {
         Ok(items)
     }
 
-    pub fn delete_model_catalog_model(&self, scope: &str, slug: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM model_catalog_models WHERE scope = ?1 AND slug = ?2",
-            params![scope, slug],
+    pub fn load_model_catalog_storage_snapshot(
+        &self,
+        scope: &str,
+    ) -> rusqlite::Result<ModelCatalogStorageSnapshot> {
+        let models = self.list_model_catalog_models(scope)?;
+        if models.is_empty() {
+            return Ok(ModelCatalogStorageSnapshot::default());
+        }
+        let string_items = self.list_model_catalog_string_items_for_kinds(
+            scope,
+            &[
+                STRING_ITEM_KIND_ADDITIONAL_SPEED_TIERS,
+                STRING_ITEM_KIND_EXPERIMENTAL_SUPPORTED_TOOLS,
+                STRING_ITEM_KIND_INPUT_MODALITIES,
+                STRING_ITEM_KIND_AVAILABLE_IN_PLANS,
+            ],
         )?;
+        let mut additional_speed_tiers = Vec::new();
+        let mut experimental_supported_tools = Vec::new();
+        let mut input_modalities = Vec::new();
+        let mut available_in_plans = Vec::new();
+        for (item_kind, item) in string_items {
+            match item_kind.as_str() {
+                STRING_ITEM_KIND_ADDITIONAL_SPEED_TIERS => additional_speed_tiers.push(item),
+                STRING_ITEM_KIND_EXPERIMENTAL_SUPPORTED_TOOLS => {
+                    experimental_supported_tools.push(item)
+                }
+                STRING_ITEM_KIND_INPUT_MODALITIES => input_modalities.push(item),
+                STRING_ITEM_KIND_AVAILABLE_IN_PLANS => available_in_plans.push(item),
+                _ => {}
+            }
+        }
+        Ok(ModelCatalogStorageSnapshot {
+            scope: self.get_model_catalog_scope(scope)?,
+            models,
+            reasoning_levels: self.list_model_catalog_reasoning_levels(scope)?,
+            additional_speed_tiers,
+            experimental_supported_tools,
+            input_modalities,
+            available_in_plans,
+        })
+    }
+
+    pub fn list_remote_unedited_model_catalog_models_for_slugs(
+        &self,
+        scope: &str,
+        slugs: &[String],
+    ) -> rusqlite::Result<Vec<ModelCatalogModelRecord>> {
+        let slugs = normalize_model_catalog_slugs(slugs);
+        if slugs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut items = Vec::new();
+        for chunk in slugs.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            let Some((slug_condition, slug_params)) = text_id_in_clause("slug", chunk) else {
+                continue;
+            };
+            let sql = remote_unedited_model_catalog_models_for_slugs_chunk_sql(&slug_condition);
+            let mut values = Vec::with_capacity(slug_params.len() + 1);
+            values.push(SqlValue::Text(scope.trim().to_string()));
+            values.extend(slug_params);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(values), map_model_catalog_model_record)?;
+            for row in rows {
+                items.push(row?);
+            }
+        }
+        items.sort_by(|left, right| {
+            left.sort_index
+                .cmp(&right.sort_index)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.slug.cmp(&right.slug))
+        });
+        Ok(items)
+    }
+
+    pub fn list_remote_unedited_model_catalog_slugs(
+        &self,
+        scope: &str,
+    ) -> rusqlite::Result<Vec<String>> {
+        let sql = model_catalog_ordered_slug_sql(
+            &["source_kind = 'remote'", "COALESCE(user_edited, 0) = 0"],
+            None,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([scope], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn list_api_available_model_catalog_slugs(
+        &self,
+        scope: &str,
+    ) -> rusqlite::Result<Vec<String>> {
+        let sql = model_catalog_ordered_slug_sql(&[MODEL_CATALOG_API_AVAILABLE_CONDITION], None);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([scope], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn find_first_api_available_model_catalog_slug(
+        &self,
+        scope: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        let sql = model_catalog_ordered_slug_sql(&[MODEL_CATALOG_API_AVAILABLE_CONDITION], Some(1));
+        self.conn
+            .query_row(&sql, [scope], |row| row.get::<_, String>(0))
+            .optional()
+    }
+
+    pub fn list_api_available_model_catalog_slugs_with_prefix(
+        &self,
+        scope: &str,
+        slug_prefix: &str,
+    ) -> rusqlite::Result<Vec<String>> {
+        let normalized_prefix = slug_prefix.trim().to_ascii_lowercase();
+        if normalized_prefix.is_empty() {
+            return self.list_api_available_model_catalog_slugs(scope);
+        }
+        let like_pattern = format!("{normalized_prefix}%");
+        let sql = model_catalog_ordered_slug_sql(
+            &[
+                MODEL_CATALOG_API_AVAILABLE_CONDITION,
+                "LOWER(TRIM(slug)) LIKE ?2",
+            ],
+            None,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![scope, like_pattern], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn model_catalog_model_exists(&self, scope: &str, slug: &str) -> rusqlite::Result<bool> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM model_catalog_models
+                 WHERE scope = ?1
+                   AND slug = ?2
+                 LIMIT 1",
+                params![scope, slug],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok(found)
+    }
+
+    pub fn list_existing_model_catalog_slugs(
+        &self,
+        scope: &str,
+        slugs: &[String],
+    ) -> rusqlite::Result<Vec<String>> {
+        let slugs = normalize_model_catalog_slugs(slugs);
+        if slugs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in slugs.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            let Some((slug_condition, slug_params)) = text_id_in_clause("slug", chunk) else {
+                continue;
+            };
+            let sql = existing_model_catalog_slugs_chunk_sql(&slug_condition);
+            let mut values = Vec::with_capacity(slug_params.len() + 1);
+            values.push(SqlValue::Text(scope.trim().to_string()));
+            values.extend(slug_params);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(values), |row| row.get::<_, String>(0))?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    pub fn count_available_model_catalog_models(&self, scope: &str) -> rusqlite::Result<i64> {
+        let sql = count_available_model_catalog_models_sql();
+        self.conn.query_row(&sql, [scope], |row| row.get(0))
+    }
+
+    pub fn delete_model_catalog_model(&self, scope: &str, slug: &str) -> rusqlite::Result<()> {
+        self.conn
+            .execute(delete_model_catalog_model_sql(), params![scope, slug])?;
         Ok(())
     }
 
@@ -310,12 +611,9 @@ impl Storage {
         &self,
         scope: &str,
     ) -> rusqlite::Result<Vec<ModelCatalogReasoningLevelRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT scope, slug, effort, description, extra_json, sort_index, updated_at
-             FROM model_catalog_reasoning_levels
-             WHERE scope = ?1
-             ORDER BY slug ASC, sort_index ASC, effort ASC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare(model_catalog_reasoning_levels_list_sql())?;
         let rows = stmt.query_map([scope], |row| {
             Ok(ModelCatalogReasoningLevelRecord {
                 scope: row.get(0)?,
@@ -340,7 +638,7 @@ impl Storage {
         slug: &str,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "DELETE FROM model_catalog_reasoning_levels WHERE scope = ?1 AND slug = ?2",
+            delete_model_catalog_reasoning_levels_sql(),
             params![scope, slug],
         )?;
         Ok(())
@@ -409,10 +707,29 @@ impl Storage {
         item_kind: &str,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "DELETE FROM model_catalog_string_items
-             WHERE scope = ?1 AND slug = ?2 AND item_kind = ?3",
+            delete_model_catalog_string_items_sql(),
             params![scope, slug, item_kind],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_model_catalog_string_item_kinds(
+        &self,
+        scope: &str,
+        slug: &str,
+        item_kinds: &[&str],
+    ) -> rusqlite::Result<()> {
+        let item_kinds = item_kinds
+            .iter()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>();
+        let Some((condition, mut values)) = text_id_in_clause("item_kind", &item_kinds) else {
+            return Ok(());
+        };
+        let sql = delete_model_catalog_string_item_kinds_sql(&condition);
+        values.insert(0, SqlValue::Text(slug.to_string()));
+        values.insert(0, SqlValue::Text(scope.to_string()));
+        self.conn.execute(&sql, params_from_iter(values))?;
         Ok(())
     }
 
@@ -450,12 +767,7 @@ impl Storage {
         item_kind: &str,
         scope: &str,
     ) -> rusqlite::Result<Vec<ModelCatalogStringItemRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT scope, slug, value, sort_index, updated_at
-             FROM model_catalog_string_items
-             WHERE scope = ?1 AND item_kind = ?2
-             ORDER BY slug ASC, sort_index ASC, value ASC",
-        )?;
+        let mut stmt = self.conn.prepare(model_catalog_string_items_list_sql())?;
         let rows = stmt.query_map(params![scope, item_kind], |row| {
             Ok(ModelCatalogStringItemRecord {
                 scope: row.get(0)?,
@@ -472,10 +784,50 @@ impl Storage {
         Ok(items)
     }
 
+    fn list_model_catalog_string_items_for_kinds(
+        &self,
+        scope: &str,
+        item_kinds: &[&str],
+    ) -> rusqlite::Result<Vec<(String, ModelCatalogStringItemRecord)>> {
+        if item_kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..item_kinds.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = model_catalog_string_items_for_kinds_sql(&placeholders);
+        let mut values = Vec::with_capacity(item_kinds.len() + 1);
+        values.push(SqlValue::Text(scope.trim().to_string()));
+        values.extend(
+            item_kinds
+                .iter()
+                .map(|item_kind| SqlValue::Text(item_kind.to_string())),
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ModelCatalogStringItemRecord {
+                    scope: row.get(1)?,
+                    slug: row.get(2)?,
+                    value: row.get(3)?,
+                    sort_index: row.get(4)?,
+                    updated_at: row.get(5)?,
+                },
+            ))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
     fn ensure_model_catalog_child_tables(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_model_catalog_models_scope_sort
-               ON model_catalog_models(scope, sort_index, slug);
+            "CREATE INDEX IF NOT EXISTS idx_model_catalog_models_scope_order
+               ON model_catalog_models(scope, sort_index, updated_at DESC, slug);
              CREATE INDEX IF NOT EXISTS idx_model_catalog_models_scope_supported_in_api
                ON model_catalog_models(scope, supported_in_api, sort_index, slug);
              CREATE INDEX IF NOT EXISTS idx_model_catalog_models_scope_visibility
@@ -1139,3 +1491,7 @@ fn serialize_extra_map(extra: &BTreeMap<String, Value>) -> rusqlite::Result<Stri
     serde_json::to_string(extra)
         .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
 }
+
+#[cfg(test)]
+#[path = "model_options_tests.rs"]
+mod tests;

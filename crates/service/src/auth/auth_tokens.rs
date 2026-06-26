@@ -4,7 +4,7 @@ use codexmanager_core::auth::{
     parse_id_token_claims, token_exchange_body_authorization_code,
     token_exchange_body_token_exchange, IdTokenClaims, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
 };
-use codexmanager_core::storage::{now_ts, Account, Token};
+use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use reqwest::header::HeaderMap;
 use reqwest::Client;
 use reqwest::Error as ReqwestError;
@@ -12,6 +12,8 @@ use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::future::Future;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
@@ -25,7 +27,10 @@ use crate::auth_callback::resolve_redirect_uri;
 use crate::storage_helpers::open_storage;
 
 static OPENAI_AUTH_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+static OPENAI_AUTH_LOOPBACK_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 static OPENAI_AUTH_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+#[cfg(test)]
+static OPENAI_AUTH_LOOPBACK_HTTP_CLIENT_BUILDS: AtomicUsize = AtomicUsize::new(0);
 const OPENAI_AUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const OPENAI_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const OPENAI_AUTH_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -725,11 +730,48 @@ fn format_api_key_exchange_status_error(
 /// 返回函数执行结果
 pub(crate) fn next_account_sort(storage: &codexmanager_core::storage::Storage) -> i64 {
     storage
-        .list_accounts()
+        .max_account_sort()
         .ok()
-        .and_then(|accounts| accounts.into_iter().map(|account| account.sort).max())
+        .flatten()
         .map(|sort| sort.saturating_add(ACCOUNT_SORT_STEP))
         .unwrap_or(0)
+}
+
+fn resolve_existing_account_for_login(
+    storage: &Storage,
+    chatgpt_account_id: Option<&str>,
+    workspace_id: Option<&str>,
+    fallback_subject_key: Option<&str>,
+    tags: Option<&str>,
+) -> Result<Option<String>, String> {
+    let has_tags = tags.map(str::trim).is_some_and(|value| !value.is_empty());
+    if !has_tags {
+        return storage
+            .find_account_id_by_identity(fallback_subject_key, chatgpt_account_id, workspace_id)
+            .map_err(|err| err.to_string());
+    }
+
+    let account_ids = [fallback_subject_key]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let identities = storage
+        .list_account_workspace_identities_matching_identity(
+            &account_ids,
+            chatgpt_account_id,
+            workspace_id,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(pick_existing_account_id_by_identity(
+        identities.iter(),
+        chatgpt_account_id,
+        workspace_id,
+        fallback_subject_key,
+        None,
+    ))
 }
 
 /// 函数 `openai_auth_http_client`
@@ -751,6 +793,24 @@ fn openai_auth_http_client() -> &'static Client {
             .build()
             .unwrap_or_else(|_| Client::new())
     })
+}
+
+fn openai_auth_loopback_http_client() -> &'static Client {
+    OPENAI_AUTH_LOOPBACK_HTTP_CLIENT.get_or_init(|| {
+        #[cfg(test)]
+        OPENAI_AUTH_LOOPBACK_HTTP_CLIENT_BUILDS.fetch_add(1, Ordering::SeqCst);
+        Client::builder()
+            .connect_timeout(OPENAI_AUTH_CONNECT_TIMEOUT)
+            .timeout(OPENAI_AUTH_TOTAL_TIMEOUT)
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
+#[cfg(test)]
+fn openai_auth_loopback_http_client_build_count() -> usize {
+    OPENAI_AUTH_LOOPBACK_HTTP_CLIENT_BUILDS.load(Ordering::SeqCst)
 }
 
 /// 函数 `issuer_uses_loopback_host`
@@ -784,12 +844,7 @@ pub(crate) fn issuer_uses_loopback_host(issuer: &str) -> bool {
 /// 返回函数执行结果
 fn auth_http_client_for_issuer(issuer: &str) -> Client {
     if issuer_uses_loopback_host(issuer) {
-        return Client::builder()
-            .connect_timeout(OPENAI_AUTH_CONNECT_TIMEOUT)
-            .timeout(OPENAI_AUTH_TOTAL_TIMEOUT)
-            .no_proxy()
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        return openai_auth_loopback_http_client().clone();
     }
 
     openai_auth_http_client().clone()
@@ -1178,26 +1233,25 @@ pub(crate) fn complete_login_with_redirect(
         workspace_id.as_deref(),
         session.tags.as_deref(),
     );
-    let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
-    let account_key = pick_existing_account_id_by_identity(
-        accounts.iter(),
+    let account_key = resolve_existing_account_for_login(
+        &storage,
         chatgpt_account_id.as_deref(),
         workspace_id.as_deref(),
         fallback_subject_key.as_deref(),
-        None,
-    )
+        session.tags.as_deref(),
+    )?
     .unwrap_or(account_storage_id);
     let now = now_ts();
-    let existing_account = storage
-        .find_account_by_id(&account_key)
+    let existing_state = storage
+        .find_account_upsert_state_by_id(&account_key)
         .map_err(|e| e.to_string())?;
-    let sort = existing_account
+    let sort = existing_state
         .as_ref()
-        .map(|account| account.sort)
+        .map(|state| state.sort)
         .unwrap_or_else(|| next_account_sort(&storage));
-    let created_at = existing_account
+    let created_at = existing_state
         .as_ref()
-        .map(|account| account.created_at)
+        .map(|state| state.created_at)
         .unwrap_or(now);
     let workspace_id_for_log = workspace_id.clone();
     let chatgpt_account_id_for_log = chatgpt_account_id.clone();

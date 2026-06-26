@@ -48,6 +48,7 @@ export function useApiKeys() {
       serviceStatus.addr,
       STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
       localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
     )
   );
   const startupApiKeys = startupSnapshot?.apiKeys || [];

@@ -54,8 +54,6 @@ CREATE TABLE IF NOT EXISTS app_wallets (
     UNIQUE(owner_kind, owner_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_app_wallets_owner ON app_wallets(owner_kind, owner_id);
-
 CREATE TABLE IF NOT EXISTS app_wallet_ledger_entries (
     id TEXT PRIMARY KEY,
     wallet_id TEXT NOT NULL REFERENCES app_wallets(id) ON DELETE CASCADE,
@@ -102,8 +100,6 @@ CREATE TABLE IF NOT EXISTS billing_rules (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_billing_rules_status_priority ON billing_rules(status, priority DESC);
 
 CREATE TABLE IF NOT EXISTS redeem_code_batches (
     id TEXT PRIMARY KEY,

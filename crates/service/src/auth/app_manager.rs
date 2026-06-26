@@ -1,6 +1,6 @@
 use codexmanager_core::storage::{
-    now_ts, ApiKeyOwner, AppUser, AppUserSession, AppWallet, AppWalletLedgerEntry, BillingRule,
-    Storage,
+    now_ts, ApiKeyOwner, AppUser, AppUserAccessSummary, AppUserSession, AppWallet,
+    AppWalletLedgerEntry, BillingRule, PublicAppUserWithWallet, Storage,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -153,7 +153,7 @@ pub fn distribution_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn distribution_enabled_for_storage(storage: &Storage) -> bool {
+pub(crate) fn distribution_enabled_for_storage(storage: &Storage) -> bool {
     let raw = storage
         .get_app_setting(APP_SETTING_DISTRIBUTION_ENABLED_KEY)
         .ok()
@@ -279,17 +279,10 @@ pub fn app_session_result(actor: &RpcActor) -> Result<AppSessionResult, String> 
         .map(|user_id| {
             let storage = open_storage_or_error()?;
             let user = storage
-                .find_app_user_by_id(user_id)
+                .find_public_app_user_with_wallet_by_id(user_id)
                 .map_err(|err| format!("read app user failed: {err}"))?
                 .ok_or_else(|| "当前用户不存在".to_string())?;
-            let wallet = if app_user_can_own_wallet(&user) {
-                storage
-                    .find_wallet_by_owner("user", &user.id)
-                    .map_err(|err| format!("read app wallet failed: {err}"))?
-            } else {
-                None
-            };
-            Ok::<_, String>(public_user(user, wallet))
+            Ok::<_, String>(public_user_with_wallet(user))
         })
         .transpose()?;
     Ok(AppSessionResult {
@@ -367,28 +360,16 @@ pub fn resolve_app_user_session(token: &str) -> Result<Option<AppSessionUserResu
     let now = now_ts();
     let token_hash = token_hash(token);
     let Some(session) = storage
-        .find_active_app_session_by_token_hash(&token_hash, now)
+        .find_active_app_session_user_by_token_hash(&token_hash, now)
         .map_err(|err| format!("read app session failed: {err}"))?
     else {
         return Ok(None);
     };
-    let Some(user) = storage
-        .find_app_user_by_id(&session.user_id)
-        .map_err(|err| format!("read app user failed: {err}"))?
-    else {
-        return Ok(None);
-    };
-    if user.status != "active" {
-        return Ok(None);
-    }
-    let _ = storage.touch_app_user_session(&session.id, now);
-    let wallet = storage
-        .find_wallet_by_owner("user", &user.id)
-        .map_err(|err| format!("read app wallet failed: {err}"))?;
+    let _ = storage.touch_app_user_session(&session.session_id, now);
     Ok(Some(AppSessionUserResult {
-        session_id: session.id,
+        session_id: session.session_id,
         expires_at: session.expires_at,
-        user: public_user(user, wallet),
+        user: public_user_with_wallet(session.user),
     }))
 }
 
@@ -414,22 +395,12 @@ pub fn create_app_user(input: AppUserCreateInput) -> Result<AppUserPublicResult,
 pub fn list_app_users() -> Result<Vec<AppUserPublicResult>, String> {
     crate::initialize_storage_if_needed()?;
     let storage = open_storage_or_error()?;
-    let users = storage
-        .list_app_users()
-        .map_err(|err| format!("list app users failed: {err}"))?;
-    users
+    Ok(storage
+        .list_public_app_users_with_wallets()
+        .map_err(|err| format!("list app users failed: {err}"))?
         .into_iter()
-        .map(|user| {
-            let wallet = if app_user_can_own_wallet(&user) {
-                storage
-                    .find_wallet_by_owner("user", &user.id)
-                    .map_err(|err| format!("read app wallet failed: {err}"))?
-            } else {
-                None
-            };
-            Ok(public_user(user, wallet))
-        })
-        .collect()
+        .map(public_user_with_wallet)
+        .collect())
 }
 
 pub fn update_app_user(input: AppUserUpdateInput) -> Result<AppUserPublicResult, String> {
@@ -440,7 +411,7 @@ pub fn update_app_user(input: AppUserUpdateInput) -> Result<AppUserPublicResult,
         return Err("用户 ID 不能为空".to_string());
     }
     let current = storage
-        .find_app_user_by_id(user_id)
+        .find_app_user_access_summary_by_id(user_id)
         .map_err(|err| format!("read app user failed: {err}"))?
         .ok_or_else(|| "用户不存在".to_string())?;
     let next_role = input
@@ -511,7 +482,7 @@ pub fn delete_app_user(user_id: &str) -> Result<(), String> {
         return Err("用户 ID 不能为空".to_string());
     }
     let user = storage
-        .find_app_user_by_id(user_id)
+        .find_app_user_access_summary_by_id(user_id)
         .map_err(|err| format!("read app user failed: {err}"))?
         .ok_or_else(|| "用户不存在".to_string())?;
     if user.role == "admin" && user.status == "active" {
@@ -534,14 +505,12 @@ pub fn delete_app_user(user_id: &str) -> Result<(), String> {
 pub fn list_api_key_owners() -> Result<Vec<ApiKeyOwnerResult>, String> {
     crate::initialize_storage_if_needed()?;
     let storage = open_storage_or_error()?;
-    let mut owners = storage
-        .list_api_key_owners()
+    Ok(storage
+        .list_api_key_owner_rows()
         .map_err(|err| format!("list api key owners failed: {err}"))?
-        .into_values()
+        .into_iter()
         .map(api_key_owner_result)
-        .collect::<Vec<_>>();
-    owners.sort_by(|a, b| a.key_id.cmp(&b.key_id));
-    Ok(owners)
+        .collect())
 }
 
 pub fn list_api_key_ids_for_user(user_id: &str) -> Result<Vec<String>, String> {
@@ -590,17 +559,10 @@ pub fn update_app_user_profile(
         .update_app_user_display_name(user_id, normalize_optional_text(display_name))
         .map_err(|err| format!("update app user profile failed: {err}"))?;
     let user = storage
-        .find_app_user_by_id(user_id)
+        .find_public_app_user_with_wallet_by_id(user_id)
         .map_err(|err| format!("read app user failed: {err}"))?
         .ok_or_else(|| "当前用户不存在".to_string())?;
-    let wallet = if app_user_can_own_wallet(&user) {
-        storage
-            .find_wallet_by_owner("user", &user.id)
-            .map_err(|err| format!("read app wallet failed: {err}"))?
-    } else {
-        None
-    };
-    Ok(public_user(user, wallet))
+    Ok(public_user_with_wallet(user))
 }
 
 pub fn change_app_user_password(
@@ -745,10 +707,9 @@ pub fn set_api_key_owner(
     if key_id.is_empty() {
         return Err("API Key ID 不能为空".to_string());
     }
-    if storage
-        .find_api_key_by_id(key_id)
+    if !storage
+        .api_key_exists(key_id)
         .map_err(|err| format!("read api key failed: {err}"))?
-        .is_none()
     {
         return Err("API Key 不存在".to_string());
     }
@@ -1019,7 +980,14 @@ fn resolve_billing_rule_for_request(
     now: i64,
 ) -> Result<Option<BillingRule>, String> {
     let rules = storage
-        .list_active_billing_rules(now)
+        .list_active_billing_rules_for_request_candidate(
+            now,
+            key_id,
+            owner.owner_user_id.as_deref(),
+            owner.project_id.as_deref(),
+            service_tier,
+            model,
+        )
         .map_err(|err| format!("list billing rules failed: {err}"))?;
     Ok(rules
         .into_iter()
@@ -1176,9 +1144,8 @@ fn create_app_user_with_storage(
     let username = normalize_username(&input.username)?;
     validate_password(&input.password)?;
     if storage
-        .find_app_user_by_username(&username)
+        .app_username_exists(&username)
         .map_err(|err| format!("read app user failed: {err}"))?
-        .is_some()
     {
         return Err("用户名已存在".to_string());
     }
@@ -1288,16 +1255,19 @@ fn app_user_can_own_wallet(user: &AppUser) -> bool {
     user.role != "admin"
 }
 
-fn ensure_user_can_own_wallet(storage: &Storage, user_id: &str) -> Result<AppUser, String> {
+fn ensure_user_can_own_wallet(
+    storage: &Storage,
+    user_id: &str,
+) -> Result<AppUserAccessSummary, String> {
     let user_id = user_id.trim();
     if user_id.is_empty() {
         return Err("用户归属需要 userId".to_string());
     }
     let user = storage
-        .find_app_user_by_id(user_id)
+        .find_app_user_access_summary_by_id(user_id)
         .map_err(|err| format!("read app user failed: {err}"))?
         .ok_or_else(|| "用户不存在".to_string())?;
-    if !app_user_can_own_wallet(&user) {
+    if user.role == "admin" {
         return Err("管理员账号不参与额度分发".to_string());
     }
     if user.status != "active" {
@@ -1323,6 +1293,38 @@ fn public_user(user: AppUser, wallet: Option<AppWallet>) -> AppUserPublicResult 
             None
         },
     }
+}
+
+fn public_user_with_wallet(user: PublicAppUserWithWallet) -> AppUserPublicResult {
+    let wallet = public_wallet_result(&user);
+    AppUserPublicResult {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+        role: user.role,
+        status: user.status,
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+        last_login_at: user.last_login_at,
+        wallet,
+    }
+}
+
+fn public_wallet_result(user: &PublicAppUserWithWallet) -> Option<AppWalletResult> {
+    let id = user.wallet_id.clone()?;
+    let balance_credit_micros = user.wallet_balance_credit_micros?;
+    let frozen_credit_micros = user.wallet_frozen_credit_micros?;
+    Some(AppWalletResult {
+        id,
+        owner_kind: user.wallet_owner_kind.clone()?,
+        owner_id: user.wallet_owner_id.clone()?,
+        balance_credit_micros,
+        frozen_credit_micros,
+        available_credit_micros: (balance_credit_micros - frozen_credit_micros).max(0),
+        status: user.wallet_status.clone()?,
+        created_at: user.wallet_created_at?,
+        updated_at: user.wallet_updated_at?,
+    })
 }
 
 fn wallet_result(wallet: AppWallet) -> AppWalletResult {

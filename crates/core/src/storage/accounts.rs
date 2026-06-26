@@ -1,6 +1,29 @@
-use rusqlite::{params_from_iter, types::Value, Result, Row};
+use rusqlite::{params_from_iter, types::Value, OptionalExtension, Result, Row};
 
-use super::{now_ts, Account, Storage, Token};
+use super::account_metadata::delete_account_metadata_for_account_sql;
+use super::account_subscriptions::delete_account_subscription_for_account_sql;
+use super::accounts_sql::*;
+use super::conversation_bindings::delete_conversation_bindings_for_account_sql;
+use super::events::delete_events_for_account_sql;
+use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
+use super::model_sources::{
+    delete_model_source_mapping_preferences_for_source_sql,
+    delete_model_source_mappings_for_source_sql, delete_model_source_models_for_source_sql,
+};
+use super::tokens::delete_token_for_account_sql;
+use super::usage::delete_usage_snapshots_for_account_sql;
+
+use super::{
+    now_ts, Account, AccountAuthRefreshTarget, AccountCleanupCandidate,
+    AccountCodexProfileCandidate, AccountDashboardSourceMetadata, AccountDirectAuthProfile,
+    AccountImportSnapshot, AccountListSummaryRow, AccountQuotaOverviewStats,
+    AccountQuotaPoolSource, AccountQuotaSourceSummary, AccountStatusCount,
+    AccountSummaryStorageSnapshot, AccountSummaryStorageSnapshotOptions, AccountTokenRefreshIssuer,
+    AccountUpsertState, AccountUsageRefreshTarget, AccountUsageRefreshTokenTarget,
+    AccountWorkspaceIdentity, Storage, Token,
+};
+
+const ACCOUNT_MODEL_SOURCE_KIND: &str = "openai_account";
 
 impl Storage {
     /// 函数 `insert_account`
@@ -23,6 +46,7 @@ impl Storage {
                 issuer,
                 chatgpt_account_id,
                 workspace_id,
+                group_name,
                 sort,
                 status,
                 created_at,
@@ -38,6 +62,7 @@ impl Storage {
                 ?7,
                 ?8,
                 ?9,
+                ?10,
                 0
             )
              ON CONFLICT(id) DO UPDATE SET
@@ -45,6 +70,7 @@ impl Storage {
                 issuer = excluded.issuer,
                 chatgpt_account_id = excluded.chatgpt_account_id,
                 workspace_id = excluded.workspace_id,
+                group_name = excluded.group_name,
                 sort = excluded.sort,
                 status = excluded.status,
                 updated_at = excluded.updated_at",
@@ -54,6 +80,7 @@ impl Storage {
                 &account.issuer,
                 &account.chatgpt_account_id,
                 &account.workspace_id,
+                &account.group_name,
                 account.sort,
                 &account.status,
                 account.created_at,
@@ -61,6 +88,123 @@ impl Storage {
             ),
         )?;
         Ok(())
+    }
+
+    pub fn upsert_imported_account_bundle(
+        &self,
+        account: &Account,
+        note: Option<&str>,
+        tags: Option<&str>,
+        token: &Token,
+    ) -> Result<()> {
+        if account.id != token.account_id {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "account id and token account id do not match".to_string(),
+            ));
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO accounts (
+                id,
+                label,
+                issuer,
+                chatgpt_account_id,
+                workspace_id,
+                group_name,
+                sort,
+                status,
+                created_at,
+                updated_at,
+                preferred
+            ) VALUES (
+                ?1,
+                ?2,
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7,
+                ?8,
+                ?9,
+                ?10,
+                0
+            )
+             ON CONFLICT(id) DO UPDATE SET
+                label = excluded.label,
+                issuer = excluded.issuer,
+                chatgpt_account_id = excluded.chatgpt_account_id,
+                workspace_id = excluded.workspace_id,
+                group_name = excluded.group_name,
+                sort = excluded.sort,
+                status = excluded.status,
+                updated_at = excluded.updated_at",
+            (
+                &account.id,
+                &account.label,
+                &account.issuer,
+                &account.chatgpt_account_id,
+                &account.workspace_id,
+                &account.group_name,
+                account.sort,
+                &account.status,
+                account.created_at,
+                account.updated_at,
+            ),
+        )?;
+
+        let existing_metadata = tx
+            .query_row(
+                "SELECT note, tags
+                 FROM account_metadata
+                 WHERE account_id = ?1
+                 LIMIT 1",
+                [&account.id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let merged_note =
+            normalize_import_metadata_text(note).or_else(|| existing_metadata.as_ref()?.0.clone());
+        let merged_tags =
+            normalize_import_metadata_text(tags).or_else(|| existing_metadata.as_ref()?.1.clone());
+        if merged_note.is_none() && merged_tags.is_none() {
+            tx.execute(delete_account_metadata_for_account_sql(), [&account.id])?;
+        } else {
+            tx.execute(
+                "INSERT INTO account_metadata (account_id, note, tags, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(account_id) DO UPDATE SET
+                    note = excluded.note,
+                    tags = excluded.tags,
+                    updated_at = excluded.updated_at",
+                (&account.id, merged_note, merged_tags, now_ts()),
+            )?;
+        }
+
+        tx.execute(
+            "INSERT INTO tokens (account_id, id_token, access_token, refresh_token, api_key_access_token, last_refresh)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id) DO UPDATE SET
+                id_token = excluded.id_token,
+                access_token = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                api_key_access_token = excluded.api_key_access_token,
+                last_refresh = excluded.last_refresh",
+            (
+                &token.account_id,
+                &token.id_token,
+                &token.access_token,
+                &token.refresh_token,
+                &token.api_key_access_token,
+                token.last_refresh,
+            ),
+        )?;
+        tx.commit()
     }
 
     /// 函数 `account_count`
@@ -76,7 +220,37 @@ impl Storage {
     /// 返回函数执行结果
     pub fn account_count(&self) -> Result<i64> {
         self.conn
-            .query_row("SELECT COUNT(1) FROM accounts", [], |row| row.get(0))
+            .query_row(account_count_sql(), [], |row| row.get(0))
+    }
+
+    pub fn account_status_counts(&self) -> Result<Vec<AccountStatusCount>> {
+        let mut stmt = self.conn.prepare(account_status_counts_sql())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AccountStatusCount {
+                status: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn account_quota_overview_stats(&self) -> Result<AccountQuotaOverviewStats> {
+        let sql = account_quota_overview_stats_sql();
+        self.conn.query_row(&sql, [], |row| {
+            Ok(AccountQuotaOverviewStats {
+                account_count: row.get(0)?,
+                available_count: row.get(1)?,
+                low_quota_count: row.get(2)?,
+                primary_remain_percent_avg: row.get(3)?,
+                secondary_remain_percent_avg: row.get(4)?,
+                last_refreshed_at: row.get(5)?,
+            })
+        })
+    }
+
+    pub fn max_account_sort(&self) -> Result<Option<i64>> {
+        self.conn
+            .query_row(max_account_sort_sql(), [], |row| row.get(0))
     }
 
     /// 函数 `account_count_filtered`
@@ -99,7 +273,7 @@ impl Storage {
     ) -> Result<i64> {
         let mut params = Vec::new();
         let where_clause = build_account_where_clause(query, group_name, &mut params, "accounts");
-        let sql = format!("SELECT COUNT(1) FROM accounts{where_clause}");
+        let sql = account_count_filtered_sql(&where_clause);
         self.conn
             .query_row(&sql, params_from_iter(params), |row| row.get(0))
     }
@@ -140,6 +314,528 @@ impl Storage {
         self.query_accounts(query, group_name, None)
     }
 
+    pub fn list_accounts_by_statuses(&self, statuses: &[String]) -> Result<Vec<Account>> {
+        let statuses = normalize_text_ids(statuses);
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in statuses.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_accounts_by_statuses_chunk(self, chunk)?);
+        }
+        out.sort_by(|left, right| {
+            left.sort
+                .cmp(&right.sort)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(out)
+    }
+
+    pub fn list_account_cleanup_candidates_by_statuses(
+        &self,
+        statuses: &[String],
+    ) -> Result<Vec<AccountCleanupCandidate>> {
+        let statuses = normalize_text_ids(statuses);
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in statuses.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_cleanup_candidates_by_statuses_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.id.cmp(&right.0.id))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_accounts_for_ids(&self, account_ids: &[String]) -> Result<Vec<Account>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_accounts_for_ids_chunk(self, chunk)?);
+        }
+        out.sort_by(|left, right| {
+            left.sort
+                .cmp(&right.sort)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(out)
+    }
+
+    pub fn list_account_dashboard_source_metadata_for_ids(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<AccountDashboardSourceMetadata>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_dashboard_source_metadata_for_ids_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.id.cmp(&right.0.id))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_account_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(account_ids_list_sql())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn update_account_sorts(
+        &self,
+        updates: &[(String, i64)],
+        updated_at: i64,
+    ) -> Result<usize> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut updated = 0usize;
+        for (account_id, sort) in updates {
+            let changed = tx.execute(update_account_sort_sql(), (sort, updated_at, account_id))?;
+            if changed == 0 {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "account not found: {account_id}"
+                )));
+            }
+            tx.execute(
+                "INSERT INTO events (account_id, type, message, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                (
+                    Some(account_id.as_str()),
+                    "account_sort_update",
+                    format!("sort={sort}"),
+                    updated_at,
+                ),
+            )?;
+            updated = updated.saturating_add(changed);
+        }
+        tx.commit()?;
+        Ok(updated)
+    }
+
+    pub fn list_account_ids_by_statuses(&self, statuses: &[String]) -> Result<Vec<String>> {
+        let statuses = normalize_text_ids(statuses);
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in statuses.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_ids_by_statuses_chunk(self, chunk)?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_account_usage_refresh_targets_by_statuses(
+        &self,
+        statuses: &[String],
+    ) -> Result<Vec<AccountUsageRefreshTarget>> {
+        let statuses = normalize_text_ids(statuses);
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in statuses.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_usage_refresh_targets_by_statuses_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.id.cmp(&right.0.id))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_account_usage_refresh_targets_with_usable_tokens_by_statuses(
+        &self,
+        statuses: &[String],
+    ) -> Result<Vec<AccountUsageRefreshTarget>> {
+        let statuses = normalize_text_ids(statuses);
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in statuses.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(
+                list_account_usage_refresh_targets_with_usable_tokens_by_statuses_chunk(
+                    self, chunk,
+                )?,
+            );
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.id.cmp(&right.0.id))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_account_usage_refresh_token_targets_by_statuses(
+        &self,
+        statuses: &[String],
+    ) -> Result<Vec<AccountUsageRefreshTokenTarget>> {
+        let statuses = normalize_text_ids(statuses);
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in statuses.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_usage_refresh_token_targets_by_statuses_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.account_id.cmp(&right.0.account_id))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_active_account_codex_profile_candidates_for_ids(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<AccountCodexProfileCandidate>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_active_account_codex_profile_candidates_for_ids_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.id.cmp(&right.0.id))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_account_auth_refresh_targets(&self) -> Result<Vec<AccountAuthRefreshTarget>> {
+        let mut stmt = self.conn.prepare(account_auth_refresh_targets_list_sql())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AccountAuthRefreshTarget {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                issuer: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn find_account_direct_auth_profile_by_id(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<AccountDirectAuthProfile>> {
+        let mut stmt = self.conn.prepare(account_direct_auth_profile_by_id_sql())?;
+        let mut rows = stmt.query([account_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(AccountDirectAuthProfile {
+                id: row.get(0)?,
+                issuer: row.get(1)?,
+                chatgpt_account_id: row.get(2)?,
+                status: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_account_quota_source_summaries(&self) -> Result<Vec<AccountQuotaSourceSummary>> {
+        let mut stmt = self
+            .conn
+            .prepare(account_quota_source_summaries_list_sql())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AccountQuotaSourceSummary {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                status: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_available_account_quota_pool_sources(&self) -> Result<Vec<AccountQuotaPoolSource>> {
+        let sql = format!(
+            "SELECT id, label
+             FROM accounts
+             WHERE {available_status_clause}
+             ORDER BY sort ASC, updated_at DESC, id ASC",
+            available_status_clause = available_account_status_clause("accounts"),
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AccountQuotaPoolSource {
+                id: row.get(0)?,
+                label: row.get(1)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_account_import_snapshots(&self) -> Result<Vec<AccountImportSnapshot>> {
+        let mut stmt = self.conn.prepare(account_import_snapshots_list_sql())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AccountImportSnapshot {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                issuer: row.get(2)?,
+                chatgpt_account_id: row.get(3)?,
+                workspace_id: row.get(4)?,
+                sort: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_account_summary_rows(&self) -> Result<Vec<AccountListSummaryRow>> {
+        let mut stmt = self.conn.prepare(account_summary_rows_list_sql())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AccountListSummaryRow {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                group_name: row.get(2)?,
+                sort: row.get(3)?,
+                status: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn load_account_summary_storage_snapshot(
+        &self,
+        account_ids: &[String],
+    ) -> Result<AccountSummaryStorageSnapshot> {
+        self.load_account_summary_storage_snapshot_with_options(
+            account_ids,
+            AccountSummaryStorageSnapshotOptions::default(),
+        )
+    }
+
+    pub fn load_account_summary_storage_snapshot_with_options(
+        &self,
+        account_ids: &[String],
+        options: AccountSummaryStorageSnapshotOptions,
+    ) -> Result<AccountSummaryStorageSnapshot> {
+        if account_ids.is_empty() {
+            return Ok(AccountSummaryStorageSnapshot::default());
+        }
+        let (metadata, subscriptions, model_assignments, quota_overrides) =
+            if options.include_details {
+                (
+                    self.list_account_metadata_for_accounts(account_ids)?,
+                    self.list_account_subscriptions_for_accounts(account_ids)?,
+                    self.list_quota_source_model_assignments_for_sources(
+                        ACCOUNT_MODEL_SOURCE_KIND,
+                        account_ids,
+                    )?,
+                    self.list_account_quota_capacity_overrides_for_accounts(account_ids)?,
+                )
+            } else {
+                Default::default()
+            };
+        Ok(AccountSummaryStorageSnapshot {
+            preferred_account_id: if options.include_preferred {
+                self.preferred_account_id()?
+            } else {
+                None
+            },
+            status_reasons: if options.include_status_reasons {
+                self.latest_account_status_reasons(account_ids)?
+            } else {
+                Default::default()
+            },
+            tokens: if options.include_tokens {
+                self.list_account_token_plans_for_accounts(account_ids)?
+            } else {
+                Vec::new()
+            },
+            usage_snapshots: self.latest_usage_snapshots_for_accounts(account_ids)?,
+            metadata,
+            subscriptions,
+            model_assignments,
+            quota_overrides,
+        })
+    }
+
+    pub fn list_account_ids_for_ids(&self, account_ids: &[String]) -> Result<Vec<String>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_ids_for_ids_chunk(self, chunk)?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn list_account_token_refresh_issuers_for_ids(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<AccountTokenRefreshIssuer>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_account_token_refresh_issuers_for_ids_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(out)
+    }
+
+    pub fn list_accounts_matching_identity(
+        &self,
+        account_ids: &[String],
+        chatgpt_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<Account>> {
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+
+        let account_ids = normalize_text_ids(account_ids);
+        if !account_ids.is_empty() {
+            let Some((condition, values)) = text_id_in_clause("a.id", &account_ids) else {
+                return Ok(Vec::new());
+            };
+            clauses.push(condition);
+            params.extend(values);
+        }
+        if let Some(value) = normalize_optional_filter(chatgpt_account_id) {
+            clauses.push("a.chatgpt_account_id = ?".to_string());
+            params.push(Value::Text(value));
+        }
+        if let Some(value) = normalize_optional_filter(workspace_id) {
+            clauses.push("a.workspace_id = ?".to_string());
+            params.push(Value::Text(value));
+        }
+        if clauses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sql = format!(
+            "SELECT {}
+             FROM accounts a
+             WHERE {}
+             ORDER BY a.updated_at DESC, a.id ASC",
+            account_select_columns("a"),
+            clauses.join(" OR ")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(params))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(map_account_row(row)?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_account_workspace_identities_matching_identity(
+        &self,
+        account_ids: &[String],
+        chatgpt_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<AccountWorkspaceIdentity>> {
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+
+        let account_ids = normalize_text_ids(account_ids);
+        if !account_ids.is_empty() {
+            let Some((condition, values)) = text_id_in_clause("a.id", &account_ids) else {
+                return Ok(Vec::new());
+            };
+            clauses.push(condition);
+            params.extend(values);
+        }
+        if let Some(value) = normalize_optional_filter(chatgpt_account_id) {
+            clauses.push("a.chatgpt_account_id = ?".to_string());
+            params.push(Value::Text(value));
+        }
+        if let Some(value) = normalize_optional_filter(workspace_id) {
+            clauses.push("a.workspace_id = ?".to_string());
+            params.push(Value::Text(value));
+        }
+        if clauses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sql = format!(
+            "SELECT a.id, a.chatgpt_account_id, a.workspace_id
+             FROM accounts a
+             WHERE {}
+             ORDER BY a.updated_at DESC, a.id ASC",
+            clauses.join(" OR ")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            Ok(AccountWorkspaceIdentity {
+                id: row.get(0)?,
+                chatgpt_account_id: row.get(1)?,
+                workspace_id: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     /// 函数 `list_accounts_paginated`
     ///
     /// 作者: gaohongshun
@@ -177,33 +873,64 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn list_gateway_candidates(&self) -> Result<Vec<(Account, Token)>> {
-        let availability_clause = gateway_account_usage_filter_clause("a", "lu");
-        let sql = format!(
-            "{latest_usage_cte}
-             SELECT
-               {account_select},
-               {token_select}
-             FROM accounts a
-             JOIN tokens t
-               ON t.account_id = a.id
-             LEFT JOIN latest_usage lu
-               ON lu.account_id = a.id
-              AND lu.rn = 1
-             WHERE {availability_clause}
-             ORDER BY a.sort ASC, a.updated_at DESC",
-            latest_usage_cte = latest_usage_cte_sql(),
-            account_select = account_select_columns("a"),
-            token_select = token_select_columns("t"),
-            availability_clause = availability_clause,
-        );
+        list_gateway_candidates_filtered(self, None)
+    }
 
-        let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query([])?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            out.push(map_gateway_candidate_row(row)?);
+    pub fn list_gateway_candidates_for_accounts(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<(Account, Token)>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
         }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_gateway_candidates_filtered(self, Some(chunk))?);
+        }
+        out.sort_by(|(left, _), (right, _)| {
+            left.sort
+                .cmp(&right.sort)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
         Ok(out)
+    }
+
+    pub fn find_account_with_token_by_id(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<(Account, Token)>> {
+        self.find_account_with_token_by_column("a.id", account_id)
+    }
+
+    pub fn find_account_with_token_by_identity(
+        &self,
+        account_id: Option<&str>,
+        chatgpt_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<(Account, Token)>> {
+        if let Some(account_id) = normalize_optional_filter(account_id) {
+            if let Some(found) = self.find_account_with_token_by_column("a.id", &account_id)? {
+                return Ok(Some(found));
+            }
+        }
+        if let Some(chatgpt_account_id) = normalize_optional_filter(chatgpt_account_id) {
+            if let Some(found) =
+                self.find_account_with_token_by_column("a.chatgpt_account_id", &chatgpt_account_id)?
+            {
+                return Ok(Some(found));
+            }
+        }
+        if let Some(workspace_id) = normalize_optional_filter(workspace_id) {
+            if let Some(found) =
+                self.find_account_with_token_by_column("a.workspace_id", &workspace_id)?
+            {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     /// 函数 `find_account_by_id`
@@ -219,18 +946,116 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn find_account_by_id(&self, account_id: &str) -> Result<Option<Account>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, label, issuer, chatgpt_account_id, workspace_id, sort, status, created_at, updated_at
-             FROM accounts
-             WHERE id = ?1
-             LIMIT 1",
-        )?;
+        let mut stmt = self.conn.prepare(account_by_id_sql())?;
         let mut rows = stmt.query([account_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(map_account_row(row)?))
         } else {
             Ok(None)
         }
+    }
+
+    pub fn find_account_status_by_id(&self, account_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(account_status_by_id_sql())?;
+        let mut rows = stmt.query([account_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn find_account_workspace_identity_by_id(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<AccountWorkspaceIdentity>> {
+        let mut stmt = self.conn.prepare(account_workspace_identity_by_id_sql())?;
+        let mut rows = stmt.query([account_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(AccountWorkspaceIdentity {
+                id: row.get(0)?,
+                chatgpt_account_id: row.get(1)?,
+                workspace_id: row.get(2)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn find_account_upsert_state_by_id(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<AccountUpsertState>> {
+        let mut stmt = self.conn.prepare(account_upsert_state_by_id_sql())?;
+        let mut rows = stmt.query([account_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(AccountUpsertState {
+                group_name: row.get(0)?,
+                sort: row.get(1)?,
+                created_at: row.get(2)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn account_exists(&self, account_id: &str) -> Result<bool> {
+        self.conn
+            .query_row(account_exists_sql(), [account_id], |row| row.get(0))
+    }
+
+    pub fn find_account_by_identity(
+        &self,
+        account_id: Option<&str>,
+        chatgpt_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<Account>> {
+        if let Some(account_id) = normalize_optional_filter(account_id) {
+            if let Some(account) = self.find_account_by_id(&account_id)? {
+                return Ok(Some(account));
+            }
+        }
+        if let Some(chatgpt_account_id) = normalize_optional_filter(chatgpt_account_id) {
+            if let Some(account) =
+                self.find_account_by_identity_column("chatgpt_account_id", &chatgpt_account_id)?
+            {
+                return Ok(Some(account));
+            }
+        }
+        if let Some(workspace_id) = normalize_optional_filter(workspace_id) {
+            if let Some(account) =
+                self.find_account_by_identity_column("workspace_id", &workspace_id)?
+            {
+                return Ok(Some(account));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn find_account_id_by_identity(
+        &self,
+        account_id: Option<&str>,
+        chatgpt_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        if let Some(account_id) = normalize_optional_filter(account_id) {
+            if let Some(found) = self.find_account_id_by_column("id", &account_id)? {
+                return Ok(Some(found));
+            }
+        }
+        if let Some(chatgpt_account_id) = normalize_optional_filter(chatgpt_account_id) {
+            if let Some(found) =
+                self.find_account_id_by_column("chatgpt_account_id", &chatgpt_account_id)?
+            {
+                return Ok(Some(found));
+            }
+        }
+        if let Some(workspace_id) = normalize_optional_filter(workspace_id) {
+            if let Some(found) = self.find_account_id_by_column("workspace_id", &workspace_id)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     /// 函数 `update_account_sort`
@@ -247,10 +1072,8 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn update_account_sort(&self, account_id: &str, sort: i64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE accounts SET sort = ?1, updated_at = ?2 WHERE id = ?3",
-            (sort, now_ts(), account_id),
-        )?;
+        self.conn
+            .execute(update_account_sort_sql(), (sort, now_ts(), account_id))?;
         Ok(())
     }
 
@@ -268,11 +1091,23 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn update_account_label(&self, account_id: &str, label: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE accounts SET label = ?1, updated_at = ?2 WHERE id = ?3",
-            (label, now_ts(), account_id),
-        )?;
+        self.conn
+            .execute(update_account_label_sql(), (label, now_ts(), account_id))?;
         Ok(())
+    }
+
+    pub fn update_account_workspace_identity(
+        &self,
+        account_id: &str,
+        chatgpt_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+        updated_at: i64,
+    ) -> Result<bool> {
+        let updated = self.conn.execute(
+            update_account_workspace_identity_sql(),
+            (chatgpt_account_id, workspace_id, updated_at, account_id),
+        )?;
+        Ok(updated > 0)
     }
 
     /// 函数 `touch_account_updated_at`
@@ -288,10 +1123,8 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn touch_account_updated_at(&self, account_id: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE accounts SET updated_at = ?1 WHERE id = ?2",
-            (now_ts(), account_id),
-        )?;
+        self.conn
+            .execute(touch_account_updated_at_sql(), (now_ts(), account_id))?;
         Ok(())
     }
 
@@ -309,10 +1142,8 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn update_account_status(&self, account_id: &str, status: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE accounts SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            (status, now_ts(), account_id),
-        )?;
+        self.conn
+            .execute(update_account_status_sql(), (status, now_ts(), account_id))?;
         Ok(())
     }
 
@@ -331,10 +1162,22 @@ impl Storage {
     /// 返回函数执行结果
     pub fn update_account_status_if_changed(&self, account_id: &str, status: &str) -> Result<bool> {
         let updated = self.conn.execute(
-            "UPDATE accounts SET status = ?1, updated_at = ?2 WHERE id = ?3 AND status != ?1",
+            update_account_status_if_changed_sql(),
             (status, now_ts(), account_id),
         )?;
         Ok(updated > 0)
+    }
+
+    pub fn update_account_status_if_changed_with_existence(
+        &self,
+        account_id: &str,
+        status: &str,
+    ) -> Result<(bool, bool)> {
+        let changed = self.update_account_status_if_changed(account_id, status)?;
+        if changed {
+            return Ok((true, true));
+        }
+        Ok((self.account_exists(account_id)?, false))
     }
 
     /// 函数 `delete_account`
@@ -351,42 +1194,51 @@ impl Storage {
     /// 返回函数执行结果
     pub fn delete_account(&mut self, account_id: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
+        tx.execute(delete_account_metadata_for_account_sql(), [account_id])?;
+        tx.execute(delete_account_subscription_for_account_sql(), [account_id])?;
+        tx.execute(delete_token_for_account_sql(), [account_id])?;
+        tx.execute(delete_usage_snapshots_for_account_sql(), [account_id])?;
+        tx.execute(delete_events_for_account_sql(), [account_id])?;
+        tx.execute(delete_conversation_bindings_for_account_sql(), [account_id])?;
         tx.execute(
-            "DELETE FROM account_metadata WHERE account_id = ?1",
-            [account_id],
+            delete_model_source_mappings_for_source_sql(),
+            (ACCOUNT_MODEL_SOURCE_KIND, account_id),
         )?;
         tx.execute(
-            "DELETE FROM account_subscriptions WHERE account_id = ?1",
-            [account_id],
-        )?;
-        tx.execute("DELETE FROM tokens WHERE account_id = ?1", [account_id])?;
-        tx.execute(
-            "DELETE FROM usage_snapshots WHERE account_id = ?1",
-            [account_id],
-        )?;
-        tx.execute("DELETE FROM events WHERE account_id = ?1", [account_id])?;
-        tx.execute(
-            "DELETE FROM conversation_bindings WHERE account_id = ?1",
-            [account_id],
+            delete_model_source_models_for_source_sql(),
+            (ACCOUNT_MODEL_SOURCE_KIND, account_id),
         )?;
         tx.execute(
-            "DELETE FROM model_source_mappings
-             WHERE source_kind = 'openai_account' AND source_id = ?1",
-            [account_id],
+            delete_model_source_mapping_preferences_for_source_sql(),
+            (ACCOUNT_MODEL_SOURCE_KIND, account_id),
         )?;
-        tx.execute(
-            "DELETE FROM model_source_models
-             WHERE source_kind = 'openai_account' AND source_id = ?1",
-            [account_id],
-        )?;
-        tx.execute(
-            "DELETE FROM model_source_mapping_preferences
-             WHERE source_kind = 'openai_account' AND source_id = ?1",
-            [account_id],
-        )?;
-        tx.execute("DELETE FROM accounts WHERE id = ?1", [account_id])?;
+        tx.execute(delete_account_by_id_sql(), [account_id])?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn delete_accounts(&mut self, account_ids: &[String]) -> Result<usize> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let tx = self.conn.transaction()?;
+        let mut deleted = 0usize;
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            delete_accounts_from_table(&tx, "account_metadata", "account_id", chunk)?;
+            delete_accounts_from_table(&tx, "account_subscriptions", "account_id", chunk)?;
+            delete_accounts_from_table(&tx, "tokens", "account_id", chunk)?;
+            delete_accounts_from_table(&tx, "usage_snapshots", "account_id", chunk)?;
+            delete_accounts_from_table(&tx, "events", "account_id", chunk)?;
+            delete_accounts_from_table(&tx, "conversation_bindings", "account_id", chunk)?;
+            delete_model_source_rows_for_accounts(&tx, "model_source_mappings", chunk)?;
+            delete_model_source_rows_for_accounts(&tx, "model_source_models", chunk)?;
+            delete_model_source_rows_for_accounts(&tx, "model_source_mapping_preferences", chunk)?;
+            deleted += delete_accounts_from_table(&tx, "accounts", "id", chunk)?;
+        }
+        tx.commit()?;
+        Ok(deleted)
     }
 
     /// 函数 `ensure_account_meta_columns`
@@ -411,6 +1263,36 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) fn ensure_account_group_name_filter_index(&self) -> Result<()> {
+        self.ensure_column("accounts", "group_name", "TEXT")?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_group_name_sort_updated_at
+               ON accounts(group_name, sort ASC, updated_at DESC);",
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_accounts_list_order_index(&self) -> Result<()> {
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_list_order
+             ON accounts(sort ASC, updated_at DESC, id ASC)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_accounts_identity_lookup_indexes(&self) -> Result<()> {
+        self.ensure_column("accounts", "chatgpt_account_id", "TEXT")?;
+        self.ensure_column("accounts", "workspace_id", "TEXT")?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_chatgpt_account_id_updated_at
+               ON accounts(chatgpt_account_id, updated_at DESC, id ASC);
+             CREATE INDEX IF NOT EXISTS idx_accounts_workspace_id_updated_at
+               ON accounts(workspace_id, updated_at DESC, id ASC);",
+        )?;
+        Ok(())
+    }
+
     /// 函数 `preferred_account_id`
     ///
     /// 作者: gaohongshun
@@ -423,13 +1305,7 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn preferred_account_id(&self) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id
-             FROM accounts
-             WHERE preferred = 1
-             ORDER BY updated_at DESC, id ASC
-             LIMIT 1",
-        )?;
+        let mut stmt = self.conn.prepare(preferred_account_id_sql())?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -453,16 +1329,11 @@ impl Storage {
     pub fn set_preferred_account(&mut self, account_id: Option<&str>) -> Result<()> {
         let now = now_ts();
         let tx = self.conn.transaction()?;
-        tx.execute("UPDATE accounts SET preferred = 0 WHERE preferred != 0", [])?;
+        tx.execute(clear_preferred_accounts_sql(), [])?;
         if let Some(account_id) = account_id {
             let normalized_account_id = account_id.trim();
             if !normalized_account_id.is_empty() {
-                tx.execute(
-                    "UPDATE accounts
-                     SET preferred = 1, updated_at = ?1
-                     WHERE id = ?2",
-                    (now, normalized_account_id),
-                )?;
+                tx.execute(set_preferred_account_sql(), (now, normalized_account_id))?;
             }
         }
         tx.commit()?;
@@ -487,7 +1358,7 @@ impl Storage {
             return Ok(false);
         }
         let updated = self.conn.execute(
-            "UPDATE accounts SET preferred = 0, updated_at = ?1 WHERE id = ?2 AND preferred = 1",
+            clear_preferred_account_by_id_sql(),
             (now_ts(), normalized_account_id),
         )?;
         Ok(updated > 0)
@@ -531,13 +1402,8 @@ impl Storage {
     ) -> Result<Vec<Account>> {
         let mut params = Vec::new();
         let where_clause = build_account_where_clause(query, group_name, &mut params, "a");
-        let mut sql = format!(
-            "SELECT {} FROM accounts a{where_clause} ORDER BY a.sort ASC, a.updated_at DESC",
-            account_select_columns("a"),
-        );
-
+        let sql = account_query_sql(&where_clause, pagination.is_some());
         if let Some((offset, limit)) = pagination {
-            sql.push_str(" LIMIT ? OFFSET ?");
             params.push(Value::Integer(limit.max(1)));
             params.push(Value::Integer(offset.max(0)));
         }
@@ -551,6 +1417,73 @@ impl Storage {
         Ok(out)
     }
 
+    fn find_account_by_identity_column(
+        &self,
+        column: &str,
+        identity: &str,
+    ) -> Result<Option<Account>> {
+        debug_assert!(matches!(column, "chatgpt_account_id" | "workspace_id"));
+        let sql = account_identity_lookup_sql(column);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([identity])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_account_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn find_account_id_by_column(&self, column: &str, identity: &str) -> Result<Option<String>> {
+        debug_assert!(matches!(
+            column,
+            "id" | "chatgpt_account_id" | "workspace_id"
+        ));
+        let sql = format!(
+            "SELECT id
+             FROM accounts
+             WHERE {column} = ?1
+             ORDER BY updated_at DESC, id ASC
+             LIMIT 1",
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([identity])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn find_account_with_token_by_column(
+        &self,
+        column: &str,
+        identity: &str,
+    ) -> Result<Option<(Account, Token)>> {
+        debug_assert!(matches!(
+            column,
+            "a.id" | "a.chatgpt_account_id" | "a.workspace_id"
+        ));
+        let sql = format!(
+            "SELECT
+               {account_select},
+               {token_select}
+             FROM accounts a
+             JOIN tokens t
+               ON t.account_id = a.id
+             WHERE {column} = ?1
+             ORDER BY a.updated_at DESC, a.id ASC
+             LIMIT 1",
+            account_select = account_select_columns("a"),
+            token_select = token_select_columns("t"),
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([identity])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_gateway_candidate_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 /// 函数 `normalize_optional_filter`
@@ -593,7 +1526,6 @@ fn build_account_where_clause(
     table_name: &str,
 ) -> String {
     let mut clauses = Vec::new();
-    let _ = group_name;
 
     if let Some(keyword) = normalize_optional_filter(query) {
         let pattern = format!("%{keyword}%");
@@ -604,6 +1536,12 @@ fn build_account_where_clause(
         ));
         params.push(Value::Text(pattern.clone()));
         params.push(Value::Text(pattern));
+    }
+
+    if let Some(group_name) = normalize_optional_filter(group_name) {
+        let group_column = qualified_column(table_name, "group_name");
+        clauses.push(format!("{group_column} = ?"));
+        params.push(Value::Text(group_name));
     }
 
     if clauses.is_empty() {
@@ -629,6 +1567,541 @@ fn qualified_column(table_name: &str, column: &str) -> String {
     format!("{table_name}.{column}")
 }
 
+fn account_quota_overview_stats_sql() -> String {
+    format!(
+        "{latest_usage_cte}
+         SELECT
+            COUNT(1) AS account_count,
+            IFNULL(SUM(CASE WHEN {available_status_clause} THEN 1 ELSE 0 END), 0) AS available_count,
+            IFNULL(SUM(
+                CASE
+                    WHEN {available_status_clause}
+                     AND (
+                        ({primary_remain_expr} > 0.0 AND {primary_remain_expr} <= 20.0)
+                        OR ({secondary_remain_expr} > 0.0 AND {secondary_remain_expr} <= 20.0)
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ), 0) AS low_quota_count,
+            AVG(CASE WHEN {available_status_clause} THEN {primary_remain_expr} END) AS primary_remain_percent_avg,
+            AVG(CASE WHEN {available_status_clause} THEN {secondary_remain_expr} END) AS secondary_remain_percent_avg,
+            MAX(CASE WHEN {available_status_clause} THEN lu.captured_at END) AS last_refreshed_at
+         FROM accounts a
+         LEFT JOIN latest_usage lu
+           ON lu.account_id = a.id
+          AND lu.rn = 1",
+        latest_usage_cte = latest_usage_cte_sql(),
+        available_status_clause = available_account_status_clause("a"),
+        primary_remain_expr = remaining_percent_sql("lu.used_percent"),
+        secondary_remain_expr = remaining_percent_sql("lu.secondary_used_percent"),
+    )
+}
+
+fn account_query_sql(where_clause: &str, include_pagination: bool) -> String {
+    let mut sql = format!(
+        "SELECT {} FROM accounts a{where_clause} ORDER BY a.sort ASC, a.updated_at DESC",
+        account_select_columns("a"),
+    );
+    if include_pagination {
+        sql.push_str(" LIMIT ? OFFSET ?");
+    }
+    sql
+}
+
+fn account_identity_lookup_sql(column: &str) -> String {
+    debug_assert!(matches!(column, "chatgpt_account_id" | "workspace_id"));
+    format!(
+        "SELECT {}
+         FROM accounts
+         WHERE {column} = ?1
+         ORDER BY updated_at DESC, id ASC
+         LIMIT 1",
+        account_select_columns("accounts"),
+    )
+}
+
+fn account_ids_by_statuses_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, sort, updated_at
+         FROM accounts
+         WHERE {condition}"
+    )
+}
+
+fn account_usage_refresh_targets_by_statuses_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, status, workspace_id, sort, updated_at
+         FROM accounts
+         WHERE {condition}"
+    )
+}
+
+fn account_cleanup_candidates_by_statuses_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, status, sort, updated_at
+         FROM accounts
+         WHERE {condition}"
+    )
+}
+
+fn account_ids_for_ids_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, sort, updated_at
+         FROM accounts
+         WHERE {condition}"
+    )
+}
+
+fn accounts_by_statuses_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT {}
+         FROM accounts a
+         WHERE {condition}",
+        account_select_columns("a"),
+    )
+}
+
+fn accounts_for_ids_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT {}
+         FROM accounts a
+         WHERE {condition}",
+        account_select_columns("a"),
+    )
+}
+
+fn active_account_codex_profile_candidates_for_ids_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, label, issuer, chatgpt_account_id, workspace_id, group_name, status, sort, updated_at
+         FROM accounts
+         WHERE {condition}
+           AND LOWER(TRIM(COALESCE(status, ''))) = 'active'"
+    )
+}
+
+fn account_token_refresh_issuers_for_ids_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, issuer
+         FROM accounts
+         WHERE {condition}"
+    )
+}
+
+fn account_dashboard_source_metadata_for_ids_chunk_sql(condition: &str) -> String {
+    format!(
+        "SELECT id, label, status, sort, updated_at
+         FROM accounts
+         WHERE {condition}"
+    )
+}
+
+fn list_accounts_by_statuses_chunk(storage: &Storage, statuses: &[String]) -> Result<Vec<Account>> {
+    let Some((condition, params)) =
+        text_id_in_clause("LOWER(TRIM(COALESCE(a.status, '')))", statuses)
+    else {
+        return Ok(Vec::new());
+    };
+    let sql = accounts_by_statuses_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(map_account_row(row)?);
+    }
+    Ok(out)
+}
+
+fn list_account_ids_by_statuses_chunk(
+    storage: &Storage,
+    statuses: &[String],
+) -> Result<Vec<(String, i64, i64)>> {
+    let Some((condition, params)) =
+        text_id_in_clause("LOWER(TRIM(COALESCE(status, '')))", statuses)
+    else {
+        return Ok(Vec::new());
+    };
+    let sql = account_ids_by_statuses_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+fn list_account_usage_refresh_targets_by_statuses_chunk(
+    storage: &Storage,
+    statuses: &[String],
+) -> Result<Vec<(AccountUsageRefreshTarget, i64, i64)>> {
+    let Some((condition, params)) =
+        text_id_in_clause("LOWER(TRIM(COALESCE(status, '')))", statuses)
+    else {
+        return Ok(Vec::new());
+    };
+    let sql = account_usage_refresh_targets_by_statuses_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((
+            AccountUsageRefreshTarget {
+                id: row.get(0)?,
+                status: row.get(1)?,
+                workspace_id: row.get(2)?,
+            },
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+fn list_account_usage_refresh_targets_with_usable_tokens_by_statuses_chunk(
+    storage: &Storage,
+    statuses: &[String],
+) -> Result<Vec<(AccountUsageRefreshTarget, i64, i64)>> {
+    let Some((condition, params)) =
+        text_id_in_clause("LOWER(TRIM(COALESCE(a.status, '')))", statuses)
+    else {
+        return Ok(Vec::new());
+    };
+    let sql = account_usage_refresh_targets_with_usable_tokens_by_statuses_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((
+            AccountUsageRefreshTarget {
+                id: row.get(0)?,
+                status: row.get(1)?,
+                workspace_id: row.get(2)?,
+            },
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+fn account_usage_refresh_targets_with_usable_tokens_by_statuses_chunk_sql(
+    condition: &str,
+) -> String {
+    format!(
+        "SELECT a.id, a.status, a.workspace_id, a.sort, a.updated_at
+         FROM accounts a
+         INNER JOIN tokens t ON t.account_id = a.id
+         WHERE {condition}
+           AND TRIM(COALESCE(t.access_token, '')) <> ''
+           AND TRIM(COALESCE(t.refresh_token, '')) <> ''"
+    )
+}
+
+fn normalize_import_metadata_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+}
+
+fn list_account_usage_refresh_token_targets_by_statuses_chunk(
+    storage: &Storage,
+    statuses: &[String],
+) -> Result<Vec<(AccountUsageRefreshTokenTarget, i64, i64)>> {
+    let Some((condition, params)) =
+        text_id_in_clause("LOWER(TRIM(COALESCE(a.status, '')))", statuses)
+    else {
+        return Ok(Vec::new());
+    };
+    let sql = usage_refresh_token_targets_by_status_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        let account_id: String = row.get(0)?;
+        Ok((
+            AccountUsageRefreshTokenTarget {
+                account_id,
+                workspace_id: row.get(1)?,
+                token: Token {
+                    account_id: row.get(2)?,
+                    id_token: row.get(3)?,
+                    access_token: row.get(4)?,
+                    refresh_token: row.get(5)?,
+                    api_key_access_token: row.get(6)?,
+                    last_refresh: row.get(7)?,
+                },
+            },
+            row.get(8)?,
+            row.get(9)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+fn usage_refresh_token_targets_by_status_sql(status_condition: &str) -> String {
+    format!(
+        "WITH target_accounts AS (
+            SELECT
+                a.id,
+                a.workspace_id,
+                a.sort,
+                a.updated_at,
+                t.account_id AS token_account_id,
+                t.id_token,
+                t.access_token,
+                t.refresh_token,
+                t.api_key_access_token,
+                t.last_refresh
+            FROM accounts a
+            INNER JOIN tokens t ON t.account_id = a.id
+            WHERE {status_condition}
+              AND TRIM(COALESCE(t.access_token, '')) <> ''
+              AND TRIM(COALESCE(t.refresh_token, '')) <> ''
+        ),
+        latest_status AS (
+            SELECT
+                e.account_id,
+                LOWER(TRIM(SUBSTR(e.message, INSTR(e.message, ' reason=') + LENGTH(' reason=')))) AS reason,
+                ROW_NUMBER() OVER (
+                    PARTITION BY e.account_id
+                    ORDER BY e.created_at DESC, e.id DESC
+                ) AS rn
+            FROM events e
+            INNER JOIN target_accounts ta
+              ON ta.id = e.account_id
+            WHERE e.type = 'account_status_update'
+              AND INSTR(e.message, ' reason=') > 0
+        )
+        SELECT
+            ta.id,
+            ta.workspace_id,
+            ta.token_account_id,
+            ta.id_token,
+            ta.access_token,
+            ta.refresh_token,
+            ta.api_key_access_token,
+            ta.last_refresh,
+            ta.sort,
+            ta.updated_at
+         FROM target_accounts ta
+         LEFT JOIN latest_status ls
+           ON ls.account_id = ta.id
+          AND ls.rn = 1
+         WHERE (
+                ls.reason IS NULL
+                OR ls.reason NOT IN (
+                    'account_deactivated',
+                    'workspace_deactivated',
+                    'deactivated_workspace'
+                )
+           )"
+    )
+}
+
+fn list_active_account_codex_profile_candidates_for_ids_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<(AccountCodexProfileCandidate, i64, i64)>> {
+    let Some((condition, params)) = text_id_in_clause("id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = active_account_codex_profile_candidates_for_ids_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((
+            AccountCodexProfileCandidate {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                issuer: row.get(2)?,
+                chatgpt_account_id: row.get(3)?,
+                workspace_id: row.get(4)?,
+                group_name: row.get(5)?,
+                status: row.get(6)?,
+            },
+            row.get(7)?,
+            row.get(8)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+fn list_account_cleanup_candidates_by_statuses_chunk(
+    storage: &Storage,
+    statuses: &[String],
+) -> Result<Vec<(AccountCleanupCandidate, i64, i64)>> {
+    let Some((condition, params)) =
+        text_id_in_clause("LOWER(TRIM(COALESCE(status, '')))", statuses)
+    else {
+        return Ok(Vec::new());
+    };
+    let sql = account_cleanup_candidates_by_statuses_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((
+            AccountCleanupCandidate {
+                id: row.get(0)?,
+                status: row.get(1)?,
+            },
+            row.get(2)?,
+            row.get(3)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+fn delete_accounts_from_table(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    account_ids: &[String],
+) -> Result<usize> {
+    let Some((condition, params)) = text_id_in_clause(column, account_ids) else {
+        return Ok(0);
+    };
+    let sql = format!("DELETE FROM {table} WHERE {condition}");
+    tx.execute(&sql, params_from_iter(params))
+}
+
+fn delete_model_source_rows_for_accounts(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    account_ids: &[String],
+) -> Result<usize> {
+    let Some((condition, params)) = text_id_in_clause("source_id", account_ids) else {
+        return Ok(0);
+    };
+    let sql = format!(
+        "DELETE FROM {table}
+         WHERE source_kind = 'openai_account'
+           AND {condition}"
+    );
+    tx.execute(&sql, params_from_iter(params))
+}
+
+fn list_accounts_for_ids_chunk(storage: &Storage, account_ids: &[String]) -> Result<Vec<Account>> {
+    let Some((condition, params)) = text_id_in_clause("a.id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = accounts_for_ids_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(map_account_row(row)?);
+    }
+    Ok(out)
+}
+
+fn list_account_ids_for_ids_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<(String, i64, i64)>> {
+    let Some((condition, params)) = text_id_in_clause("id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = account_ids_for_ids_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+fn list_account_token_refresh_issuers_for_ids_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<AccountTokenRefreshIssuer>> {
+    let Some((condition, params)) = text_id_in_clause("id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = account_token_refresh_issuers_for_ids_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok(AccountTokenRefreshIssuer {
+            id: row.get(0)?,
+            issuer: row.get(1)?,
+        })
+    })?;
+    rows.collect()
+}
+
+fn list_account_dashboard_source_metadata_for_ids_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<(AccountDashboardSourceMetadata, i64, i64)>> {
+    let Some((condition, params)) = text_id_in_clause("id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = account_dashboard_source_metadata_for_ids_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((
+            AccountDashboardSourceMetadata {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                status: row.get(2)?,
+            },
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+fn list_gateway_candidates_filtered(
+    storage: &Storage,
+    account_ids: Option<&[String]>,
+) -> Result<Vec<(Account, Token)>> {
+    let availability_clause = gateway_account_usage_filter_clause("a", "lu");
+    let mut usage_cte_params = Vec::new();
+    let latest_usage_cte = if let Some(account_ids) = account_ids {
+        let Some((usage_condition, usage_params)) = text_id_in_clause("account_id", account_ids)
+        else {
+            return Ok(Vec::new());
+        };
+        usage_cte_params.extend(usage_params);
+        latest_usage_cte_sql_for_condition(&usage_condition)
+    } else {
+        latest_usage_cte_sql().to_string()
+    };
+    let mut where_clauses = vec![availability_clause];
+    let mut params = Vec::new();
+    if let Some(account_ids) = account_ids {
+        let Some((condition, condition_params)) = text_id_in_clause("a.id", account_ids) else {
+            return Ok(Vec::new());
+        };
+        where_clauses.push(condition);
+        params.extend(condition_params);
+    }
+    let where_clause = where_clauses.join(" AND ");
+    let sql = gateway_candidates_filtered_sql(&latest_usage_cte, &where_clause);
+    if !usage_cte_params.is_empty() {
+        usage_cte_params.extend(params);
+        params = usage_cte_params;
+    }
+
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(map_gateway_candidate_row(row)?);
+    }
+    Ok(out)
+}
+
+fn gateway_candidates_filtered_sql(latest_usage_cte: &str, where_clause: &str) -> String {
+    format!(
+        "{latest_usage_cte}
+         SELECT
+           {account_select},
+           {token_select}
+         FROM accounts a
+         JOIN tokens t
+           ON t.account_id = a.id
+         LEFT JOIN latest_usage lu
+           ON lu.account_id = a.id
+          AND lu.rn = 1
+         WHERE {where_clause}
+         ORDER BY a.sort ASC, a.updated_at DESC",
+        account_select = account_select_columns("a"),
+        token_select = token_select_columns("t"),
+    )
+}
+
 /// 函数 `latest_usage_cte_sql`
 ///
 /// 作者: gaohongshun
@@ -646,6 +2119,7 @@ fn latest_usage_cte_sql() -> &'static str {
             account_id,
             used_percent,
             window_minutes,
+            captured_at,
             secondary_used_percent,
             secondary_window_minutes,
             ROW_NUMBER() OVER (
@@ -654,6 +2128,41 @@ fn latest_usage_cte_sql() -> &'static str {
             ) AS rn
         FROM usage_snapshots
     )"
+}
+
+fn latest_usage_cte_sql_for_condition(where_condition: &str) -> String {
+    format!(
+        "WITH latest_usage AS (
+        SELECT
+            account_id,
+            used_percent,
+            window_minutes,
+            captured_at,
+            secondary_used_percent,
+            secondary_window_minutes,
+            ROW_NUMBER() OVER (
+                PARTITION BY account_id
+                ORDER BY captured_at DESC, id DESC
+            ) AS rn
+        FROM usage_snapshots
+        WHERE {where_condition}
+    )"
+    )
+}
+
+fn available_account_status_clause(account_alias: &str) -> String {
+    format!("LOWER(TRIM(COALESCE({account_alias}.status, ''))) IN ('active', 'available')")
+}
+
+fn remaining_percent_sql(percent_expr: &str) -> String {
+    format!(
+        "CASE
+            WHEN {percent_expr} IS NULL THEN NULL
+            WHEN {percent_expr} < 0.0 THEN 100.0
+            WHEN {percent_expr} > 100.0 THEN 0.0
+            ELSE 100.0 - {percent_expr}
+         END"
+    )
 }
 
 /// 函数 `available_usage_clause`
@@ -718,6 +2227,7 @@ fn account_select_columns(table_name: &str) -> String {
         "issuer",
         "chatgpt_account_id",
         "workspace_id",
+        "group_name",
         "sort",
         "status",
         "created_at",
@@ -789,11 +2299,11 @@ fn map_account_row_from_offset(row: &Row<'_>, offset: usize) -> Result<Account> 
         issuer: row.get(offset + 2)?,
         chatgpt_account_id: row.get(offset + 3)?,
         workspace_id: row.get(offset + 4)?,
-        group_name: None,
-        sort: row.get(offset + 5)?,
-        status: row.get(offset + 6)?,
-        created_at: row.get(offset + 7)?,
-        updated_at: row.get(offset + 8)?,
+        group_name: row.get(offset + 5)?,
+        sort: row.get(offset + 6)?,
+        status: row.get(offset + 7)?,
+        created_at: row.get(offset + 8)?,
+        updated_at: row.get(offset + 9)?,
     })
 }
 
@@ -833,189 +2343,10 @@ fn map_token_row_from_offset(row: &Row<'_>, offset: usize) -> Result<Token> {
 /// 返回函数执行结果
 fn map_gateway_candidate_row(row: &Row<'_>) -> Result<(Account, Token)> {
     let account = map_account_row_from_offset(row, 0)?;
-    let token = map_token_row_from_offset(row, 9)?;
+    let token = map_token_row_from_offset(row, 10)?;
     Ok((account, token))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::storage::UsageSnapshotRecord;
-
-    fn sample_account(id: &str, status: &str, now: i64) -> Account {
-        Account {
-            id: id.to_string(),
-            label: id.to_string(),
-            issuer: "issuer".to_string(),
-            chatgpt_account_id: None,
-            workspace_id: None,
-            group_name: None,
-            sort: 0,
-            status: status.to_string(),
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    fn sample_token(account_id: &str, now: i64) -> Token {
-        Token {
-            account_id: account_id.to_string(),
-            id_token: "id".to_string(),
-            access_token: "access".to_string(),
-            refresh_token: "refresh".to_string(),
-            api_key_access_token: None,
-            last_refresh: now,
-        }
-    }
-
-    #[test]
-    fn insert_account_update_preserves_existing_token() {
-        let mut storage = Storage::open_in_memory().expect("open");
-        storage.init().expect("init");
-        let now = now_ts();
-
-        let mut account = sample_account("acc-upsert", "active", now);
-        account.chatgpt_account_id = Some("cgpt-old".to_string());
-        storage.insert_account(&account).expect("insert account");
-        storage
-            .insert_token(&sample_token(account.id.as_str(), now))
-            .expect("insert token");
-        storage
-            .set_preferred_account(Some(account.id.as_str()))
-            .expect("set preferred");
-
-        let mut updated = account.clone();
-        updated.label = "updated label".to_string();
-        updated.chatgpt_account_id = Some("cgpt-new".to_string());
-        updated.workspace_id = Some("ws-new".to_string());
-        updated.created_at = now.saturating_add(100);
-        updated.updated_at = now.saturating_add(1);
-        storage
-            .insert_account(&updated)
-            .expect("update account without replacing row");
-
-        let found = storage
-            .find_account_by_id(account.id.as_str())
-            .expect("find updated account")
-            .expect("updated account exists");
-        assert_eq!(found.label, "updated label");
-        assert_eq!(found.chatgpt_account_id.as_deref(), Some("cgpt-new"));
-        assert_eq!(found.workspace_id.as_deref(), Some("ws-new"));
-        assert_eq!(found.created_at, now);
-        assert_eq!(found.updated_at, now.saturating_add(1));
-        assert_eq!(
-            storage.preferred_account_id().expect("preferred account"),
-            Some(account.id.clone())
-        );
-
-        let token = storage
-            .find_token_by_account_id(account.id.as_str())
-            .expect("find token")
-            .expect("token still exists");
-        assert_eq!(token.access_token, "access");
-        assert_eq!(token.refresh_token, "refresh");
-    }
-
-    #[test]
-    fn list_gateway_candidates_only_returns_active_available_accounts() {
-        let storage = Storage::open_in_memory().expect("open");
-        storage.init().expect("init");
-        let now = now_ts();
-
-        let active_available = sample_account("acc-active-ok", "active", now);
-        let active_missing_usage = sample_account("acc-active-missing", "active", now);
-        let unavailable = sample_account("acc-unavailable", "unavailable", now);
-
-        for account in [&active_available, &active_missing_usage, &unavailable] {
-            storage.insert_account(account).expect("insert account");
-            storage
-                .insert_token(&sample_token(account.id.as_str(), now))
-                .expect("insert token");
-        }
-
-        storage
-            .insert_usage_snapshot(&UsageSnapshotRecord {
-                account_id: active_available.id.clone(),
-                used_percent: Some(12.0),
-                window_minutes: Some(180),
-                resets_at: None,
-                secondary_used_percent: None,
-                secondary_window_minutes: None,
-                secondary_resets_at: None,
-                credits_json: None,
-                captured_at: now,
-            })
-            .expect("insert usage");
-        storage
-            .insert_usage_snapshot(&UsageSnapshotRecord {
-                account_id: unavailable.id.clone(),
-                used_percent: Some(10.0),
-                window_minutes: Some(180),
-                resets_at: None,
-                secondary_used_percent: None,
-                secondary_window_minutes: None,
-                secondary_resets_at: None,
-                credits_json: None,
-                captured_at: now,
-            })
-            .expect("insert usage");
-
-        let candidates = storage
-            .list_gateway_candidates()
-            .expect("list gateway candidates");
-        let mut ids = candidates
-            .into_iter()
-            .map(|(account, _)| account.id)
-            .collect::<Vec<_>>();
-        ids.sort();
-
-        assert_eq!(
-            ids,
-            vec![
-                "acc-active-missing".to_string(),
-                "acc-active-ok".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn set_preferred_account_keeps_only_one_account_selected() {
-        let mut storage = Storage::open_in_memory().expect("open");
-        storage.init().expect("init");
-        let now = now_ts();
-
-        storage
-            .insert_account(&sample_account("acc-a", "active", now))
-            .expect("insert account a");
-        storage
-            .insert_account(&sample_account("acc-b", "active", now))
-            .expect("insert account b");
-
-        storage
-            .set_preferred_account(Some("acc-a"))
-            .expect("set preferred a");
-        assert_eq!(
-            storage.preferred_account_id().expect("preferred a"),
-            Some("acc-a".to_string())
-        );
-
-        storage
-            .set_preferred_account(Some("acc-b"))
-            .expect("set preferred b");
-        assert_eq!(
-            storage.preferred_account_id().expect("preferred b"),
-            Some("acc-b".to_string())
-        );
-
-        assert!(
-            storage
-                .clear_preferred_account_if("acc-a")
-                .expect("clear non-preferred")
-                == false
-        );
-        assert!(storage
-            .clear_preferred_account_if("acc-b")
-            .expect("clear preferred"));
-        assert_eq!(storage.preferred_account_id().expect("no preferred"), None);
-    }
-}
+#[path = "accounts_tests.rs"]
+mod tests;

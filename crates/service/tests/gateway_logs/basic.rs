@@ -454,11 +454,6 @@ fn gateway_applies_saved_model_forward_rules_to_codex_responses_request() {
         }],
         "usage": { "input_tokens": 2, "output_tokens": 1, "total_tokens": 3 }
     });
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_once(&serde_json::to_string(&response).expect("serialize response"));
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
     let platform_key = "pk_saved_model_forward_rules";
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init schema");
@@ -529,6 +524,11 @@ fn gateway_applies_saved_model_forward_rules_to_codex_responses_request() {
         "modelForwardRules": "spark*=gpt-5.4-mini"
     })))
     .expect("save app settings");
+
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_once(&serde_json::to_string(&response).expect("serialize response"));
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
 
     let server = codexmanager_service::start_one_shot_server().expect("start server");
     let (status, response_body) = post_http_raw(

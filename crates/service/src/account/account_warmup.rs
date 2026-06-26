@@ -4,11 +4,11 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
 use crate::account_status::mark_account_unavailable_for_auth_error;
-use crate::apikey_models::read_managed_model_catalog_from_storage;
 use crate::storage_helpers::open_storage;
 use crate::usage_account_meta::workspace_header_for_account;
 use crate::usage_token_refresh::{refresh_and_persist_access_token, token_refresh_ahead_secs};
@@ -19,6 +19,19 @@ const WARMUP_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/respons
 const DEFAULT_WARMUP_MODEL: &str = "gpt-5.3-codex";
 const WARMUP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const WARMUP_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
+static WARMUP_HTTP_CLIENT: OnceLock<Mutex<Option<WarmupClientCacheEntry>>> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WarmupClientConfig {
+    user_agent: String,
+    proxy_url: Option<String>,
+}
+
+#[derive(Clone)]
+struct WarmupClientCacheEntry {
+    config: WarmupClientConfig,
+    client: Client,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +49,11 @@ pub(crate) struct AccountWarmupItemResult {
     pub(crate) account_name: String,
     pub(crate) ok: bool,
     pub(crate) message: String,
+}
+
+struct AccountWarmupTarget {
+    account: Account,
+    token: Token,
 }
 
 /// 函数 `warmup_accounts`
@@ -60,7 +78,7 @@ pub(crate) fn warmup_accounts(
         return Err("no account available for warmup".to_string());
     }
 
-    let client = build_warmup_client()?;
+    let client = warmup_client()?;
     let warmup_message = normalize_warmup_message(message);
     let warmup_model = resolve_warmup_model_slug(&storage);
     let mut results = Vec::with_capacity(accounts.len());
@@ -91,29 +109,25 @@ pub(crate) fn warmup_accounts(
 fn resolve_target_accounts(
     storage: &Storage,
     account_ids: &[String],
-) -> Result<Vec<Account>, String> {
-    let accounts = storage
-        .list_gateway_candidates()
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .map(|(account, _token)| account)
-        .collect::<Vec<_>>();
-
+) -> Result<Vec<AccountWarmupTarget>, String> {
     if account_ids.is_empty() {
-        return Ok(accounts);
+        return storage
+            .list_gateway_candidates()
+            .map_err(|err| err.to_string())
+            .map(gateway_candidate_warmup_targets);
     }
 
-    let mut selected = Vec::new();
-    for account_id in account_ids {
-        let normalized = account_id.trim();
-        if normalized.is_empty() {
-            continue;
-        }
-        if let Some(account) = accounts.iter().find(|item| item.id == normalized) {
-            selected.push(account.clone());
-        }
-    }
-    Ok(selected)
+    storage
+        .list_gateway_candidates_for_accounts(account_ids)
+        .map_err(|err| err.to_string())
+        .map(gateway_candidate_warmup_targets)
+}
+
+fn gateway_candidate_warmup_targets(candidates: Vec<(Account, Token)>) -> Vec<AccountWarmupTarget> {
+    candidates
+        .into_iter()
+        .map(|(account, token)| AccountWarmupTarget { account, token })
+        .collect()
 }
 
 fn normalize_warmup_message(message: &str) -> String {
@@ -125,16 +139,45 @@ fn normalize_warmup_message(message: &str) -> String {
     }
 }
 
-fn build_warmup_client() -> Result<Client, String> {
+fn current_warmup_client_config() -> WarmupClientConfig {
+    WarmupClientConfig {
+        user_agent: crate::gateway::current_codex_user_agent(),
+        proxy_url: crate::gateway::current_upstream_proxy_url(),
+    }
+}
+
+fn warmup_client() -> Result<Client, String> {
+    let config = current_warmup_client_config();
+    let cache = WARMUP_HTTP_CLIENT.get_or_init(|| Mutex::new(None));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| "warmup client cache lock poisoned".to_string())?;
+    if let Some(entry) = guard.as_ref() {
+        if entry.config == config {
+            return Ok(entry.client.clone());
+        }
+    }
+    let client = build_warmup_client_for_config(&config)?;
+    *guard = Some(WarmupClientCacheEntry {
+        config,
+        client: client.clone(),
+    });
+    Ok(client)
+}
+
+fn build_warmup_client_for_config(config: &WarmupClientConfig) -> Result<Client, String> {
+    #[cfg(test)]
+    WARMUP_CLIENT_BUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     let builder = Client::builder()
         .connect_timeout(WARMUP_CONNECT_TIMEOUT)
         .timeout(WARMUP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(4)
         .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(crate::gateway::current_codex_user_agent());
+        .user_agent(config.user_agent.as_str());
     let builder = crate::gateway::apply_blocking_upstream_proxy(
         builder,
-        crate::gateway::current_upstream_proxy_url().as_deref(),
+        config.proxy_url.as_deref(),
         "warmup_http_proxy_invalid",
     );
     builder
@@ -142,79 +185,74 @@ fn build_warmup_client() -> Result<Client, String> {
         .map_err(|err| format!("build warmup client failed: {err}"))
 }
 
+#[cfg(test)]
+static WARMUP_CLIENT_BUILD_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn reset_warmup_client_cache_for_test() {
+    if let Some(cache) = WARMUP_HTTP_CLIENT.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
+    WARMUP_CLIENT_BUILD_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn warmup_client_build_count_for_test() -> usize {
+    WARMUP_CLIENT_BUILD_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 fn warmup_single_account(
     storage: &Storage,
     client: &Client,
-    account: Account,
+    target: AccountWarmupTarget,
     model_slug: &str,
     message: &str,
 ) -> AccountWarmupItemResult {
+    let AccountWarmupTarget { account, mut token } = target;
     let account_name = account.label.clone();
     let started_at = Instant::now();
-    match load_account_token(storage, &account) {
-        Ok(mut token) => {
-            let mut outcome =
-                send_warmup_request_with_fallback(client, &account, &token, model_slug, message);
+    let mut outcome =
+        send_warmup_request_with_fallback(client, &account, &token, model_slug, message);
 
-            if let Err(err) = outcome.as_ref() {
-                if should_retry_warmup_with_refresh(&token, err) {
-                    let issuer = std::env::var("CODEXMANAGER_ISSUER")
-                        .unwrap_or_else(|_| codexmanager_core::auth::DEFAULT_ISSUER.to_string());
-                    let client_id = std::env::var("CODEXMANAGER_CLIENT_ID")
-                        .unwrap_or_else(|_| codexmanager_core::auth::DEFAULT_CLIENT_ID.to_string());
-                    outcome = refresh_and_persist_access_token(
-                        storage,
-                        &mut token,
-                        &issuer,
-                        &client_id,
-                        token_refresh_ahead_secs(),
-                    )
-                    .and_then(|_| {
-                        send_warmup_request_with_fallback(
-                            client, &account, &token, model_slug, message,
-                        )
-                    });
-                }
-            }
+    if let Err(err) = outcome.as_ref() {
+        if should_retry_warmup_with_refresh(&token, err) {
+            let issuer = std::env::var("CODEXMANAGER_ISSUER")
+                .unwrap_or_else(|_| codexmanager_core::auth::DEFAULT_ISSUER.to_string());
+            let client_id = std::env::var("CODEXMANAGER_CLIENT_ID")
+                .unwrap_or_else(|_| codexmanager_core::auth::DEFAULT_CLIENT_ID.to_string());
+            outcome = refresh_and_persist_access_token(
+                storage,
+                &mut token,
+                &issuer,
+                &client_id,
+                token_refresh_ahead_secs(),
+            )
+            .and_then(|_| {
+                send_warmup_request_with_fallback(client, &account, &token, model_slug, message)
+            });
+        }
+    }
 
-            match outcome {
-                Ok(ok_message) => {
-                    persist_warmup_observability(
-                        storage,
-                        &account,
-                        200,
-                        None,
-                        model_slug,
-                        started_at.elapsed().as_millis() as i64,
-                        ok_message.as_str(),
-                    );
-                    let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(&account.id);
-                    AccountWarmupItemResult {
-                        account_id: account.id,
-                        account_name,
-                        ok: true,
-                        message: ok_message,
-                    }
-                }
-                Err(err) => {
-                    let _ = maybe_mark_account_auth_error(storage, &account.id, &err);
-                    let status_code = extract_status_code_from_message(&err);
-                    persist_warmup_observability(
-                        storage,
-                        &account,
-                        status_code,
-                        Some(err.as_str()),
-                        model_slug,
-                        started_at.elapsed().as_millis() as i64,
-                        "预热失败",
-                    );
-                    AccountWarmupItemResult {
-                        account_id: account.id,
-                        account_name,
-                        ok: false,
-                        message: err,
-                    }
-                }
+    match outcome {
+        Ok(ok_message) => {
+            persist_warmup_observability(
+                storage,
+                &account,
+                200,
+                None,
+                model_slug,
+                started_at.elapsed().as_millis() as i64,
+                ok_message.as_str(),
+            );
+            let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(&account.id);
+            AccountWarmupItemResult {
+                account_id: account.id,
+                account_name,
+                ok: true,
+                message: ok_message,
             }
         }
         Err(err) => {
@@ -297,23 +335,11 @@ fn extract_status_code_from_message(message: &str) -> i64 {
     digits.parse::<i64>().unwrap_or(500)
 }
 
-fn load_account_token(storage: &Storage, account: &Account) -> Result<Token, String> {
-    storage
-        .find_token_by_account_id(&account.id)
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "missing token".to_string())
-}
-
 fn resolve_warmup_model_slug(storage: &Storage) -> String {
-    read_managed_model_catalog_from_storage(storage)
+    storage
+        .find_first_api_available_model_catalog_slug("default")
         .ok()
-        .and_then(|catalog| {
-            catalog
-                .items
-                .into_iter()
-                .find(|item| item.model.supported_in_api)
-                .map(|item| item.model.slug)
-        })
+        .flatten()
         .filter(|slug| !slug.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string())
 }
@@ -513,198 +539,8 @@ fn summarize_warmup_stream_error(value: &serde_json::Value) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        build_warmup_headers, consume_warmup_stream, resolve_target_accounts,
-        resolve_warmup_model_slug, should_retry_warmup_with_refresh, DEFAULT_WARMUP_MODEL,
-    };
-    use crate::apikey_models::save_managed_model_catalog_with_storage;
-    use codexmanager_core::rpc::types::{
-        ManagedModelCatalogEntry, ManagedModelCatalogResult, ModelInfo,
-    };
-    use codexmanager_core::storage::{now_ts, Account, Storage, Token};
-    use std::io::Cursor;
-
-    fn make_model(slug: &str, sort_index: i64, supported_in_api: bool) -> ManagedModelCatalogEntry {
-        ManagedModelCatalogEntry {
-            model: ModelInfo {
-                slug: slug.to_string(),
-                display_name: slug.to_string(),
-                supported_in_api,
-                ..ModelInfo::default()
-            },
-            sort_index,
-            ..ManagedModelCatalogEntry::default()
-        }
-    }
-
-    #[test]
-    fn resolve_warmup_model_slug_uses_first_supported_model_from_catalog_order() {
-        let storage = Storage::open_in_memory().expect("open in-memory storage");
-        storage.init().expect("init in-memory storage");
-        save_managed_model_catalog_with_storage(
-            &storage,
-            &ManagedModelCatalogResult {
-                items: vec![
-                    make_model("gpt-hidden", 0, false),
-                    make_model("gpt-latest", 1, true),
-                    make_model("gpt-older", 2, true),
-                ],
-                ..ManagedModelCatalogResult::default()
-            },
-        )
-        .expect("save model catalog");
-
-        assert_eq!(resolve_warmup_model_slug(&storage), "gpt-latest");
-    }
-
-    #[test]
-    fn resolve_warmup_model_slug_falls_back_when_catalog_missing() {
-        let storage = Storage::open_in_memory().expect("open in-memory storage");
-        storage.init().expect("init in-memory storage");
-        assert_eq!(resolve_warmup_model_slug(&storage), DEFAULT_WARMUP_MODEL);
-    }
-
-    #[test]
-    fn should_retry_warmup_with_refresh_only_for_auth_errors_with_refresh_token() {
-        let mut token = Token {
-            account_id: "account-1".to_string(),
-            id_token: String::new(),
-            access_token: String::new(),
-            refresh_token: "refresh-token".to_string(),
-            api_key_access_token: None,
-            last_refresh: 0,
-        };
-
-        assert!(should_retry_warmup_with_refresh(
-            &token,
-            "status=401 body=Unauthorized"
-        ));
-        assert!(!should_retry_warmup_with_refresh(
-            &token,
-            "status=500 body=server error"
-        ));
-
-        token.refresh_token.clear();
-        assert!(!should_retry_warmup_with_refresh(
-            &token,
-            "status=401 body=Unauthorized"
-        ));
-    }
-
-    #[test]
-    fn resolve_target_accounts_only_returns_gateway_available_accounts() {
-        let storage = Storage::open_in_memory().expect("open in-memory storage");
-        storage.init().expect("init in-memory storage");
-        let now = now_ts();
-
-        for (id, status) in [
-            ("acc-active", "active"),
-            ("acc-unavailable", "unavailable"),
-            ("acc-disabled", "disabled"),
-            ("acc-banned", "banned"),
-            ("acc-inactive", "inactive"),
-        ] {
-            storage
-                .insert_account(&Account {
-                    id: id.to_string(),
-                    label: id.to_string(),
-                    issuer: "issuer".to_string(),
-                    chatgpt_account_id: None,
-                    workspace_id: None,
-                    group_name: None,
-                    sort: 0,
-                    status: status.to_string(),
-                    created_at: now,
-                    updated_at: now,
-                })
-                .expect("insert account");
-            storage
-                .insert_token(&Token {
-                    account_id: id.to_string(),
-                    id_token: "id-token".to_string(),
-                    access_token: "access-token".to_string(),
-                    refresh_token: "refresh-token".to_string(),
-                    api_key_access_token: None,
-                    last_refresh: now,
-                })
-                .expect("insert token");
-        }
-
-        let all_targets = resolve_target_accounts(&storage, &[]).expect("resolve all targets");
-        assert_eq!(all_targets.len(), 1);
-        assert_eq!(all_targets[0].id, "acc-active");
-
-        let selected_targets = resolve_target_accounts(
-            &storage,
-            &[
-                "acc-unavailable".to_string(),
-                "acc-active".to_string(),
-                "acc-disabled".to_string(),
-            ],
-        )
-        .expect("resolve selected targets");
-        assert_eq!(selected_targets.len(), 1);
-        assert_eq!(selected_targets[0].id, "acc-active");
-    }
-
-    #[test]
-    fn build_warmup_headers_omits_non_codex_headers() {
-        let account = Account {
-            id: "acc-1".to_string(),
-            label: "acc-1".to_string(),
-            issuer: "issuer".to_string(),
-            chatgpt_account_id: None,
-            workspace_id: None,
-            group_name: None,
-            sort: 0,
-            status: "active".to_string(),
-            created_at: 0,
-            updated_at: 0,
-        };
-
-        let headers = build_warmup_headers(&account, "bearer-token").expect("build warmup headers");
-
-        assert!(headers.get("version").is_none());
-        assert!(headers.get("openai-organization").is_none());
-        assert!(headers.get("openai-project").is_none());
-        assert!(headers.get("client_version").is_none());
-    }
-
-    #[test]
-    fn consume_warmup_stream_waits_for_response_completed() {
-        let stream = Cursor::new(
-            "event: response.created\n\
-             data: {\"type\":\"response.created\"}\n\n\
-             event: response.completed\n\
-             data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n",
-        );
-
-        assert!(consume_warmup_stream(stream).is_ok());
-    }
-
-    #[test]
-    fn consume_warmup_stream_rejects_incomplete_stream() {
-        let stream = Cursor::new(
-            "event: response.created\n\
-             data: {\"type\":\"response.created\"}\n\n",
-        );
-
-        let err = consume_warmup_stream(stream).expect_err("stream should be incomplete");
-        assert!(err.contains("before response.completed"));
-    }
-
-    #[test]
-    fn consume_warmup_stream_reports_error_event() {
-        let stream = Cursor::new(
-            "event: response.failed\n\
-             data: {\"type\":\"response.failed\",\"error\":{\"message\":\"quota exceeded\"}}\n\n",
-        );
-
-        let err = consume_warmup_stream(stream).expect_err("stream should fail");
-        assert!(err.contains("quota exceeded"));
-    }
-}
+#[path = "account_warmup_tests.rs"]
+mod tests;
 
 fn build_warmup_headers(account: &Account, bearer: &str) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();

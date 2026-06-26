@@ -56,6 +56,7 @@ export interface AccountImportResult {
   fileCount?: number;
   directoryPath?: string;
   contents?: string[];
+  importedAccountIds?: string[];
 }
 
 export interface AccountExportResult {
@@ -117,6 +118,9 @@ export function readAccountImportResult(payload: unknown): AccountImportResult {
     fileCount: readNumberField(payload, "fileCount"),
     directoryPath: readStringField(payload, "directoryPath"),
     contents: readStringArrayField(payload, "contents"),
+    importedAccountIds: readStringArrayField(payload, "importedAccountIds").concat(
+      readStringArrayField(payload, "imported_account_ids")
+    ),
   };
 }
 

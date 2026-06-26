@@ -2,7 +2,7 @@ use codexmanager_core::auth::{
     extract_chatgpt_account_id, extract_workspace_id, normalize_chatgpt_account_id,
     normalize_workspace_id, parse_id_token_claims,
 };
-use codexmanager_core::storage::{now_ts, Account, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, AccountWorkspaceIdentity, Storage, Token};
 use std::collections::HashMap;
 
 /// 函数 `clean_header_value`
@@ -79,6 +79,7 @@ pub(crate) fn workspace_header_for_account(account: &Account) -> Option<String> 
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn build_workspace_map_from_accounts(
     accounts: &[Account],
 ) -> HashMap<String, Option<String>> {
@@ -88,25 +89,6 @@ pub(crate) fn build_workspace_map_from_accounts(
         workspace_map.insert(account.id.clone(), workspace_id);
     }
     workspace_map
-}
-
-/// 函数 `build_workspace_map`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 返回函数执行结果
-#[allow(dead_code)]
-pub(crate) fn build_workspace_map(storage: &Storage) -> HashMap<String, Option<String>> {
-    storage
-        .list_accounts()
-        .map(|accounts| build_workspace_map_from_accounts(&accounts))
-        .unwrap_or_default()
 }
 
 /// 函数 `resolve_workspace_id_for_account`
@@ -120,16 +102,17 @@ pub(crate) fn build_workspace_map(storage: &Storage) -> HashMap<String, Option<S
 ///
 /// # 返回
 /// 返回函数执行结果
-#[allow(dead_code)]
 pub(crate) fn resolve_workspace_id_for_account(
     storage: &Storage,
     account_id: &str,
 ) -> Option<String> {
     storage
-        .find_account_by_id(account_id)
+        .find_account_workspace_identity_by_id(account_id)
         .ok()
         .flatten()
-        .and_then(|account| workspace_header_for_account(&account))
+        .and_then(|identity| {
+            resolve_workspace_header(identity.workspace_id, identity.chatgpt_account_id)
+        })
 }
 
 /// 函数 `derive_account_meta`
@@ -195,16 +178,20 @@ pub(crate) fn patch_account_meta(
     chatgpt_account_id: Option<String>,
     workspace_id: Option<String>,
 ) {
-    let Ok(account) = storage.find_account_by_id(account_id) else {
+    let Ok(account) = storage.find_account_workspace_identity_by_id(account_id) else {
         return;
     };
     let Some(mut account) = account else {
         return;
     };
 
-    if apply_account_meta_patch(&mut account, chatgpt_account_id, workspace_id) {
-        account.updated_at = now_ts();
-        let _ = storage.insert_account(&account);
+    if apply_account_identity_patch(&mut account, chatgpt_account_id, workspace_id) {
+        let _ = storage.update_account_workspace_identity(
+            &account.id,
+            account.chatgpt_account_id.as_deref(),
+            account.workspace_id.as_deref(),
+            now_ts(),
+        );
     }
 }
 
@@ -229,7 +216,12 @@ pub(crate) fn patch_account_meta_cached(
     if let Some(account) = accounts.get_mut(account_id) {
         if apply_account_meta_patch(account, chatgpt_account_id, workspace_id) {
             account.updated_at = now_ts();
-            let _ = storage.insert_account(account);
+            let _ = storage.update_account_workspace_identity(
+                &account.id,
+                account.chatgpt_account_id.as_deref(),
+                account.workspace_id.as_deref(),
+                account.updated_at,
+            );
         }
         return;
     }
@@ -291,6 +283,24 @@ fn is_invalid_upstream_scope_value(value: &str) -> bool {
 /// 返回函数执行结果
 fn apply_account_meta_patch(
     account: &mut Account,
+    chatgpt_account_id: Option<String>,
+    workspace_id: Option<String>,
+) -> bool {
+    let mut identity = AccountWorkspaceIdentity {
+        id: account.id.clone(),
+        chatgpt_account_id: account.chatgpt_account_id.clone(),
+        workspace_id: account.workspace_id.clone(),
+    };
+    let changed = apply_account_identity_patch(&mut identity, chatgpt_account_id, workspace_id);
+    if changed {
+        account.chatgpt_account_id = identity.chatgpt_account_id;
+        account.workspace_id = identity.workspace_id;
+    }
+    changed
+}
+
+fn apply_account_identity_patch(
+    account: &mut AccountWorkspaceIdentity,
     chatgpt_account_id: Option<String>,
     workspace_id: Option<String>,
 ) -> bool {

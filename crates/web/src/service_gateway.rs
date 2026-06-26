@@ -15,6 +15,23 @@ pub(super) fn should_spawn_service() -> bool {
     read_env_trim("CODEXMANAGER_WEB_NO_SPAWN_SERVICE").is_none()
 }
 
+static SERVICE_PROBE_CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+    std::sync::OnceLock::new();
+
+fn build_service_probe_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(1200))
+        .build()
+        .map_err(|err| format!("probe client init failed: {err}"))
+}
+
+fn service_probe_client() -> Result<reqwest::Client, String> {
+    SERVICE_PROBE_CLIENT
+        .get_or_init(build_service_probe_client)
+        .clone()
+}
+
 /// 函数 `service_rpc_probe`
 ///
 /// 作者: gaohongshun
@@ -27,17 +44,17 @@ pub(super) fn should_spawn_service() -> bool {
 ///
 /// # 返回
 /// 返回函数执行结果
-async fn service_rpc_probe(service_addr: &str, rpc_token: &str) -> Result<(), String> {
+async fn service_rpc_probe(
+    client: &reqwest::Client,
+    service_addr: &str,
+    rpc_token: &str,
+) -> Result<(), String> {
     let trimmed = service_addr.trim();
     if trimmed.is_empty() {
         return Err("service address is empty".to_string());
     }
 
-    let response = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_millis(1200))
-        .build()
-        .map_err(|err| format!("probe client init failed: {err}"))?
+    let response = client
         .post(format!("http://{trimmed}/rpc"))
         .header("content-type", "application/json")
         .header("x-codexmanager-rpc-token", rpc_token)
@@ -202,8 +219,13 @@ pub(super) async fn ensure_service_running(
     dir: &Path,
     spawned_service: &Arc<Mutex<bool>>,
 ) -> Option<String> {
+    let probe_client = match service_probe_client() {
+        Ok(client) => client,
+        Err(err) => return Some(err),
+    };
+
     if tcp_probe(service_addr).await {
-        match service_rpc_probe(service_addr, rpc_token).await {
+        match service_rpc_probe(&probe_client, service_addr, rpc_token).await {
             Ok(()) => return None,
             Err(err) if err == "rpc_token_mismatch" && should_spawn_service() => {
                 if !shutdown_existing_service(service_addr).await {
@@ -241,7 +263,7 @@ pub(super) async fn ensure_service_running(
     let mut last_probe_error: Option<String> = None;
     for _ in 0..50 {
         if tcp_probe(service_addr).await {
-            match service_rpc_probe(service_addr, rpc_token).await {
+            match service_rpc_probe(&probe_client, service_addr, rpc_token).await {
                 Ok(()) => return None,
                 Err(err) => {
                     last_probe_error = Some(format!(
@@ -619,93 +641,5 @@ pub(super) async fn quit(State(state): State<Arc<AppState>>) -> impl IntoRespons
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        format_upstream_error_message, gateway_proxy_max_body_bytes, gateway_proxy_target_url,
-        should_skip_gateway_request_header, should_skip_gateway_response_header,
-        ENV_GATEWAY_PROXY_MAX_BODY_BYTES,
-    };
-    use axum::http::{header, HeaderValue, Uri};
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_test_lock() -> MutexGuard<'static, ()> {
-        ENV_TEST_LOCK.lock().expect("env test lock")
-    }
-
-    struct EnvGuard {
-        key: &'static str,
-        original: Option<std::ffi::OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let original = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, original }
-        }
-
-        fn clear(key: &'static str) -> Self {
-            let original = std::env::var_os(key);
-            std::env::remove_var(key);
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.original {
-                std::env::set_var(self.key, value);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    #[test]
-    fn format_upstream_error_message_adds_docker_hint_for_host_internal() {
-        let err = std::io::Error::other("dns failed");
-        let message = format_upstream_error_message("host.docker.internal:9760", &err);
-        assert!(message.contains("host.docker.internal"));
-        assert!(message.contains("codexmanager-service:48760"));
-    }
-
-    #[test]
-    fn gateway_proxy_target_url_preserves_path_and_query() {
-        let uri: Uri = "/v1/responses?stream=true".parse().expect("valid uri");
-        assert_eq!(
-            gateway_proxy_target_url("localhost:48760", &uri),
-            "http://localhost:48760/v1/responses?stream=true"
-        );
-    }
-
-    #[test]
-    fn gateway_proxy_body_limit_defaults_to_unbounded() {
-        let _lock = env_test_lock();
-        let _guard = EnvGuard::clear(ENV_GATEWAY_PROXY_MAX_BODY_BYTES);
-
-        assert_eq!(gateway_proxy_max_body_bytes(), 0);
-    }
-
-    #[test]
-    fn gateway_proxy_body_limit_allows_env_override() {
-        let _lock = env_test_lock();
-        let _guard = EnvGuard::set(ENV_GATEWAY_PROXY_MAX_BODY_BYTES, "536870912");
-
-        assert_eq!(gateway_proxy_max_body_bytes(), 536_870_912);
-    }
-
-    #[test]
-    fn gateway_proxy_header_filters_skip_hop_by_hop_headers() {
-        assert!(should_skip_gateway_request_header(
-            &header::HOST,
-            &HeaderValue::from_static("example.com")
-        ));
-        assert!(should_skip_gateway_response_header(&header::CONTENT_LENGTH));
-        assert!(!should_skip_gateway_request_header(
-            &header::AUTHORIZATION,
-            &HeaderValue::from_static("Bearer key")
-        ));
-    }
-}
+#[path = "service_gateway_tests.rs"]
+mod tests;

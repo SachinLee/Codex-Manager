@@ -32,6 +32,7 @@ export function useMemberDashboardSummary(enabled = true) {
       dashboardClient.getMemberSummary({
         dayStartTs: localDayRange.dayStartTs,
         dayEndTs: localDayRange.dayEndTs,
+        includeDetails: false,
       }),
     enabled: isQueryEnabled,
     retry: 1,

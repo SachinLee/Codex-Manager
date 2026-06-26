@@ -6,6 +6,7 @@ use crate::account_identity::build_account_storage_id;
 use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TEST_ID_TOKEN_WS_A: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdWItMSIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsIndvcmtzcGFjZV9pZCI6IndzLWEiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiY2dwdC0xIn19.sig";
@@ -29,11 +30,16 @@ const TEST_ID_TOKEN_SAME_SUB_TEAM_B: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzYW
 /// # 返回
 /// 返回函数执行结果
 fn unique_temp_db_path() -> PathBuf {
+    static NEXT_DB_ID: AtomicU64 = AtomicU64::new(1);
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    std::env::temp_dir().join(format!("codexmanager-account-import-test-{unique}.db"))
+    let pid = std::process::id();
+    let sequence = NEXT_DB_ID.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "codexmanager-account-import-test-{pid}-{unique}-{sequence}.db"
+    ))
 }
 
 /// 函数 `payload`
@@ -756,6 +762,8 @@ fn import_account_auth_json_keeps_valid_items_when_one_content_is_invalid() {
     assert_eq!(result.created, 1);
     assert_eq!(result.updated, 0);
     assert_eq!(result.failed, 1);
+    assert_eq!(result.imported_account_ids.len(), 1);
+    assert!(result.imported_account_ids.iter().all(|id| !id.is_empty()));
     assert!(result
         .errors
         .iter()
@@ -822,6 +830,7 @@ fn import_account_auth_json_handles_large_multi_batch_payload() {
     assert_eq!(result.created, 1000);
     assert_eq!(result.updated, 0);
     assert_eq!(result.failed, 0);
+    assert_eq!(result.imported_account_ids.len(), 1000);
     assert!(result.errors.is_empty());
 
     let storage = Storage::open(&db_path).expect("reopen storage");

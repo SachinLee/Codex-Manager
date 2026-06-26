@@ -38,20 +38,22 @@ fn probe_bind_target_available(bind_addr: &str, connect_addr: &str) -> Result<()
         }
         v4.map_err(|err| format!("检查服务端口失败 ({connect_addr}): {err}"))?;
         if let Err(err) = v6 {
-            log::debug!("IPv6 loopback bind probe skipped for {}: {}", connect_addr, err);
+            log::debug!(
+                "IPv6 loopback bind probe skipped for {}: {}",
+                connect_addr,
+                err
+            );
         }
         return Ok(());
     }
 
-    TcpListener::bind(trimmed)
-        .map(|_| ())
-        .map_err(|err| {
-            if is_addr_in_use(&err) {
-                format!("端口已被占用: {connect_addr}")
-            } else {
-                format!("检查服务端口失败 ({connect_addr}): {err}")
-            }
-        })
+    TcpListener::bind(trimmed).map(|_| ()).map_err(|err| {
+        if is_addr_in_use(&err) {
+            format!("端口已被占用: {connect_addr}")
+        } else {
+            format!("检查服务端口失败 ({connect_addr}): {err}")
+        }
+    })
 }
 
 pub(crate) fn ensure_bind_target_available(
@@ -230,6 +232,7 @@ pub async fn service_start(app: tauri::AppHandle, addr: String) -> Result<(), St
         stop_service();
         ensure_bind_target_available(&bind_addr, &connect_addr)?;
         spawn_service_with_addr(&app, &bind_addr, &connect_addr)?;
+        thread::sleep(SERVICE_READY_RETRY_DELAY);
         wait_for_service_ready(
             &connect_addr,
             SERVICE_READY_RETRIES,

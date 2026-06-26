@@ -1,5 +1,7 @@
 use crate::account_availability::{evaluate_snapshot, Availability};
-use crate::account_status::{is_refresh_blocked_status_reason, set_account_status};
+use crate::account_status::{
+    load_account_status_context, set_account_status_with_context, AccountStatusContext,
+};
 use codexmanager_core::storage::{now_ts, Storage, UsageSnapshotRecord};
 use codexmanager_core::usage::parse_usage_snapshot;
 
@@ -7,16 +9,8 @@ const DEFAULT_USAGE_SNAPSHOTS_RETAIN_PER_ACCOUNT: usize = 1;
 const USAGE_SNAPSHOTS_RETAIN_PER_ACCOUNT_ENV: &str =
     "CODEXMANAGER_USAGE_SNAPSHOTS_RETAIN_PER_ACCOUNT";
 
-fn usage_status_updates_blocked(storage: &Storage, account_id: &str, current_status: &str) -> bool {
-    if current_status.trim().eq_ignore_ascii_case("disabled") {
-        return true;
-    }
-    storage
-        .latest_account_status_reasons(&[account_id.to_string()])
-        .ok()
-        .and_then(|mut reasons| reasons.remove(account_id))
-        .as_deref()
-        .is_some_and(is_refresh_blocked_status_reason)
+fn usage_status_updates_blocked(context: &AccountStatusContext) -> bool {
+    context.status.trim().eq_ignore_ascii_case("disabled")
 }
 
 /// 函数 `usage_snapshots_retain_per_account`
@@ -53,27 +47,29 @@ pub(crate) fn apply_status_from_snapshot(
     record: &UsageSnapshotRecord,
 ) -> Availability {
     let availability = evaluate_snapshot(record);
-    let current_status = storage
-        .find_account_by_id(&record.account_id)
-        .ok()
-        .flatten()
-        .map(|account| account.status)
-        .unwrap_or_default();
+    let context = load_account_status_context(storage, &record.account_id);
 
-    if usage_status_updates_blocked(storage, &record.account_id, &current_status) {
+    if usage_status_updates_blocked(&context) {
         return availability;
     }
 
     match availability {
         Availability::Available => {
-            set_account_status(storage, &record.account_id, "active", "usage_ok");
+            set_account_status_with_context(
+                storage,
+                &record.account_id,
+                "active",
+                "usage_ok",
+                Some(&context),
+            );
         }
         Availability::Unavailable("usage_exhausted_primary" | "usage_exhausted_secondary") => {
-            set_account_status(
+            set_account_status_with_context(
                 storage,
                 &record.account_id,
                 "limited",
                 "usage_limit_exhausted",
+                Some(&context),
             );
         }
         Availability::Unavailable(_) => {}

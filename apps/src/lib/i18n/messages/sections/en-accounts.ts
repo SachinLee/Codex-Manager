@@ -55,6 +55,13 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
   "用量接口返回 403，账号权限不足或被限制":
     "Usage API returned 403. Account lacks permission or is restricted.",
   "用量接口返回 HTTP {status}": "Usage API returned HTTP {status}",
+  "用量刷新 DNS 解析失败，请检查网络或代理":
+    "Usage refresh DNS resolution failed. Check your network or proxy.",
+  "用量刷新超时，请检查网络或代理":
+    "Usage refresh timed out. Check your network or proxy.",
+  "用量刷新连接失败，请检查网络或代理":
+    "Usage refresh connection failed. Check your network or proxy.",
+  "用量刷新失败，请查看后台日志": "Usage refresh failed. Check backend logs.",
   "用量限制": "Usage limit",
   "留空使用计划模板": "Leave blank to use the plan template",
   "的名称、标签、备注、排序与额度池配置。":

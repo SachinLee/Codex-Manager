@@ -419,6 +419,20 @@
   fill: var(--glass-floating);
 }
 
+[data-slot="tooltip-content"].logs-tooltip-content {
+  background: var(--card-solid) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: 0 20px 48px -24px rgb(15 23 42 / 0.34), 0 10px 24px -18px rgb(15 23 42 / 0.28) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+[data-slot="tooltip-content"].logs-tooltip-content > svg {
+  background: var(--card-solid) !important;
+  fill: var(--card-solid) !important;
+}
+
 [data-appearance='classic'] .glass-card {
   background: var(--card);
   border: 1px solid var(--border);

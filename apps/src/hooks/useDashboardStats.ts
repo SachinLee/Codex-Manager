@@ -20,6 +20,13 @@ import { pickBestRecommendations, pickCurrentAccount } from "@/lib/utils/usage";
 interface UseDashboardStatsOptions {
   forceActive?: boolean;
   requestLogLimit?: number;
+  includeAccountHints?: boolean;
+  includeApiModels?: boolean;
+  includeApiKeys?: boolean;
+  includeAccounts?: boolean;
+  includeUsageSnapshots?: boolean;
+  includeAccountRuntime?: boolean;
+  includeAccountDetails?: boolean;
 }
 
 /**
@@ -43,6 +50,13 @@ export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
   const isPageActive = options.forceActive ?? defaultPageActive;
   const requestLogLimit =
     options.requestLogLimit ?? STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT;
+  const includeAccountHints = options.includeAccountHints ?? true;
+  const includeApiModels = options.includeApiModels ?? true;
+  const includeApiKeys = options.includeApiKeys ?? true;
+  const includeAccounts = options.includeAccounts ?? true;
+  const includeUsageSnapshots = options.includeUsageSnapshots ?? true;
+  const includeAccountRuntime = options.includeAccountRuntime ?? true;
+  const includeAccountDetails = options.includeAccountDetails ?? true;
   const isSnapshotQueryEnabled = useDeferredDesktopActivation(
     isServiceReady && isPageActive,
   );
@@ -61,12 +75,25 @@ export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
       serviceStatus.addr,
       requestLogLimit,
       localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+      includeApiModels,
+      includeApiKeys,
+      includeAccounts,
+      includeUsageSnapshots,
+      includeAccountRuntime,
+      includeAccountDetails,
     ),
     queryFn: () =>
       serviceClient.getStartupSnapshot({
         requestLogLimit,
         dayStartTs: localDayRange.dayStartTs,
         dayEndTs: localDayRange.dayEndTs,
+        includeApiModels,
+        includeApiKeys,
+        includeAccounts,
+        includeUsageSnapshots,
+        includeAccountRuntime,
+        includeAccountDetails,
       }),
     enabled: isSnapshotQueryEnabled,
     retry: 1,
@@ -107,14 +134,17 @@ export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
     !hasStartupSignal &&
     snapshotQuery.isFetching;
   const hasSnapshotData = Boolean(data);
-  const totalAccounts = accounts.length;
-  const availableAccounts = accounts.filter((item) => item.isAvailable).length;
-  const unavailableAccounts = totalAccounts - availableAccounts;
-  const currentAccount = pickCurrentAccount(
-    accounts,
-    data?.requestLogs || []
-  );
-  const recommendations = pickBestRecommendations(accounts);
+  const accountSummary = data?.accountSummary;
+  const totalAccounts = accountSummary?.accountCount ?? accounts.length;
+  const availableAccounts =
+    accountSummary?.availableCount ?? accounts.filter((item) => item.isAvailable).length;
+  const unavailableAccounts = Math.max(totalAccounts - availableAccounts, 0);
+  const currentAccount = includeAccountHints
+    ? pickCurrentAccount(accounts, data?.requestLogs || [])
+    : null;
+  const recommendations = includeAccountHints
+    ? pickBestRecommendations(accounts)
+    : { primaryPick: null, secondaryPick: null };
 
   return {
     stats: {
@@ -137,7 +167,7 @@ export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
     },
     currentAccount,
     recommendations,
-    requestLogs: data?.requestLogs || [],
+    requestLogs: includeAccountHints ? data?.requestLogs || [] : [],
     isLoading:
       (!isServiceReady && !hasSnapshotData) ||
       (!isSnapshotQueryEnabled && !data) ||

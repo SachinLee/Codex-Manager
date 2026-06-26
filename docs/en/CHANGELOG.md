@@ -5,6 +5,12 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-24
+
+### Changed
+- Simplified the Codex first-time setup guide to focus on the minimum `auth.json` and `config.toml` configuration.
+- Bumped the release version to `0.4.0` and synchronized workspace, frontend package, Tauri desktop metadata, and lockfiles.
+
 ## [0.3.9] - 2026-06-11
 
 ### Added
@@ -325,7 +331,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.6...v0.3.7

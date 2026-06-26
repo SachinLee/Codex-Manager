@@ -46,6 +46,14 @@ pub(super) fn record_usage_refresh_failure(storage: &Storage, account_id: &str, 
         message: message.to_string(),
         created_at,
     });
+    if let Some(reason) = status_reason_for_refresh_failure(&error_class) {
+        let _ = storage.insert_event(&Event {
+            account_id: Some(account_id.to_string()),
+            event_type: "account_status_update".to_string(),
+            message: format!("status=active reason={reason}"),
+            created_at,
+        });
+    }
 }
 
 /// 函数 `mark_usage_unreachable_if_needed`
@@ -128,7 +136,10 @@ fn classify_usage_refresh_error(message: &str) -> String {
     if normalized.contains("timeout") {
         return "timeout".to_string();
     }
-    if normalized.contains("connection") || normalized.contains("connect") {
+    if normalized.contains("connection")
+        || normalized.contains("connect")
+        || normalized.contains("error sending request")
+    {
         return "connection".to_string();
     }
     if normalized.contains("dns") {
@@ -141,6 +152,16 @@ fn classify_usage_refresh_error(message: &str) -> String {
         return "token_refresh".to_string();
     }
     "other".to_string()
+}
+
+fn status_reason_for_refresh_failure(error_class: &str) -> Option<&'static str> {
+    match error_class {
+        "timeout" => Some("usage_refresh_timeout"),
+        "connection" => Some("usage_refresh_connection"),
+        "dns" => Some("usage_refresh_dns"),
+        "other" => Some("usage_refresh_failed"),
+        _ => None,
+    }
 }
 
 /// 函数 `extract_usage_status_code`

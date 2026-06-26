@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-24
+
+### Changed
+- 简化 Codex 首次接入引导，只保留 `auth.json` 与 `config.toml` 的最小必要配置。
+- 发布版本提升到 `0.4.0`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
 ## [0.3.9] - 2026-06-11
 
 ### Added
@@ -325,7 +331,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.6...v0.3.7

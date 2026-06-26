@@ -197,7 +197,10 @@ fn service_bind_probe_reports_occupied_loopback_port() {
         err.contains("端口已被占用"),
         "expected occupied port message, got {err}"
     );
-    assert!(err.contains(&addr), "message should include addr, got {err}");
+    assert!(
+        err.contains(&addr),
+        "message should include addr, got {err}"
+    );
 }
 
 /// 函数 `rpc_token_path_stays_in_db_dir`

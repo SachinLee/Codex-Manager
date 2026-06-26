@@ -63,6 +63,7 @@ export interface AppSettings {
   routeStrategyOptions: string[];
   freeAccountMaxModel: string;
   freeAccountMaxModelOptions: string[];
+  modelCatalogAutoRemoteFetch: boolean;
   modelForwardRules: string;
   compactModelForwardRules: string;
   accountMaxInflight: number;

@@ -1,6 +1,19 @@
 use codexmanager_core::storage::{now_ts, Event};
+use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::{account_status, storage_helpers::open_storage};
+
+#[derive(Debug, Clone)]
+pub(crate) struct AccountSortUpdate {
+    pub account_id: String,
+    pub sort: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AccountSortUpdateResult {
+    updated: usize,
+}
 
 /// 函数 `update_account`
 ///
@@ -56,9 +69,8 @@ pub(crate) fn update_account(
     if let Some(preferred) = preferred {
         if preferred {
             let found = storage
-                .find_account_by_id(normalized_account_id)
-                .map_err(|err| err.to_string())?
-                .is_some();
+                .account_exists(normalized_account_id)
+                .map_err(|err| err.to_string())?;
             if !found {
                 return Err("account not found".to_string());
             }
@@ -178,6 +190,38 @@ pub(crate) fn update_account(
     Ok(())
 }
 
+pub(crate) fn update_account_sorts(
+    updates: Vec<AccountSortUpdate>,
+) -> Result<AccountSortUpdateResult, String> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    for update in updates {
+        let account_id = update.account_id.trim().to_string();
+        if account_id.is_empty() {
+            return Err("missing accountId".to_string());
+        }
+        if !seen.insert(account_id.clone()) {
+            return Err(format!("duplicate accountId: {account_id}"));
+        }
+        normalized.push((account_id, update.sort));
+    }
+    if normalized.is_empty() {
+        return Err("missing account sort updates".to_string());
+    }
+
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let updated = storage
+        .update_account_sorts(normalized.as_slice(), now_ts())
+        .map_err(|e| {
+            let message = e.to_string();
+            message
+                .strip_prefix("Invalid parameter name: ")
+                .unwrap_or(message.as_str())
+                .to_string()
+        })?;
+    Ok(AccountSortUpdateResult { updated })
+}
+
 /// 函数 `normalize_account_status`
 ///
 /// 作者: gaohongshun
@@ -264,3 +308,7 @@ fn normalize_optional_tags(value: Option<&str>) -> Option<String> {
         Some(parts.join(","))
     }
 }
+
+#[cfg(test)]
+#[path = "account_update_tests.rs"]
+mod tests;

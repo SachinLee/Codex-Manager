@@ -1,4 +1,5 @@
 import { invoke, withAddr } from "./transport";
+import type { RequestOptions } from "@/lib/utils/request";
 import {
   GatewayConcurrencyRecommendation,
   readGatewayManualAccountId,
@@ -19,6 +20,7 @@ import {
   normalizeBackgroundTasks,
   normalizeRequestLogFilterSummary,
   normalizeRequestLogListResult,
+  normalizeRequestLogListWithSummaryResult,
   normalizeStartupSnapshot,
   normalizeTodaySummary,
 } from "./normalize";
@@ -28,6 +30,7 @@ import {
   AggregateApiDailyUsageStat,
   RequestLogFilterSummary,
   RequestLogListResult,
+  RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
   ServiceInitializationResult,
   StartupSnapshot,
@@ -49,6 +52,12 @@ export const serviceClient = {
       requestLogLimit?: number;
       dayStartTs?: number;
       dayEndTs?: number;
+      includeApiModels?: boolean;
+      includeApiKeys?: boolean;
+      includeAccounts?: boolean;
+      includeUsageSnapshots?: boolean;
+      includeAccountRuntime?: boolean;
+      includeAccountDetails?: boolean;
     }
   ): Promise<StartupSnapshot> {
     const result = await invoke<unknown>(
@@ -140,7 +149,7 @@ export const serviceClient = {
     pageSize?: number;
     startTs?: number | null;
     endTs?: number | null;
-  }): Promise<RequestLogListResult> {
+  }, options?: RequestOptions): Promise<RequestLogListResult> {
     const result = await invoke<unknown>(
       "service_requestlog_list",
       withAddr({
@@ -150,9 +159,32 @@ export const serviceClient = {
         pageSize: params?.pageSize ?? 20,
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
-      })
+      }),
+      options
     );
     return normalizeRequestLogListResult(result);
+  },
+  async listRequestLogsWithSummary(params?: {
+    query?: string;
+    statusFilter?: string;
+    page?: number;
+    pageSize?: number;
+    startTs?: number | null;
+    endTs?: number | null;
+  }, options?: RequestOptions): Promise<RequestLogListWithSummaryResult> {
+    const result = await invoke<unknown>(
+      "service_requestlog_list_with_summary",
+      withAddr({
+        query: params?.query || "",
+        statusFilter: params?.statusFilter || "all",
+        page: params?.page ?? 1,
+        pageSize: params?.pageSize ?? 20,
+        startTs: params?.startTs ?? null,
+        endTs: params?.endTs ?? null,
+      }),
+      options
+    );
+    return normalizeRequestLogListWithSummaryResult(result);
   },
   async getRequestLogSummary(params?: {
     query?: string;

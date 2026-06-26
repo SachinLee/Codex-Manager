@@ -1,6 +1,5 @@
 use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -112,9 +111,20 @@ pub(crate) fn collect_gateway_candidates_with_low_quota_mode(
         return Ok(cached);
     }
 
-    let candidates = collect_gateway_candidates_uncached(storage, low_quota_mode)?;
+    let candidates = collect_gateway_candidates_uncached(storage, low_quota_mode, None)?;
     write_candidate_cache(low_quota_mode, candidates.clone());
     Ok(candidates)
+}
+
+pub(crate) fn collect_gateway_candidates_for_accounts_with_low_quota_mode(
+    storage: &Storage,
+    account_ids: &[String],
+    low_quota_mode: LowQuotaCandidateMode,
+) -> Result<Vec<(Account, Token)>, String> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    collect_gateway_candidates_uncached(storage, low_quota_mode, Some(account_ids))
 }
 
 /// 函数 `collect_gateway_candidates_uncached`
@@ -131,23 +141,31 @@ pub(crate) fn collect_gateway_candidates_with_low_quota_mode(
 fn collect_gateway_candidates_uncached(
     storage: &Storage,
     low_quota_mode: LowQuotaCandidateMode,
+    account_ids: Option<&[String]>,
 ) -> Result<Vec<(Account, Token)>, String> {
     // 选择可用账号作为网关上游候选
-    let candidates = storage
-        .list_gateway_candidates()
-        .map_err(|e| e.to_string())?;
+    let candidates = match account_ids {
+        Some(account_ids) => storage.list_gateway_candidates_for_accounts(account_ids),
+        None => storage.list_gateway_candidates(),
+    }
+    .map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(candidates.len());
     for (account, token) in candidates {
         let mut candidate_account = account.clone();
         let (chatgpt_account_id, workspace_id) = derive_account_meta(&token);
         if patch_account_meta_in_place(&mut candidate_account, chatgpt_account_id, workspace_id) {
             candidate_account.updated_at = now_ts();
-            let _ = storage.insert_account(&candidate_account);
+            let _ = storage.update_account_workspace_identity(
+                &candidate_account.id,
+                candidate_account.chatgpt_account_id.as_deref(),
+                candidate_account.workspace_id.as_deref(),
+                candidate_account.updated_at,
+            );
         }
         out.push((candidate_account, token));
     }
     apply_quota_guard(storage, &mut out, low_quota_mode);
-    if out.is_empty() {
+    if out.is_empty() && account_ids.is_none() {
         log_no_candidates(storage);
     }
     Ok(out)
@@ -166,14 +184,18 @@ fn apply_quota_guard(
     if !config.enabled || !config.has_threshold() {
         return;
     }
-    let snapshots = load_usage_snapshots(storage);
-    if snapshots.is_empty() {
+    let account_ids = candidates
+        .iter()
+        .map(|(account, _)| account.id.clone())
+        .collect::<Vec<_>>();
+    let low_quota_ids = load_low_quota_account_ids(storage, &account_ids, config);
+    if low_quota_ids.is_empty() {
         return;
     }
     let mut normal = Vec::with_capacity(candidates.len());
     let mut low_quota = Vec::new();
     for candidate in candidates.drain(..) {
-        if is_low_quota_account(&candidate.0.id, &snapshots, config) {
+        if low_quota_ids.contains(candidate.0.id.as_str()) {
             low_quota.push(candidate);
         } else {
             normal.push(candidate);
@@ -189,24 +211,20 @@ fn apply_quota_guard(
     }
 }
 
-fn load_usage_snapshots(storage: &Storage) -> HashMap<String, UsageSnapshotRecord> {
+fn load_low_quota_account_ids(
+    storage: &Storage,
+    account_ids: &[String],
+    config: QuotaGuardConfig,
+) -> std::collections::HashSet<String> {
     storage
-        .latest_usage_snapshots_by_account()
+        .low_quota_account_ids_for_accounts(
+            account_ids,
+            config.primary_min_remaining_percent,
+            config.secondary_min_remaining_percent,
+        )
         .unwrap_or_default()
         .into_iter()
-        .map(|snap| (snap.account_id.clone(), snap))
         .collect()
-}
-
-fn is_low_quota_account(
-    account_id: &str,
-    snapshots: &HashMap<String, UsageSnapshotRecord>,
-    config: QuotaGuardConfig,
-) -> bool {
-    let Some(snap) = snapshots.get(account_id) else {
-        return false;
-    };
-    is_low_quota_snapshot_at(snap, config)
 }
 
 pub(crate) fn low_quota_threshold_percent() -> f64 {
@@ -425,40 +443,25 @@ fn current_db_path() -> String {
 /// # 返回
 /// 无
 fn log_no_candidates(storage: &Storage) {
-    let accounts = storage.list_accounts().unwrap_or_default();
-    let tokens = storage.list_tokens().unwrap_or_default();
-    let snaps = storage
-        .latest_usage_snapshots_by_account()
-        .unwrap_or_default();
-    let token_map = tokens
+    let account_count = storage.account_count().unwrap_or_default();
+    let token_account_count = storage.token_account_count().unwrap_or_default();
+    let snapshot_count = storage.usage_snapshot_count().unwrap_or_default();
+    let status_counts = storage
+        .account_status_counts()
+        .unwrap_or_default()
         .into_iter()
-        .map(|token| (token.account_id.clone(), token))
-        .collect::<std::collections::HashMap<_, _>>();
-    let snap_map = snaps
-        .into_iter()
-        .map(|snap| (snap.account_id.clone(), snap))
-        .collect::<std::collections::HashMap<_, _>>();
+        .map(|item| format!("{}={}", item.status, item.count))
+        .collect::<Vec<_>>()
+        .join(",");
     let db_path = current_db_path();
     log::warn!(
-        "gateway no candidates: db_path={}, accounts={}, tokens={}, snapshots={}",
+        "gateway no candidates: db_path={}, accounts={}, token_accounts={}, snapshots={}, statuses={}",
         db_path,
-        accounts.len(),
-        token_map.len(),
-        snap_map.len()
+        account_count,
+        token_account_count,
+        snapshot_count,
+        status_counts
     );
-    for account in accounts {
-        let usage = snap_map.get(&account.id);
-        log::warn!(
-            "gateway account: id={}, status={}, has_token={}, primary=({:?}/{:?}) secondary=({:?}/{:?})",
-            account.id,
-            account.status,
-            token_map.contains_key(&account.id),
-            usage.and_then(|u| u.used_percent),
-            usage.and_then(|u| u.window_minutes),
-            usage.and_then(|u| u.secondary_used_percent),
-            usage.and_then(|u| u.secondary_window_minutes),
-        );
-    }
 }
 
 /// 函数 `reload_from_env`

@@ -1,5 +1,5 @@
 use codexmanager_core::auth::{extract_token_exp, DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
-use codexmanager_core::storage::{now_ts, Account, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, AccountTokenRefreshIssuer, Storage, Token};
 use codexmanager_core::usage::parse_usage_snapshot;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use std::collections::HashMap;
@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use crate::account_status::mark_account_unavailable_for_auth_error;
 use crate::storage_helpers::open_storage;
 use crate::usage_account_meta::{
-    build_workspace_map_from_accounts, clean_header_value, derive_account_meta, patch_account_meta,
-    patch_account_meta_cached, workspace_header_for_account,
+    clean_header_value, derive_account_meta, patch_account_meta, patch_account_meta_cached,
+    resolve_workspace_id_for_account,
 };
 use crate::usage_http::{fetch_account_subscription, fetch_usage_snapshot};
 use crate::usage_keepalive::{is_keepalive_error_ignorable, run_gateway_keepalive_once};
@@ -400,10 +400,10 @@ pub(crate) fn refresh_tokens_before_expiry_for_all_accounts() -> Result<(), Stri
     if tokens.is_empty() {
         return Ok(());
     }
-    let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
-    let account_map = accounts
+    let issuers = load_token_refresh_issuers_for_tokens(&storage, &tokens)?;
+    let issuer_map = issuers
         .iter()
-        .map(|account| (account.id.clone(), account.clone()))
+        .map(|issuer| (issuer.id.clone(), issuer.issuer.clone()))
         .collect::<HashMap<_, _>>();
 
     let default_issuer =
@@ -430,7 +430,7 @@ pub(crate) fn refresh_tokens_before_expiry_for_all_accounts() -> Result<(), Stri
         }
         due_tokens.push(TokenRefreshTask {
             issuer: resolve_token_refresh_issuer(
-                account_map.get(&token.account_id),
+                issuer_map.get(&token.account_id).map(String::as_str),
                 &default_issuer,
             ),
             client_id: client_id.clone(),
@@ -441,6 +441,19 @@ pub(crate) fn refresh_tokens_before_expiry_for_all_accounts() -> Result<(), Stri
     refreshed = refreshed.saturating_add(run_token_refresh_tasks(due_tokens)?);
     let _ = (refreshed, skipped);
     Ok(())
+}
+
+fn load_token_refresh_issuers_for_tokens(
+    storage: &Storage,
+    tokens: &[Token],
+) -> Result<Vec<AccountTokenRefreshIssuer>, String> {
+    let account_ids = tokens
+        .iter()
+        .map(|token| token.account_id.clone())
+        .collect::<Vec<_>>();
+    storage
+        .list_account_token_refresh_issuers_for_ids(&account_ids)
+        .map_err(|e| e.to_string())
 }
 
 /// 函数 `refresh_usage_for_account`
@@ -465,25 +478,10 @@ pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<(), String> 
         None => return Ok(()),
     };
 
-    let account = storage
-        .find_account_by_id(account_id)
-        .map_err(|e| e.to_string())?;
-    let workspace_id = account.as_ref().and_then(workspace_header_for_account);
-    let mut account_map = account
-        .map(|value| {
-            let mut map = HashMap::new();
-            map.insert(value.id.clone(), value);
-            map
-        })
-        .unwrap_or_default();
+    let workspace_id = resolve_workspace_id_for_account(&storage, account_id);
 
     let started_at = Instant::now();
-    let account_cache = if account_map.is_empty() {
-        None
-    } else {
-        Some(&mut account_map)
-    };
-    match refresh_usage_for_token(&storage, &token, workspace_id.as_deref(), account_cache) {
+    match refresh_usage_for_token(&storage, &token, workspace_id.as_deref(), None) {
         Ok(_) => {}
         Err(err) => {
             record_usage_refresh_metrics(false, started_at);
@@ -918,9 +916,9 @@ fn run_token_refresh_task(
     }
 }
 
-fn resolve_token_refresh_issuer(account: Option<&Account>, default_issuer: &str) -> String {
-    account
-        .map(|account| account.issuer.trim())
+fn resolve_token_refresh_issuer(account_issuer: Option<&str>, default_issuer: &str) -> String {
+    account_issuer
+        .map(str::trim)
         .filter(|issuer| !issuer.is_empty())
         .unwrap_or(default_issuer)
         .to_string()

@@ -14,6 +14,8 @@ const ENV_STORAGE_MAX_CONNECTIONS: &str = "CODEXMANAGER_STORAGE_MAX_CONNECTIONS"
 const ENV_STORAGE_MAX_IDLE_CONNECTIONS: &str = "CODEXMANAGER_STORAGE_MAX_IDLE_CONNECTIONS";
 const ENV_STORAGE_ACQUIRE_TIMEOUT_MS: &str = "CODEXMANAGER_STORAGE_ACQUIRE_TIMEOUT_MS";
 
+static INITIALIZED_STORAGE_PATHS: OnceLock<Mutex<HashMap<String, ()>>> = OnceLock::new();
+
 #[derive(Default)]
 struct StorageBucket {
     idle: Vec<Storage>,
@@ -343,6 +345,10 @@ fn storage_acquire_timeout() -> Duration {
     ))
 }
 
+fn initialized_storage_paths() -> &'static Mutex<HashMap<String, ()>> {
+    INITIALIZED_STORAGE_PATHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// 函数 `open_storage`
 ///
 /// 作者: gaohongshun
@@ -497,6 +503,15 @@ fn return_storage_to_pool(path: String, storage: Storage) {
 pub(crate) fn initialize_storage() -> Result<(), String> {
     let path = std::env::var("CODEXMANAGER_DB_PATH")
         .map_err(|_| "CODEXMANAGER_DB_PATH not set".to_string())?;
+    {
+        let initialized = crate::lock_utils::lock_recover(
+            initialized_storage_paths(),
+            "initialized_storage_paths",
+        );
+        if initialized.contains_key(&path) {
+            return Ok(());
+        }
+    }
     if !Path::new(&path).exists() {
         log::warn!("storage path missing: {}", path);
     }
@@ -505,6 +520,8 @@ pub(crate) fn initialize_storage() -> Result<(), String> {
     storage
         .init()
         .map_err(|err| format!("storage init failed: {} ({})", path, err))?;
+    crate::lock_utils::lock_recover(initialized_storage_paths(), "initialized_storage_paths")
+        .insert(path, ());
     Ok(())
 }
 
@@ -524,6 +541,8 @@ fn clear_storage_cache_for_tests() {
     let pool = storage_pool();
     let mut state = lock_storage_pool_state(pool);
     state.buckets.clear();
+    crate::lock_utils::lock_recover(initialized_storage_paths(), "initialized_storage_paths")
+        .clear();
     pool.available.notify_all();
 }
 

@@ -58,42 +58,46 @@ pub(crate) fn delete_accounts(account_ids: Vec<String>) -> Result<DeleteManyResu
         errors: Vec::new(),
     };
 
-    for account_id in unique {
-        match storage
-            .find_account_by_id(&account_id)
-            .map_err(|err| err.to_string())?
-        {
-            Some(_) => {}
-            None => {
-                result.failed += 1;
-                result.errors.push(DeleteManyError {
-                    account_id,
-                    message: "account not found".to_string(),
-                });
-                continue;
-            }
-        }
+    let existing_account_ids = storage
+        .list_account_ids_for_ids(&unique)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let existing_unique = unique
+        .iter()
+        .filter(|account_id| existing_account_ids.contains(account_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
 
-        match storage.delete_account(&account_id) {
-            Ok(_) => {
-                let _ = storage.insert_event(&Event {
-                    account_id: Some(account_id.clone()),
-                    event_type: "account_delete_many".to_string(),
-                    message: "account deleted via bulk action".to_string(),
-                    created_at: now_ts(),
-                });
-                result.deleted += 1;
-                result.deleted_account_ids.push(account_id);
-            }
-            Err(err) => {
-                result.failed += 1;
-                result.errors.push(DeleteManyError {
-                    account_id,
-                    message: err.to_string(),
-                });
-            }
+    for account_id in unique {
+        if !existing_account_ids.contains(&account_id) {
+            result.failed += 1;
+            result.errors.push(DeleteManyError {
+                account_id,
+                message: "account not found".to_string(),
+            });
+        }
+    }
+
+    if !existing_unique.is_empty() {
+        storage
+            .delete_accounts(&existing_unique)
+            .map_err(|err| err.to_string())?;
+        result.deleted = existing_unique.len();
+        for account_id in existing_unique {
+            let _ = storage.insert_event(&Event {
+                account_id: Some(account_id.clone()),
+                event_type: "account_delete_many".to_string(),
+                message: "account deleted via bulk action".to_string(),
+                created_at: now_ts(),
+            });
+            result.deleted_account_ids.push(account_id);
         }
     }
 
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "account_delete_many_tests.rs"]
+mod tests;

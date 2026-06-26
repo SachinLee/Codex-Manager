@@ -1,6 +1,9 @@
 use chrono::TimeZone;
 use codexmanager_core::auth::DEFAULT_CLIENT_ID;
-use codexmanager_core::storage::{now_ts, Account, ApiKey, Token};
+use codexmanager_core::storage::{
+    now_ts, AccountCodexProfileCandidate, AccountDirectAuthProfile, AccountTokenCandidate,
+    ApiKeyCodexProfileCandidate, Token,
+};
 use rusqlite::{backup::Backup, params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -197,6 +200,11 @@ struct BackupEntry {
     updated_at: i64,
 }
 
+struct CodexProfileSettingsSnapshot {
+    state: Option<ManagedState>,
+    backups: HashMap<String, BackupEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarkerFile {
@@ -226,14 +234,15 @@ pub(crate) fn set_config(codex_home: Option<&str>) -> Result<CodexProfileStatus,
 
 pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
     let storage = open_storage()?;
-    let tokens = storage
-        .list_tokens()
-        .map_err(|err| format!("list tokens failed: {err}"))?
-        .into_iter()
-        .map(|token| (token.account_id.clone(), token))
-        .collect::<HashMap<_, _>>();
+    let tokens = usable_account_token_candidates_by_account(
+        storage
+            .list_usable_account_token_candidates()
+            .map_err(|err| format!("list token candidates failed: {err}"))?,
+    );
+    let mut account_ids = tokens.keys().cloned().collect::<Vec<_>>();
+    account_ids.sort();
     let mut accounts = storage
-        .list_accounts()
+        .list_active_account_codex_profile_candidates_for_ids(&account_ids)
         .map_err(|err| format!("list accounts failed: {err}"))?
         .into_iter()
         .filter_map(|account| account_candidate(&account, tokens.get(&account.id)))
@@ -246,8 +255,8 @@ pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
     });
 
     let mut api_keys = storage
-        .list_api_keys()
-        .map_err(|err| format!("list api keys failed: {err}"))?
+        .list_api_key_codex_profile_candidates()
+        .map_err(|err| format!("list api key profile candidates failed: {err}"))?
         .into_iter()
         .filter_map(api_key_candidate)
         .collect::<Vec<_>>();
@@ -263,6 +272,15 @@ pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
     Ok(CodexProfileCandidates { accounts, api_keys })
 }
 
+fn usable_account_token_candidates_by_account(
+    tokens: Vec<AccountTokenCandidate>,
+) -> HashMap<String, AccountTokenCandidate> {
+    tokens
+        .into_iter()
+        .map(|token| (token.account_id.clone(), token))
+        .collect()
+}
+
 pub(crate) fn apply_direct_account(
     account_id: Option<&str>,
     codex_home: Option<&str>,
@@ -274,7 +292,7 @@ pub(crate) fn apply_direct_account(
 
     let storage = open_storage()?;
     let account = storage
-        .find_account_by_id(account_id)
+        .find_account_direct_auth_profile_by_id(account_id)
         .map_err(|err| format!("read account failed: {err}"))?
         .ok_or_else(|| "account not found".to_string())?;
     if account.status.trim() != "active" {
@@ -332,16 +350,15 @@ pub(crate) fn apply_gateway(
     let gateway_base_url = normalize_gateway_base_url(base_url);
 
     let storage = open_storage()?;
-    let api_key = storage
-        .find_api_key_by_id(api_key_id)
+    let gateway_auth = storage
+        .find_api_key_gateway_auth_by_id(api_key_id)
         .map_err(|err| format!("read api key failed: {err}"))?
         .ok_or_else(|| "api key not found".to_string())?;
-    if !is_active_api_key(&api_key) {
+    if !api_key_status_is_active(&gateway_auth.status) {
         return Err("api key is disabled".to_string());
     }
-    let secret = storage
-        .find_api_key_secret_by_id(api_key_id)
-        .map_err(|err| format!("read api key secret failed: {err}"))?
+    let secret = gateway_auth
+        .secret
         .ok_or_else(|| "api key secret not found".to_string())?;
     if secret.trim().is_empty() {
         return Err("api key secret is empty".to_string());
@@ -361,7 +378,7 @@ pub(crate) fn apply_gateway(
             profile_dir: profile_key(&profile_dir),
             mode: CodexProfileMode::Gateway,
             account_id: None,
-            api_key_id: Some(api_key.id),
+            api_key_id: Some(gateway_auth.id),
             gateway_base_url: Some(gateway_base_url),
             provider_id: PROVIDER_ID.to_string(),
             updated_at: now_ts(),
@@ -428,11 +445,11 @@ fn open_storage() -> Result<crate::storage_helpers::StorageHandle, String> {
 }
 
 fn account_candidate(
-    account: &Account,
-    token: Option<&Token>,
+    account: &AccountCodexProfileCandidate,
+    token: Option<&AccountTokenCandidate>,
 ) -> Option<CodexProfileAccountCandidate> {
     let token = token?;
-    if account.status.trim() != "active" || !token_is_usable(token) {
+    if !token_candidate_is_usable(token) {
         return None;
     }
     Some(CodexProfileAccountCandidate {
@@ -451,8 +468,8 @@ fn account_candidate(
     })
 }
 
-fn api_key_candidate(api_key: ApiKey) -> Option<CodexProfileApiKeyCandidate> {
-    if !is_active_api_key(&api_key) {
+fn api_key_candidate(api_key: ApiKeyCodexProfileCandidate) -> Option<CodexProfileApiKeyCandidate> {
+    if !api_key_status_is_active(&api_key.status) {
         return None;
     }
     Some(CodexProfileApiKeyCandidate {
@@ -464,8 +481,12 @@ fn api_key_candidate(api_key: ApiKey) -> Option<CodexProfileApiKeyCandidate> {
     })
 }
 
-fn is_active_api_key(api_key: &ApiKey) -> bool {
-    !api_key.status.trim().eq_ignore_ascii_case("disabled")
+fn api_key_status_is_active(status: &str) -> bool {
+    !status.trim().eq_ignore_ascii_case("disabled")
+}
+
+fn token_candidate_is_usable(token: &AccountTokenCandidate) -> bool {
+    token.has_access_token && token.has_refresh_token
 }
 
 fn token_is_usable(token: &Token) -> bool {
@@ -644,9 +665,9 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
     let warnings = ensure_managed_profile_migrated(profile_dir);
     let stats = history_backup_stats(&paths.history_backup_root);
     let key = profile_key(profile_dir);
-    let backup_map = load_backups();
+    let settings = load_profile_settings_snapshot();
     let marker = read_marker(&paths.marker_path).ok();
-    let persisted = load_state().filter(|state| state.profile_dir == key);
+    let persisted = settings.state.filter(|state| state.profile_dir == key);
     let detected_mode = detect_mode(&auth_path, &config_path, marker.as_ref());
     let state = marker
         .map(|marker| ManagedState {
@@ -680,7 +701,7 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             .as_ref()
             .and_then(|state| state.gateway_base_url.clone()),
         provider_id: PROVIDER_ID.to_string(),
-        has_backup: backup_map.contains_key(&key),
+        has_backup: settings.backups.contains_key(&key),
         last_applied_at: state.as_ref().map(|state| state.updated_at),
         profile_writable: profile_writable(profile_dir),
         error: None,
@@ -1691,7 +1712,10 @@ fn profile_key(profile_dir: &Path) -> String {
     profile_dir.to_string_lossy().to_string()
 }
 
-fn build_direct_auth_json(account: &Account, token: &Token) -> Result<String, String> {
+fn build_direct_auth_json(
+    account: &AccountDirectAuthProfile,
+    token: &Token,
+) -> Result<String, String> {
     let account_id = account
         .chatgpt_account_id
         .as_deref()
@@ -1850,6 +1874,19 @@ fn load_backups() -> HashMap<String, BackupEntry> {
         .unwrap_or_default()
 }
 
+fn load_profile_settings_snapshot() -> CodexProfileSettingsSnapshot {
+    let settings = crate::app_settings::list_app_settings_map();
+    CodexProfileSettingsSnapshot {
+        state: settings
+            .get(APP_SETTING_STATE_KEY)
+            .and_then(|value| serde_json::from_str(value).ok()),
+        backups: settings
+            .get(APP_SETTING_BACKUPS_KEY)
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default(),
+    }
+}
+
 fn save_backups(backups: &HashMap<String, BackupEntry>) -> Result<(), String> {
     let value =
         serde_json::to_string(backups).map_err(|err| format!("serialize backups failed: {err}"))?;
@@ -1920,375 +1957,5 @@ fn temp_file_path(parent: &Path, target: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rusqlite::Connection;
-
-    fn temp_profile(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        std::env::temp_dir().join(format!("codexmanager-{name}-{unique}"))
-    }
-
-    fn cleanup_profile(dir: &Path) {
-        if let Ok(root) = managed_profile_root(dir) {
-            let _ = fs::remove_dir_all(root);
-        }
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    fn write_test_rollout(dir: &Path, thread_id: &str, provider: &str) -> (PathBuf, String) {
-        let rollout_dir = dir.join("sessions").join("2026").join("06").join("06");
-        fs::create_dir_all(&rollout_dir).expect("mkdir rollout");
-        let path = rollout_dir.join(format!("rollout-2026-06-06T00-00-00-{thread_id}.jsonl"));
-        let event_line = r#"{"timestamp":"2026-06-06T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"keep me"}}"#.to_string();
-        let content = format!(
-            "{{\"timestamp\":\"2026-06-06T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{thread_id}\",\"model_provider\":\"{provider}\",\"cwd\":\"/tmp\"}}}}\n{event_line}\n"
-        );
-        fs::write(&path, content).expect("write rollout");
-        (path, event_line)
-    }
-
-    fn create_state_db(dir: &Path, thread_id: &str, provider: &str) {
-        let conn = Connection::open(dir.join(STATE_DB_FILE)).expect("open sqlite");
-        conn.execute(
-            "CREATE TABLE threads (
-                id TEXT PRIMARY KEY,
-                model_provider TEXT,
-                title TEXT,
-                updated_at INTEGER,
-                updated_at_ms INTEGER
-            )",
-            [],
-        )
-        .expect("create threads");
-        conn.execute(
-            "INSERT INTO threads (id, model_provider, title, updated_at, updated_at_ms)
-             VALUES (?1, ?2, 'Thread title', 1770000000, 1770000000000)",
-            params![thread_id, provider],
-        )
-        .expect("insert thread");
-    }
-
-    fn sqlite_provider(dir: &Path, thread_id: &str) -> String {
-        let conn = Connection::open(dir.join(STATE_DB_FILE)).expect("open sqlite");
-        conn.query_row(
-            "SELECT model_provider FROM threads WHERE id = ?1",
-            params![thread_id],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("read provider")
-    }
-
-    #[test]
-    fn direct_config_removes_only_managed_provider() {
-        let input = r#"
-model_provider = "cm"
-model = "gpt-5.4"
-
-[model_providers.cm]
-name = "CodexManager"
-base_url = "http://localhost:48760/v1"
-wire_api = "responses"
-
-[model_providers.other]
-name = "Other"
-base_url = "https://example.test/v1"
-"#;
-
-        let output = patch_config_for_direct(Some(input.to_string())).expect("patch direct");
-
-        assert!(!output.contains("model_provider = \"cm\""));
-        assert!(!output.contains("[model_providers.cm]"));
-        assert!(output.contains("[model_providers.other]"));
-        assert!(output.contains("model = \"gpt-5.4\""));
-    }
-
-    #[test]
-    fn gateway_config_sets_managed_provider_and_preserves_other_values() {
-        let input = r#"
-model = "gpt-5.4"
-
-[model_providers.other]
-name = "Other"
-"#;
-
-        let output = patch_config_for_gateway(Some(input.to_string()), "http://127.0.0.1:48770/v1")
-            .expect("patch gateway");
-
-        assert!(output.contains("model_provider = \"cm\""));
-        assert!(output.contains("[model_providers.cm]"));
-        assert!(output.contains("base_url = \"http://127.0.0.1:48770/v1\""));
-        assert!(output.contains("wire_api = \"responses\""));
-        assert!(output.contains("[model_providers.other]"));
-    }
-
-    #[test]
-    fn invalid_toml_is_rejected() {
-        assert!(patch_config_for_gateway(Some("bad = [".to_string()), "http://x/v1").is_err());
-    }
-
-    #[test]
-    fn restore_optional_file_removes_files_that_were_missing() {
-        let dir = temp_profile("restore-missing");
-        fs::create_dir_all(&dir).expect("mkdir");
-        let path = dir.join("auth.json");
-        fs::write(&path, "{}").expect("write");
-
-        restore_optional_file(&path, None).expect("restore missing");
-
-        assert!(!path.exists());
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn auth_json_shapes_match_codex_modes() {
-        let now = now_ts();
-        let account = Account {
-            id: "acc-1".to_string(),
-            label: "Account".to_string(),
-            issuer: "https://auth.openai.com".to_string(),
-            chatgpt_account_id: Some("chatgpt-1".to_string()),
-            workspace_id: None,
-            group_name: None,
-            sort: 0,
-            status: "active".to_string(),
-            created_at: now,
-            updated_at: now,
-        };
-        let token = Token {
-            account_id: "acc-1".to_string(),
-            id_token: "id-token".to_string(),
-            access_token: "access-token".to_string(),
-            refresh_token: "refresh-token".to_string(),
-            api_key_access_token: None,
-            last_refresh: now,
-        };
-
-        let direct = build_direct_auth_json(&account, &token).expect("direct auth");
-        let gateway = build_gateway_auth_json("cm-key").expect("gateway auth");
-
-        assert!(auth_json_has_tokens(&direct));
-        assert!(!auth_json_is_gateway(&direct));
-        assert!(auth_json_is_gateway(&gateway));
-    }
-
-    #[test]
-    fn write_profile_files_uses_internal_marker() {
-        let dir = temp_profile("internal-marker");
-        let state = ManagedState {
-            profile_dir: profile_key(&dir),
-            mode: CodexProfileMode::Gateway,
-            account_id: None,
-            api_key_id: Some("key-1".to_string()),
-            gateway_base_url: Some("http://localhost:48760/v1".to_string()),
-            provider_id: PROVIDER_ID.to_string(),
-            updated_at: now_ts(),
-        };
-
-        write_profile_files(&dir, "{}", "", state).expect("write profile");
-
-        let paths = managed_profile_paths(&dir).expect("paths");
-        assert!(paths.marker_path.exists());
-        assert!(!dir.join(MARKER_FILE).exists());
-        let status = status_for_profile(&dir).expect("status");
-        assert!(matches!(status.mode, CodexProfileMode::Gateway));
-        assert_eq!(
-            status.marker_path,
-            paths.marker_path.to_string_lossy().to_string()
-        );
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn legacy_marker_migrates_to_internal_marker() {
-        let dir = temp_profile("legacy-marker");
-        fs::create_dir_all(&dir).expect("mkdir profile");
-        let marker = MarkerFile {
-            writer: "codexmanager".to_string(),
-            mode: CodexProfileMode::DirectAccount,
-            account_id: Some("acc-1".to_string()),
-            api_key_id: None,
-            gateway_base_url: None,
-            provider_id: PROVIDER_ID.to_string(),
-            updated_at: now_ts(),
-        };
-        fs::write(
-            dir.join(MARKER_FILE),
-            serde_json::to_string_pretty(&marker).expect("marker json"),
-        )
-        .expect("write legacy marker");
-
-        let status = status_for_profile(&dir).expect("status");
-
-        let paths = managed_profile_paths(&dir).expect("paths");
-        assert!(paths.marker_path.exists());
-        assert!(!paths.legacy_marker_path.exists());
-        assert!(matches!(status.mode, CodexProfileMode::DirectAccount));
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn legacy_history_backups_migrate_and_are_pruned() {
-        let dir = temp_profile("legacy-history-backups");
-        let legacy_root = dir.join(HISTORY_BACKUP_DIR);
-        fs::create_dir_all(&legacy_root).expect("mkdir legacy root");
-        for index in 0..5 {
-            let backup_dir = legacy_root.join(format!("backup-{index}"));
-            fs::create_dir_all(&backup_dir).expect("mkdir legacy backup");
-            fs::write(backup_dir.join("file.txt"), format!("backup-{index}"))
-                .expect("write legacy backup");
-        }
-
-        let status = status_for_profile(&dir).expect("status");
-
-        let paths = managed_profile_paths(&dir).expect("paths");
-        assert!(!paths.legacy_history_backup_root.exists());
-        assert!(paths.history_backup_root.exists());
-        assert_eq!(status.history_backup_count, MAX_HISTORY_BACKUPS_PER_PROFILE);
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn history_repair_aligns_direct_and_gateway_providers() {
-        let dir = temp_profile("history-provider");
-        fs::create_dir_all(&dir).expect("mkdir profile");
-        let thread_id = "thread-provider";
-        let (rollout_path, event_line) = write_test_rollout(&dir, thread_id, PROVIDER_ID);
-        create_state_db(&dir, thread_id, PROVIDER_ID);
-        fs::write(
-            dir.join(SESSION_INDEX_FILE),
-            format!(
-                "{{\"id\":\"{thread_id}\",\"thread_name\":\"Thread title\",\"updated_at\":\"2026-06-06T00:00:00Z\"}}\n"
-            ),
-        )
-        .expect("write session index");
-
-        let direct = repair_history_for_provider(&dir, DEFAULT_HISTORY_PROVIDER_ID);
-
-        assert!(direct.warnings.is_empty(), "{:?}", direct.warnings);
-        assert_eq!(direct.changed_rollout_file_count, 1);
-        assert_eq!(direct.updated_sqlite_row_count, 1);
-        assert_eq!(
-            sqlite_provider(&dir, thread_id),
-            DEFAULT_HISTORY_PROVIDER_ID
-        );
-        let direct_rollout = fs::read_to_string(&rollout_path).expect("read direct rollout");
-        assert!(direct_rollout.contains("\"model_provider\":\"openai\""));
-        assert!(direct_rollout.contains(&event_line));
-        assert!(!dir.join(HISTORY_BACKUP_DIR).exists());
-        let direct_backup = direct.backup_dir.as_ref().expect("direct backup dir");
-        assert!(direct_backup.contains(MANAGED_PROFILE_ROOT_DIR));
-        let direct_backup_path = PathBuf::from(direct_backup);
-        assert!(direct_backup_path.join(STATE_DB_FILE).exists());
-        assert!(!direct_backup_path
-            .join(format!("{STATE_DB_FILE}-wal"))
-            .exists());
-        assert!(!direct_backup_path
-            .join(format!("{STATE_DB_FILE}-shm"))
-            .exists());
-        assert!(direct_backup_path
-            .join(HISTORY_BACKUP_MANIFEST_FILE)
-            .exists());
-
-        let gateway = repair_history_for_provider(&dir, PROVIDER_ID);
-
-        assert!(gateway.warnings.is_empty(), "{:?}", gateway.warnings);
-        assert_eq!(gateway.changed_rollout_file_count, 1);
-        assert_eq!(gateway.updated_sqlite_row_count, 1);
-        assert_eq!(sqlite_provider(&dir, thread_id), PROVIDER_ID);
-        let gateway_rollout = fs::read_to_string(&rollout_path).expect("read gateway rollout");
-        assert!(gateway_rollout.contains("\"model_provider\":\"cm\""));
-        assert!(gateway_rollout.contains(&event_line));
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn history_repair_appends_missing_session_index_once() {
-        let dir = temp_profile("history-index");
-        fs::create_dir_all(&dir).expect("mkdir profile");
-        let thread_id = "thread-index";
-        create_state_db(&dir, thread_id, DEFAULT_HISTORY_PROVIDER_ID);
-
-        let first = repair_history_for_provider(&dir, DEFAULT_HISTORY_PROVIDER_ID);
-        let second = repair_history_for_provider(&dir, DEFAULT_HISTORY_PROVIDER_ID);
-
-        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
-        assert_eq!(first.added_session_index_entry_count, 1);
-        assert!(second.warnings.is_empty(), "{:?}", second.warnings);
-        assert_eq!(second.added_session_index_entry_count, 0);
-        let index = fs::read_to_string(dir.join(SESSION_INDEX_FILE)).expect("read index");
-        assert_eq!(index.lines().count(), 1);
-        assert!(index.contains(thread_id));
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn history_repair_handles_sqlite_with_only_updated_at_ms() {
-        let dir = temp_profile("history-index-updated-ms-only");
-        fs::create_dir_all(&dir).expect("mkdir profile");
-        let thread_id = "thread-index-ms";
-        let conn = Connection::open(dir.join(STATE_DB_FILE)).expect("open sqlite");
-        conn.execute(
-            "CREATE TABLE threads (
-                id TEXT PRIMARY KEY,
-                model_provider TEXT,
-                title TEXT,
-                updated_at_ms INTEGER
-            )",
-            [],
-        )
-        .expect("create threads");
-        conn.execute(
-            "INSERT INTO threads (id, model_provider, title, updated_at_ms)
-             VALUES (?1, ?2, 'Thread title', 1770000000000)",
-            params![thread_id, DEFAULT_HISTORY_PROVIDER_ID],
-        )
-        .expect("insert thread");
-        drop(conn);
-
-        let summary = repair_history_for_provider(&dir, DEFAULT_HISTORY_PROVIDER_ID);
-
-        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
-        assert_eq!(summary.added_session_index_entry_count, 1);
-        let index = fs::read_to_string(dir.join(SESSION_INDEX_FILE)).expect("read index");
-        assert!(index.contains(thread_id));
-        assert!(index.contains("2026"));
-        cleanup_profile(&dir);
-    }
-
-    #[test]
-    fn history_repair_reports_sqlite_lock_as_warning() {
-        let dir = temp_profile("history-locked");
-        fs::create_dir_all(&dir).expect("mkdir profile");
-        let thread_id = "thread-locked";
-        create_state_db(&dir, thread_id, PROVIDER_ID);
-        fs::write(
-            dir.join(SESSION_INDEX_FILE),
-            format!(
-                "{{\"id\":\"{thread_id}\",\"thread_name\":\"Thread title\",\"updated_at\":\"2026-06-06T00:00:00Z\"}}\n"
-            ),
-        )
-        .expect("write session index");
-        let lock_conn = Connection::open(dir.join(STATE_DB_FILE)).expect("open lock sqlite");
-        lock_conn
-            .execute("BEGIN IMMEDIATE", [])
-            .expect("begin immediate");
-
-        let summary = repair_history_for_provider(&dir, DEFAULT_HISTORY_PROVIDER_ID);
-
-        assert_eq!(summary.updated_sqlite_row_count, 0);
-        assert!(
-            summary
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("update Codex history sqlite provider failed")),
-            "{:?}",
-            summary.warnings
-        );
-        drop(lock_conn);
-        cleanup_profile(&dir);
-    }
-}
+#[path = "codex_profile_tests.rs"]
+mod tests;

@@ -1,0 +1,259 @@
+use super::CandidateExecutionState;
+use bytes::Bytes;
+use codexmanager_core::storage::Account;
+
+fn sample_setup() -> super::super::request_setup::UpstreamRequestSetup {
+    super::super::request_setup::UpstreamRequestSetup {
+        upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        upstream_fallback_base: None,
+        url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
+        url_alt: None,
+        candidate_count: 1,
+        account_max_inflight: 1,
+        anthropic_has_thread_anchor: false,
+        has_sticky_fallback_session: false,
+        has_sticky_fallback_conversation: false,
+        has_body_encrypted_content: false,
+        conversation_routing: None,
+        route_strategy_for_log: "ordered",
+        route_source_for_log: "route_strategy",
+    }
+}
+
+/// 函数 `body_for_attempt_rewrites_model_override`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-04-02
+///
+/// # 参数
+/// 无
+///
+/// # 返回
+/// 无
+#[test]
+fn body_for_attempt_rewrites_model_override() {
+    let mut state = CandidateExecutionState::default();
+    let body = Bytes::from_static(br#"{"model":"gpt-5.4","input":"hello"}"#);
+    let setup = sample_setup();
+
+    let actual = state.body_for_attempt(
+        "/v1/responses",
+        &body,
+        false,
+        &setup,
+        Some("gpt-5.2"),
+        Some("thread-2"),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(actual.as_ref()).expect("parse rewritten body");
+
+    assert_eq!(
+        value.get("model").and_then(serde_json::Value::as_str),
+        Some("gpt-5.2")
+    );
+    assert_eq!(
+        value
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        None
+    );
+}
+
+#[test]
+fn body_for_attempt_keeps_native_codex_retry_shape() {
+    let _guard = crate::test_env_guard();
+    let mut state = CandidateExecutionState::default();
+    let body =
+        Bytes::from_static(br#"{"model":"gpt-5.4","input":"hello","stream":false,"store":true}"#);
+    let setup = sample_setup();
+
+    let actual = state.body_for_attempt(
+        "/v1/responses",
+        &body,
+        false,
+        &setup,
+        Some("gpt-5.2"),
+        Some("thread-2"),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(actual.as_ref()).expect("parse rewritten body");
+
+    assert_eq!(
+        value.get("model").and_then(serde_json::Value::as_str),
+        Some("gpt-5.2")
+    );
+    assert_eq!(
+        value.get("stream").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        value.get("store").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(value.get("prompt_cache_key").is_none());
+    assert!(value.get("instructions").is_none());
+    assert!(value.get("tool_choice").is_none());
+    assert!(value.get("include").is_none());
+}
+
+#[test]
+fn body_for_attempt_injects_local_thread_anchor_without_compat_shape() {
+    let mut state = CandidateExecutionState::default();
+    let body =
+        Bytes::from_static(br#"{"model":"gpt-5.4","input":"hello","stream":false,"store":true}"#);
+    let mut setup = sample_setup();
+    setup.has_sticky_fallback_conversation = true;
+
+    let actual = state.body_for_attempt(
+        "/v1/responses",
+        &body,
+        false,
+        &setup,
+        Some("gpt-5.2"),
+        Some("thread-2"),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(actual.as_ref()).expect("parse rewritten body");
+
+    assert_eq!(
+        value.get("model").and_then(serde_json::Value::as_str),
+        Some("gpt-5.2")
+    );
+    assert_eq!(
+        value
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        Some("thread-2")
+    );
+    assert_eq!(
+        value.get("stream").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        value.get("store").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(value.get("instructions").is_none());
+    assert!(value.get("tool_choice").is_none());
+    assert!(value.get("include").is_none());
+}
+
+#[test]
+fn body_for_attempt_preserves_existing_prompt_cache_key() {
+    let mut state = CandidateExecutionState::default();
+    let body = Bytes::from_static(
+        br#"{"model":"gpt-5.4","input":"hello","prompt_cache_key":"client-thread"}"#,
+    );
+    let setup = sample_setup();
+
+    let actual = state.body_for_attempt(
+        "/v1/responses",
+        &body,
+        false,
+        &setup,
+        None,
+        Some("thread-from-conversation"),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(actual.as_ref()).expect("parse rewritten body");
+
+    assert_eq!(
+        value
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        Some("client-thread")
+    );
+}
+
+#[test]
+fn compact_body_for_attempt_preserves_existing_prompt_cache_key() {
+    let mut state = CandidateExecutionState::default();
+    let body = Bytes::from_static(
+        br#"{"model":"gpt-5.5","input":"hello","prompt_cache_key":"client-thread"}"#,
+    );
+    let mut setup = sample_setup();
+    setup.has_sticky_fallback_conversation = true;
+
+    let actual = state.body_for_attempt(
+        "/v1/responses/compact",
+        &body,
+        true,
+        &setup,
+        None,
+        Some("thread-from-conversation"),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(actual.as_ref()).expect("parse rewritten body");
+
+    assert_eq!(
+        value
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        Some("client-thread")
+    );
+}
+
+#[test]
+fn strip_session_affinity_preserves_same_workspace_when_thread_anchor_exists() {
+    let mut state = CandidateExecutionState::default();
+    let first = Account {
+        id: "acc-1".to_string(),
+        label: "acc-1".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: Some("ws-same".to_string()),
+        group_name: None,
+        sort: 1,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+    let second = Account {
+        id: "acc-2".to_string(),
+        label: "acc-2".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: Some("ws-same".to_string()),
+        group_name: None,
+        sort: 2,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    assert!(!state.strip_session_affinity(&first, 0, true));
+    assert!(!state.strip_session_affinity(&second, 1, true));
+}
+
+#[test]
+fn strip_session_affinity_strips_cross_workspace_when_thread_anchor_exists() {
+    let mut state = CandidateExecutionState::default();
+    let first = Account {
+        id: "acc-1".to_string(),
+        label: "acc-1".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: Some("ws-a".to_string()),
+        group_name: None,
+        sort: 1,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+    let second = Account {
+        id: "acc-2".to_string(),
+        label: "acc-2".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: Some("ws-b".to_string()),
+        group_name: None,
+        sort: 2,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    assert!(!state.strip_session_affinity(&first, 0, true));
+    assert!(state.strip_session_affinity(&second, 1, true));
+}

@@ -1,19 +1,14 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogDescription, 
-  DialogHeader, 
-  DialogTitle
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
-import { 
-  Tabs, 
-  TabsContent, 
-  TabsList, 
-  TabsTrigger 
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
@@ -28,7 +23,14 @@ import { useAppStore } from "@/lib/store/useAppStore";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import { FileUp, Info, LogIn, Clipboard, ExternalLink, Hash } from "lucide-react";
+import {
+  FileUp,
+  Info,
+  LogIn,
+  Clipboard,
+  ExternalLink,
+  Hash,
+} from "lucide-react";
 
 interface AddAccountModalProps {
   open: boolean;
@@ -54,9 +56,10 @@ function delay(ms: number): Promise<void> {
  * 返回函数执行结果
  */
 function pickImportTokenField(record: unknown, keys: string[]): string {
-  const source = record && typeof record === "object" && !Array.isArray(record)
-    ? (record as Record<string, unknown>)
-    : null;
+  const source =
+    record && typeof record === "object" && !Array.isArray(record)
+      ? (record as Record<string, unknown>)
+      : null;
   if (!source) return "";
   for (const key of keys) {
     const value = source[key];
@@ -90,9 +93,15 @@ function normalizeSingleImportRecord(record: unknown): unknown {
     return record;
   }
 
-  const accessToken = pickImportTokenField(record, ["access_token", "accessToken"]);
+  const accessToken = pickImportTokenField(record, [
+    "access_token",
+    "accessToken",
+  ]);
   const idToken = pickImportTokenField(record, ["id_token", "idToken"]);
-  const refreshToken = pickImportTokenField(record, ["refresh_token", "refreshToken"]);
+  const refreshToken = pickImportTokenField(record, [
+    "refresh_token",
+    "refreshToken",
+  ]);
   if (!accessToken) {
     return record;
   }
@@ -193,10 +202,15 @@ function buildBulkImportContents(rawContent: string): string[] {
  * # 返回
  * 返回函数执行结果
  */
-function getBulkImportErrorMessage(error: unknown, t: (key: string) => string): string {
+function getBulkImportErrorMessage(
+  error: unknown,
+  t: (key: string) => string,
+): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes("invalid JSON object stream")) {
-    return t("导入内容格式不正确。JSON 账号内容请整段粘贴；普通 Token 才按每行一个导入。");
+    return t(
+      "导入内容格式不正确。JSON 账号内容请整段粘贴；普通 Token 才按每行一个导入。",
+    );
   }
   if (message.includes("invalid JSON array")) {
     return t("JSON 数组格式不正确，请检查括号和逗号后重试。");
@@ -272,7 +286,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       queryClient.invalidateQueries({ queryKey: ["accounts"] }),
       queryClient.invalidateQueries({ queryKey: ["usage"] }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
-      queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY }),
+      queryClient.invalidateQueries({
+        queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,
+      }),
     ]);
   };
 
@@ -321,7 +337,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
         const currentAccountId = currentAccountResult.account?.accountId || "";
         if (
           currentAccountId &&
-          latestAccounts.items.some((account) => account.id === currentAccountId)
+          latestAccounts.items.some(
+            (account) => account.id === currentAccountId,
+          )
         ) {
           return currentAccountId;
         }
@@ -366,7 +384,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
     toast.info(
       canAccessManagementRpc
         ? `${t("服务未连接，暂时无法")} ${t(actionLabel)}`
-        : t("当前运行环境暂不支持账号管理")
+        : t("当前运行环境暂不支持账号管理"),
     );
     return false;
   };
@@ -399,13 +417,16 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
           return;
         }
 
-        const status = String(result.status || "").trim().toLowerCase();
+        const status = String(result.status || "")
+          .trim()
+          .toLowerCase();
         if (status === "success") {
           setLoginHint(t("授权完成，正在同步账号列表..."));
           try {
             await completeLoginSuccess(t("登录成功"));
           } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message =
+              error instanceof Error ? error.message : String(error);
             setIsPollingLogin(false);
             setLoginHint(`${t("登录成功，但账号同步失败")}：${message}`);
             toast.error(`${t("登录成功，但账号同步失败")}：${message}`);
@@ -455,7 +476,10 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
     setLoginHint("");
     try {
       const result = await accountClient.startLogin({
-        tags: tags.split(",").map(t => t.trim()).filter(Boolean),
+        tags: tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
         note,
       });
       setLoginUrl(result.authUrl || result.verificationUrl || "");
@@ -468,7 +492,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       toast.success(
         result.userCode
           ? t("已生成设备登录信息，请按提示完成授权")
-          : t("已生成登录链接，请在浏览器中完成授权")
+          : t("已生成登录链接，请在浏览器中完成授权"),
       );
       if (result.loginId) {
         void waitForLogin(result.loginId, pendingHint);
@@ -476,7 +500,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
         setLoginHint(t("未返回登录任务编号，请完成授权后使用手动解析。"));
       }
     } catch (err: unknown) {
-      toast.error(`${t("启动登录失败")}: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(
+        `${t("启动登录失败")}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       setIsLoading(false);
     }
@@ -510,13 +536,17 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       const state = url.searchParams.get("state") || "";
       const code = url.searchParams.get("code") || "";
       const redirectUri = `${url.origin}${url.pathname}`;
-      
+
       await accountClient.completeLogin(state, code, redirectUri);
       setLoginHint(t("授权完成，正在同步账号列表..."));
       await completeLoginSuccess(t("登录成功"));
     } catch (err: unknown) {
-      setLoginHint(`${t("解析失败")}: ${err instanceof Error ? err.message : String(err)}`);
-      toast.error(`${t("解析失败")}: ${err instanceof Error ? err.message : String(err)}`);
+      setLoginHint(
+        `${t("解析失败")}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      toast.error(
+        `${t("解析失败")}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       setIsLoading(false);
     }
@@ -548,12 +578,16 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       const created = Number(result?.created || 0);
       const updated = Number(result?.updated || 0);
       const failed = Number(result?.failed || 0);
-      toast.success(`${t("导入完成")}：${t("共")}${total}，${t("新增")}${created}，${t("更新")}${updated}，${t("失败")}${failed}`);
+      toast.success(
+        `${t("导入完成")}：${t("共")}${total}，${t("新增")}${created}，${t("更新")}${updated}，${t("失败")}${failed}`,
+      );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["accounts"] }),
         queryClient.invalidateQueries({ queryKey: ["usage"] }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
-        queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY }),
+        queryClient.invalidateQueries({
+          queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,
+        }),
       ]);
       resetModalState();
       onOpenChange(false);
@@ -618,7 +652,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                   <Info />
                   <AlertDescription>
                     {canAccessManagementRpc
-                      ? t("服务未连接，账号授权与回调解析暂不可用；连接恢复后可继续操作。")
+                      ? t(
+                          "服务未连接，账号授权与回调解析暂不可用；连接恢复后可继续操作。",
+                        )
                       : unavailableMessage}
                   </AlertDescription>
                 </Alert>
@@ -629,7 +665,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                   placeholder={t("例如：高频, 团队A")}
                   value={tags}
                   disabled={!isServiceReady}
-                  onChange={e => setTags(e.target.value)}
+                  onChange={(e) => setTags(e.target.value)}
                 />
               </div>
               <div className="space-y-2">
@@ -638,7 +674,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                   placeholder={t("例如：主号 / 测试号")}
                   value={note}
                   disabled={!isServiceReady}
-                  onChange={e => setNote(e.target.value)}
+                  onChange={(e) => setNote(e.target.value)}
                 />
               </div>
 
@@ -652,7 +688,11 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                 </Button>
                 {loginUrl && (
                   <div className="mt-3 p-2 rounded-lg bg-primary/5 border border-primary/10 flex items-center gap-2 animate-in fade-in zoom-in duration-300">
-                    <Input value={loginUrl} readOnly className="font-mono text-[10px] h-8 bg-transparent" />
+                    <Input
+                      value={loginUrl}
+                      readOnly
+                      className="font-mono text-[10px] h-8 bg-transparent"
+                    />
                     <Button
                       variant="ghost"
                       size="sm"
@@ -665,7 +705,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                   </div>
                 )}
                 {loginHint ? (
-                  <p className="mt-2 text-xs text-muted-foreground">{loginHint}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {loginHint}
+                  </p>
                 ) : null}
               </div>
 
@@ -673,20 +715,23 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
               <div className="space-y-3">
                 <div className="space-y-2">
                   <Label className="text-xs flex items-center gap-1.5 text-muted-foreground">
-                    <Hash className="h-3 w-3" /> {t("手动解析回调（当本地 48760 端口占用时）")}
+                    <Hash className="h-3 w-3" />{" "}
+                    {t("手动解析回调（当本地 48760 端口占用时）")}
                   </Label>
                   <div className="flex gap-2">
-                    <Input 
-                      placeholder={t("粘贴浏览器跳转后的完整回调 URL（包含 state 和 code）")} 
+                    <Input
+                      placeholder={t(
+                        "粘贴浏览器跳转后的完整回调 URL（包含 state 和 code）",
+                      )}
                       value={manualCallback}
                       disabled={!isServiceReady}
-                      onChange={e => setManualCallback(e.target.value)}
-                      className="font-mono text-[10px] h-9" 
+                      onChange={(e) => setManualCallback(e.target.value)}
+                      className="font-mono text-[10px] h-9"
                     />
-                    <Button 
-                      variant="secondary" 
-                      onClick={handleManualCallback} 
-                      disabled={!isServiceReady || isLoading} 
+                    <Button
+                      variant="secondary"
+                      onClick={handleManualCallback}
+                      disabled={!isServiceReady || isLoading}
                       className="h-9 px-4 shrink-0"
                     >
                       {t("解析")}
@@ -704,9 +749,13 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                 </Alert>
               ) : null}
               <div className="space-y-2">
-                <Label>{t("账号数据（Token 可每行一个，JSON 可整段粘贴）")}</Label>
-                <Textarea 
-                  placeholder={t("粘贴账号数据。普通 Token 可每行一个；完整 JSON / JSON 数组请整段粘贴。")}
+                <Label>
+                  {t("账号数据（Token 可每行一个，JSON 可整段粘贴）")}
+                </Label>
+                <Textarea
+                  placeholder={t(
+                    "粘贴账号数据。普通 Token 可每行一个；完整 JSON / JSON 数组请整段粘贴。",
+                  )}
                   className="min-h-[250px] resize-none overflow-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] font-mono text-[10px] leading-4"
                   value={bulkContent}
                   disabled={!isServiceReady}
@@ -716,7 +765,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
               <Alert>
                 <Info />
                 <AlertDescription className="text-xs leading-relaxed">
-                  {t("支持格式：ChatGPT 账号（Refresh Token）、Claude Session 等。系统将自动识别格式并导入。")}
+                  {t(
+                    "支持格式：ChatGPT 账号（Refresh Token）系统将自动识别格式并导入。",
+                  )}
                 </AlertDescription>
               </Alert>
               <Button

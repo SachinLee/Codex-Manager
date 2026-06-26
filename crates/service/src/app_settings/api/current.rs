@@ -2,36 +2,36 @@ use crate::app_settings::{list_app_settings_map, listener_bind_addr_for_mode};
 use crate::initialize_storage_if_needed;
 use crate::{current_web_auth_mode, distribution_enabled, web_access_password_configured};
 use chrono::Local;
-use codexmanager_core::rpc::types::ModelInfo;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::author_links::{
     default_author_server_recommendations, default_author_sponsors, load_author_link_items,
     serialize_author_link_items,
 };
 use super::{
-    current_background_tasks_snapshot_value, current_close_to_tray_on_close_setting,
-    current_codex_cli_guide_dismissed, current_env_overrides, current_gateway_account_max_inflight,
-    current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
+    current_background_tasks_snapshot_value, current_env_overrides,
+    current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
+    current_gateway_free_account_max_model, current_gateway_model_catalog_auto_remote_fetch,
     current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
     current_gateway_residency_requirement, current_gateway_sse_keepalive_interval_ms,
     current_gateway_upstream_stream_timeout_ms, current_gateway_upstream_total_timeout_ms,
-    current_gateway_user_agent_version, current_lightweight_mode_on_close_to_tray_setting,
-    current_saved_service_addr, current_service_bind_mode, current_ui_appearance_preset,
-    current_ui_locale, current_ui_low_transparency_enabled, current_ui_theme,
-    current_update_auto_check_enabled, default_gateway_originator,
-    default_gateway_user_agent_version, env_override_catalog_value, env_override_reserved_keys,
-    env_override_unsupported_keys, residency_requirement_options, save_env_overrides_value,
+    current_gateway_user_agent_version, current_saved_service_addr, current_service_bind_mode,
+    default_gateway_originator, default_gateway_user_agent_version, env_override_catalog_value,
+    env_override_reserved_keys, env_override_unsupported_keys, normalize_optional_text,
+    normalize_ui_appearance_preset, normalize_ui_locale, normalize_ui_theme,
+    parse_bool_with_default, residency_requirement_options, save_env_overrides_value,
     save_persisted_app_setting, save_persisted_bool_setting, sync_runtime_settings_from_storage,
     APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
-    APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
-    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
-    APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
-    APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
+    APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+    APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
+    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+    APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
     APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
     APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY, APP_SETTING_SERVICE_ADDR_KEY,
@@ -79,6 +79,13 @@ fn normalize_service_bind_mode_value(raw: Option<&str>) -> &'static str {
     }
 }
 
+fn setting_bool(settings: &HashMap<String, String>, key: &str, default: bool) -> bool {
+    settings
+        .get(key)
+        .map(|value| parse_bool_with_default(value, default))
+        .unwrap_or(default)
+}
+
 fn current_runtime_time_zone_value() -> Value {
     let env_tz = std::env::var("TZ")
         .ok()
@@ -117,20 +124,59 @@ pub(super) fn current_app_settings_value(
     close_to_tray_supported: Option<bool>,
     service_listen_mode_override: Option<&str>,
 ) -> Result<Value, String> {
+    current_app_settings_value_inner(
+        close_to_tray_on_close,
+        close_to_tray_supported,
+        service_listen_mode_override,
+        false,
+    )
+}
+
+pub(super) fn current_app_settings_value_persisted(
+    close_to_tray_on_close: Option<bool>,
+    close_to_tray_supported: Option<bool>,
+    service_listen_mode_override: Option<&str>,
+) -> Result<Value, String> {
+    current_app_settings_value_inner(
+        close_to_tray_on_close,
+        close_to_tray_supported,
+        service_listen_mode_override,
+        true,
+    )
+}
+fn current_app_settings_value_inner(
+    close_to_tray_on_close: Option<bool>,
+    close_to_tray_supported: Option<bool>,
+    service_listen_mode_override: Option<&str>,
+    persist_snapshot: bool,
+) -> Result<Value, String> {
     initialize_storage_if_needed()?;
     sync_runtime_settings_from_storage();
+    let settings = list_app_settings_map();
     let background_tasks = current_background_tasks_snapshot_value()?;
     let runtime_time_zone = current_runtime_time_zone_value();
-    let update_auto_check = current_update_auto_check_enabled();
-    let persisted_close_to_tray = current_close_to_tray_on_close_setting();
+    let update_auto_check = setting_bool(&settings, APP_SETTING_UPDATE_AUTO_CHECK_KEY, true);
+    let persisted_close_to_tray =
+        setting_bool(&settings, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, false);
     let close_to_tray = close_to_tray_on_close.unwrap_or(persisted_close_to_tray);
-    let lightweight_mode_on_close_to_tray = current_lightweight_mode_on_close_to_tray_setting();
-    let codex_cli_guide_dismissed = current_codex_cli_guide_dismissed();
-    let low_transparency = current_ui_low_transparency_enabled();
-    let theme = current_ui_theme();
-    let appearance_preset = current_ui_appearance_preset();
-    let locale = current_ui_locale();
-    let settings = list_app_settings_map();
+    let lightweight_mode_on_close_to_tray = setting_bool(
+        &settings,
+        APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+        false,
+    );
+    let codex_cli_guide_dismissed = setting_bool(
+        &settings,
+        APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
+        false,
+    );
+    let low_transparency = setting_bool(&settings, APP_SETTING_UI_LOW_TRANSPARENCY_KEY, false);
+    let theme = normalize_ui_theme(settings.get(APP_SETTING_UI_THEME_KEY).map(String::as_str));
+    let appearance_preset = normalize_ui_appearance_preset(
+        settings
+            .get(APP_SETTING_UI_APPEARANCE_PRESET_KEY)
+            .map(String::as_str),
+    );
+    let locale = normalize_ui_locale(settings.get(APP_SETTING_UI_LOCALE_KEY).map(String::as_str));
     let service_addr = current_saved_service_addr();
     let service_listen_mode = if let Some(mode) = service_listen_mode_override {
         normalize_service_bind_mode_value(Some(mode)).to_string()
@@ -141,6 +187,7 @@ pub(super) fn current_app_settings_value(
     };
     let route_strategy = crate::gateway::current_route_strategy().to_string();
     let free_account_max_model = current_gateway_free_account_max_model();
+    let model_catalog_auto_remote_fetch = current_gateway_model_catalog_auto_remote_fetch();
     let model_forward_rules = current_gateway_model_forward_rules();
     let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
     let account_max_inflight = current_gateway_account_max_inflight();
@@ -197,37 +244,58 @@ pub(super) fn current_app_settings_value(
         })
     });
 
-    persist_current_snapshot(
-        update_auto_check,
-        persisted_close_to_tray,
-        lightweight_mode_on_close_to_tray,
-        codex_cli_guide_dismissed,
-        low_transparency,
-        &theme,
-        &appearance_preset,
-        &locale,
-        &service_addr,
-        &service_listen_mode,
-        &route_strategy,
-        &free_account_max_model,
-        &model_forward_rules,
-        &compact_model_forward_rules,
-        account_max_inflight,
-        &gateway_originator,
-        &gateway_user_agent_version,
-        &gateway_residency_requirement,
-        &quota_guard_raw,
-        &plugin_market_mode,
-        &plugin_market_source_url,
-        &author_sponsors_raw,
-        &author_server_recommendations_raw,
-        upstream_proxy_url.as_deref(),
-        upstream_stream_timeout_ms,
-        upstream_total_timeout_ms,
-        sse_keepalive_interval_ms,
-        &background_tasks_raw,
-        &env_overrides,
-    );
+    if persist_snapshot {
+        persist_current_snapshot(
+            update_auto_check,
+            persisted_close_to_tray,
+            lightweight_mode_on_close_to_tray,
+            codex_cli_guide_dismissed,
+            low_transparency,
+            &theme,
+            &appearance_preset,
+            &locale,
+            &service_addr,
+            &service_listen_mode,
+            &route_strategy,
+            &free_account_max_model,
+            model_catalog_auto_remote_fetch,
+            &model_forward_rules,
+            &compact_model_forward_rules,
+            account_max_inflight,
+            &gateway_originator,
+            &gateway_user_agent_version,
+            &gateway_residency_requirement,
+            &quota_guard_raw,
+            &plugin_market_mode,
+            &plugin_market_source_url,
+            &author_sponsors_raw,
+            &author_server_recommendations_raw,
+            upstream_proxy_url.as_deref(),
+            upstream_stream_timeout_ms,
+            upstream_total_timeout_ms,
+            sse_keepalive_interval_ms,
+            &background_tasks_raw,
+            &env_overrides,
+        );
+    } else {
+        persist_get_snapshot_if_changed(
+            &settings,
+            &service_addr,
+            &service_listen_mode,
+            &route_strategy,
+            &free_account_max_model,
+            model_catalog_auto_remote_fetch,
+            &model_forward_rules,
+            &gateway_originator,
+            &gateway_user_agent_version,
+            &gateway_residency_requirement,
+            upstream_proxy_url.as_deref(),
+            upstream_stream_timeout_ms,
+            sse_keepalive_interval_ms,
+            &background_tasks_raw,
+            &env_overrides,
+        );
+    }
 
     if service_listen_mode_override.is_none() {
         if let Some(mode) = settings.get(SERVICE_BIND_MODE_SETTING_KEY) {
@@ -283,6 +351,10 @@ pub(super) fn current_app_settings_value(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "modelCatalogAutoRemoteFetch".to_string(),
+            model_catalog_auto_remote_fetch.into(),
+        );
         object.insert("runtimeTimeZone".to_string(), runtime_time_zone);
         object.insert("webAuthMode".to_string(), current_web_auth_mode().into());
         object.insert(
@@ -358,8 +430,12 @@ pub(super) fn current_author_content_value() -> Result<Value, String> {
 /// # 返回
 /// 返回函数执行结果
 fn load_free_account_max_model_options(current: &str) -> Vec<String> {
-    let cached = crate::apikey_models::read_model_options(false)
-        .map(|result| result.models)
+    let cached = crate::storage_helpers::open_storage()
+        .and_then(|storage| {
+            storage
+                .list_api_available_model_catalog_slugs_with_prefix("default", "gpt-")
+                .ok()
+        })
         .unwrap_or_default();
     collect_free_account_max_model_options(current, &cached)
 }
@@ -376,11 +452,11 @@ fn load_free_account_max_model_options(current: &str) -> Vec<String> {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn collect_free_account_max_model_options(current: &str, cached: &[ModelInfo]) -> Vec<String> {
+fn collect_free_account_max_model_options(current: &str, cached: &[String]) -> Vec<String> {
     let mut items = vec!["auto".to_string()];
     for slug in cached
         .iter()
-        .map(|item| item.slug.trim().to_ascii_lowercase())
+        .map(|item| item.trim().to_ascii_lowercase())
         .filter(|slug| is_free_account_max_model_option(slug))
     {
         if !items.iter().any(|item| item == &slug) {
@@ -468,6 +544,7 @@ fn persist_current_snapshot(
     service_listen_mode: &str,
     route_strategy: &str,
     free_account_max_model: &str,
+    model_catalog_auto_remote_fetch: bool,
     model_forward_rules: &str,
     compact_model_forward_rules: &str,
     account_max_inflight: usize,
@@ -513,6 +590,10 @@ fn persist_current_snapshot(
     let _ = save_persisted_app_setting(
         APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
         Some(free_account_max_model),
+    );
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
+        model_catalog_auto_remote_fetch,
     );
     let _ = save_persisted_app_setting(
         APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
@@ -593,6 +674,135 @@ fn persist_current_snapshot(
     let _ = save_env_overrides_value(env_overrides);
 }
 
+fn persisted_text_value(value: Option<&str>) -> String {
+    normalize_optional_text(value).unwrap_or_default()
+}
+
+fn save_persisted_bool_setting_if_changed(
+    settings: &HashMap<String, String>,
+    key: &str,
+    value: bool,
+) {
+    let text = if value { "1" } else { "0" };
+    if settings.get(key).map(String::as_str) == Some(text) {
+        return;
+    }
+    let _ = save_persisted_bool_setting(key, value);
+}
+
+fn save_app_setting_if_changed(settings: &HashMap<String, String>, key: &str, value: Option<&str>) {
+    let text = persisted_text_value(value);
+    if settings.get(key).map(String::as_str) == Some(text.as_str()) {
+        return;
+    }
+    let _ = save_persisted_app_setting(key, if text.is_empty() { None } else { Some(&text) });
+}
+
+fn save_env_overrides_if_changed(
+    settings: &HashMap<String, String>,
+    env_overrides: &BTreeMap<String, String>,
+) {
+    let Ok(raw) = serde_json::to_string(env_overrides) else {
+        return;
+    };
+    if settings
+        .get(APP_SETTING_ENV_OVERRIDES_KEY)
+        .map(String::as_str)
+        == Some(raw.as_str())
+    {
+        return;
+    }
+    let _ = save_env_overrides_value(env_overrides);
+}
+
+fn persist_get_snapshot_if_changed(
+    settings: &HashMap<String, String>,
+    service_addr: &str,
+    service_listen_mode: &str,
+    route_strategy: &str,
+    free_account_max_model: &str,
+    model_catalog_auto_remote_fetch: bool,
+    model_forward_rules: &str,
+    gateway_originator: &str,
+    gateway_user_agent_version: &str,
+    gateway_residency_requirement: &str,
+    upstream_proxy_url: Option<&str>,
+    upstream_stream_timeout_ms: u64,
+    sse_keepalive_interval_ms: u64,
+    background_tasks_raw: &str,
+    env_overrides: &BTreeMap<String, String>,
+) {
+    save_app_setting_if_changed(settings, APP_SETTING_SERVICE_ADDR_KEY, Some(service_addr));
+    save_app_setting_if_changed(
+        settings,
+        SERVICE_BIND_MODE_SETTING_KEY,
+        Some(service_listen_mode),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+        Some(route_strategy),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+        Some(free_account_max_model),
+    );
+    save_persisted_bool_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
+        model_catalog_auto_remote_fetch,
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
+        if model_forward_rules.trim().is_empty() {
+            None
+        } else {
+            Some(model_forward_rules)
+        },
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+        Some(gateway_originator),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
+        Some(gateway_user_agent_version),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+        if gateway_residency_requirement.trim().is_empty() {
+            None
+        } else {
+            Some(gateway_residency_requirement)
+        },
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
+        upstream_proxy_url,
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
+        Some(&upstream_stream_timeout_ms.to_string()),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+        Some(&sse_keepalive_interval_ms.to_string()),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+        Some(background_tasks_raw),
+    );
+    save_env_overrides_if_changed(settings, env_overrides);
+}
 /// 函数 `normalize_market_mode`
 ///
 /// 作者: gaohongshun
@@ -613,105 +823,5 @@ fn normalize_market_mode(raw: &str) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        collect_free_account_max_model_options, normalize_market_mode,
-        DEFAULT_FREE_ACCOUNT_MAX_MODEL_OPTIONS,
-    };
-    use codexmanager_core::rpc::types::ModelInfo;
-
-    /// 函数 `free_account_max_model_options_fallback_to_curated_defaults`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn free_account_max_model_options_fallback_to_curated_defaults() {
-        let actual = collect_free_account_max_model_options("auto", &[]);
-        let expected = DEFAULT_FREE_ACCOUNT_MAX_MODEL_OPTIONS
-            .iter()
-            .map(|item| (*item).to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-    }
-
-    /// 函数 `free_account_max_model_options_reuse_cached_model_picker_options`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn free_account_max_model_options_reuse_cached_model_picker_options() {
-        let actual = collect_free_account_max_model_options(
-            "gpt-5.2",
-            &[
-                ModelInfo {
-                    slug: "gpt-5".to_string(),
-                    display_name: "gpt-5".to_string(),
-                    ..Default::default()
-                },
-                ModelInfo {
-                    slug: "gpt-5.1-codex".to_string(),
-                    display_name: "gpt-5.1-codex".to_string(),
-                    ..Default::default()
-                },
-                ModelInfo {
-                    slug: "gpt-5.4-pro".to_string(),
-                    display_name: "gpt-5.4-pro".to_string(),
-                    ..Default::default()
-                },
-                ModelInfo {
-                    slug: "o3".to_string(),
-                    display_name: "o3".to_string(),
-                    ..Default::default()
-                },
-                ModelInfo {
-                    slug: "gpt-5.1-codex".to_string(),
-                    display_name: "gpt-5.1-codex".to_string(),
-                    ..Default::default()
-                },
-            ],
-        );
-
-        assert_eq!(
-            actual,
-            vec![
-                "auto".to_string(),
-                "gpt-5".to_string(),
-                "gpt-5.1-codex".to_string(),
-                "gpt-5.2".to_string()
-            ]
-        );
-    }
-
-    /// 函数 `plugin_market_mode_normalization_defaults_to_builtin`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn plugin_market_mode_normalization_defaults_to_builtin() {
-        assert_eq!(normalize_market_mode(""), "builtin");
-        assert_eq!(normalize_market_mode("private"), "private");
-        assert_eq!(normalize_market_mode("custom"), "custom");
-        assert_eq!(normalize_market_mode("unknown"), "builtin");
-    }
-}
+#[path = "current_tests.rs"]
+mod tests;

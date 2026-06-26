@@ -36,6 +36,27 @@ pub async fn service_requestlog_list(
     rpc_call_in_background("requestlog/list", addr, Some(params)).await
 }
 
+#[tauri::command]
+pub async fn service_requestlog_list_with_summary(
+    addr: Option<String>,
+    query: Option<String>,
+    status_filter: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "query": query,
+        "statusFilter": status_filter,
+        "page": page,
+        "pageSize": page_size,
+        "startTs": start_ts,
+        "endTs": end_ts
+    });
+    rpc_call_in_background("requestlog/list_with_summary", addr, Some(params)).await
+}
+
 /// 函数 `service_requestlog_clear`
 ///
 /// 作者: gaohongshun

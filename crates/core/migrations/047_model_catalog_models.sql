@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS model_catalog_models (
   PRIMARY KEY (scope, slug)
 );
 
-CREATE INDEX IF NOT EXISTS idx_model_catalog_models_scope_sort
-  ON model_catalog_models(scope, sort_index, slug);
+CREATE INDEX IF NOT EXISTS idx_model_catalog_models_scope_order
+  ON model_catalog_models(scope, sort_index, updated_at DESC, slug);
 
 CREATE TABLE IF NOT EXISTS model_catalog_reasoning_levels (
   scope TEXT NOT NULL,

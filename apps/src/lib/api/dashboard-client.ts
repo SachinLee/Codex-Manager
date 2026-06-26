@@ -288,12 +288,14 @@ export const dashboardClient = {
   async getAdminUsageSummary(params?: {
     startTs?: number | null;
     endTs?: number | null;
+    includeBreakdowns?: boolean;
   }): Promise<DashboardAdminUsageSummary> {
     const result = await invoke<unknown>(
       "service_dashboard_admin_usage_summary",
       withAddr({
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
+        includeBreakdowns: params?.includeBreakdowns ?? null,
       }),
     );
     return readAdminUsageSummary(result);
@@ -315,6 +317,7 @@ export const dashboardClient = {
     userId?: string | null;
     dayStartTs?: number;
     dayEndTs?: number;
+    includeDetails?: boolean;
   }): Promise<MemberDashboardSummary> {
     const result = await invoke<unknown>(
       "service_dashboard_member_summary",
@@ -322,6 +325,7 @@ export const dashboardClient = {
         userId: params?.userId ?? null,
         dayStartTs: params?.dayStartTs ?? null,
         dayEndTs: params?.dayEndTs ?? null,
+        includeDetails: params?.includeDetails ?? null,
       }),
     );
     return readMemberDashboardSummary(result);

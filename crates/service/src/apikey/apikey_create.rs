@@ -36,10 +36,9 @@ fn normalize_custom_key(custom_key: Option<String>) -> Result<Option<String>, St
 
 fn platform_key_exists(storage: &Storage, key: &str) -> Result<bool, String> {
     let key_hash = hash_platform_key(key);
-    let existing = storage
-        .find_api_key_by_hash(&key_hash)
-        .map_err(|err| format!("check api key uniqueness failed: {err}"))?;
-    Ok(existing.is_some())
+    Ok(storage
+        .api_key_hash_exists(&key_hash)
+        .map_err(|err| format!("check api key uniqueness failed: {err}"))?)
 }
 
 fn ensure_platform_key_not_exists(storage: &Storage, key: &str) -> Result<(), String> {

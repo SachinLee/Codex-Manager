@@ -1,14 +1,17 @@
 import { existsSync, rmSync } from "node:fs";
+import http from "node:http";
 import { dirname, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 
 const cwd = process.cwd();
 const task = process.argv[2] || "build:desktop";
 const desktopDevHost = "127.0.0.1";
 const desktopDevPort = 3005;
+const desktopNextPort = 3006;
 const desktopDevWaitTimeoutMs = 10_000;
 const desktopDevWaitIntervalMs = 500;
+const desktopDevWarmupTimeoutMs = 120_000;
 const candidates = [
   cwd,
   resolve(cwd, "apps"),
@@ -55,7 +58,7 @@ async function hasReusableDesktopDevServer() {
   }
 
   try {
-    const response = await fetch(`http://${desktopDevHost}:${desktopDevPort}`, {
+    const response = await fetch(`http://${desktopDevHost}:${desktopDevPort}/startup.html`, {
       signal: AbortSignal.timeout(1500),
     });
     return response.ok;
@@ -74,11 +77,13 @@ function sleep(ms) {
   });
 }
 
-async function waitForDesktopDevPortToClose(timeoutMs = 5_000) {
+async function waitForDesktopDevPortsToClose(timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() <= deadline) {
-    if (!(await canConnect(desktopDevHost, desktopDevPort, 300))) {
+    const proxyClosed = !(await canConnect(desktopDevHost, desktopDevPort, 300));
+    const nextClosed = !(await canConnect(desktopDevHost, desktopNextPort, 300));
+    if (proxyClosed && nextClosed) {
       return true;
     }
 
@@ -110,7 +115,49 @@ async function waitForReusableDesktopDevServer(timeoutMs = desktopDevWaitTimeout
   return false;
 }
 
-function listDesktopDevListenerPids() {
+async function fetchDesktopDevPath(path, timeoutMs, port = desktopDevPort) {
+  const response = await fetch(`http://${desktopDevHost}:${port}${path}`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  await response.arrayBuffer();
+  return response.ok;
+}
+
+async function warmupDesktopDevServer() {
+  const deadline = Date.now() + desktopDevWarmupTimeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      if (await fetchDesktopDevPath("/startup.html", 1500, desktopNextPort)) {
+        break;
+      }
+    } catch {
+      // Keep waiting until Next starts serving static files.
+    }
+
+    if (Date.now() >= deadline) {
+      console.error(`等待前端开发服务就绪超时: http://${desktopDevHost}:${desktopNextPort}/startup.html`);
+      process.exit(1);
+    }
+
+    await sleep(desktopDevWaitIntervalMs);
+  }
+
+  console.log(`前端静态启动页已就绪: http://${desktopDevHost}:${desktopNextPort}/startup.html`);
+  try {
+    const warmed = await fetchDesktopDevPath("/", desktopDevWarmupTimeoutMs, desktopNextPort);
+    if (!warmed) {
+      console.error(`前端首页预热失败: http://${desktopDevHost}:${desktopNextPort}/`);
+      process.exit(1);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`前端首页预热失败: ${message}`);
+    process.exit(1);
+  }
+  console.log(`前端首页已预热完成: http://${desktopDevHost}:${desktopNextPort}/`);
+}
+
+function listDesktopDevListenerPids(port = desktopDevPort) {
   const result = spawnSync("netstat", ["-ano", "-p", "tcp"], {
     encoding: "utf8",
   });
@@ -119,7 +166,7 @@ function listDesktopDevListenerPids() {
     return [];
   }
 
-  const expectedAddress = `${desktopDevHost}:${desktopDevPort}`;
+  const expectedAddress = `${desktopDevHost}:${port}`;
   const pids = new Set();
 
   for (const line of result.stdout.split(/\r?\n/)) {
@@ -164,7 +211,7 @@ function getWindowsProcessInfo(pid) {
   }
 }
 
-function isDesktopDevProcess(pid) {
+function isDesktopDevProcess(pid, port = desktopDevPort) {
   let currentPid = pid;
 
   for (let index = 0; index < 4 && currentPid; index += 1) {
@@ -178,11 +225,14 @@ function isDesktopDevProcess(pid) {
       normalizedCommandLine.includes("next dev") ||
       normalizedCommandLine.includes("\\next\\dist\\bin\\next") ||
       normalizedCommandLine.includes("start-server.js");
+    const isDevProxyProcess =
+      normalizedCommandLine.includes("before-build.mjs") &&
+      normalizedCommandLine.includes("dev:desktop");
     const matchesDesktopPort =
-      normalizedCommandLine.includes(`-p ${desktopDevPort}`) ||
-      normalizedCommandLine.includes(`:${desktopDevPort}`);
+      normalizedCommandLine.includes(`-p ${port}`) ||
+      normalizedCommandLine.includes(`:${port}`);
 
-    if (isNextProcess && (matchesDesktopPort || index > 0)) {
+    if ((isNextProcess || isDevProxyProcess) && (matchesDesktopPort || isDevProxyProcess || index > 0)) {
       return true;
     }
 
@@ -209,14 +259,85 @@ function terminateWindowsProcessTree(pid) {
   return /not found|no running instance|does not exist/i.test(combinedOutput);
 }
 
+function createDesktopDevProxy() {
+  const server = http.createServer((request, response) => {
+    const proxyRequest = http.request(
+      {
+        hostname: desktopDevHost,
+        port: desktopNextPort,
+        path: request.url,
+        method: request.method,
+        headers: {
+          ...request.headers,
+          host: `${desktopDevHost}:${desktopNextPort}`,
+        },
+      },
+      (proxyResponse) => {
+        response.writeHead(proxyResponse.statusCode ?? 502, proxyResponse.headers);
+        proxyResponse.pipe(response);
+      },
+    );
+
+    proxyRequest.on("error", (error) => {
+      response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+      response.end(`Next dev proxy error: ${error.message}`);
+    });
+
+    request.pipe(proxyRequest);
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    const upstream = net.connect(desktopNextPort, desktopDevHost, () => {
+      upstream.write(
+        [
+          `${request.method} ${request.url} HTTP/${request.httpVersion}`,
+          `Host: ${desktopDevHost}:${desktopNextPort}`,
+          ...Object.entries(request.headers)
+            .filter(([key]) => key.toLowerCase() !== "host")
+            .map(([key, value]) => `${key}: ${value}`),
+          "",
+          "",
+        ].join("\r\n"),
+      );
+      if (head.length > 0) {
+        upstream.write(head);
+      }
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+
+    upstream.on("error", () => {
+      socket.destroy();
+    });
+  });
+
+  server.on("error", (error) => {
+    console.error(`前端开发代理启动失败: ${error.message}`);
+    process.exit(1);
+  });
+
+  server.listen(desktopDevPort, desktopDevHost, () => {
+    console.log(
+      `前端开发代理已就绪: http://${desktopDevHost}:${desktopDevPort} -> http://${desktopDevHost}:${desktopNextPort}`,
+    );
+  });
+
+  return server;
+}
+
 async function cleanupStaleDesktopDevState() {
-  const listenerPids = listDesktopDevListenerPids();
+  const listenerPids = [
+    ...new Set([
+      ...listDesktopDevListenerPids(desktopDevPort),
+      ...listDesktopDevListenerPids(desktopNextPort),
+    ]),
+  ];
 
   for (const pid of listenerPids) {
     const processInfo = getWindowsProcessInfo(pid);
-    if (!isDesktopDevProcess(pid)) {
+    if (!isDesktopDevProcess(pid, desktopDevPort) && !isDesktopDevProcess(pid, desktopNextPort)) {
       console.error(
-        `端口 ${desktopDevPort} 被其他进程占用，无法自动清理。PID: ${pid}，命令行: ${processInfo?.CommandLine || "未知"}`,
+        `开发端口被其他进程占用，无法自动清理。PID: ${pid}，命令行: ${processInfo?.CommandLine || "未知"}`,
       );
       process.exit(1);
     }
@@ -229,9 +350,9 @@ async function cleanupStaleDesktopDevState() {
   }
 
   if (listenerPids.length > 0) {
-    const portReleased = await waitForDesktopDevPortToClose();
+    const portReleased = await waitForDesktopDevPortsToClose();
     if (!portReleased) {
-      console.error(`端口 ${desktopDevPort} 释放超时，无法继续启动前端开发服务`);
+      console.error(`开发端口释放超时，无法继续启动前端开发服务`);
       process.exit(1);
     }
   }
@@ -250,7 +371,21 @@ async function cleanupStaleDesktopDevState() {
 }
 
 function resolvePnpmCommand() {
-  const baseArgs = ["--dir", frontendDir, "run", task];
+  const baseArgs =
+    task === "dev:desktop"
+      ? [
+          "--dir",
+          frontendDir,
+          "exec",
+          "next",
+          "dev",
+          "--webpack",
+          "-H",
+          desktopDevHost,
+          "-p",
+          String(desktopNextPort),
+        ]
+      : ["--dir", frontendDir, "run", task];
   const nodeBinDir = dirname(process.execPath);
   const windowsCandidates = [
     { command: resolve(nodeBinDir, "pnpm.cmd"), args: baseArgs },
@@ -303,8 +438,13 @@ if (task === "dev:desktop") {
   const desktopDevLockPath = getDesktopDevLockPath(frontendDir);
   const hasDesktopDevLock = existsSync(desktopDevLockPath);
   const hasDesktopDevPortListener = await canConnect(desktopDevHost, desktopDevPort, 300);
-  if (hasDesktopDevLock || hasDesktopDevPortListener) {
-    const staleState = [hasDesktopDevLock ? "锁文件" : null, hasDesktopDevPortListener ? "端口占用" : null]
+  const hasDesktopNextPortListener = await canConnect(desktopDevHost, desktopNextPort, 300);
+  if (hasDesktopDevLock || hasDesktopDevPortListener || hasDesktopNextPortListener) {
+    const staleState = [
+      hasDesktopDevLock ? "锁文件" : null,
+      hasDesktopDevPortListener ? `${desktopDevPort}端口占用` : null,
+      hasDesktopNextPortListener ? `${desktopNextPort}端口占用` : null,
+    ]
       .filter(Boolean)
       .join(" / ");
     console.log(`检测到 Next.js 开发态残留（${staleState}），等待现有实例就绪: ${desktopDevLockPath}`);
@@ -321,6 +461,28 @@ if (task === "dev:desktop") {
 const packageManager = resolvePnpmCommand();
 console.log(`执行前端任务: ${packageManager.command} ${packageManager.args.join(" ")}`);
 const needsShell = process.platform === "win32" && /\.cmd$/i.test(packageManager.command);
+
+if (task === "dev:desktop") {
+  const child = spawn(packageManager.command, packageManager.args, {
+    stdio: "inherit",
+    shell: needsShell,
+    windowsHide: true,
+  });
+  child.once("error", (error) => {
+    console.error(`前端开发服务启动失败: ${error.message}`);
+    process.exit(1);
+  });
+  await warmupDesktopDevServer();
+  createDesktopDevProxy();
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.exit(0);
+    }
+    process.exit(code ?? 0);
+  });
+  await new Promise(() => {});
+}
+
 const result = spawnSync(packageManager.command, packageManager.args, {
   stdio: "inherit",
   shell: needsShell,

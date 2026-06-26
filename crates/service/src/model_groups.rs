@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use codexmanager_core::rpc::types::{
     ModelGroupEntry, ModelGroupListResult, ModelGroupModelEntry, ModelGroupModelsSetParams,
@@ -85,25 +85,14 @@ fn user_group_entry(assignment: UserModelGroup) -> UserModelGroupEntry {
 }
 
 fn result_from_storage(storage: &Storage) -> Result<ModelGroupListResult, String> {
-    storage
-        .bootstrap_default_model_group()
-        .map_err(|err| format!("bootstrap default model group failed: {err}"))?;
+    let snapshot = storage
+        .load_model_group_list_snapshot()
+        .map_err(|err| format!("load model group list failed: {err}"))?;
     Ok(ModelGroupListResult {
-        groups: storage
-            .list_model_groups()
-            .map_err(|err| format!("list model groups failed: {err}"))?
-            .into_iter()
-            .map(group_entry)
-            .collect(),
-        models: storage
-            .list_model_group_models()
-            .map_err(|err| format!("list model group models failed: {err}"))?
-            .into_iter()
-            .map(group_model_entry)
-            .collect(),
-        user_assignments: storage
-            .list_user_model_groups()
-            .map_err(|err| format!("list user model groups failed: {err}"))?
+        groups: snapshot.groups.into_iter().map(group_entry).collect(),
+        models: snapshot.models.into_iter().map(group_model_entry).collect(),
+        user_assignments: snapshot
+            .user_assignments
             .into_iter()
             .map(user_group_entry)
             .collect(),
@@ -187,23 +176,27 @@ pub(crate) fn set_model_group_models(
         .find_model_group(group_id.as_str())
         .map_err(|err| format!("read model group failed: {err}"))?
         .ok_or_else(|| "模型组不存在".to_string())?;
-    let platform_slugs = storage
-        .list_model_catalog_models("default")
-        .map_err(|err| format!("list model catalog failed: {err}"))?
-        .into_iter()
-        .map(|item| item.slug)
-        .collect::<HashSet<_>>();
     let now = now_ts();
     let mut seen = HashSet::new();
-    let mut models = Vec::new();
+    let mut requested_slugs = Vec::new();
+    let mut unique_items = Vec::new();
     for item in params.models {
         let slug = normalize_optional_text(Some(item.platform_model_slug.as_str()))
             .ok_or_else(|| "平台模型不能为空".to_string())?;
+        if seen.insert(slug.clone()) {
+            requested_slugs.push(slug.clone());
+            unique_items.push((item, slug));
+        }
+    }
+    let platform_slugs = storage
+        .list_existing_model_catalog_slugs("default", &requested_slugs)
+        .map_err(|err| format!("list model catalog failed: {err}"))?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut models = Vec::new();
+    for (item, slug) in unique_items {
         if !platform_slugs.contains(slug.as_str()) {
             return Err(format!("平台模型 `{slug}` 不存在"));
-        }
-        if !seen.insert(slug.clone()) {
-            continue;
         }
         models.push(ModelGroupModel {
             group_id: group_id.clone(),
@@ -237,16 +230,25 @@ pub(crate) fn set_model_group_users(
         .ok_or_else(|| "模型组不存在".to_string())?;
     let now = now_ts();
     let mut seen = HashSet::new();
-    let mut assignments = Vec::new();
+    let mut user_ids = Vec::new();
     for raw_user_id in params.user_ids {
         let user_id = normalize_optional_text(Some(raw_user_id.as_str()))
             .ok_or_else(|| "用户 ID 不能为空".to_string())?;
         if !seen.insert(user_id.clone()) {
             continue;
         }
-        let user = storage
-            .find_app_user_by_id(user_id.as_str())
-            .map_err(|err| format!("read app user failed: {err}"))?
+        user_ids.push(user_id);
+    }
+    let users = storage
+        .list_app_user_access_summaries_for_ids(&user_ids)
+        .map_err(|err| format!("read app users failed: {err}"))?
+        .into_iter()
+        .map(|user| (user.id.clone(), user))
+        .collect::<HashMap<_, _>>();
+    let mut assignments = Vec::new();
+    for user_id in user_ids {
+        let user = users
+            .get(user_id.as_str())
             .ok_or_else(|| format!("用户 `{user_id}` 不存在"))?;
         if user.role != "member" {
             return Err(format!("用户 `{}` 不是成员账号", user.username));
@@ -292,7 +294,7 @@ pub(crate) fn resolve_api_key_model_group_access(
         return Ok(None);
     };
     let user = storage
-        .find_app_user_by_id(user_id)
+        .find_app_user_access_summary_by_id(user_id)
         .map_err(|err| format!("read app user failed: {err}"))?
         .ok_or_else(|| "API Key 归属用户不存在".to_string())?;
     if user.role == "admin" {
@@ -324,7 +326,7 @@ pub(crate) fn allowed_model_slugs_for_api_key(
         return Ok(None);
     };
     let user = storage
-        .find_app_user_by_id(user_id)
+        .find_app_user_access_summary_by_id(user_id)
         .map_err(|err| format!("read app user failed: {err}"))?
         .ok_or_else(|| "API Key 归属用户不存在".to_string())?;
     if user.role == "admin" {

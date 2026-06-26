@@ -5,6 +5,9 @@ import type { MessageCatalog } from "../types";
 export const EN_MODEL_CATALOG_MESSAGES: MessageCatalog = {
   "Priority": "Priority",
   "Token 价格 (USD / 1M tokens)": "Token prices (USD / 1M tokens)",
+  "自动拉取远端模型目录": "Auto-fetch remote model catalog",
+  "开启后本地模型目录为空时会自动从远端拉取；关闭后只在点击“远端并入”时拉取。":
+    "When enabled, an empty local model catalog is fetched from remote automatically; when disabled, remote data is fetched only after clicking Merge remote.",
   "保留本地覆写": "Keep local override",
   "保存来源模型失败": "Failed to save source model",
   "保存模型价格": "Save model price",

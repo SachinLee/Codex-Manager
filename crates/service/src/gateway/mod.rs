@@ -225,8 +225,9 @@ use cooldown::{
 };
 #[cfg(test)]
 pub(super) use failover::should_failover_after_refresh;
-use failover::should_failover_from_cached_snapshot;
-use failover::should_failover_from_low_quota_snapshot;
+use failover::{
+    should_failover_from_cached_snapshot_value, should_failover_from_low_quota_snapshot_value,
+};
 use http_bridge::respond_with_upstream;
 pub(crate) use http_bridge::summarize_upstream_error_hint_from_body;
 pub(crate) use http_bridge::PassthroughSseProtocol;
@@ -386,8 +387,8 @@ use request_gate::{request_gate_lock, RequestGateAcquireError};
 pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
-pub(crate) use runtime_config::fresh_upstream_client;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
+pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
 use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
@@ -397,6 +398,7 @@ use runtime_config::{
 };
 use selection::collect_gateway_candidates;
 pub(crate) use selection::{
+    collect_gateway_candidates_for_accounts_with_low_quota_mode,
     collect_gateway_candidates_with_low_quota_mode, current_quota_guard_config,
     invalidate_candidate_cache, set_quota_guard_config, LowQuotaCandidateMode, QuotaGuardConfig,
 };
@@ -933,10 +935,7 @@ pub(crate) fn set_manual_preferred_account(account_id: &str) -> Result<(), Strin
         return Err("accountId is required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage not initialized".to_string())?;
-    let found = storage
-        .find_account_by_id(id)
-        .map_err(|err| err.to_string())?
-        .is_some();
+    let found = storage.account_exists(id).map_err(|err| err.to_string())?;
     if !found {
         return Err("account not found".to_string());
     }

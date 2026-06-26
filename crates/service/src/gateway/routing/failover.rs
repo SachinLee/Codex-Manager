@@ -1,4 +1,4 @@
-use codexmanager_core::storage::Storage;
+use codexmanager_core::storage::{Storage, UsageSnapshotRecord};
 
 use crate::account_availability::{evaluate_snapshot, Availability};
 
@@ -31,28 +31,20 @@ pub(crate) fn should_failover_after_refresh(
     }
 }
 
-/// 函数 `should_failover_from_cached_snapshot`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 返回函数执行结果
-pub(crate) fn should_failover_from_cached_snapshot(storage: &Storage, account_id: &str) -> bool {
-    should_failover_by_snapshot(storage, account_id, false)
+pub(super) fn should_failover_from_cached_snapshot_value(
+    snap: Option<&UsageSnapshotRecord>,
+    fail_on_missing: bool,
+) -> bool {
+    match snap.map(evaluate_snapshot) {
+        Some(Availability::Unavailable(_reason)) => true,
+        Some(Availability::Available) => false,
+        None if fail_on_missing => true,
+        None => false,
+    }
 }
 
-pub(crate) fn should_failover_from_low_quota_snapshot(storage: &Storage, account_id: &str) -> bool {
-    storage
-        .latest_usage_snapshot_for_account(account_id)
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(super::selection::is_low_quota_snapshot)
+pub(super) fn should_failover_from_low_quota_snapshot_value(snap: &UsageSnapshotRecord) -> bool {
+    super::selection::is_low_quota_snapshot(snap)
 }
 
 /// 函数 `should_failover_by_snapshot`
@@ -73,10 +65,5 @@ fn should_failover_by_snapshot(storage: &Storage, account_id: &str, fail_on_miss
         .latest_usage_snapshot_for_account(account_id)
         .ok()
         .flatten();
-    match snap.as_ref().map(evaluate_snapshot) {
-        Some(Availability::Unavailable(_reason)) => true,
-        Some(Availability::Available) => false,
-        None if fail_on_missing => true,
-        None => false,
-    }
+    should_failover_from_cached_snapshot_value(snap.as_ref(), fail_on_missing)
 }

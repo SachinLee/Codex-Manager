@@ -78,11 +78,10 @@ import { getAppErrorMessage } from "@/lib/api/transport";
 import { estimateChartYAxisWidth } from "@/lib/dashboard/format";
 import type { AppLocale } from "@/lib/i18n/config";
 import { useI18n } from "@/lib/i18n/provider";
+import { useAppStore } from "@/lib/store/useAppStore";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/usage";
 import type { AccountManagerStatus, AppUser, MemberDashboardSummary } from "@/types";
-
-type TranslateFn = ReturnType<typeof useI18n>["t"];
 
 const ACCOUNT_MANAGER_QUERY_KEYS = {
   status: ["account-manager", "status"] as const,
@@ -531,9 +530,11 @@ export default function AccountManagerPage() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const { canAccessManagementRpc } = useRuntimeCapabilities();
+  const serviceConnected = useAppStore((state) => state.serviceStatus.connected);
   const isPageActive = useDesktopPageActive("/account-manager/");
   const shouldQuery =
-    useDeferredDesktopActivation(canAccessManagementRpc) && isPageActive;
+    useDeferredDesktopActivation(canAccessManagementRpc && serviceConnected) &&
+    isPageActive;
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [topUpUserId, setTopUpUserId] = useState<string | null>(null);
   const [editUserId, setEditUserId] = useState<string | null>(null);
@@ -569,20 +570,21 @@ export default function AccountManagerPage() {
   });
   const usageDetailQuery = useQuery<MemberDashboardSummary>({
     queryKey: ["account-manager", "user-usage", usageUserId],
-    queryFn: () => dashboardClient.getMemberSummary({ userId: usageUserId }),
+    queryFn: () =>
+      dashboardClient.getMemberSummary({
+        userId: usageUserId,
+        includeDetails: true,
+      }),
     enabled: shouldQuery && Boolean(usageUserId),
     retry: 1,
   });
 
   usePageTransitionReady(
     "/account-manager/",
-    !canAccessManagementRpc ||
-      statusQuery.isFetched ||
-      statusQuery.isError ||
-      !isPageActive,
+    !shouldQuery || statusQuery.isFetched || statusQuery.isError,
   );
 
-  const users = usersQuery.data ?? [];
+  const users = useMemo(() => usersQuery.data ?? [], [usersQuery.data]);
   const usersById = useMemo(
     () => new Map(users.map((user) => [user.id, user])),
     [users],

@@ -330,6 +330,8 @@ pub struct ApiKeyListResult {
 #[serde(rename_all = "camelCase")]
 pub struct ApiKeyUsageStatSummary {
     pub key_id: String,
+    pub today_tokens: i64,
+    pub today_estimated_cost_usd: f64,
     pub total_tokens: i64,
     pub estimated_cost_usd: f64,
 }
@@ -1365,6 +1367,16 @@ pub struct RequestLogListResult {
     pub page_size: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogListWithSummaryResult {
+    pub items: Vec<RequestLogSummary>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub summary: RequestLogFilterSummaryResult,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestLogFilterSummaryResult {
@@ -1449,6 +1461,8 @@ pub struct AggregateApiDailyUsageStatsResult {
 #[serde(rename_all = "camelCase")]
 pub struct StartupSnapshotResult {
     pub accounts: Vec<AccountSummary>,
+    #[serde(default)]
+    pub account_summary: QuotaOpenAiAccountOverviewResult,
     pub usage_snapshots: Vec<UsageSnapshotResult>,
     #[serde(default)]
     pub usage_aggregate_summary: UsageAggregateSummaryResult,

@@ -34,6 +34,7 @@ import {
   memo,
   useCallback,
   useMemo,
+  useState,
   type MouseEvent,
 } from "react";
 
@@ -105,6 +106,7 @@ NavItem.displayName = "NavItem";
  */
 export function Sidebar() {
   const { t } = useI18n();
+  const [logoFailed, setLogoFailed] = useState(false);
   const {
     isSidebarOpen,
     toggleSidebar,
@@ -115,7 +117,7 @@ export function Sidebar() {
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
-  const brandTitle = isSidebarOpen ? t("重新打开 Codex CLI 引导") : "CodexManager";
+  const brandTitle = isSidebarOpen ? t("重新打开 Codex 引导") : "CodexManager";
   const toggleTitle = isSidebarOpen ? t("收起侧边栏") : t("展开侧边栏");
   const routeAccess = useMemo(
     () => ({ role, mode: session?.mode ?? null }),
@@ -207,8 +209,17 @@ export function Sidebar() {
             isSidebarOpen ? "text-left" : "justify-center"
           )}
         >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <span className="text-sm font-bold">CM</span>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary text-primary-foreground">
+            {logoFailed ? (
+              <span className="text-sm font-bold">CM</span>
+            ) : (
+              <img
+                src="/logo.png"
+                alt="CodexManager"
+                className="h-full w-full object-cover"
+                onError={() => setLogoFailed(true)}
+              />
+            )}
           </div>
           {isSidebarOpen && (
             <div className="flex flex-col overflow-hidden animate-in fade-in duration-300">

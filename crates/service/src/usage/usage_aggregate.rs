@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use codexmanager_core::rpc::types::UsageAggregateSummaryResult;
-use codexmanager_core::storage::{Account, UsageSnapshotRecord};
+use codexmanager_core::storage::{UsageSnapshotRecord, UsageSnapshotSummaryRow};
 use serde_json::Value;
 
 use crate::storage_helpers::open_storage;
@@ -23,14 +23,79 @@ const ROUNDING_BIAS: i64 = 3;
 /// 返回函数执行结果
 pub(crate) fn read_usage_aggregate_summary() -> Result<UsageAggregateSummaryResult, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let accounts = storage
-        .list_accounts()
-        .map_err(|err| format!("list accounts failed: {err}"))?;
-    let usage_items = storage
-        .latest_usage_snapshots_by_account()
-        .map_err(|err| format!("list usage snapshots failed: {err}"))?;
+    read_usage_aggregate_summary_with_storage(&storage)
+}
 
-    Ok(compute_usage_aggregate_summary(&accounts, &usage_items))
+pub(crate) fn read_usage_aggregate_summary_with_storage(
+    storage: &codexmanager_core::storage::Storage,
+) -> Result<UsageAggregateSummaryResult, String> {
+    let usage_items = storage
+        .latest_usage_snapshot_summary_rows()
+        .map_err(|err| format!("list usage snapshot summary rows failed: {err}"))?;
+    Ok(compute_usage_aggregate_summary_for_known_items(
+        &usage_items,
+    ))
+}
+
+trait UsageAggregateItem {
+    fn account_id(&self) -> &str;
+    fn used_percent(&self) -> Option<f64>;
+    fn window_minutes(&self) -> Option<i64>;
+    fn secondary_used_percent(&self) -> Option<f64>;
+    fn secondary_window_minutes(&self) -> Option<i64>;
+    fn credits_json(&self) -> Option<&str>;
+}
+
+impl UsageAggregateItem for UsageSnapshotRecord {
+    fn account_id(&self) -> &str {
+        self.account_id.as_str()
+    }
+
+    fn used_percent(&self) -> Option<f64> {
+        self.used_percent
+    }
+
+    fn window_minutes(&self) -> Option<i64> {
+        self.window_minutes
+    }
+
+    fn secondary_used_percent(&self) -> Option<f64> {
+        self.secondary_used_percent
+    }
+
+    fn secondary_window_minutes(&self) -> Option<i64> {
+        self.secondary_window_minutes
+    }
+
+    fn credits_json(&self) -> Option<&str> {
+        self.credits_json.as_deref()
+    }
+}
+
+impl UsageAggregateItem for UsageSnapshotSummaryRow {
+    fn account_id(&self) -> &str {
+        self.account_id.as_str()
+    }
+
+    fn used_percent(&self) -> Option<f64> {
+        self.used_percent
+    }
+
+    fn window_minutes(&self) -> Option<i64> {
+        self.window_minutes
+    }
+
+    fn secondary_used_percent(&self) -> Option<f64> {
+        self.secondary_used_percent
+    }
+
+    fn secondary_window_minutes(&self) -> Option<i64> {
+        self.secondary_window_minutes
+    }
+
+    fn credits_json(&self) -> Option<&str> {
+        self.credits_json.as_deref()
+    }
 }
 
 /// 函数 `compute_usage_aggregate_summary`
@@ -44,79 +109,135 @@ pub(crate) fn read_usage_aggregate_summary() -> Result<UsageAggregateSummaryResu
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn compute_usage_aggregate_summary(
-    accounts: &[Account],
+    accounts: &[codexmanager_core::storage::Account],
     usage_items: &[UsageSnapshotRecord],
+) -> UsageAggregateSummaryResult {
+    let account_ids = accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<Vec<_>>();
+    compute_usage_aggregate_summary_for_account_ids(&account_ids, usage_items)
+}
+
+pub(crate) fn compute_usage_aggregate_summary_for_account_ids_list(
+    account_ids: &[String],
+    usage_items: &[UsageSnapshotRecord],
+) -> UsageAggregateSummaryResult {
+    compute_usage_aggregate_summary_for_account_ids(account_ids, usage_items)
+}
+
+fn compute_usage_aggregate_summary_for_known_items<T: UsageAggregateItem>(
+    usage_items: &[T],
+) -> UsageAggregateSummaryResult {
+    let mut accumulator = UsageAggregateAccumulator::default();
+    for usage in usage_items {
+        if usage.account_id().trim().is_empty() {
+            continue;
+        }
+        accumulator.add_usage(Some(usage));
+    }
+    accumulator.finish()
+}
+
+fn compute_usage_aggregate_summary_for_account_ids<T: UsageAggregateItem>(
+    account_ids: &[String],
+    usage_items: &[T],
 ) -> UsageAggregateSummaryResult {
     let usage_map = usage_items
         .iter()
-        .map(|item| (item.account_id.as_str(), item))
+        .map(|item| (item.account_id(), item))
         .collect::<HashMap<_, _>>();
 
-    let mut primary_bucket_count = 0_i64;
-    let mut primary_known_count = 0_i64;
-    let mut primary_remaining_total = 0_f64;
-    let mut secondary_bucket_count = 0_i64;
-    let mut secondary_known_count = 0_i64;
-    let mut secondary_remaining_total = 0_f64;
+    let mut accumulator = UsageAggregateAccumulator::default();
 
-    for account in accounts {
-        let usage = usage_map.get(account.id.as_str()).copied();
+    for account_id in account_ids {
+        let usage = usage_map.get(account_id.as_str()).copied();
+        accumulator.add_usage(usage);
+    }
+
+    accumulator.finish()
+}
+
+#[derive(Default)]
+struct UsageAggregateAccumulator {
+    primary_bucket_count: i64,
+    primary_known_count: i64,
+    primary_remaining_total: f64,
+    secondary_bucket_count: i64,
+    secondary_known_count: i64,
+    secondary_remaining_total: f64,
+}
+
+impl UsageAggregateAccumulator {
+    fn add_usage<T: UsageAggregateItem>(&mut self, usage: Option<&T>) {
         let has_primary_signal = usage
-            .map(|value| value.used_percent.is_some() || value.window_minutes.is_some())
+            .map(|value| value.used_percent().is_some() || value.window_minutes().is_some())
             .unwrap_or(false);
         let has_secondary_signal = usage
             .map(|value| {
-                value.secondary_used_percent.is_some() || value.secondary_window_minutes.is_some()
+                value.secondary_used_percent().is_some()
+                    || value.secondary_window_minutes().is_some()
             })
             .unwrap_or(false);
         let primary_belongs_to_secondary = usage
             .map(|value| {
                 !has_secondary_signal
-                    && (is_long_window(value.window_minutes)
-                        || is_free_plan_usage(value.credits_json.as_deref()))
+                    && (is_long_window(value.window_minutes())
+                        || is_free_plan_usage(value.credits_json()))
             })
             .unwrap_or(false);
 
         if has_primary_signal {
             if primary_belongs_to_secondary {
-                secondary_bucket_count += 1;
+                self.secondary_bucket_count += 1;
             } else {
-                primary_bucket_count += 1;
+                self.primary_bucket_count += 1;
             }
         }
 
-        if let Some(primary_remain) = usage.and_then(|value| remaining_percent(value.used_percent))
+        if let Some(primary_remain) =
+            usage.and_then(|value| remaining_percent(value.used_percent()))
         {
             if primary_belongs_to_secondary {
-                secondary_known_count += 1;
-                secondary_remaining_total += primary_remain;
+                self.secondary_known_count += 1;
+                self.secondary_remaining_total += primary_remain;
             } else {
-                primary_known_count += 1;
-                primary_remaining_total += primary_remain;
+                self.primary_known_count += 1;
+                self.primary_remaining_total += primary_remain;
             }
         }
 
         if has_secondary_signal {
-            secondary_bucket_count += 1;
+            self.secondary_bucket_count += 1;
         }
         if let Some(secondary_remain) =
-            usage.and_then(|value| remaining_percent(value.secondary_used_percent))
+            usage.and_then(|value| remaining_percent(value.secondary_used_percent()))
         {
-            secondary_known_count += 1;
-            secondary_remaining_total += secondary_remain;
+            self.secondary_known_count += 1;
+            self.secondary_remaining_total += secondary_remain;
         }
     }
 
-    UsageAggregateSummaryResult {
-        primary_bucket_count,
-        primary_known_count,
-        primary_unknown_count: (primary_bucket_count - primary_known_count).max(0),
-        primary_remain_percent: average_percent(primary_remaining_total, primary_known_count),
-        secondary_bucket_count,
-        secondary_known_count,
-        secondary_unknown_count: (secondary_bucket_count - secondary_known_count).max(0),
-        secondary_remain_percent: average_percent(secondary_remaining_total, secondary_known_count),
+    fn finish(self) -> UsageAggregateSummaryResult {
+        UsageAggregateSummaryResult {
+            primary_bucket_count: self.primary_bucket_count,
+            primary_known_count: self.primary_known_count,
+            primary_unknown_count: (self.primary_bucket_count - self.primary_known_count).max(0),
+            primary_remain_percent: average_percent(
+                self.primary_remaining_total,
+                self.primary_known_count,
+            ),
+            secondary_bucket_count: self.secondary_bucket_count,
+            secondary_known_count: self.secondary_known_count,
+            secondary_unknown_count: (self.secondary_bucket_count - self.secondary_known_count)
+                .max(0),
+            secondary_remain_percent: average_percent(
+                self.secondary_remaining_total,
+                self.secondary_known_count,
+            ),
+        }
     }
 }
 
@@ -262,141 +383,5 @@ fn extract_plan_type_recursive(value: &Value) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::compute_usage_aggregate_summary;
-    use codexmanager_core::storage::{now_ts, Account, UsageSnapshotRecord};
-
-    /// 函数 `account`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - id: 参数 id
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn account(id: &str) -> Account {
-        Account {
-            id: id.to_string(),
-            label: id.to_string(),
-            issuer: "https://auth.openai.com".to_string(),
-            chatgpt_account_id: None,
-            workspace_id: None,
-            group_name: None,
-            sort: 0,
-            status: "active".to_string(),
-            created_at: now_ts(),
-            updated_at: now_ts(),
-        }
-    }
-
-    /// 函数 `usage_record`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - account_id: 参数 account_id
-    /// - used_percent: 参数 used_percent
-    /// - window_minutes: 参数 window_minutes
-    /// - secondary_used_percent: 参数 secondary_used_percent
-    /// - secondary_window_minutes: 参数 secondary_window_minutes
-    /// - credits_json: 参数 credits_json
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn usage_record(
-        account_id: &str,
-        used_percent: Option<f64>,
-        window_minutes: Option<i64>,
-        secondary_used_percent: Option<f64>,
-        secondary_window_minutes: Option<i64>,
-        credits_json: Option<&str>,
-    ) -> UsageSnapshotRecord {
-        UsageSnapshotRecord {
-            account_id: account_id.to_string(),
-            used_percent,
-            window_minutes,
-            resets_at: None,
-            secondary_used_percent,
-            secondary_window_minutes,
-            secondary_resets_at: None,
-            credits_json: credits_json.map(|value| value.to_string()),
-            captured_at: now_ts(),
-        }
-    }
-
-    /// 函数 `aggregate_summary_routes_free_single_window_account_to_secondary_bucket`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn aggregate_summary_routes_free_single_window_account_to_secondary_bucket() {
-        let accounts = vec![account("a1"), account("a2")];
-        let usage_items = vec![
-            usage_record("a1", Some(20.0), Some(300), Some(40.0), Some(10080), None),
-            usage_record(
-                "a2",
-                Some(10.0),
-                Some(10080),
-                None,
-                None,
-                Some(r#"{"planType":"free"}"#),
-            ),
-        ];
-
-        let result = compute_usage_aggregate_summary(&accounts, &usage_items);
-        assert_eq!(result.primary_bucket_count, 1);
-        assert_eq!(result.primary_known_count, 1);
-        assert_eq!(result.primary_remain_percent, Some(80));
-        assert_eq!(result.secondary_bucket_count, 2);
-        assert_eq!(result.secondary_known_count, 2);
-        assert_eq!(result.secondary_remain_percent, Some(75));
-    }
-
-    /// 函数 `aggregate_summary_preserves_unknown_counts_per_bucket`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn aggregate_summary_preserves_unknown_counts_per_bucket() {
-        let accounts = vec![account("a1"), account("a2"), account("a3")];
-        let usage_items = vec![
-            usage_record("a1", Some(20.0), Some(300), None, None, None),
-            usage_record(
-                "a2",
-                None,
-                Some(10080),
-                None,
-                None,
-                Some(r#"{"planType":"free"}"#),
-            ),
-        ];
-
-        let result = compute_usage_aggregate_summary(&accounts, &usage_items);
-        assert_eq!(result.primary_bucket_count, 1);
-        assert_eq!(result.primary_known_count, 1);
-        assert_eq!(result.primary_unknown_count, 0);
-        assert_eq!(result.secondary_bucket_count, 1);
-        assert_eq!(result.secondary_known_count, 0);
-        assert_eq!(result.secondary_unknown_count, 1);
-        assert_eq!(result.secondary_remain_percent, None);
-    }
-}
+#[path = "usage_aggregate_tests.rs"]
+mod tests;

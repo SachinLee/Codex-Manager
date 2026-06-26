@@ -258,7 +258,7 @@ export function QuotaOverviewCell({ items }: { items: QuotaSummaryItem[] }) {
             {summaryItems.map((item) => (
               <div
                 key={`${item.id}-reset`}
-                className="flex min-w-0 items-center justify-between gap-2"
+                className="min-w-0 space-y-0.5"
               >
                 <span
                   className={fitLongTextClassName(
@@ -266,7 +266,7 @@ export function QuotaOverviewCell({ items }: { items: QuotaSummaryItem[] }) {
                       item.resetsAt,
                       item.emptyResetText ?? t("未知"),
                     ),
-                    "min-w-0 break-words [overflow-wrap:anywhere]",
+                    "block min-w-0 break-words leading-tight [overflow-wrap:anywhere]",
                     "text-[10px]",
                   )}
                 >
@@ -275,7 +275,7 @@ export function QuotaOverviewCell({ items }: { items: QuotaSummaryItem[] }) {
                     item.emptyResetText ?? t("未知"),
                   )}
                 </span>
-                <span className="shrink-0 whitespace-nowrap">
+                <span className="block whitespace-nowrap leading-tight text-foreground/70">
                   {formatRemainingDurationFromSeconds(
                     item.resetsAt,
                     item.id.endsWith("-primary") ? "hours" : "days",
@@ -381,6 +381,18 @@ export function formatAccountStatusReasonLabel(
   }
   if (reason === "refresh_token_region_blocked") {
     return t("代理地区不受支持，已暂停账号刷新");
+  }
+  if (reason === "usage_refresh_timeout") {
+    return t("用量刷新超时，请检查网络或代理");
+  }
+  if (reason === "usage_refresh_connection") {
+    return t("用量刷新连接失败，请检查网络或代理");
+  }
+  if (reason === "usage_refresh_dns") {
+    return t("用量刷新 DNS 解析失败，请检查网络或代理");
+  }
+  if (reason === "usage_refresh_failed") {
+    return t("用量刷新失败，请查看后台日志");
   }
 
   const usageHttpStatus = reason.match(/^usage_http_(\d{3})$/);
@@ -729,16 +741,6 @@ export function AccountInfoCell({
               </Badge>
             ) : null}
           </div>
-          <span
-            className={fitLongTextClassName(
-              account.id,
-              "mt-0.5 block max-w-full break-all font-mono uppercase text-muted-foreground opacity-60 [overflow-wrap:anywhere]",
-              "text-[10px]",
-            )}
-            title={account.id}
-          >
-            {account.id}
-          </span>
           <span className="mt-1 text-[10px] text-muted-foreground">
             {t("最近刷新")}:{" "}
             {formatTsFromSeconds(account.lastRefreshAt, t("从未刷新"))}
@@ -748,17 +750,17 @@ export function AccountInfoCell({
           </span>
         </div>
       </TooltipTrigger>
-      <TooltipContent className="max-w-sm">
+      <TooltipContent className="max-w-sm border border-border bg-popover text-popover-foreground shadow-lg">
         <div className="flex min-w-[260px] flex-col gap-2">
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-0.5">
-              <div className="text-[10px] text-background/70">
+              <div className="text-[10px] text-muted-foreground">
                 {t("账号类型")}
               </div>
               <div className="font-medium">{accountPlanLabel || t("未知")}</div>
             </div>
             <div className="space-y-0.5">
-              <div className="text-[10px] text-background/70">
+              <div className="text-[10px] text-muted-foreground">
                 {t("当前状态")}
               </div>
               <div className="font-medium">
@@ -767,25 +769,25 @@ export function AccountInfoCell({
             </div>
             {statusReasonLabel ? (
               <div className="space-y-0.5 sm:col-span-2">
-                <div className="text-[10px] text-background/70">
+                <div className="text-[10px] text-muted-foreground">
                   {t("状态原因")}
                 </div>
                 <div className="font-medium">{statusReasonLabel}</div>
                 {statusReasonCode ? (
-                  <div className="break-all font-mono text-[10px] text-background/70">
+                  <div className="break-all font-mono text-[10px] text-muted-foreground">
                     {statusReasonCode}
                   </div>
                 ) : null}
               </div>
             ) : null}
             <div className="space-y-0.5">
-              <div className="text-[10px] text-background/70">
+              <div className="text-[10px] text-muted-foreground">
                 {t("订阅状态")}
               </div>
               <div className="font-medium">{subscriptionStatusLabel}</div>
             </div>
             <div className="space-y-0.5">
-              <div className="text-[10px] text-background/70">
+              <div className="text-[10px] text-muted-foreground">
                 {t("订阅方案")}
               </div>
               <div className="font-medium">{subscriptionPlanLabel}</div>
@@ -793,7 +795,7 @@ export function AccountInfoCell({
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-0.5">
-              <div className="text-[10px] text-background/70">
+              <div className="text-[10px] text-muted-foreground">
                 {t("到期时间")}
               </div>
               <div className="font-medium">
@@ -801,7 +803,7 @@ export function AccountInfoCell({
               </div>
             </div>
             <div className="space-y-0.5">
-              <div className="text-[10px] text-background/70">
+              <div className="text-[10px] text-muted-foreground">
                 {t("续费时间")}
               </div>
               <div className="font-medium">
@@ -810,18 +812,14 @@ export function AccountInfoCell({
             </div>
           </div>
           <div className="space-y-0.5">
-            <div className="text-[10px] text-background/70">{t("标签")}</div>
+            <div className="text-[10px] text-muted-foreground">{t("标签")}</div>
             <div className="break-words">{tagsText || t("未设置")}</div>
           </div>
           <div className="space-y-0.5">
-            <div className="text-[10px] text-background/70">{t("备注")}</div>
+            <div className="text-[10px] text-muted-foreground">{t("备注")}</div>
             <div className="whitespace-pre-wrap break-words">
               {noteText || t("未设置")}
             </div>
-          </div>
-          <div className="space-y-0.5">
-            <div className="text-[10px] text-background/70">{t("账号 ID")}</div>
-            <div className="break-all font-mono text-[11px]">{account.id}</div>
           </div>
         </div>
       </TooltipContent>

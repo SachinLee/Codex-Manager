@@ -39,6 +39,7 @@ export const KO_DASHBOARD_MESSAGES: MessageCatalog = {
   所选区间: "선택한 기간",
   "按天、成员、OpenAI 账号和聚合 API 汇总 token 消耗":
     "일자, 멤버, OpenAI 계정, Aggregate API별로 토큰 사용량을 집계합니다.",
+  "按天汇总 token、费用和请求量": "일자별 token, 비용, 요청 수를 집계합니다.",
   按模型管理中的排序权重展示: "모델 관리의 정렬 가중치 기준으로 표시",
   "按模型管理排序展示前 8 个": "모델 관리 순서 기준 상위 8개 표시",
   无钱包: "지갑 없음",

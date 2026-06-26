@@ -24,9 +24,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 snapshot: usage_read::read_usage_snapshot(account_id),
             })
         }
-        "account/usage/list" => super::value_or_error(
-            usage_list::read_usage_snapshots().map(|items| UsageListResult { items }),
-        ),
+        "account/usage/list" => {
+            let limit = super::i64_param(req, "limit").map(|value| value.max(0) as usize);
+            super::value_or_error(
+                usage_list::read_usage_snapshots_limited(limit)
+                    .map(|items| UsageListResult { items }),
+            )
+        }
         "account/usage/aggregate" => {
             super::value_or_error(usage_aggregate::read_usage_aggregate_summary())
         }

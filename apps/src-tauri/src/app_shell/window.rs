@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::webview::Color;
+use tauri::webview::{Color, PageLoadEvent};
 use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::Manager;
-use tauri::{PhysicalPosition, PhysicalRect, Rect, WebviewUrl, WebviewWindowBuilder};
+use tauri::{PhysicalPosition, PhysicalRect, Rect, Url, WebviewUrl, WebviewWindowBuilder};
 
 use super::state::{APP_EXIT_REQUESTED, KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE};
 
@@ -36,6 +36,10 @@ fn show_main_window(app: &tauri::AppHandle) -> bool {
     let Some(window) = ensure_main_window(app) else {
         return false;
     };
+    reveal_main_window(&window)
+}
+
+fn reveal_main_window(window: &tauri::WebviewWindow) -> bool {
     if let Err(err) = window.unminimize() {
         log::debug!("unminimize main window before show skipped: {}", err);
     }
@@ -87,6 +91,25 @@ pub(crate) fn request_show_main_window(app: &tauri::AppHandle) -> Result<(), Str
         }
     });
     Ok(())
+}
+
+pub(crate) fn navigate_main_window_to_startup_app(app: &tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    let app_for_callback = app_handle.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    if let Err(err) = app_handle.run_on_main_thread(move || {
+        let Some(window) = app_for_callback.get_webview_window(MAIN_WINDOW_LABEL) else {
+            let _ = sender.send(Err("main window is missing".to_string()));
+            return;
+        };
+        let result = navigate_window_to_app_url(&window).map_err(|err| err.to_string());
+        let _ = sender.send(result);
+    }) {
+        return Err(format!("schedule startup app navigation failed: {err}"));
+    }
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|err| format!("startup app navigation callback timed out: {err}"))?
 }
 
 pub(crate) fn hide_tray_preview_window(app: &tauri::AppHandle) {
@@ -145,8 +168,31 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .cloned()
         .or_else(|| app.config().app.windows.first().cloned())?;
     config.label = MAIN_WINDOW_LABEL.to_string();
+    #[cfg(debug_assertions)]
+    {
+        config.url = startup_loading_url();
+    }
 
-    match WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build()) {
+    let builder = match WebviewWindowBuilder::from_config(app, &config) {
+        Ok(builder) => builder,
+        Err(err) => {
+            log::warn!("create main window builder failed: {}", err);
+            return None;
+        }
+    };
+
+    match builder
+        .on_page_load(|window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            if window.label() != MAIN_WINDOW_LABEL {
+                return;
+            }
+            log::info!("main window page loaded");
+        })
+        .build()
+    {
         Ok(window) => Some(window),
         Err(err) => {
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -156,6 +202,24 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
             None
         }
     }
+}
+
+#[cfg(debug_assertions)]
+fn startup_loading_url() -> WebviewUrl {
+    WebviewUrl::App("startup.html".into())
+}
+
+#[cfg(debug_assertions)]
+fn navigate_window_to_app_url(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let url = Url::parse("http://127.0.0.1:3005/")
+        .expect("hard-coded dev server startup url must be valid");
+    log::info!("navigating main window to dev app root");
+    window.navigate(url)
+}
+
+#[cfg(not(debug_assertions))]
+fn navigate_window_to_app_url(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    Ok(())
 }
 
 fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {

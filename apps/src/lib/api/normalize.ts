@@ -42,6 +42,7 @@ import {
   RequestLog,
   RequestLogFilterSummary,
   RequestLogListResult,
+  RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
   StartupSnapshot,
   UsageAggregateSummary,
@@ -351,6 +352,22 @@ export function normalizeUsageAggregateSummary(payload: unknown): UsageAggregate
     secondaryKnownCount: asInteger(source.secondaryKnownCount, 0, 0),
     secondaryUnknownCount: asInteger(source.secondaryUnknownCount, 0, 0),
     secondaryRemainPercent: toNullableNumber(source.secondaryRemainPercent),
+  };
+}
+
+function normalizeStartupAccountSummary(payload: unknown) {
+  const source = asObject(payload);
+  return {
+    accountCount: asInteger(source.accountCount ?? source.account_count, 0, 0),
+    availableCount: asInteger(source.availableCount ?? source.available_count, 0, 0),
+    lowQuotaCount: asInteger(source.lowQuotaCount ?? source.low_quota_count, 0, 0),
+    primaryRemainPercent: toNullableNumber(
+      source.primaryRemainPercent ?? source.primary_remain_percent
+    ),
+    secondaryRemainPercent: toNullableNumber(
+      source.secondaryRemainPercent ?? source.secondary_remain_percent
+    ),
+    lastRefreshedAt: toNullableNumber(source.lastRefreshedAt ?? source.last_refreshed_at),
   };
 }
 
@@ -1190,6 +1207,17 @@ export function normalizeApiKeyUsageStats(payload: unknown): ApiKeyUsageStat[] {
       if (!keyId) return null;
       return {
         keyId,
+        todayTokens: asInteger(
+          current.todayTokens ?? current.today_tokens,
+          0,
+          0
+        ),
+        todayEstimatedCostUsd: Math.max(
+          0,
+          toNullableNumber(
+            current.todayEstimatedCostUsd ?? current.today_estimated_cost_usd
+          ) ?? 0
+        ),
         totalTokens: asInteger(current.totalTokens ?? current.total_tokens, 0, 0),
         estimatedCostUsd: Math.max(
           0,
@@ -1684,6 +1712,16 @@ export function normalizeRequestLogListResult(payload: unknown): RequestLogListR
   };
 }
 
+export function normalizeRequestLogListWithSummaryResult(
+  payload: unknown
+): RequestLogListWithSummaryResult {
+  const source = asObject(payload);
+  return {
+    ...normalizeRequestLogListResult(payload),
+    summary: normalizeRequestLogFilterSummary(source.summary),
+  };
+}
+
 /**
  * 函数 `normalizeRequestLogFilterSummary`
  *
@@ -1915,6 +1953,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     freeAccountMaxModelOptions: asArray(source.freeAccountMaxModelOptions).map((item) =>
       asString(item)
     ),
+    modelCatalogAutoRemoteFetch: asBoolean(source.modelCatalogAutoRemoteFetch, true),
     modelForwardRules: asString(source.modelForwardRules ?? source.model_forward_rules),
     compactModelForwardRules: asString(
       source.compactModelForwardRules ?? source.compact_model_forward_rules
@@ -1986,6 +2025,7 @@ export function normalizeStartupSnapshot(payload: unknown): StartupSnapshot {
 
   return {
     accounts,
+    accountSummary: normalizeStartupAccountSummary(source.accountSummary ?? source.account_summary),
     usageSnapshots,
     usageAggregateSummary: normalizeUsageAggregateSummary(source.usageAggregateSummary),
     apiKeys: normalizeApiKeyList(source.apiKeys),

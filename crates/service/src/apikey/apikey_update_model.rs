@@ -101,7 +101,7 @@ pub(crate) fn update_api_key_model(
 
     if protocol_type.is_some() || has_upstream_base_url || has_static_headers_json {
         let current = storage
-            .find_api_key_by_id(key_id)
+            .find_api_key_profile_config_by_id(key_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "api key not found".to_string())?;
         let protocol = protocol_type.unwrap_or_else(|| current.protocol_type.clone());

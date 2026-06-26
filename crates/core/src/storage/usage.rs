@@ -1,6 +1,10 @@
-use rusqlite::{Result, Row};
+use rusqlite::{params_from_iter, Result, Row};
 
-use super::{Storage, UsageSnapshotRecord};
+use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
+use super::{
+    Storage, UsageSnapshotCleanupRow, UsageSnapshotQuotaSourceRow, UsageSnapshotRecord,
+    UsageSnapshotSummaryRow,
+};
 
 const DEFAULT_USAGE_SNAPSHOTS_RETAIN_PER_ACCOUNT: usize = 1;
 const USAGE_SNAPSHOTS_RETAIN_PER_ACCOUNT_ENV: &str =
@@ -11,6 +15,83 @@ pub(super) fn usage_snapshots_retain_per_account() -> usize {
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(DEFAULT_USAGE_SNAPSHOTS_RETAIN_PER_ACCOUNT)
+}
+
+fn usage_snapshot_count_for_account_sql() -> &'static str {
+    "SELECT COUNT(1) FROM usage_snapshots WHERE account_id = ?1"
+}
+
+fn usage_snapshot_count_sql() -> &'static str {
+    "SELECT COUNT(1) FROM usage_snapshots"
+}
+
+fn latest_usage_snapshot_sql() -> &'static str {
+    "SELECT account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at FROM usage_snapshots ORDER BY captured_at DESC, id DESC LIMIT 1"
+}
+
+fn latest_usage_snapshot_for_account_sql() -> &'static str {
+    "SELECT account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at
+     FROM usage_snapshots
+     WHERE account_id = ?1
+     ORDER BY captured_at DESC, id DESC
+     LIMIT 1"
+}
+
+fn latest_usage_snapshot_summary_rows_sql() -> String {
+    format!(
+        "{cte}
+        SELECT
+            account_id,
+            used_percent,
+            window_minutes,
+            secondary_used_percent,
+            secondary_window_minutes,
+            credits_json
+        FROM ranked
+        WHERE rn = 1",
+        cte = latest_usage_ranked_cte_sql(
+            "account_id,
+                used_percent,
+                window_minutes,
+                secondary_used_percent,
+                secondary_window_minutes,
+                credits_json",
+            None,
+        ),
+    )
+}
+
+pub(super) fn delete_usage_snapshots_for_account_sql() -> &'static str {
+    "DELETE FROM usage_snapshots WHERE account_id = ?1"
+}
+
+fn prune_usage_snapshots_for_account_sql() -> &'static str {
+    "DELETE FROM usage_snapshots
+     WHERE account_id = ?1
+       AND id NOT IN (
+         SELECT id
+         FROM usage_snapshots
+         WHERE account_id = ?1
+         ORDER BY captured_at DESC, id DESC
+         LIMIT ?2
+       )"
+}
+
+fn prune_usage_snapshots_all_accounts_sql() -> &'static str {
+    "DELETE FROM usage_snapshots
+     WHERE id IN (
+         SELECT id
+         FROM (
+             SELECT
+                 id,
+                 ROW_NUMBER() OVER (
+                     PARTITION BY account_id
+                     ORDER BY captured_at DESC, id DESC
+                 ) AS rn
+             FROM usage_snapshots
+         )
+         WHERE rn > ?1
+     )"
 }
 
 impl Storage {
@@ -66,15 +147,7 @@ impl Storage {
             return Ok(0);
         }
         self.conn.execute(
-            "DELETE FROM usage_snapshots
-             WHERE account_id = ?1
-               AND id NOT IN (
-                 SELECT id
-                 FROM usage_snapshots
-                 WHERE account_id = ?1
-                 ORDER BY captured_at DESC, id DESC
-                 LIMIT ?2
-               )",
+            prune_usage_snapshots_for_account_sql(),
             (account_id, retain as i64),
         )
     }
@@ -83,22 +156,8 @@ impl Storage {
         if retain == 0 {
             return Ok(0);
         }
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT account_id FROM usage_snapshots")?;
-        let mut rows = stmt.query([])?;
-        let mut account_ids = Vec::new();
-        while let Some(row) = rows.next()? {
-            account_ids.push(row.get::<_, String>(0)?);
-        }
-        drop(rows);
-        drop(stmt);
-        let mut removed = 0_usize;
-        for account_id in account_ids {
-            removed = removed
-                .saturating_add(self.prune_usage_snapshots_for_account(&account_id, retain)?);
-        }
-        Ok(removed)
+        self.conn
+            .execute(prune_usage_snapshots_all_accounts_sql(), [retain as i64])
     }
 
     /// 函数 `usage_snapshot_count_for_account`
@@ -115,10 +174,15 @@ impl Storage {
     /// 返回函数执行结果
     pub fn usage_snapshot_count_for_account(&self, account_id: &str) -> Result<i64> {
         self.conn.query_row(
-            "SELECT COUNT(1) FROM usage_snapshots WHERE account_id = ?1",
+            usage_snapshot_count_for_account_sql(),
             [account_id],
             |row| row.get(0),
         )
+    }
+
+    pub fn usage_snapshot_count(&self) -> Result<i64> {
+        self.conn
+            .query_row(usage_snapshot_count_sql(), [], |row| row.get(0))
     }
 
     /// 函数 `latest_usage_snapshot`
@@ -133,9 +197,7 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn latest_usage_snapshot(&self) -> Result<Option<UsageSnapshotRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at FROM usage_snapshots ORDER BY captured_at DESC, id DESC LIMIT 1",
-        )?;
+        let mut stmt = self.conn.prepare(latest_usage_snapshot_sql())?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
             Ok(Some(map_usage_snapshot_row(row)?))
@@ -160,13 +222,7 @@ impl Storage {
         &self,
         account_id: &str,
     ) -> Result<Option<UsageSnapshotRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at
-             FROM usage_snapshots
-             WHERE account_id = ?1
-             ORDER BY captured_at DESC, id DESC
-             LIMIT 1",
-        )?;
+        let mut stmt = self.conn.prepare(latest_usage_snapshot_for_account_sql())?;
         let mut rows = stmt.query([account_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(map_usage_snapshot_row(row)?))
@@ -187,46 +243,126 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn latest_usage_snapshots_by_account(&self) -> Result<Vec<UsageSnapshotRecord>> {
-        // 中文注释：窗口函数 + 复合索引可稳定处理“同 captured_at 并发写入”场景；
-        // 不这样做会依赖复杂子查询拼接，后续维护和优化都更难。
-        let mut stmt = self.conn.prepare(
-            "WITH ranked AS (
-                SELECT
-                    id,
-                    account_id,
-                    used_percent,
-                    window_minutes,
-                    resets_at,
-                    secondary_used_percent,
-                    secondary_window_minutes,
-                    secondary_resets_at,
-                    credits_json,
-                    captured_at,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY account_id
-                        ORDER BY captured_at DESC, id DESC
-                    ) AS rn
-                FROM usage_snapshots
-            )
-            SELECT
-                account_id,
-                used_percent,
-                window_minutes,
-                resets_at,
-                secondary_used_percent,
-                secondary_window_minutes,
-                secondary_resets_at,
-                credits_json,
-                captured_at
-            FROM ranked
-            WHERE rn = 1
-            ORDER BY captured_at DESC, id DESC",
-        )?;
-        let mut rows = stmt.query([])?;
+        self.latest_usage_snapshots_by_account_limited(None)
+    }
+
+    pub fn latest_usage_snapshots_by_account_limited(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<UsageSnapshotRecord>> {
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let sql = latest_usage_snapshots_by_account_sql(limit);
+        let params = limit.map(|limit| vec![limit as i64]).unwrap_or_default();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(params))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(map_usage_snapshot_row(row)?);
         }
+        Ok(out)
+    }
+
+    pub fn latest_usage_snapshot_summary_rows(&self) -> Result<Vec<UsageSnapshotSummaryRow>> {
+        let sql = latest_usage_snapshot_summary_rows_sql();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(map_usage_snapshot_summary_row(row)?);
+        }
+        Ok(out)
+    }
+
+    pub fn latest_usage_snapshots_for_accounts(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<UsageSnapshotRecord>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(latest_usage_snapshots_for_accounts_chunk(self, chunk)?);
+        }
+        out.sort_by(|a, b| {
+            b.captured_at
+                .cmp(&a.captured_at)
+                .then_with(|| a.account_id.cmp(&b.account_id))
+        });
+        Ok(out)
+    }
+
+    pub fn latest_usage_quota_source_rows_for_accounts(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<UsageSnapshotQuotaSourceRow>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(latest_usage_quota_source_rows_for_accounts_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|a, b| {
+            b.captured_at
+                .cmp(&a.captured_at)
+                .then_with(|| a.account_id.cmp(&b.account_id))
+        });
+        Ok(out)
+    }
+
+    pub fn latest_usage_cleanup_rows_for_accounts(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<UsageSnapshotCleanupRow>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(latest_usage_cleanup_rows_for_accounts_chunk(self, chunk)?);
+        }
+        out.sort_by(|a, b| a.account_id.cmp(&b.account_id));
+        Ok(out)
+    }
+
+    pub fn low_quota_account_ids_for_accounts(
+        &self,
+        account_ids: &[String],
+        primary_min_remaining_percent: f64,
+        secondary_min_remaining_percent: f64,
+    ) -> Result<Vec<String>> {
+        let account_ids = normalize_text_ids(account_ids);
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let primary_threshold = normalize_remaining_threshold(primary_min_remaining_percent);
+        let secondary_threshold = normalize_remaining_threshold(secondary_min_remaining_percent);
+        if primary_threshold <= 0.0 && secondary_threshold <= 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(low_quota_account_ids_for_accounts_chunk(
+                self,
+                chunk,
+                primary_threshold,
+                secondary_threshold,
+            )?);
+        }
+        out.sort();
+        out.dedup();
         Ok(out)
     }
 
@@ -246,6 +382,14 @@ impl Storage {
         self.ensure_column("usage_snapshots", "secondary_window_minutes", "INTEGER")?;
         self.ensure_column("usage_snapshots", "secondary_resets_at", "INTEGER")?;
         Ok(())
+    }
+}
+
+fn normalize_remaining_threshold(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 100.0)
+    } else {
+        0.0
     }
 }
 
@@ -273,3 +417,245 @@ fn map_usage_snapshot_row(row: &Row<'_>) -> Result<UsageSnapshotRecord> {
         captured_at: row.get(8)?,
     })
 }
+
+fn map_usage_snapshot_summary_row(row: &Row<'_>) -> Result<UsageSnapshotSummaryRow> {
+    Ok(UsageSnapshotSummaryRow {
+        account_id: row.get(0)?,
+        used_percent: row.get(1)?,
+        window_minutes: row.get(2)?,
+        secondary_used_percent: row.get(3)?,
+        secondary_window_minutes: row.get(4)?,
+        credits_json: row.get(5)?,
+    })
+}
+
+fn map_usage_quota_source_row(row: &Row<'_>) -> Result<UsageSnapshotQuotaSourceRow> {
+    Ok(UsageSnapshotQuotaSourceRow {
+        account_id: row.get(0)?,
+        used_percent: row.get(1)?,
+        secondary_used_percent: row.get(2)?,
+        captured_at: row.get(3)?,
+    })
+}
+
+fn map_usage_cleanup_row(row: &Row<'_>) -> Result<UsageSnapshotCleanupRow> {
+    Ok(UsageSnapshotCleanupRow {
+        account_id: row.get(0)?,
+        used_percent: row.get(1)?,
+        window_minutes: row.get(2)?,
+        secondary_used_percent: row.get(3)?,
+        secondary_window_minutes: row.get(4)?,
+        credits_json: row.get(5)?,
+    })
+}
+
+fn latest_usage_snapshots_by_account_sql(limit: Option<usize>) -> String {
+    let mut sql = format!(
+        "{cte}
+        SELECT
+            account_id,
+            used_percent,
+            window_minutes,
+            resets_at,
+            secondary_used_percent,
+            secondary_window_minutes,
+            secondary_resets_at,
+            credits_json,
+            captured_at
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY captured_at DESC, id DESC",
+        cte = latest_usage_ranked_cte_sql(
+            "account_id,
+                used_percent,
+                window_minutes,
+                resets_at,
+                secondary_used_percent,
+                secondary_window_minutes,
+                secondary_resets_at,
+                credits_json,
+                captured_at",
+            None,
+        ),
+    );
+    if limit.is_some() {
+        sql.push_str(" LIMIT ?");
+    }
+    sql
+}
+fn latest_usage_ranked_cte_sql(select_columns: &str, where_condition: Option<&str>) -> String {
+    let where_clause = where_condition
+        .map(|condition| format!("WHERE {condition}"))
+        .unwrap_or_default();
+    format!(
+        "WITH ranked AS (
+            SELECT
+                id,
+                {select_columns},
+                ROW_NUMBER() OVER (
+                    PARTITION BY account_id
+                    ORDER BY captured_at DESC, id DESC
+                ) AS rn
+            FROM usage_snapshots
+            {where_clause}
+        )"
+    )
+}
+
+fn latest_usage_snapshots_for_accounts_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<UsageSnapshotRecord>> {
+    let Some((condition, params)) = text_id_in_clause("account_id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = latest_usage_snapshots_for_accounts_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(map_usage_snapshot_row(row)?);
+    }
+    Ok(out)
+}
+
+fn latest_usage_snapshots_for_accounts_chunk_sql(account_condition: &str) -> String {
+    format!(
+        "{cte}
+        SELECT
+            account_id,
+            used_percent,
+            window_minutes,
+            resets_at,
+            secondary_used_percent,
+            secondary_window_minutes,
+            secondary_resets_at,
+            credits_json,
+            captured_at
+        FROM ranked
+        WHERE rn = 1",
+        cte = latest_usage_ranked_cte_sql(
+            "account_id,
+                used_percent,
+                window_minutes,
+                resets_at,
+                secondary_used_percent,
+                secondary_window_minutes,
+                secondary_resets_at,
+                credits_json,
+                captured_at",
+            Some(account_condition),
+        ),
+    )
+}
+
+fn latest_usage_quota_source_rows_for_accounts_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<UsageSnapshotQuotaSourceRow>> {
+    let Some((condition, params)) = text_id_in_clause("account_id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = latest_usage_quota_source_rows_for_accounts_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), map_usage_quota_source_row)?;
+    rows.collect()
+}
+
+fn latest_usage_quota_source_rows_for_accounts_chunk_sql(account_condition: &str) -> String {
+    format!(
+        "{cte}
+        SELECT account_id, used_percent, secondary_used_percent, captured_at
+        FROM ranked
+        WHERE rn = 1",
+        cte = latest_usage_ranked_cte_sql(
+            "account_id,
+                used_percent,
+                secondary_used_percent,
+                captured_at",
+            Some(account_condition),
+        ),
+    )
+}
+
+fn latest_usage_cleanup_rows_for_accounts_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+) -> Result<Vec<UsageSnapshotCleanupRow>> {
+    let Some((condition, params)) = text_id_in_clause("account_id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = latest_usage_cleanup_rows_for_accounts_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), map_usage_cleanup_row)?;
+    rows.collect()
+}
+
+fn latest_usage_cleanup_rows_for_accounts_chunk_sql(account_condition: &str) -> String {
+    format!(
+        "{cte}
+        SELECT
+            account_id,
+            used_percent,
+            window_minutes,
+            secondary_used_percent,
+            secondary_window_minutes,
+            credits_json
+        FROM ranked
+        WHERE rn = 1",
+        cte = latest_usage_ranked_cte_sql(
+            "account_id,
+                used_percent,
+                window_minutes,
+                secondary_used_percent,
+                secondary_window_minutes,
+                credits_json",
+            Some(account_condition),
+        ),
+    )
+}
+
+fn low_quota_account_ids_for_accounts_chunk(
+    storage: &Storage,
+    account_ids: &[String],
+    primary_min_remaining_percent: f64,
+    secondary_min_remaining_percent: f64,
+) -> Result<Vec<String>> {
+    let Some((condition, params)) = text_id_in_clause("account_id", account_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = low_quota_account_ids_for_accounts_chunk_sql(&condition);
+    let mut values = params;
+    values.extend([
+        rusqlite::types::Value::Real(primary_min_remaining_percent),
+        rusqlite::types::Value::Real(primary_min_remaining_percent),
+        rusqlite::types::Value::Real(secondary_min_remaining_percent),
+        rusqlite::types::Value::Real(secondary_min_remaining_percent),
+    ]);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(values), |row| row.get(0))?;
+    rows.collect()
+}
+
+fn low_quota_account_ids_for_accounts_chunk_sql(account_condition: &str) -> String {
+    format!(
+        "{cte}
+        SELECT account_id
+        FROM ranked
+        WHERE rn = 1
+          AND (
+                (? > 0.0 AND used_percent IS NOT NULL AND (100.0 - used_percent) <= ?)
+                OR (? > 0.0 AND secondary_used_percent IS NOT NULL AND (100.0 - secondary_used_percent) <= ?)
+          )",
+        cte = latest_usage_ranked_cte_sql(
+            "account_id,
+                used_percent,
+                secondary_used_percent",
+            Some(account_condition),
+        ),
+    )
+}
+
+#[cfg(test)]
+#[path = "usage_tests.rs"]
+mod tests;

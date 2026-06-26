@@ -84,6 +84,9 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 quota_capacity_secondary_window_tokens,
             ))
         }
+        "account/updateSorts" => super::value_or_error(
+            account_sort_updates_param(req).and_then(account_update::update_account_sorts),
+        ),
         "account/warmup" => {
             let account_ids = req
                 .params
@@ -257,6 +260,35 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
     Some(super::response(req, result))
 }
 
+fn account_sort_updates_param(
+    req: &JsonRpcRequest,
+) -> Result<Vec<account_update::AccountSortUpdate>, String> {
+    let items = req
+        .params
+        .as_ref()
+        .and_then(|params| params.get("updates"))
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "missing account sort updates".to_string())?;
+    let mut updates = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let source = item
+            .as_object()
+            .ok_or_else(|| format!("account sort update at index {index} must be an object"))?;
+        let account_id = source
+            .get("accountId")
+            .or_else(|| source.get("account_id"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| format!("account sort update at index {index} missing accountId"))?
+            .to_string();
+        let sort = source
+            .get("sort")
+            .and_then(|value| value.as_i64())
+            .ok_or_else(|| format!("account sort update at index {index} missing sort"))?;
+        updates.push(account_update::AccountSortUpdate { account_id, sort });
+    }
+    Ok(updates)
+}
+
 fn string_array_param(req: &JsonRpcRequest, key: &str) -> Option<Vec<String>> {
     req.params
         .as_ref()
@@ -319,4 +351,49 @@ fn first_string_param(req: &JsonRpcRequest, keys: &[&str]) -> Option<String> {
 /// 返回函数执行结果
 fn first_bool_param(req: &JsonRpcRequest, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| super::bool_param(req, key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rpc_request(method: &str, params: serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            id: 1.into(),
+            method: method.to_string(),
+            params: Some(params),
+            trace: None,
+        }
+    }
+
+    fn error_message(resp: &JsonRpcResponse) -> String {
+        resp.result
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    #[test]
+    fn update_sorts_rpc_rejects_malformed_updates() {
+        let missing_sort = try_handle(&rpc_request(
+            "account/updateSorts",
+            serde_json::json!({ "updates": [{ "accountId": "acc-a" }] }),
+        ))
+        .expect("response");
+        assert_eq!(
+            error_message(&missing_sort),
+            "account sort update at index 0 missing sort"
+        );
+
+        let missing_account_id = try_handle(&rpc_request(
+            "account/updateSorts",
+            serde_json::json!({ "updates": [{ "sort": 1 }] }),
+        ))
+        .expect("response");
+        assert_eq!(
+            error_message(&missing_account_id),
+            "account sort update at index 0 missing accountId"
+        );
+    }
 }

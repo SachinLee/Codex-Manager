@@ -88,6 +88,11 @@ export interface AccountDeleteByStatusesPayload {
   statuses: string[];
 }
 
+export interface AccountSortUpdatePayload {
+  accountId: string;
+  sort: number;
+}
+
 interface LoginStartPayload {
   loginType?: string;
   openBrowser?: boolean;
@@ -249,6 +254,7 @@ function createEmptyImportResult(): AccountImportResult {
     updated: 0,
     failed: 0,
     errors: [],
+    importedAccountIds: [],
   };
 }
 
@@ -331,6 +337,19 @@ function mergeImportResult(
   target.created = (target.created || 0) + (source.created || 0);
   target.updated = (target.updated || 0) + (source.updated || 0);
   target.failed = (target.failed || 0) + (source.failed || 0);
+  const importedAccountIds = source.importedAccountIds || [];
+  if (!target.importedAccountIds) {
+    target.importedAccountIds = [];
+  }
+  for (const accountId of importedAccountIds) {
+    const normalizedAccountId = String(accountId || "").trim();
+    if (
+      normalizedAccountId &&
+      !target.importedAccountIds.includes(normalizedAccountId)
+    ) {
+      target.importedAccountIds.push(normalizedAccountId);
+    }
+  }
 
   const errors = source.errors || [];
   if (!target.errors) {
@@ -405,6 +424,16 @@ export const accountClient = {
     ),
   updateSort: (accountId: string, sort: number) =>
     invoke("service_account_update", withAddr({ accountId, sort })),
+  updateSorts: (updates: AccountSortUpdatePayload[]) =>
+    invoke(
+      "service_account_update_sorts",
+      withAddr({
+        updates: updates.map((update) => ({
+          accountId: update.accountId,
+          sort: update.sort,
+        })),
+      })
+    ),
   updateProfile: (accountId: string, params: AccountUpdatePayload) =>
     invoke(
       "service_account_update",

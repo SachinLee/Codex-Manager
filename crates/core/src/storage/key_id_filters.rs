@@ -10,36 +10,51 @@ pub(super) const SQLITE_IN_CLAUSE_BATCH_SIZE: usize = 900;
 
 static NEXT_TEMP_FILTER_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(super) fn normalize_key_ids(key_ids: &[String]) -> Vec<String> {
-    let mut normalized = key_ids
+pub(super) fn normalize_text_ids(ids: &[String]) -> Vec<String> {
+    let mut normalized = ids
         .iter()
-        .map(|key_id| key_id.trim())
-        .filter(|key_id| !key_id.is_empty())
-        .map(|key_id| key_id.to_string())
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_string())
         .collect::<Vec<_>>();
     normalized.sort();
     normalized.dedup();
     normalized
 }
 
-pub(super) fn key_id_in_clause(column: &str, key_ids: &[String]) -> Option<(String, Vec<Value>)> {
-    let key_ids = normalize_key_ids(key_ids);
-    if key_ids.is_empty() {
+pub(super) fn normalize_key_ids(key_ids: &[String]) -> Vec<String> {
+    normalize_text_ids(key_ids)
+}
+
+pub(super) fn text_id_in_clause(column: &str, ids: &[String]) -> Option<(String, Vec<Value>)> {
+    let ids = normalize_text_ids(ids);
+    if ids.is_empty() {
         return None;
     }
 
     let placeholders = std::iter::repeat("?")
-        .take(key_ids.len())
+        .take(ids.len())
         .collect::<Vec<_>>()
         .join(", ");
-    let params = key_ids.into_iter().map(Value::Text).collect::<Vec<_>>();
+    let params = ids.into_iter().map(Value::Text).collect::<Vec<_>>();
     Some((format!("{column} IN ({placeholders})"), params))
+}
+
+pub(super) fn key_id_in_clause(column: &str, key_ids: &[String]) -> Option<(String, Vec<Value>)> {
+    text_id_in_clause(column, key_ids)
 }
 
 pub(super) struct KeyIdSqlFilter<'a> {
     condition: String,
     params: Vec<Value>,
     // Keep the temporary table alive for as long as the generated SQL can run.
+    _temp_filter: Option<TempKeyIdFilter<'a>>,
+}
+
+pub(super) struct PairedKeyIdSqlFilter<'a> {
+    first_condition: String,
+    second_condition: String,
+    params: Vec<Value>,
     _temp_filter: Option<TempKeyIdFilter<'a>>,
 }
 
@@ -78,6 +93,64 @@ impl<'a> KeyIdSqlFilter<'a> {
 
     pub(super) fn condition(&self) -> &str {
         &self.condition
+    }
+
+    pub(super) fn params(&self) -> &[Value] {
+        &self.params
+    }
+}
+
+impl<'a> PairedKeyIdSqlFilter<'a> {
+    pub(super) fn create(
+        storage: &'a Storage,
+        first_column: &str,
+        second_column: &str,
+        key_ids: &[String],
+    ) -> Result<Option<Self>> {
+        let key_ids = normalize_key_ids(key_ids);
+        if key_ids.is_empty() {
+            return Ok(None);
+        }
+
+        if key_ids.len() <= SQLITE_IN_CLAUSE_BATCH_SIZE {
+            let Some((first_condition, first_params)) = key_id_in_clause(first_column, &key_ids)
+            else {
+                return Ok(None);
+            };
+            let Some((second_condition, second_params)) = key_id_in_clause(second_column, &key_ids)
+            else {
+                return Ok(None);
+            };
+            let mut params = Vec::with_capacity(first_params.len() + second_params.len());
+            params.extend(first_params);
+            params.extend(second_params);
+            return Ok(Some(Self {
+                first_condition,
+                second_condition,
+                params,
+                _temp_filter: None,
+            }));
+        }
+
+        let Some(temp_filter) = TempKeyIdFilter::create(storage, &key_ids)? else {
+            return Ok(None);
+        };
+        let first_condition = temp_filter.condition(first_column);
+        let second_condition = temp_filter.condition(second_column);
+        Ok(Some(Self {
+            first_condition,
+            second_condition,
+            params: Vec::new(),
+            _temp_filter: Some(temp_filter),
+        }))
+    }
+
+    pub(super) fn first_condition(&self) -> &str {
+        &self.first_condition
+    }
+
+    pub(super) fn second_condition(&self) -> &str {
+        &self.second_condition
     }
 
     pub(super) fn params(&self) -> &[Value] {

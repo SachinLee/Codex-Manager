@@ -1,10 +1,10 @@
 use super::{
     clear_pending_usage_refresh_tasks_for_tests, enqueue_usage_refresh_with_worker,
-    next_usage_poll_cursor, notify_usage_refresh_completed, reset_usage_poll_cursor_for_tests,
-    resolve_token_refresh_issuer, run_token_refresh_task, set_usage_refresh_completed_handler,
-    should_retry_usage_refresh_with_token, subscribe_usage_refresh_completed,
-    token_refresh_access_exp_cutoff, token_refresh_due_cutoff, token_refresh_schedule,
-    usage_poll_batch_indices,
+    load_token_refresh_issuers_for_tokens, next_usage_poll_cursor, notify_usage_refresh_completed,
+    reset_usage_poll_cursor_for_tests, resolve_token_refresh_issuer, run_token_refresh_task,
+    set_usage_refresh_completed_handler, should_retry_usage_refresh_with_token,
+    subscribe_usage_refresh_completed, token_refresh_access_exp_cutoff, token_refresh_due_cutoff,
+    token_refresh_schedule, usage_poll_batch_indices,
 };
 use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use std::collections::HashSet;
@@ -357,22 +357,11 @@ fn due_cutoff_covers_boundary_when_poll_interval_matches_refresh_ahead() {
 /// 无
 #[test]
 fn token_refresh_issuer_uses_account_issuer() {
-    let now = now_ts();
-    let account = Account {
-        id: "acc-custom-issuer".to_string(),
-        label: "custom issuer".to_string(),
-        issuer: "https://custom-issuer.example".to_string(),
-        chatgpt_account_id: None,
-        workspace_id: None,
-        group_name: None,
-        sort: 0,
-        status: "active".to_string(),
-        created_at: now,
-        updated_at: now,
-    };
-
     assert_eq!(
-        resolve_token_refresh_issuer(Some(&account), "https://auth.openai.com"),
+        resolve_token_refresh_issuer(
+            Some("https://custom-issuer.example"),
+            "https://auth.openai.com"
+        ),
         "https://custom-issuer.example"
     );
 }
@@ -390,27 +379,84 @@ fn token_refresh_issuer_uses_account_issuer() {
 /// 无
 #[test]
 fn token_refresh_issuer_falls_back_to_default() {
-    let now = now_ts();
-    let account = Account {
-        id: "acc-empty-issuer".to_string(),
-        label: "empty issuer".to_string(),
-        issuer: "  ".to_string(),
-        chatgpt_account_id: None,
-        workspace_id: None,
-        group_name: None,
-        sort: 0,
-        status: "active".to_string(),
-        created_at: now,
-        updated_at: now,
-    };
-
     assert_eq!(
-        resolve_token_refresh_issuer(Some(&account), "https://auth.openai.com"),
+        resolve_token_refresh_issuer(Some("  "), "https://auth.openai.com"),
         "https://auth.openai.com"
     );
     assert_eq!(
         resolve_token_refresh_issuer(None, "https://auth.openai.com"),
         "https://auth.openai.com"
+    );
+}
+
+#[test]
+fn load_token_refresh_issuers_for_tokens_reads_only_due_token_issuers() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init");
+    let now = now_ts();
+
+    for id in ["acc-due-b", "acc-ignored", "acc-due-a"] {
+        storage
+            .insert_account(&Account {
+                id: id.to_string(),
+                label: id.to_string(),
+                issuer: format!("https://{id}.example"),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort: if id == "acc-due-a" { 0 } else { 1 },
+                status: "active".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+    }
+
+    let tokens = vec![
+        Token {
+            account_id: "acc-due-b".to_string(),
+            id_token: "id".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            api_key_access_token: None,
+            last_refresh: now,
+        },
+        Token {
+            account_id: "acc-missing".to_string(),
+            id_token: "id".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            api_key_access_token: None,
+            last_refresh: now,
+        },
+        Token {
+            account_id: "acc-due-a".to_string(),
+            id_token: "id".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            api_key_access_token: None,
+            last_refresh: now,
+        },
+    ];
+
+    let issuers =
+        load_token_refresh_issuers_for_tokens(&storage, &tokens).expect("load account issuers");
+
+    assert_eq!(
+        issuers
+            .into_iter()
+            .map(|issuer| (issuer.id, issuer.issuer))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "acc-due-a".to_string(),
+                "https://acc-due-a.example".to_string()
+            ),
+            (
+                "acc-due-b".to_string(),
+                "https://acc-due-b.example".to_string()
+            ),
+        ]
     );
 }
 

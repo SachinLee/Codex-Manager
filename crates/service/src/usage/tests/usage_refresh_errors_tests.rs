@@ -1,5 +1,6 @@
 use super::{
-    classify_usage_refresh_error, should_record_failure_event_with_state, FailureThrottleKey,
+    classify_usage_refresh_error, should_record_failure_event_with_state,
+    status_reason_for_refresh_failure, FailureThrottleKey,
 };
 use std::collections::HashMap;
 
@@ -57,7 +58,45 @@ fn usage_refresh_error_class_catches_timeout_and_connection() {
         classify_usage_refresh_error("connection reset by peer"),
         "connection"
     );
+    assert_eq!(
+        classify_usage_refresh_error(
+            "error sending request for url (https://chatgpt.com/backend-api/accounts/check)"
+        ),
+        "connection"
+    );
     assert_eq!(classify_usage_refresh_error("unknown error"), "other");
+}
+
+/// 函数 `usage_refresh_error_class_maps_to_visible_status_reason`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-06-23
+///
+/// # 参数
+/// 无
+///
+/// # 返回
+/// 无
+#[test]
+fn usage_refresh_error_class_maps_to_visible_status_reason() {
+    assert_eq!(
+        status_reason_for_refresh_failure("timeout"),
+        Some("usage_refresh_timeout")
+    );
+    assert_eq!(
+        status_reason_for_refresh_failure("connection"),
+        Some("usage_refresh_connection")
+    );
+    assert_eq!(
+        status_reason_for_refresh_failure("dns"),
+        Some("usage_refresh_dns")
+    );
+    assert_eq!(
+        status_reason_for_refresh_failure("other"),
+        Some("usage_refresh_failed")
+    );
+    assert_eq!(status_reason_for_refresh_failure("usage_status_500"), None);
 }
 
 /// 函数 `failure_event_throttle_dedupes_within_window`

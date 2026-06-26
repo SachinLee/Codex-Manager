@@ -1,8 +1,9 @@
 use codexmanager_core::{
     rpc::types::{AccountListResult, AccountSummary},
     storage::{
-        Account, AccountMetadata, AccountQuotaCapacityOverride, AccountSubscription, Token,
-        UsageSnapshotRecord,
+        Account, AccountListSummaryRow, AccountMetadata, AccountQuotaCapacityOverride,
+        AccountSubscription, AccountSummaryStorageSnapshot, AccountSummaryStorageSnapshotOptions,
+        AccountTokenPlan, UsageSnapshotRecord,
     },
 };
 use std::collections::HashMap;
@@ -39,11 +40,23 @@ impl From<Account> for AccountSummaryParts {
     }
 }
 
+impl From<AccountListSummaryRow> for AccountSummaryParts {
+    fn from(account: AccountListSummaryRow) -> Self {
+        Self {
+            id: account.id,
+            label: account.label,
+            group_name: account.group_name,
+            sort: account.sort,
+            status: account.status,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct AccountSummarySetup {
     preferred_account_id: Option<String>,
     status_reasons: HashMap<String, String>,
-    tokens: HashMap<String, Token>,
+    tokens: HashMap<String, AccountTokenPlan>,
     usage_snapshots: Vec<UsageSnapshotRecord>,
     metadata: HashMap<String, AccountMetadata>,
     subscriptions: HashMap<String, AccountSubscription>,
@@ -78,10 +91,11 @@ pub(crate) fn read_accounts() -> Result<AccountListResult, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
     let db_path = std::env::var("CODEXMANAGER_DB_PATH").unwrap_or_else(|_| "<unset>".to_string());
     let accounts = storage
-        .list_accounts()
+        .list_account_summary_rows()
         .map_err(|err| format!("list accounts failed: {err}"))?;
     let total = accounts.len() as i64;
-    let items = to_account_summaries(&storage, accounts)?;
+    let context = build_account_summary_context_from_rows(&storage, accounts)?;
+    let items = context.items;
     let page_size = if total > 0 {
         total
     } else {
@@ -171,93 +185,118 @@ fn to_account_summary_with_reason(
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) fn build_account_summary_context(
+pub(crate) fn build_account_summary_context_from_rows(
     storage: &codexmanager_core::storage::Storage,
-    accounts: &[Account],
+    accounts: Vec<AccountListSummaryRow>,
 ) -> Result<AccountSummaryContext, String> {
+    build_account_summary_context_from_rows_with_options(
+        storage,
+        accounts,
+        AccountSummaryStorageSnapshotOptions::default(),
+    )
+}
+
+pub(crate) fn build_account_summary_context_from_rows_with_options(
+    storage: &codexmanager_core::storage::Storage,
+    accounts: Vec<AccountListSummaryRow>,
+    options: AccountSummaryStorageSnapshotOptions,
+) -> Result<AccountSummaryContext, String> {
+    build_account_summary_context_for_items(storage, accounts, options)
+}
+
+fn build_account_summary_context_for_items<A>(
+    storage: &codexmanager_core::storage::Storage,
+    accounts: Vec<A>,
+    options: AccountSummaryStorageSnapshotOptions,
+) -> Result<AccountSummaryContext, String>
+where
+    A: Into<AccountSummaryParts> + AsAccountId,
+{
+    if accounts.is_empty() {
+        return Ok(AccountSummaryContext {
+            items: Vec::new(),
+            usage_snapshots: Vec::new(),
+        });
+    }
     let account_ids = accounts
         .iter()
-        .map(|account| account.id.clone())
+        .map(|account| account.account_id().to_string())
         .collect::<Vec<_>>();
-    let setup = load_account_summary_setup(storage, &account_ids)?;
-    let items = build_account_summary_items(accounts.iter(), &setup);
+    let setup = load_account_summary_setup(storage, &account_ids, options)?;
+    let items = build_account_summary_items(accounts, &setup);
     Ok(AccountSummaryContext {
         items,
         usage_snapshots: setup.usage_snapshots,
     })
 }
 
-fn to_account_summaries(
-    storage: &codexmanager_core::storage::Storage,
-    accounts: Vec<Account>,
-) -> Result<Vec<AccountSummary>, String> {
-    let account_ids = accounts
-        .iter()
-        .map(|account| account.id.clone())
-        .collect::<Vec<_>>();
-    let setup = load_account_summary_setup(storage, &account_ids)?;
-    Ok(build_account_summary_items(accounts, &setup))
+trait AsAccountId {
+    fn account_id(&self) -> &str;
+}
+
+impl AsAccountId for Account {
+    fn account_id(&self) -> &str {
+        self.id.as_str()
+    }
+}
+
+impl AsAccountId for AccountListSummaryRow {
+    fn account_id(&self) -> &str {
+        self.id.as_str()
+    }
 }
 
 fn load_account_summary_setup(
     storage: &codexmanager_core::storage::Storage,
     account_ids: &[String],
+    options: AccountSummaryStorageSnapshotOptions,
 ) -> Result<AccountSummarySetup, String> {
-    let preferred_account_id = storage
-        .preferred_account_id()
-        .map_err(|err| format!("load preferred account failed: {err}"))?;
-    let status_reasons = storage
-        .latest_account_status_reasons(account_ids)
-        .map_err(|err| format!("load account status reasons failed: {err}"))?;
-    let tokens = storage
-        .list_tokens()
-        .map_err(|err| format!("load account tokens failed: {err}"))?
+    let snapshot = storage
+        .load_account_summary_storage_snapshot_with_options(account_ids, options)
+        .map_err(|err| format!("load account summary snapshot failed: {err}"))?;
+    Ok(account_summary_setup_from_snapshot(snapshot))
+}
+
+fn account_summary_setup_from_snapshot(
+    snapshot: AccountSummaryStorageSnapshot,
+) -> AccountSummarySetup {
+    let tokens = snapshot
+        .tokens
         .into_iter()
         .map(|token| (token.account_id.clone(), token))
-        .collect::<HashMap<String, Token>>();
-    let usage_snapshots = storage
-        .latest_usage_snapshots_by_account()
-        .map_err(|err| format!("load account usage snapshots failed: {err}"))?;
-    let metadata = storage
-        .list_account_metadata()
-        .map_err(|err| format!("load account metadata failed: {err}"))?
+        .collect::<HashMap<String, AccountTokenPlan>>();
+    let metadata = snapshot
+        .metadata
         .into_iter()
         .map(|item| (item.account_id.clone(), item))
         .collect::<HashMap<String, AccountMetadata>>();
-    let subscriptions = storage
-        .list_account_subscriptions()
-        .map_err(|err| format!("load account subscriptions failed: {err}"))?
+    let subscriptions = snapshot
+        .subscriptions
         .into_iter()
         .map(|item| (item.account_id.clone(), item))
         .collect::<HashMap<String, AccountSubscription>>();
-    let source_assignments = storage
-        .list_quota_source_model_assignments()
-        .map_err(|err| format!("load quota source assignments failed: {err}"))?;
     let mut model_slugs_by_account: HashMap<String, Vec<String>> = HashMap::new();
-    for assignment in source_assignments {
-        if assignment.source_kind == "openai_account" {
-            model_slugs_by_account
-                .entry(assignment.source_id)
-                .or_default()
-                .push(assignment.model_slug);
-        }
+    for assignment in snapshot.model_assignments {
+        model_slugs_by_account
+            .entry(assignment.source_id)
+            .or_default()
+            .push(assignment.model_slug);
     }
-    let quota_overrides = storage
-        .list_account_quota_capacity_overrides()
-        .map_err(|err| format!("load account quota capacity overrides failed: {err}"))?
+    let quota_overrides = snapshot
+        .quota_overrides
         .into_iter()
         .map(|item| (item.account_id.clone(), item))
         .collect::<HashMap<String, AccountQuotaCapacityOverride>>();
-    Ok(AccountSummarySetup {
-        preferred_account_id,
-        status_reasons,
+    AccountSummarySetup {
+        preferred_account_id: snapshot.preferred_account_id,
+        status_reasons: snapshot.status_reasons,
         tokens,
-        usage_snapshots,
+        usage_snapshots: snapshot.usage_snapshots,
         metadata,
         subscriptions,
         model_slugs_by_account,
         quota_overrides,
-    })
+    }
 }
 
 fn build_account_summary_items<I, A>(
@@ -310,7 +349,7 @@ fn map_account_summary<A>(
     account: A,
     preferred_account_id: Option<&str>,
     status_reasons: &HashMap<String, String>,
-    tokens: &HashMap<String, Token>,
+    tokens: &HashMap<String, AccountTokenPlan>,
     usages: &HashMap<String, &UsageSnapshotRecord>,
     metadata: &HashMap<String, AccountMetadata>,
     subscriptions: &HashMap<String, AccountSubscription>,

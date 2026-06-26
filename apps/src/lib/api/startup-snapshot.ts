@@ -2,7 +2,7 @@
 
 import { StartupSnapshot } from "@/types";
 
-export const STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT = 120;
+export const STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT = 24;
 export const STARTUP_SNAPSHOT_STALE_TIME = 15_000;
 export const STARTUP_SNAPSHOT_WARMUP_INTERVAL_MS = 2_500;
 export const STARTUP_SNAPSHOT_WARMUP_TIMEOUT_MS = 45_000;
@@ -25,8 +25,27 @@ export function buildStartupSnapshotQueryKey(
   addr: string | null | undefined,
   requestLogLimit = STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
   dayStartTs?: number | null,
+  dayEndTs?: number | null,
+  includeApiModels = true,
+  includeApiKeys = true,
+  includeAccounts = true,
+  includeUsageSnapshots = true,
+  includeAccountRuntime = true,
+  includeAccountDetails = true,
 ) {
-  return ["startup-snapshot", addr || null, requestLogLimit, dayStartTs || null] as const;
+  return [
+    "startup-snapshot",
+    addr || null,
+    requestLogLimit,
+    dayStartTs || null,
+    dayEndTs || null,
+    includeApiModels,
+    includeApiKeys,
+    includeAccounts,
+    includeUsageSnapshots,
+    includeAccountRuntime,
+    includeAccountDetails,
+  ] as const;
 }
 
 /**

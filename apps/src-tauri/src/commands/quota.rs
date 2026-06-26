@@ -62,7 +62,9 @@ pub async fn service_quota_capacity_config(
 }
 
 #[tauri::command]
-pub async fn service_quota_billing_rules(addr: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn service_quota_billing_rules(
+    addr: Option<String>,
+) -> Result<serde_json::Value, String> {
     rpc_call_in_background("quota/billingRules", addr, None).await
 }
 

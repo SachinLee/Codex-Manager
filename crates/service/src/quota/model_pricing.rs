@@ -1,4 +1,5 @@
 use codexmanager_core::storage::{now_ts, ModelPriceRule, Storage};
+use std::sync::{Mutex, OnceLock};
 
 pub(crate) const PRICE_SEED_VERSION: &str = "2026-05-11";
 
@@ -15,6 +16,14 @@ struct PriceSeed {
     long_context_output_price_per_1m: Option<f64>,
     source_url: &'static str,
 }
+
+#[derive(Debug, Clone)]
+struct EnabledPriceRuleCache {
+    db_path: String,
+    rules: Vec<ModelPriceRule>,
+}
+
+static ENABLED_PRICE_RULE_CACHE: OnceLock<Mutex<Option<EnabledPriceRuleCache>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) struct ModelPriceMatch {
@@ -415,6 +424,7 @@ pub(crate) fn ensure_official_price_seed(storage: &Storage) -> Result<(), String
             })
             .map_err(|err| format!("insert official model price seed failed: {err}"))?;
     }
+    invalidate_price_rule_cache();
     Ok(())
 }
 
@@ -423,6 +433,45 @@ pub(crate) fn load_enabled_price_rules(storage: &Storage) -> Result<Vec<ModelPri
     storage
         .list_enabled_model_price_rules()
         .map_err(|err| format!("list enabled model price rules failed: {err}"))
+}
+
+pub(crate) fn invalidate_price_rule_cache() {
+    let mut cache = crate::lock_utils::lock_recover(
+        ENABLED_PRICE_RULE_CACHE.get_or_init(|| Mutex::new(None)),
+        "enabled_price_rule_cache",
+    );
+    *cache = None;
+}
+
+fn current_price_rule_cache_db_path() -> Option<String> {
+    let db_path = std::env::var("CODEXMANAGER_DB_PATH").ok()?;
+    let db_path = db_path.trim();
+    if db_path.is_empty() || db_path == "<unset>" {
+        return None;
+    }
+    Some(db_path.to_string())
+}
+
+fn load_enabled_price_rules_cached(storage: &Storage) -> Result<Vec<ModelPriceRule>, String> {
+    let Some(db_path) = current_price_rule_cache_db_path() else {
+        return load_enabled_price_rules(storage);
+    };
+
+    let cache_lock = ENABLED_PRICE_RULE_CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let cache = crate::lock_utils::lock_recover(cache_lock, "enabled_price_rule_cache");
+        if let Some(cached) = cache.as_ref().filter(|cached| cached.db_path == db_path) {
+            return Ok(cached.rules.clone());
+        }
+    }
+
+    let rules = load_enabled_price_rules(storage)?;
+    let mut cache = crate::lock_utils::lock_recover(cache_lock, "enabled_price_rule_cache");
+    *cache = Some(EnabledPriceRuleCache {
+        db_path,
+        rules: rules.clone(),
+    });
+    Ok(rules)
 }
 
 pub(crate) fn wildcard_matches(pattern: &str, value: &str) -> bool {
@@ -660,8 +709,7 @@ pub(crate) fn estimate_cost_usd_for_log(
     let input = input_tokens.unwrap_or(0);
     let cached = cached_input_tokens.unwrap_or(0);
     let output = output_tokens.unwrap_or(0);
-    let cost = storage
-        .list_enabled_model_price_rules()
+    let cost = load_enabled_price_rules_cached(storage)
         .ok()
         .filter(|rules| !rules.is_empty())
         .map(|rules| estimate_cost_with_rules(&rules, model, input, cached, output))
@@ -671,146 +719,5 @@ pub(crate) fn estimate_cost_usd_for_log(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_rule(
-        id: &str,
-        model_pattern: &str,
-        match_type: &str,
-        priority: i64,
-        input: f64,
-        cached: Option<f64>,
-        output: f64,
-    ) -> ModelPriceRule {
-        ModelPriceRule {
-            id: id.to_string(),
-            provider: "test".to_string(),
-            model_pattern: model_pattern.to_string(),
-            match_type: match_type.to_string(),
-            billing_mode: "standard".to_string(),
-            currency: "USD".to_string(),
-            unit: "per_1m_tokens".to_string(),
-            input_price_per_1m: Some(input),
-            cached_input_price_per_1m: cached,
-            output_price_per_1m: Some(output),
-            reasoning_output_price_per_1m: None,
-            cache_write_5m_price_per_1m: None,
-            cache_write_1h_price_per_1m: None,
-            cache_hit_price_per_1m: None,
-            long_context_threshold_tokens: None,
-            long_context_input_price_per_1m: None,
-            long_context_cached_input_price_per_1m: None,
-            long_context_output_price_per_1m: None,
-            source: "test".to_string(),
-            source_url: None,
-            seed_version: None,
-            enabled: true,
-            priority,
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    fn assert_close(actual: f64, expected: f64) {
-        let delta = (actual - expected).abs();
-        assert!(
-            delta < 0.000_000_1,
-            "expected {expected}, got {actual}, delta {delta}"
-        );
-    }
-
-    #[test]
-    fn resolves_exact_and_wildcard_database_rules() {
-        let rules = vec![
-            test_rule("wild", "vendor-*-mini", "wildcard", 10, 1.0, Some(0.1), 2.0),
-            test_rule(
-                "exact",
-                "vendor-model-mini",
-                "exact",
-                100,
-                3.0,
-                Some(0.3),
-                4.0,
-            ),
-        ];
-        let exact =
-            resolve_model_price_from_rules(&rules, "vendor-model-mini", 0).expect("exact rule");
-        assert_close(exact.input_price_per_1m, 3.0);
-        assert_close(exact.cached_input_price_per_1m, 0.3);
-        assert_close(exact.output_price_per_1m, 4.0);
-
-        let wildcard =
-            resolve_model_price_from_rules(&rules, "vendor-other-mini", 0).expect("wildcard rule");
-        assert_close(wildcard.input_price_per_1m, 1.0);
-        assert_close(wildcard.output_price_per_1m, 2.0);
-    }
-
-    #[test]
-    fn resolves_exact_and_snapshot_models() {
-        let exact = resolve_model_price("gpt-5.4-mini", 0).expect("exact price");
-        assert_eq!(exact.provider, "openai");
-        assert_close(exact.input_price_per_1m, 0.75);
-        assert_close(exact.cached_input_price_per_1m, 0.075);
-        assert_close(exact.output_price_per_1m, 4.5);
-
-        let snapshot = resolve_model_price("gpt-5.4-mini-2026-03-17", 0).expect("snapshot price");
-        assert_close(snapshot.input_price_per_1m, 0.75);
-        assert_close(snapshot.output_price_per_1m, 4.5);
-    }
-
-    #[test]
-    fn prefers_more_specific_prefix_for_latest_claude_opus() {
-        let latest = resolve_model_price("claude-opus-4.7-20260219", 0).expect("latest opus price");
-        assert_eq!(latest.provider, "anthropic");
-        assert_close(latest.input_price_per_1m, 5.0);
-        assert_close(latest.cached_input_price_per_1m, 0.5);
-        assert_close(latest.output_price_per_1m, 25.0);
-
-        let legacy = resolve_model_price("claude-opus-4-20250514", 0).expect("opus 4 price");
-        assert_close(legacy.input_price_per_1m, 15.0);
-        assert_close(legacy.output_price_per_1m, 75.0);
-    }
-
-    #[test]
-    fn returns_missing_for_unknown_models() {
-        assert!(resolve_model_price("unknown-provider-model", 0).is_none());
-        let cost = estimate_cost(Some("unknown-provider-model"), 100, 0, 100);
-        assert_eq!(cost.price_status, "missing");
-        assert!(cost.cost_usd.is_none());
-        assert!(cost.provider.is_none());
-    }
-
-    #[test]
-    fn zero_usd_balance_is_known_zero_tokens() {
-        let tokens = estimate_remaining_tokens_from_usd_with_rules(&[], "gpt-5.4-mini", 0.0);
-        assert_eq!(tokens, Some(0));
-    }
-
-    #[test]
-    fn estimates_cost_with_cached_input_discount() {
-        let cost = estimate_cost(Some("gpt-5.4"), 1_000, 400, 100);
-        assert_eq!(cost.price_status, "ok");
-        assert_eq!(cost.provider.as_deref(), Some("openai"));
-        assert_close(cost.cost_usd.expect("cost"), 0.0031);
-    }
-
-    #[test]
-    fn falls_back_cached_input_to_input_price_when_no_discount_exists() {
-        let cost = estimate_cost(Some("gpt-5.5-pro"), 1_000, 200, 100);
-        assert_eq!(cost.price_status, "ok");
-        assert_close(cost.cost_usd.expect("cost"), 0.048);
-    }
-
-    #[test]
-    fn applies_openai_long_context_pricing_at_threshold() {
-        let standard = resolve_model_price("gpt-5.4", 271_999).expect("standard price");
-        assert_close(standard.input_price_per_1m, 2.5);
-        assert_close(standard.output_price_per_1m, 15.0);
-
-        let long_context = resolve_model_price("gpt-5.4", 272_000).expect("long context price");
-        assert_close(long_context.input_price_per_1m, 5.0);
-        assert_close(long_context.cached_input_price_per_1m, 0.5);
-        assert_close(long_context.output_price_per_1m, 22.5);
-    }
-}
+#[path = "model_pricing_tests.rs"]
+mod tests;

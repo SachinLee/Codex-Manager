@@ -1,4 +1,4 @@
-use codexmanager_core::storage::Account;
+use codexmanager_core::storage::{Account, AccountWorkspaceIdentity};
 
 use crate::storage_helpers::account_key;
 
@@ -72,6 +72,57 @@ fn normalize_id_part(value: Option<&str>) -> Option<String> {
 /// 返回函数执行结果
 fn same_normalized(lhs: Option<&str>, rhs: Option<&str>) -> bool {
     normalize_non_empty(lhs) == normalize_non_empty(rhs)
+}
+
+pub(crate) trait AccountIdentityView {
+    fn account_id(&self) -> &str;
+    fn chatgpt_account_id(&self) -> Option<&str>;
+    fn workspace_id(&self) -> Option<&str>;
+}
+
+impl AccountIdentityView for Account {
+    fn account_id(&self) -> &str {
+        self.id.as_str()
+    }
+
+    fn chatgpt_account_id(&self) -> Option<&str> {
+        self.chatgpt_account_id.as_deref()
+    }
+
+    fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
+    }
+}
+
+impl AccountIdentityView for AccountWorkspaceIdentity {
+    fn account_id(&self) -> &str {
+        self.id.as_str()
+    }
+
+    fn chatgpt_account_id(&self) -> Option<&str> {
+        self.chatgpt_account_id.as_deref()
+    }
+
+    fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
+    }
+}
+
+impl<T> AccountIdentityView for &T
+where
+    T: AccountIdentityView + ?Sized,
+{
+    fn account_id(&self) -> &str {
+        (*self).account_id()
+    }
+
+    fn chatgpt_account_id(&self) -> Option<&str> {
+        (*self).chatgpt_account_id()
+    }
+
+    fn workspace_id(&self) -> Option<&str> {
+        (*self).workspace_id()
+    }
 }
 
 /// 函数 `build_scope_identity_hint`
@@ -169,7 +220,8 @@ pub(crate) fn pick_existing_account_id_by_identity<'a, I>(
     account_id_hint: Option<&str>,
 ) -> Option<String>
 where
-    I: IntoIterator<Item = &'a Account>,
+    I: IntoIterator,
+    I::Item: AccountIdentityView,
 {
     let accounts = accounts.into_iter().collect::<Vec<_>>();
     let preferred_chatgpt = normalize_non_empty(chatgpt_account_id).map(str::to_string);
@@ -179,49 +231,55 @@ where
         (preferred_chatgpt.as_ref(), preferred_workspace.as_ref())
     {
         if let Some(found) = accounts.iter().find(|acc| {
-            same_normalized(acc.chatgpt_account_id.as_deref(), Some(chatgpt_id.as_str()))
-                && same_normalized(acc.workspace_id.as_deref(), Some(workspace_id.as_str()))
+            same_normalized(acc.chatgpt_account_id(), Some(chatgpt_id.as_str()))
+                && same_normalized(acc.workspace_id(), Some(workspace_id.as_str()))
         }) {
-            return Some(found.id.clone());
+            return Some(found.account_id().to_string());
         }
         return None;
     }
 
     if let Some(chatgpt_id) = preferred_chatgpt.as_ref() {
-        let mut matched = accounts.iter().filter(|acc| {
-            same_normalized(acc.chatgpt_account_id.as_deref(), Some(chatgpt_id.as_str()))
-        });
+        let mut matched = accounts
+            .iter()
+            .filter(|acc| same_normalized(acc.chatgpt_account_id(), Some(chatgpt_id.as_str())));
         if let Some(found) = matched.next() {
             if matched.next().is_none() {
-                return Some(found.id.clone());
+                return Some(found.account_id().to_string());
             }
         }
         if let Some(found) = accounts.iter().find(|acc| {
-            same_normalized(acc.chatgpt_account_id.as_deref(), Some(chatgpt_id.as_str()))
-                && normalize_non_empty(acc.workspace_id.as_deref()).is_none()
+            same_normalized(acc.chatgpt_account_id(), Some(chatgpt_id.as_str()))
+                && normalize_non_empty(acc.workspace_id()).is_none()
         }) {
-            return Some(found.id.clone());
+            return Some(found.account_id().to_string());
         }
     }
 
     if let Some(workspace) = preferred_workspace.as_ref() {
         if let Some(found) = accounts
             .iter()
-            .find(|acc| same_normalized(acc.workspace_id.as_deref(), Some(workspace.as_str())))
+            .find(|acc| same_normalized(acc.workspace_id(), Some(workspace.as_str())))
         {
-            return Some(found.id.clone());
+            return Some(found.account_id().to_string());
         }
     }
 
     if let Some(account_id_hint) = normalize_non_empty(account_id_hint) {
-        if let Some(found) = accounts.iter().find(|acc| acc.id == account_id_hint) {
-            return Some(found.id.clone());
+        if let Some(found) = accounts
+            .iter()
+            .find(|acc| acc.account_id() == account_id_hint)
+        {
+            return Some(found.account_id().to_string());
         }
     }
 
     if let Some(fallback_subject_key) = normalize_non_empty(fallback_subject_key) {
-        if let Some(found) = accounts.iter().find(|acc| acc.id == fallback_subject_key) {
-            return Some(found.id.clone());
+        if let Some(found) = accounts
+            .iter()
+            .find(|acc| acc.account_id() == fallback_subject_key)
+        {
+            return Some(found.account_id().to_string());
         }
     }
 

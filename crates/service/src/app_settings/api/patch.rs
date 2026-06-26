@@ -9,16 +9,16 @@ use super::{
     save_persisted_app_setting, set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed,
     set_env_overrides, set_gateway_account_max_inflight, set_gateway_background_tasks,
     set_gateway_compact_model_forward_rules, set_gateway_free_account_max_model,
-    set_gateway_model_forward_rules, set_gateway_originator, set_gateway_quota_guard,
-    set_gateway_residency_requirement, set_gateway_route_strategy,
-    set_gateway_sse_keepalive_interval_ms, set_gateway_upstream_proxy_url,
-    set_gateway_upstream_stream_timeout_ms, set_gateway_upstream_total_timeout_ms,
-    set_gateway_user_agent_version, set_lightweight_mode_on_close_to_tray_setting,
-    set_saved_service_addr, set_service_bind_mode, set_ui_appearance_preset, set_ui_locale,
-    set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
-    BackgroundTasksInput, QuotaGuardInput, APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY,
-    APP_SETTING_AUTHOR_SPONSORS_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
-    APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
+    set_gateway_model_catalog_auto_remote_fetch, set_gateway_model_forward_rules,
+    set_gateway_originator, set_gateway_quota_guard, set_gateway_residency_requirement,
+    set_gateway_route_strategy, set_gateway_sse_keepalive_interval_ms,
+    set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
+    set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version,
+    set_lightweight_mode_on_close_to_tray_setting, set_saved_service_addr, set_service_bind_mode,
+    set_ui_appearance_preset, set_ui_locale, set_ui_low_transparency_enabled, set_ui_theme,
+    set_update_auto_check_enabled, BackgroundTasksInput, QuotaGuardInput,
+    APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
+    APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
 };
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -36,6 +36,7 @@ pub(super) struct AppSettingsPatch {
     pub(super) service_listen_mode: Option<String>,
     route_strategy: Option<String>,
     free_account_max_model: Option<String>,
+    model_catalog_auto_remote_fetch: Option<bool>,
     model_forward_rules: Option<String>,
     compact_model_forward_rules: Option<String>,
     account_max_inflight: Option<usize>,
@@ -124,6 +125,9 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(model) = patch.free_account_max_model {
         let _ = set_gateway_free_account_max_model(&model)?;
+    }
+    if let Some(enabled) = patch.model_catalog_auto_remote_fetch {
+        let _ = set_gateway_model_catalog_auto_remote_fetch(enabled)?;
     }
     if let Some(raw) = patch.model_forward_rules {
         let _ = set_gateway_model_forward_rules(&raw)?;

@@ -5,6 +5,9 @@ import type { MessageCatalog } from "../types";
 export const KO_MODEL_CATALOG_MESSAGES: MessageCatalog = {
   "Priority": "Priority",
   "Token 价格 (USD / 1M tokens)": "토큰 가격 (USD / 1M tokens)",
+  "自动拉取远端模型目录": "원격 모델 카탈로그 자동 가져오기",
+  "开启后本地模型目录为空时会自动从远端拉取；关闭后只在点击“远端并入”时拉取。":
+    "켜면 로컬 모델 카탈로그가 비어 있을 때 원격에서 자동으로 가져옵니다. 끄면 원격 병합을 클릭할 때만 가져옵니다.",
   "保留本地覆写": "로컬 덮어쓰기 유지",
   "保存来源模型失败": "소스 모델 저장 실패",
   "保存模型价格": "모델 가격 저장",

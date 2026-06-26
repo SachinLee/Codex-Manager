@@ -7,7 +7,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
         "dashboard/adminUsageSummary" => {
             let start_ts = super::i64_param(req, "startTs");
             let end_ts = super::i64_param(req, "endTs");
-            super::value_or_error(dashboard::read_admin_usage_summary(actor, start_ts, end_ts))
+            let include_breakdowns = super::bool_param(req, "includeBreakdowns").unwrap_or(true);
+            super::value_or_error(dashboard::read_admin_usage_summary(
+                actor,
+                start_ts,
+                end_ts,
+                include_breakdowns,
+            ))
         }
         "dashboard/tokenActivity" => {
             let start_ts = super::i64_param(req, "startTs");
@@ -18,11 +24,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             let user_id = super::string_param(req, "userId");
             let day_start_ts = super::i64_param(req, "dayStartTs");
             let day_end_ts = super::i64_param(req, "dayEndTs");
+            let include_details = super::bool_param(req, "includeDetails").unwrap_or(true);
             super::value_or_error(dashboard::read_member_dashboard_summary(
                 actor,
                 user_id,
                 day_start_ts,
                 day_end_ts,
+                include_details,
             ))
         }
         _ => return None,

@@ -1,4 +1,4 @@
-use codexmanager_core::storage::Storage;
+use codexmanager_core::storage::{Storage, UsageSnapshotRecord};
 use reqwest::header::HeaderValue;
 
 use super::failover_policy::{
@@ -13,6 +13,22 @@ pub(in super::super) enum UpstreamOutcomeDecision {
 fn is_compact_target(url: &str) -> bool {
     let normalized = url.trim().to_ascii_lowercase();
     normalized.contains("/responses/compact")
+}
+
+fn latest_cached_usage_snapshot<'a>(
+    storage: &Storage,
+    account_id: &str,
+    cache: &'a mut Option<Option<UsageSnapshotRecord>>,
+) -> Option<&'a UsageSnapshotRecord> {
+    if cache.is_none() {
+        *cache = Some(
+            storage
+                .latest_usage_snapshot_for_account(account_id)
+                .ok()
+                .flatten(),
+        );
+    }
+    cache.as_ref().and_then(Option::as_ref)
 }
 
 /// 函数 `decide_upstream_outcome`
@@ -46,6 +62,7 @@ where
     }
 
     let is_official_target = super::super::config::is_official_openai_target(url);
+    let mut usage_snapshot_cache: Option<Option<UsageSnapshotRecord>> = None;
     if status.is_success() {
         super::super::super::clear_account_cooldown(account_id);
         log_gateway_result(Some(url), status.as_u16(), None);
@@ -90,7 +107,8 @@ where
     if is_official_target
         && is_compact_target(url)
         && matches!(status.as_u16(), 500..=599)
-        && super::super::super::should_failover_from_low_quota_snapshot(storage, account_id)
+        && latest_cached_usage_snapshot(storage, account_id, &mut usage_snapshot_cache)
+            .is_some_and(super::super::super::should_failover_from_low_quota_snapshot_value)
     {
         super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
         let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(account_id);
@@ -136,7 +154,10 @@ where
 
     let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(account_id);
     let should_failover = (!is_official_target || status.as_u16() != 401)
-        && super::super::super::should_failover_from_cached_snapshot(storage, account_id);
+        && super::super::super::should_failover_from_cached_snapshot_value(
+            latest_cached_usage_snapshot(storage, account_id, &mut usage_snapshot_cache),
+            false,
+        );
     if should_failover {
         if is_official_target {
             super::super::super::mark_account_cooldown(

@@ -69,6 +69,7 @@ import { accountClient } from "@/lib/api/account-client";
 import { appClient } from "@/lib/api/app-client";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
+import { useAppStore } from "@/lib/store/useAppStore";
 import { cn } from "@/lib/utils";
 import { formatTsFromSeconds } from "@/lib/utils/usage";
 import { AppUser, ManagedModelInfo, ModelGroup, ModelGroupModel } from "@/types";
@@ -138,9 +139,11 @@ export default function ModelGroupsPage() {
   const queryClient = useQueryClient();
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
+  const serviceConnected = useAppStore((state) => state.serviceStatus.connected);
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
   const isAdminMode = isAdminRole(role);
   const isPageActive = useDesktopPageActive("/model-groups/");
+  const shouldQuery = isAdminMode && serviceConnected && isPageActive;
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [manageTab, setManageTab] = useState<ManageTab>("base");
   const [editingGroup, setEditingGroup] = useState<ModelGroup | null>(null);
@@ -151,28 +154,37 @@ export default function ModelGroupsPage() {
   const groupsQuery = useQuery({
     queryKey: QUERY_KEYS.groups,
     queryFn: () => appClient.listModelGroups(),
-    enabled: isAdminMode && isPageActive,
+    enabled: shouldQuery,
   });
   const modelsQuery = useQuery({
     queryKey: QUERY_KEYS.models,
     queryFn: () => accountClient.listManagedModels(false),
-    enabled: isAdminMode && isPageActive,
+    enabled: shouldQuery,
   });
   const usersQuery = useQuery({
     queryKey: QUERY_KEYS.users,
     queryFn: () => appClient.listAppUsers(),
-    enabled: isAdminMode && isPageActive,
+    enabled: shouldQuery,
   });
 
   usePageTransitionReady(
     "/model-groups/",
-    !isAdminMode || groupsQuery.isFetched || groupsQuery.isError || !isPageActive,
+    !shouldQuery || groupsQuery.isFetched || groupsQuery.isError,
   );
 
-  const groups = groupsQuery.data?.groups ?? [];
-  const groupModels = groupsQuery.data?.models ?? [];
-  const userAssignments = groupsQuery.data?.userAssignments ?? [];
-  const catalogModels = modelsQuery.data?.items ?? [];
+  const groups = useMemo(() => groupsQuery.data?.groups ?? [], [groupsQuery.data?.groups]);
+  const groupModels = useMemo(
+    () => groupsQuery.data?.models ?? [],
+    [groupsQuery.data?.models],
+  );
+  const userAssignments = useMemo(
+    () => groupsQuery.data?.userAssignments ?? [],
+    [groupsQuery.data?.userAssignments],
+  );
+  const catalogModels = useMemo(
+    () => modelsQuery.data?.items ?? [],
+    [modelsQuery.data?.items],
+  );
   const memberUsers = useMemo(() => activeMemberUsers(usersQuery.data ?? []), [usersQuery.data]);
   const refreshedEditingGroup = editingGroup
     ? groups.find((group) => group.id === editingGroup.id)

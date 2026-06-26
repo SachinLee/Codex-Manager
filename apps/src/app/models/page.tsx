@@ -186,13 +186,15 @@ export default function ModelsPage() {
     queryKey: ["accounts", "model-routing-sources"],
     queryFn: () => accountClient.list(),
     enabled: canLoadAdminRoutingSources,
+    staleTime: 60_000,
     retry: 1,
   });
 
   const { data: aggregateApis } = useQuery({
-    queryKey: ["aggregate-apis", "model-routing-sources"],
+    queryKey: ["aggregate-apis"],
     queryFn: () => accountClient.listAggregateApis(),
     enabled: canLoadAdminRoutingSources,
+    staleTime: 60_000,
     retry: 1,
   });
 

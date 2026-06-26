@@ -39,6 +39,8 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
   所选区间: "Selected range",
   "按天、成员、OpenAI 账号和聚合 API 汇总 token 消耗":
     "Summarize token usage by day, member, OpenAI account, and aggregate API.",
+  "按天汇总 token、费用和请求量":
+    "Summarize tokens, cost, and request volume by day.",
   按模型管理中的排序权重展示: "Shown by model management sort weight",
   "按模型管理排序展示前 8 个": "Top 8 by model management order",
   无钱包: "No wallet",

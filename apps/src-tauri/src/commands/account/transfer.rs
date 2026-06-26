@@ -72,6 +72,30 @@ fn merge_import_result(
         target.insert(key.to_string(), serde_json::json!(merged));
     }
 
+    let target_imported_ids = target
+        .entry("imported_account_ids".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    if let Some(target_imported_ids) = target_imported_ids.as_array_mut() {
+        let source_imported_ids = source
+            .get("imported_account_ids")
+            .or_else(|| source.get("importedAccountIds"))
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for account_id in source_imported_ids {
+            let Some(account_id) = account_id.as_str().map(str::trim).filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            if !target_imported_ids
+                .iter()
+                .any(|value| value.as_str() == Some(account_id))
+            {
+                target_imported_ids.push(serde_json::json!(account_id));
+            }
+        }
+    }
+
     let Some(source_errors) = source.get("errors").and_then(|value| value.as_array()) else {
         return;
     };
@@ -116,6 +140,7 @@ fn import_account_contents(
     merged.insert("updated".to_string(), serde_json::json!(0));
     merged.insert("failed".to_string(), serde_json::json!(0));
     merged.insert("errors".to_string(), serde_json::json!([]));
+    merged.insert("imported_account_ids".to_string(), serde_json::json!([]));
 
     let mut processed_items = 0usize;
     for batch in batches {

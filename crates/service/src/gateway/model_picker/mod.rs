@@ -1,8 +1,9 @@
 use codexmanager_core::auth::parse_id_token_claims;
 use codexmanager_core::rpc::types::ModelsResponse;
-use codexmanager_core::storage::{Account, Storage, Token};
+use codexmanager_core::storage::{Account, Storage, Token, UsageSnapshotRecord};
 use reqwest::Method;
 use serde_json::Value;
+use std::collections::HashMap;
 
 mod parse;
 mod request;
@@ -124,13 +125,42 @@ enum ModelPickerPlanTier {
 /// # 返回
 /// 无
 fn sort_model_picker_candidates(storage: &Storage, candidates: &mut [(Account, Token)]) {
+    let snapshot_map = latest_snapshot_map_for_candidates(storage, candidates);
     candidates.sort_by_key(|(account, token)| {
         (
             super::is_account_in_cooldown(&account.id),
             super::account_inflight_count(&account.id),
-            resolve_model_picker_plan_tier(storage, account.id.as_str(), token),
+            resolve_model_picker_plan_tier(snapshot_map.get(account.id.as_str()), token),
         )
     });
+}
+
+fn latest_snapshot_map_for_candidates(
+    storage: &Storage,
+    candidates: &[(Account, Token)],
+) -> HashMap<String, UsageSnapshotRecord> {
+    let account_ids = candidates
+        .iter()
+        .filter(|(_, token)| {
+            plan_tier_from_token(&token.access_token)
+                .or_else(|| plan_tier_from_token(&token.id_token))
+                .is_none()
+        })
+        .map(|(account, _)| account.id.clone())
+        .collect::<Vec<_>>();
+    if account_ids.is_empty() {
+        return HashMap::new();
+    }
+    match storage.latest_usage_snapshots_for_accounts(&account_ids) {
+        Ok(snapshots) => snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.account_id.clone(), snapshot))
+            .collect(),
+        Err(err) => {
+            log::warn!("model picker usage snapshot prefetch failed: {err}");
+            HashMap::new()
+        }
+    }
 }
 
 /// 函数 `resolve_model_picker_plan_tier`
@@ -147,13 +177,12 @@ fn sort_model_picker_candidates(storage: &Storage, candidates: &mut [(Account, T
 /// # 返回
 /// 返回函数执行结果
 fn resolve_model_picker_plan_tier(
-    storage: &Storage,
-    account_id: &str,
+    snapshot: Option<&UsageSnapshotRecord>,
     token: &Token,
 ) -> ModelPickerPlanTier {
     plan_tier_from_token(&token.access_token)
         .or_else(|| plan_tier_from_token(&token.id_token))
-        .or_else(|| plan_tier_from_usage_snapshot(storage, account_id))
+        .or_else(|| plan_tier_from_usage_snapshot(snapshot))
         .unwrap_or(ModelPickerPlanTier::Unknown)
 }
 
@@ -188,15 +217,11 @@ fn plan_tier_from_token(raw_token: &str) -> Option<ModelPickerPlanTier> {
 /// # 返回
 /// 返回函数执行结果
 fn plan_tier_from_usage_snapshot(
-    storage: &Storage,
-    account_id: &str,
+    snapshot: Option<&UsageSnapshotRecord>,
 ) -> Option<ModelPickerPlanTier> {
-    storage
-        .latest_usage_snapshot_for_account(account_id)
-        .ok()
-        .flatten()
-        .and_then(|snapshot| snapshot.credits_json)
-        .and_then(|raw| plan_tier_from_credits_json(raw.as_str()))
+    snapshot
+        .and_then(|snapshot| snapshot.credits_json.as_deref())
+        .and_then(plan_tier_from_credits_json)
 }
 
 /// 函数 `plan_tier_from_credits_json`
@@ -312,184 +337,5 @@ fn normalize_model_picker_plan_tier(raw: &str) -> Option<ModelPickerPlanTier> {
 }
 
 #[cfg(test)]
-mod tests {
-    use codexmanager_core::storage::{now_ts, Storage, Token};
-
-    use super::{should_retry_models_with_openai_fallback, sort_model_picker_candidates, Account};
-
-    /// 函数 `encode_base64url`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - bytes: 参数 bytes
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn encode_base64url(bytes: &[u8]) -> String {
-        const TABLE: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut out = String::new();
-        let mut index = 0;
-        while index + 3 <= bytes.len() {
-            let chunk = ((bytes[index] as u32) << 16)
-                | ((bytes[index + 1] as u32) << 8)
-                | (bytes[index + 2] as u32);
-            out.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
-            out.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
-            out.push(TABLE[((chunk >> 6) & 0x3f) as usize] as char);
-            out.push(TABLE[(chunk & 0x3f) as usize] as char);
-            index += 3;
-        }
-        match bytes.len().saturating_sub(index) {
-            1 => {
-                let chunk = (bytes[index] as u32) << 16;
-                out.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
-                out.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
-            }
-            2 => {
-                let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
-                out.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
-                out.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
-                out.push(TABLE[((chunk >> 6) & 0x3f) as usize] as char);
-            }
-            _ => {}
-        }
-        out
-    }
-
-    /// 函数 `plan_token`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - plan: 参数 plan
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn plan_token(plan: &str) -> String {
-        let header = encode_base64url(br#"{"alg":"none","typ":"JWT"}"#);
-        let payload = encode_base64url(
-            serde_json::json!({
-                "sub": format!("acc-{plan}"),
-                "https://api.openai.com/auth": {
-                    "chatgpt_plan_type": plan
-                }
-            })
-            .to_string()
-            .as_bytes(),
-        );
-        format!("{header}.{payload}.sig")
-    }
-
-    /// 函数 `candidate`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - id: 参数 id
-    /// - sort: 参数 sort
-    /// - plan: 参数 plan
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn candidate(id: &str, sort: i64, plan: &str) -> (Account, Token) {
-        let now = now_ts();
-        let token = plan_token(plan);
-        (
-            Account {
-                id: id.to_string(),
-                label: id.to_string(),
-                issuer: "issuer".to_string(),
-                chatgpt_account_id: None,
-                workspace_id: None,
-                group_name: None,
-                sort,
-                status: "active".to_string(),
-                created_at: now,
-                updated_at: now,
-            },
-            Token {
-                account_id: id.to_string(),
-                id_token: token.clone(),
-                access_token: token,
-                refresh_token: "refresh".to_string(),
-                api_key_access_token: None,
-                last_refresh: now,
-            },
-        )
-    }
-
-    /// 函数 `fallback_retry_matches_stable_html_and_challenge_summaries`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn fallback_retry_matches_stable_html_and_challenge_summaries() {
-        assert!(should_retry_models_with_openai_fallback(
-            "models upstream failed: status=403 body=Cloudflare 安全验证页（title=Just a moment...）"
-        ));
-        assert!(should_retry_models_with_openai_fallback(
-            "models upstream failed: status=502 body=<html><head><title>502 Bad Gateway</title></head></html>"
-        ));
-        assert!(!should_retry_models_with_openai_fallback(
-            "models upstream failed: status=401 body=missing_authorization_header"
-        ));
-    }
-
-    /// 函数 `sort_model_picker_candidates_prefers_plan_tier_priority`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn sort_model_picker_candidates_prefers_plan_tier_priority() {
-        let storage = Storage::open_in_memory().expect("open");
-        storage.init().expect("init");
-        let mut candidates = vec![
-            candidate("acc-free", 0, "free"),
-            candidate("acc-team-a", 1, "team"),
-            candidate("acc-plus", 2, "plus"),
-            candidate("acc-pro", 3, "pro"),
-            candidate("acc-go", 4, "go"),
-            candidate("acc-team-b", 5, "business"),
-        ];
-
-        sort_model_picker_candidates(&storage, &mut candidates);
-
-        let ids = candidates
-            .iter()
-            .map(|(account, _)| account.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            vec![
-                "acc-pro",
-                "acc-team-a",
-                "acc-team-b",
-                "acc-plus",
-                "acc-go",
-                "acc-free",
-            ]
-        );
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;

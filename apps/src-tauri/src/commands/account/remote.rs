@@ -1,6 +1,13 @@
 use crate::app_storage::apply_runtime_storage_env;
 use crate::commands::shared::rpc_call_in_background;
 
+#[derive(Debug, serde::Deserialize)]
+pub struct AccountSortUpdatePayload {
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: String,
+    sort: i64,
+}
+
 /// 函数 `account_update_payload`
 ///
 /// 作者: gaohongshun
@@ -220,6 +227,24 @@ pub async fn service_account_update(
         ),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn service_account_update_sorts(
+    addr: Option<String>,
+    updates: Vec<AccountSortUpdatePayload>,
+) -> Result<serde_json::Value, String> {
+    let updates = updates
+        .into_iter()
+        .map(|update| {
+            serde_json::json!({
+                "accountId": update.account_id,
+                "sort": update.sort,
+            })
+        })
+        .collect::<Vec<_>>();
+    let params = serde_json::json!({ "updates": updates });
+    rpc_call_in_background("account/updateSorts", addr, Some(params)).await
 }
 
 /// 函数 `service_account_warmup`

@@ -1,6 +1,6 @@
 use super::{
-    build_workspace_map, build_workspace_map_from_accounts, clean_header_value,
-    derive_account_meta, patch_account_meta_cached, resolve_workspace_id_for_account,
+    build_workspace_map_from_accounts, clean_header_value, derive_account_meta, patch_account_meta,
+    patch_account_meta_cached, resolve_workspace_id_for_account,
 };
 use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use std::collections::HashMap;
@@ -80,32 +80,6 @@ fn resolve_workspace_prefers_workspace_then_chatgpt() {
     assert_eq!(resolved, Some("ws-primary".to_string()));
 }
 
-/// 函数 `build_workspace_map_falls_back_to_chatgpt_account_id`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn build_workspace_map_falls_back_to_chatgpt_account_id() {
-    let storage = Storage::open_in_memory().expect("open");
-    storage.init().expect("init");
-    storage
-        .insert_account(&build_account("acc-2", Some("  "), Some(" chatgpt-2 ")))
-        .expect("insert");
-
-    let workspace_map = build_workspace_map(&storage);
-    assert_eq!(
-        workspace_map.get("acc-2").cloned(),
-        Some(Some("chatgpt-2".to_string()))
-    );
-}
-
 /// 函数 `build_workspace_map_from_accounts_uses_preloaded_snapshot`
 ///
 /// 作者: gaohongshun
@@ -165,6 +139,99 @@ fn patch_account_meta_cached_updates_preloaded_account_without_lookup() {
         .expect("account");
     assert_eq!(updated.chatgpt_account_id.as_deref(), Some("chatgpt-5"));
     assert_eq!(updated.workspace_id.as_deref(), Some("workspace-5"));
+}
+
+#[test]
+fn patch_account_meta_cached_updates_identity_without_rewriting_account() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let mut account = build_account("acc-cached-identity", None, None);
+    account.label = "keep cached label".to_string();
+    account.issuer = "keep cached issuer".to_string();
+    account.group_name = Some("keep cached group".to_string());
+    account.sort = 29;
+    account.status = "limited".to_string();
+    let created_at = account.created_at;
+    storage.insert_account(&account).expect("insert");
+    let mut account_map = HashMap::new();
+    account_map.insert(account.id.clone(), account);
+
+    patch_account_meta_cached(
+        &storage,
+        &mut account_map,
+        "acc-cached-identity",
+        Some("chatgpt-cached".to_string()),
+        Some("workspace-cached".to_string()),
+    );
+
+    let updated = storage
+        .find_account_by_id("acc-cached-identity")
+        .expect("find")
+        .expect("account");
+    assert_eq!(updated.label, "keep cached label");
+    assert_eq!(updated.issuer, "keep cached issuer");
+    assert_eq!(updated.group_name.as_deref(), Some("keep cached group"));
+    assert_eq!(updated.sort, 29);
+    assert_eq!(updated.status, "limited");
+    assert_eq!(updated.created_at, created_at);
+    assert_eq!(
+        updated.chatgpt_account_id.as_deref(),
+        Some("chatgpt-cached")
+    );
+    assert_eq!(updated.workspace_id.as_deref(), Some("workspace-cached"));
+    let cached = account_map
+        .get("acc-cached-identity")
+        .expect("cached account updated");
+    assert_eq!(cached.chatgpt_account_id.as_deref(), Some("chatgpt-cached"));
+    assert_eq!(cached.workspace_id.as_deref(), Some("workspace-cached"));
+}
+
+/// 函数 `patch_account_meta_updates_identity_without_rewriting_account`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-06-20
+///
+/// # 参数
+/// 无
+///
+/// # 返回
+/// 无
+#[test]
+fn patch_account_meta_updates_identity_without_rewriting_account() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let mut account = build_account("acc-identity-only", Some("old-workspace"), None);
+    account.label = "keep label".to_string();
+    account.issuer = "keep issuer".to_string();
+    account.group_name = Some("keep group".to_string());
+    account.sort = 17;
+    account.status = "limited".to_string();
+    let created_at = account.created_at;
+    storage.insert_account(&account).expect("insert");
+
+    patch_account_meta(
+        &storage,
+        "acc-identity-only",
+        Some("chatgpt-identity".to_string()),
+        Some("workspace-identity".to_string()),
+    );
+
+    let updated = storage
+        .find_account_by_id("acc-identity-only")
+        .expect("find")
+        .expect("account");
+    assert_eq!(updated.label, "keep label");
+    assert_eq!(updated.issuer, "keep issuer");
+    assert_eq!(updated.group_name.as_deref(), Some("keep group"));
+    assert_eq!(updated.sort, 17);
+    assert_eq!(updated.status, "limited");
+    assert_eq!(updated.created_at, created_at);
+    assert_eq!(
+        updated.chatgpt_account_id.as_deref(),
+        Some("chatgpt-identity")
+    );
+    assert_eq!(updated.workspace_id.as_deref(), Some("workspace-identity"));
 }
 
 /// 函数 `patch_account_meta_cached_replaces_subject_style_scope_values`

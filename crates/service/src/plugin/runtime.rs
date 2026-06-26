@@ -1,12 +1,60 @@
 use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse};
-use codexmanager_core::storage::{now_ts, PluginInstall, PluginRunLog, PluginTask};
+use codexmanager_core::storage::{
+    now_ts, PluginRunLog, PluginRuntimeInstall, PluginTask, PluginTaskExecutionRow,
+};
 use rhai::{Array, Dynamic, Engine, Map, Scope};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::account_cleanup::{delete_banned_accounts, delete_unavailable_free_accounts};
 use crate::storage_helpers::open_storage;
+
+static PLUGIN_HTTP_CLIENT: OnceLock<Mutex<Option<reqwest::blocking::Client>>> = OnceLock::new();
+#[cfg(test)]
+static PLUGIN_HTTP_CLIENT_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn build_plugin_http_client() -> Result<reqwest::blocking::Client, String> {
+    #[cfg(test)]
+    PLUGIN_HTTP_CLIENT_BUILD_COUNT.fetch_add(1, Ordering::SeqCst);
+
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("build http client failed: {err}"))
+}
+
+fn plugin_http_client() -> Result<reqwest::blocking::Client, String> {
+    let lock = PLUGIN_HTTP_CLIENT.get_or_init(|| Mutex::new(None));
+    let mut cached = crate::lock_utils::lock_recover(lock, "plugin_http_client");
+    if let Some(client) = cached.as_ref() {
+        return Ok(client.clone());
+    }
+    let client = build_plugin_http_client()?;
+    *cached = Some(client.clone());
+    Ok(client)
+}
+
+#[cfg(test)]
+fn plugin_http_client_build_count_for_test() -> usize {
+    PLUGIN_HTTP_CLIENT_BUILD_COUNT.load(Ordering::SeqCst)
+}
+
+fn task_execution_row_from_task(task: PluginTask) -> PluginTaskExecutionRow {
+    PluginTaskExecutionRow {
+        id: task.id,
+        plugin_id: task.plugin_id,
+        name: task.name,
+        description: task.description,
+        entrypoint: task.entrypoint,
+        schedule_kind: task.schedule_kind,
+        interval_seconds: task.interval_seconds,
+        enabled: task.enabled,
+    }
+}
 
 /// 函数 `handle_task_run`
 ///
@@ -65,8 +113,16 @@ pub(crate) fn run_plugin_task(task_id: &str, input: Option<Value>) -> Result<Val
     else {
         return Err(format!("task not found: {task_id}"));
     };
+    run_loaded_plugin_task(&storage, task_execution_row_from_task(task), input)
+}
+
+pub(super) fn run_loaded_plugin_task(
+    storage: &codexmanager_core::storage::Storage,
+    task: PluginTaskExecutionRow,
+    input: Option<Value>,
+) -> Result<Value, String> {
     let Some(plugin) = storage
-        .find_plugin_install(&task.plugin_id)
+        .find_plugin_runtime_install(&task.plugin_id)
         .map_err(|err| err.to_string())?
     else {
         return Err(format!("plugin not found: {}", task.plugin_id));
@@ -136,10 +192,7 @@ pub(crate) fn run_plugin_task(task_id: &str, input: Option<Value>) -> Result<Val
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn fetch_text(url: &str) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("build http client failed: {err}"))?;
+    let client = plugin_http_client()?;
     let response = client
         .get(url)
         .send()
@@ -171,8 +224,8 @@ pub(crate) fn fetch_text(url: &str) -> Result<String, String> {
 /// # 返回
 /// 返回函数执行结果
 fn execute_plugin_script(
-    plugin: &PluginInstall,
-    task: &PluginTask,
+    plugin: &PluginRuntimeInstall,
+    task: &PluginTaskExecutionRow,
     input: Option<Value>,
     permissions: &HashSet<String>,
     run_started_at: i64,
@@ -192,13 +245,13 @@ fn execute_plugin_script(
 
     if permissions.contains("settings:read") {
         let settings_map = crate::app_settings::list_app_settings_map();
+        let get_setting_map = settings_map.clone();
         engine.register_fn("get_setting", move |key: String| -> Dynamic {
-            settings_map
+            get_setting_map
                 .get(key.trim())
                 .map(|value| Dynamic::from(value.clone()))
                 .unwrap_or(Dynamic::UNIT)
         });
-        let settings_map = crate::app_settings::list_app_settings_map();
         engine.register_fn("list_settings", move || -> Dynamic {
             dynamic_from_json(json!(settings_map))
         });
@@ -283,10 +336,7 @@ fn execute_plugin_script(
 /// # 返回
 /// 返回函数执行结果
 fn fetch_http_value(method: &str, url: &str, body: Option<String>) -> Result<Value, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("build http client failed: {err}"))?;
+    let client = plugin_http_client()?;
     let request = match method {
         "POST" => client.post(url),
         _ => client.get(url),
@@ -342,7 +392,7 @@ fn parse_permissions(raw: &str) -> HashSet<String> {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn next_run_time_for_task(task: &PluginTask, finished_at: i64) -> Option<i64> {
+fn next_run_time_for_task(task: &PluginTaskExecutionRow, finished_at: i64) -> Option<i64> {
     if task.schedule_kind == "manual" {
         return None;
     }
@@ -436,3 +486,7 @@ fn json_from_dynamic(value: Dynamic) -> Value {
     }
     Value::Null
 }
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

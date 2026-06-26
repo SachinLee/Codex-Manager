@@ -2,6 +2,23 @@ use rusqlite::params;
 
 use super::Storage;
 
+fn app_settings_list_sql() -> &'static str {
+    "SELECT key, value
+     FROM app_settings
+     ORDER BY key ASC"
+}
+
+fn app_setting_value_by_key_sql() -> &'static str {
+    "SELECT value
+     FROM app_settings
+     WHERE key = ?1
+     LIMIT 1"
+}
+
+fn delete_app_setting_sql() -> &'static str {
+    "DELETE FROM app_settings WHERE key = ?1"
+}
+
 impl Storage {
     /// 函数 `list_app_settings`
     ///
@@ -15,11 +32,7 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn list_app_settings(&self) -> rusqlite::Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value
-             FROM app_settings
-             ORDER BY key ASC",
-        )?;
+        let mut stmt = self.conn.prepare(app_settings_list_sql())?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let mut items = Vec::new();
         for row in rows {
@@ -41,12 +54,7 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn get_app_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT value
-             FROM app_settings
-             WHERE key = ?1
-             LIMIT 1",
-        )?;
+        let mut stmt = self.conn.prepare(app_setting_value_by_key_sql())?;
         let mut rows = stmt.query([key])?;
         if let Some(row) = rows.next()? {
             return Ok(Some(row.get(0)?));
@@ -93,8 +101,11 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn delete_app_setting(&self, key: &str) -> rusqlite::Result<()> {
-        self.conn
-            .execute("DELETE FROM app_settings WHERE key = ?1", [key])?;
+        self.conn.execute(delete_app_setting_sql(), [key])?;
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod tests;

@@ -1,6 +1,5 @@
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/usage";
@@ -102,39 +101,36 @@ export function SummaryCard({
   toneClass: string;
 }) {
   return (
-    <Card size="sm" className="glass-card shadow-sm transition-all">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5">
-        <CardTitle className="text-[13px] font-medium text-muted-foreground">
-          {title}
-        </CardTitle>
+    <div className="group/metric relative min-h-[96px] overflow-hidden rounded-xl border border-border/50 bg-background/55 p-3 transition-colors hover:bg-background/70">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+            {title}
+          </div>
+          <div className="mt-2 truncate text-[2rem] leading-none font-semibold tracking-tight">
+            {value}
+          </div>
+        </div>
         <div
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-xl",
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
             toneClass,
           )}
         >
-          <Icon className="h-3.5 w-3.5" />
+          <Icon className="h-4 w-4" />
         </div>
-      </CardHeader>
-      <CardContent className="space-y-0.5">
-        <div className="text-[2rem] leading-none font-semibold tracking-tight">
-          {value}
-        </div>
-        <p className="text-[11px] text-muted-foreground">{description}</p>
-      </CardContent>
-    </Card>
+      </div>
+      <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+        {description}
+      </p>
+    </div>
   );
 }
 
 export function LogsPageSkeleton() {
   return (
     <div className="space-y-5">
-      <Skeleton className="h-28 w-full rounded-xl" />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <Skeleton key={index} className="h-32 w-full rounded-xl" />
-        ))}
-      </div>
+      <Skeleton className="h-[260px] w-full rounded-xl" />
       <Skeleton className="h-[420px] w-full rounded-xl" />
     </div>
   );

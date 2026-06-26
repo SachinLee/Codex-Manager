@@ -1,7 +1,11 @@
 use super::*;
-use codexmanager_core::rpc::types::{JsonRpcMessage, JsonRpcResponse};
+use codexmanager_core::rpc::types::{
+    JsonRpcMessage, JsonRpcResponse, ModelGroupModelUpsertParams, ModelGroupModelsSetParams,
+    ModelGroupUsersSetParams,
+};
 use codexmanager_core::storage::{
-    ModelCatalogModelRecord, ModelGroupModel, RequestLog, RequestTokenStat,
+    Account, Event, ModelCatalogModelRecord, ModelGroupModel, PluginInstall, PluginRunLog,
+    PluginTask, RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
 };
 
 /// 函数 `response_result`
@@ -286,6 +290,142 @@ fn admin_user_update_edits_member_and_protects_last_active_admin() {
     let _ = std::fs::remove_file(db_path);
 }
 
+#[test]
+fn account_manager_user_list_batches_wallets() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-user-list-wallets");
+    let admin = create_app_user(AppUserCreateInput {
+        username: "admin-list-wallets".to_string(),
+        password: "password-one".to_string(),
+        display_name: None,
+        role: Some(ROLE_ADMIN.to_string()),
+        initial_balance_credit_micros: None,
+    })
+    .expect("create admin");
+    let member = create_test_member("member-list-wallets", Some(1_000_000));
+
+    let resp = response_result(handle_request_with_actor(
+        rpc_request("accountManager/users/list", serde_json::json!({})),
+        RpcActor::from_parts(Some(ROLE_ADMIN), Some(&admin.id)),
+    ));
+    let users = resp.result.as_array().expect("users");
+    let listed_admin = users
+        .iter()
+        .find(|user| user.get("id").and_then(|value| value.as_str()) == Some(admin.id.as_str()))
+        .expect("listed admin");
+    let listed_member = users
+        .iter()
+        .find(|user| user.get("id").and_then(|value| value.as_str()) == Some(member.id.as_str()))
+        .expect("listed member");
+
+    assert!(listed_admin
+        .get("wallet")
+        .is_none_or(|value| value.is_null()));
+    assert_eq!(
+        listed_member
+            .get("wallet")
+            .and_then(|wallet| wallet.get("availableCreditMicros"))
+            .and_then(|value| value.as_i64()),
+        Some(1_000_000)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn plugin_logs_rpc_resolves_names_from_current_log_page() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-plugin-log-names");
+    let storage = storage_helpers::open_storage().expect("open storage");
+    let install = PluginInstall {
+        plugin_id: "cleanup-banned-accounts".to_string(),
+        source_url: Some("builtin://codexmanager".to_string()),
+        name: "清理封禁账号".to_string(),
+        version: "1.0.0".to_string(),
+        description: Some("test".to_string()),
+        author: Some("CodexManager".to_string()),
+        homepage_url: None,
+        script_url: None,
+        script_body: "fn run(context) { context }".to_string(),
+        permissions_json: serde_json::json!(["accounts:cleanup"]).to_string(),
+        manifest_json: serde_json::json!({ "id": "cleanup-banned-accounts" }).to_string(),
+        status: "enabled".to_string(),
+        installed_at: 1,
+        updated_at: 1,
+        last_run_at: None,
+        last_error: None,
+    };
+    let task = PluginTask {
+        id: "cleanup-banned-accounts::run".to_string(),
+        plugin_id: install.plugin_id.clone(),
+        name: "手动清理".to_string(),
+        description: None,
+        entrypoint: "run".to_string(),
+        schedule_kind: "manual".to_string(),
+        interval_seconds: None,
+        enabled: true,
+        next_run_at: None,
+        last_run_at: None,
+        last_status: None,
+        last_error: None,
+        task_json: serde_json::json!({
+            "id": "run",
+            "name": "手动清理",
+            "entrypoint": "run",
+            "scheduleKind": "manual",
+            "enabled": true
+        })
+        .to_string(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    storage
+        .replace_plugin_install(&install, &[task])
+        .expect("seed plugin");
+    storage
+        .insert_plugin_run_log(&PluginRunLog {
+            id: None,
+            plugin_id: "cleanup-banned-accounts".to_string(),
+            task_id: Some("cleanup-banned-accounts::run".to_string()),
+            run_type: "manual".to_string(),
+            status: "success".to_string(),
+            started_at: 100,
+            finished_at: Some(101),
+            duration_ms: Some(1),
+            output_json: Some(serde_json::json!({ "deleted": 0 }).to_string()),
+            error: None,
+        })
+        .expect("insert plugin log");
+
+    let resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "plugin/logs/list",
+            serde_json::json!({
+                "pluginId": "cleanup-banned-accounts",
+                "taskId": "cleanup-banned-accounts::run",
+                "limit": 5
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_ADMIN), Some("admin-plugin-logs")),
+    ));
+    let items = resp
+        .result
+        .get("items")
+        .and_then(|value| value.as_array())
+        .expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].get("pluginName").and_then(|value| value.as_str()),
+        Some("清理封禁账号")
+    );
+    assert_eq!(
+        items[0].get("taskName").and_then(|value| value.as_str()),
+        Some("手动清理")
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
 fn setup_dashboard_test_db(name: &str) -> String {
     let db_path = std::env::temp_dir()
         .join(format!(
@@ -395,6 +535,402 @@ fn seed_test_catalog_model(slug: &str) {
         .expect("seed catalog model");
 }
 
+#[test]
+fn startup_snapshot_can_skip_api_model_catalog_for_light_dashboard_reads() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-startup-snapshot-light");
+    seed_test_catalog_model("gpt-startup-heavy");
+
+    let full_resp = response_result(handle_request_with_actor(
+        rpc_request("startup/snapshot", serde_json::json!({})),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        full_resp.result["apiModels"]["models"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
+        "{:?}",
+        full_resp.result
+    );
+
+    let light_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "startup/snapshot",
+            serde_json::json!({ "includeApiModels": false }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert_eq!(
+        light_resp.result["apiModels"]["models"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn startup_snapshot_can_skip_account_details_for_light_dashboard_reads() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-startup-snapshot-account-light");
+    let now = codexmanager_core::storage::now_ts();
+    let account_id = "acc-startup-light";
+    let mut storage = storage_helpers::open_storage().expect("open storage");
+    storage
+        .insert_account(&Account {
+            id: account_id.to_string(),
+            label: "Startup Light Account".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .insert_token(&Token {
+            account_id: account_id.to_string(),
+            id_token: "id".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            api_key_access_token: None,
+            last_refresh: now,
+        })
+        .expect("insert token");
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account_id.to_string(),
+            used_percent: Some(20.0),
+            window_minutes: Some(180),
+            resets_at: Some(now + 300),
+            secondary_used_percent: Some(30.0),
+            secondary_window_minutes: Some(10_080),
+            secondary_resets_at: Some(now + 600),
+            credits_json: None,
+            captured_at: now,
+        })
+        .expect("insert usage snapshot");
+    storage
+        .upsert_account_metadata(account_id, Some("note"), Some("tag-a,tag-b"))
+        .expect("insert metadata");
+    storage
+        .upsert_account_subscription(account_id, true, Some("team"), Some("plus"), None, None)
+        .expect("insert subscription");
+    storage
+        .set_quota_source_model_assignments(
+            "openai_account",
+            account_id,
+            &["gpt-visible".to_string()],
+        )
+        .expect("insert model assignment");
+    storage
+        .upsert_account_quota_capacity_override(account_id, Some(100), Some(200))
+        .expect("insert quota override");
+
+    let full_resp = response_result(handle_request_with_actor(
+        rpc_request("startup/snapshot", serde_json::json!({})),
+        RpcActor::system_admin(),
+    ));
+    let full_account = &full_resp.result["accounts"][0];
+    assert_eq!(full_account["note"].as_str(), Some("note"));
+    assert_eq!(full_account["subscriptionPlan"].as_str(), Some("plus"));
+    assert_eq!(full_account["modelSlugs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        full_account["quotaCapacityPrimaryWindowTokens"].as_i64(),
+        Some(100)
+    );
+
+    let light_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "startup/snapshot",
+            serde_json::json!({ "includeAccountDetails": false }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    let light_account = &light_resp.result["accounts"][0];
+    assert_eq!(light_account["id"].as_str(), Some(account_id));
+    assert_eq!(light_account["hasToken"].as_bool(), Some(true));
+    assert_eq!(
+        light_resp.result["usageSnapshots"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert!(light_account["note"].is_null());
+    assert!(light_account["subscriptionPlan"].is_null());
+    assert_eq!(
+        light_account["modelSlugs"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert!(light_account["quotaCapacityPrimaryWindowTokens"].is_null());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn startup_snapshot_can_skip_api_keys_for_light_dashboard_reads() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-startup-snapshot-api-key-light");
+    let user = create_test_member("startup-api-key-light", None);
+    let key_id = create_owned_test_api_key(&user.id, "startup light key", "gpt-5-mini");
+
+    let full_resp = response_result(handle_request_with_actor(
+        rpc_request("startup/snapshot", serde_json::json!({})),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        full_resp.result["apiKeys"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["id"] == key_id)),
+        "{:?}",
+        full_resp.result
+    );
+
+    let light_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "startup/snapshot",
+            serde_json::json!({ "includeApiKeys": false }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert_eq!(
+        light_resp.result["apiKeys"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn startup_snapshot_can_skip_account_runtime_for_light_dashboard_reads() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-startup-snapshot-runtime-light");
+    let now = codexmanager_core::storage::now_ts();
+    let account_id = "acc-startup-runtime-light";
+    let mut storage = storage_helpers::open_storage().expect("open storage");
+    storage
+        .insert_account(&Account {
+            id: account_id.to_string(),
+            label: "Startup Runtime Light".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .set_preferred_account(Some(account_id))
+        .expect("set preferred account");
+    storage
+        .insert_token(&Token {
+            account_id: account_id.to_string(),
+            id_token: "id".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            api_key_access_token: None,
+            last_refresh: now,
+        })
+        .expect("insert token");
+    storage
+        .insert_event(&Event {
+            account_id: Some(account_id.to_string()),
+            event_type: "account_status".to_string(),
+            message: "status=unavailable reason=usage_http_401".to_string(),
+            created_at: now,
+        })
+        .expect("insert status reason event");
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account_id.to_string(),
+            used_percent: Some(20.0),
+            window_minutes: Some(180),
+            resets_at: Some(now + 300),
+            secondary_used_percent: Some(30.0),
+            secondary_window_minutes: Some(10_080),
+            secondary_resets_at: Some(now + 600),
+            credits_json: None,
+            captured_at: now,
+        })
+        .expect("insert usage snapshot");
+
+    let light_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "startup/snapshot",
+            serde_json::json!({
+                "includeAccountRuntime": false,
+                "includeAccountDetails": false
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    let account = &light_resp.result["accounts"][0];
+    assert_eq!(account["id"].as_str(), Some(account_id));
+    assert_eq!(account["preferred"].as_bool(), Some(false));
+    assert_eq!(account["hasToken"].as_bool(), Some(false));
+    assert!(account["statusReason"].is_null());
+    assert_eq!(
+        light_resp.result["usageSnapshots"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        light_resp.result["usageAggregateSummary"]["primaryKnownCount"].as_i64(),
+        Some(1)
+    );
+    assert_eq!(
+        light_resp.result["accountSummary"]["accountCount"].as_i64(),
+        Some(1)
+    );
+    assert_eq!(
+        light_resp.result["accountSummary"]["primaryRemainPercent"].as_i64(),
+        Some(80)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn startup_snapshot_can_skip_account_payload_for_dashboard_summary_reads() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-startup-snapshot-summary-only");
+    let now = codexmanager_core::storage::now_ts();
+    let account_id = "acc-startup-summary-only";
+    let storage = storage_helpers::open_storage().expect("open storage");
+    storage
+        .insert_account(&Account {
+            id: account_id.to_string(),
+            label: "Startup Summary Only".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account_id.to_string(),
+            used_percent: Some(20.0),
+            window_minutes: Some(180),
+            resets_at: Some(now + 300),
+            secondary_used_percent: Some(30.0),
+            secondary_window_minutes: Some(10_080),
+            secondary_resets_at: Some(now + 600),
+            credits_json: None,
+            captured_at: now,
+        })
+        .expect("insert usage snapshot");
+
+    let light_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "startup/snapshot",
+            serde_json::json!({
+                "requestLogLimit": 0,
+                "includeApiModels": false,
+                "includeApiKeys": false,
+                "includeAccounts": false,
+                "includeUsageSnapshots": false,
+                "includeAccountRuntime": false,
+                "includeAccountDetails": false
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+
+    assert_eq!(
+        light_resp.result["accounts"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        light_resp.result["usageSnapshots"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        light_resp.result["accountSummary"]["accountCount"].as_i64(),
+        Some(1)
+    );
+    assert_eq!(
+        light_resp.result["usageAggregateSummary"]["primaryKnownCount"].as_i64(),
+        Some(1)
+    );
+    assert_eq!(
+        light_resp.result["usageAggregateSummary"]["primaryRemainPercent"].as_i64(),
+        Some(80)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn request_log_summary_reuses_filtered_count_for_all_status() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-requestlog-summary-count");
+    let day_start = 1_700_000_000;
+
+    insert_test_request_log(
+        "key-summary",
+        "trace-summary-ok",
+        "gpt-5-mini",
+        200,
+        10,
+        0,
+        20,
+        0.01,
+        day_start + 10,
+    );
+    insert_test_request_log(
+        "key-summary",
+        "trace-summary-error",
+        "gpt-5-mini",
+        502,
+        30,
+        0,
+        40,
+        0.02,
+        day_start + 20,
+    );
+
+    let all_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/summary",
+            serde_json::json!({ "statusFilter": "all" }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        all_resp.result.get("error").is_none(),
+        "{:?}",
+        all_resp.result
+    );
+    assert_eq!(all_resp.result["totalCount"].as_i64(), Some(2));
+    assert_eq!(all_resp.result["filteredCount"].as_i64(), Some(2));
+
+    let success_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/summary",
+            serde_json::json!({ "statusFilter": "2xx" }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        success_resp.result.get("error").is_none(),
+        "{:?}",
+        success_resp.result
+    );
+    assert_eq!(success_resp.result["totalCount"].as_i64(), Some(2));
+    assert_eq!(success_resp.result["filteredCount"].as_i64(), Some(1));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
 fn insert_test_request_log(
     key_id: &str,
     trace_id: &str,
@@ -441,6 +977,117 @@ fn insert_test_request_log(
             },
         )
         .expect("insert request log");
+}
+
+#[test]
+fn set_model_group_models_validates_requested_catalog_slugs_only() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-model-group-model-slug-validation");
+    set_web_auth_mode("accounts").expect("enable accounts mode");
+    seed_test_catalog_model("gpt-5-mini");
+    let storage = storage_helpers::open_storage().expect("open storage");
+    let group_id = storage
+        .default_model_group_id()
+        .expect("read default model group")
+        .expect("default model group");
+    drop(storage);
+
+    let result = set_model_group_models(ModelGroupModelsSetParams {
+        group_id: group_id.clone(),
+        models: vec![
+            ModelGroupModelUpsertParams {
+                platform_model_slug: "gpt-5-mini".to_string(),
+                enabled: Some(true),
+                rate_multiplier_millis: Some(1200),
+                billing_model_slug: None,
+                note: Some("primary".to_string()),
+            },
+            ModelGroupModelUpsertParams {
+                platform_model_slug: "gpt-5-mini".to_string(),
+                enabled: Some(false),
+                rate_multiplier_millis: Some(900),
+                billing_model_slug: None,
+                note: Some("duplicate ignored".to_string()),
+            },
+        ],
+    })
+    .expect("set model group models");
+
+    let saved = result
+        .models
+        .iter()
+        .filter(|item| item.group_id == group_id && item.platform_model_slug == "gpt-5-mini")
+        .collect::<Vec<_>>();
+    assert_eq!(saved.len(), 1);
+    assert!(saved[0].enabled);
+    assert_eq!(saved[0].rate_multiplier_millis, Some(1200));
+    assert_eq!(saved[0].note.as_deref(), Some("primary"));
+
+    let err = set_model_group_models(ModelGroupModelsSetParams {
+        group_id,
+        models: vec![ModelGroupModelUpsertParams {
+            platform_model_slug: "missing-model".to_string(),
+            enabled: Some(true),
+            rate_multiplier_millis: None,
+            billing_model_slug: None,
+            note: None,
+        }],
+    })
+    .expect_err("missing catalog model should fail");
+    assert!(err.contains("平台模型 `missing-model` 不存在"));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn set_model_group_users_batches_member_validation_and_dedupes() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-model-group-users-batch-validation");
+    set_web_auth_mode("accounts").expect("enable accounts mode");
+    let admin = create_app_user(AppUserCreateInput {
+        username: "admin-model-group-users".to_string(),
+        password: "password-one".to_string(),
+        display_name: None,
+        role: Some(ROLE_ADMIN.to_string()),
+        initial_balance_credit_micros: None,
+    })
+    .expect("create admin");
+    let member_one = create_test_member("member-model-group-users-one", None);
+    let member_two = create_test_member("member-model-group-users-two", None);
+    let storage = storage_helpers::open_storage().expect("open storage");
+    let group_id = storage
+        .default_model_group_id()
+        .expect("read default model group")
+        .expect("default model group");
+    drop(storage);
+
+    let result = set_model_group_users(ModelGroupUsersSetParams {
+        group_id: group_id.clone(),
+        user_ids: vec![
+            member_two.id.clone(),
+            member_one.id.clone(),
+            member_two.id.clone(),
+        ],
+    })
+    .expect("set model group users");
+
+    let saved = result
+        .user_assignments
+        .iter()
+        .filter(|item| item.group_id == group_id)
+        .collect::<Vec<_>>();
+    assert_eq!(saved.len(), 2);
+    assert!(saved.iter().any(|item| item.user_id == member_one.id));
+    assert!(saved.iter().any(|item| item.user_id == member_two.id));
+
+    let err = set_model_group_users(ModelGroupUsersSetParams {
+        group_id,
+        user_ids: vec![admin.id],
+    })
+    .expect_err("admin should not be assigned to member model group");
+    assert!(err.contains("不是成员账号"));
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]
@@ -642,6 +1289,74 @@ fn member_dashboard_filters_to_current_user_keys() {
     assert_eq!(resp.result["recentLogs"][0]["keyId"], key_one.id);
     assert_eq!(resp.result["topKeys"][0]["keyId"], key_one.id);
     assert_eq!(resp.result["topKeys"][0]["todayTokens"], 70);
+    assert_eq!(
+        resp.result["availableModels"]
+            .as_array()
+            .expect("available models array")
+            .len(),
+        0
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn member_dashboard_can_skip_detail_payloads() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-member-dashboard-light");
+    let day_start = 1_700_000_000;
+    let day_end = day_start + 86_400;
+    let user = create_test_member("member-light", Some(2_000_000));
+    let key_id = create_owned_test_api_key(&user.id, "member light key", "gpt-5-mini");
+    seed_test_catalog_model("gpt-5-mini");
+
+    insert_test_request_log(
+        &key_id,
+        "trace-member-light",
+        "gpt-5-mini",
+        200,
+        40,
+        4,
+        30,
+        0.01,
+        day_start + 10,
+    );
+
+    let resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "dashboard/memberSummary",
+            serde_json::json!({
+                "dayStartTs": day_start,
+                "dayEndTs": day_end,
+                "includeDetails": false
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&user.id)),
+    ));
+
+    assert!(resp.result.get("error").is_none(), "{:?}", resp.result);
+    assert_eq!(resp.result["apiKeySummary"]["totalCount"], 1);
+    assert_eq!(resp.result["usageToday"]["totalTokens"], 70);
+    assert_eq!(
+        resp.result["availableModels"]
+            .as_array()
+            .expect("available models array")
+            .len(),
+        0
+    );
+    assert_eq!(
+        resp.result["recentLogs"]
+            .as_array()
+            .expect("recent logs array")
+            .len(),
+        0
+    );
+    assert!(resp.result["alerts"]
+        .as_array()
+        .map(|items| !items
+            .iter()
+            .any(|item| item["kind"] == "no_available_model"))
+        .unwrap_or(false));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -879,6 +1594,64 @@ fn admin_usage_summary_requires_admin_and_returns_range_rollups() {
 }
 
 #[test]
+fn admin_usage_summary_can_skip_breakdowns_for_light_dashboard() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-admin-usage-light");
+    let day_start = 1_700_000_000;
+    let day_end = day_start + 86_400;
+    let user = create_test_member("admin-usage-light-member", Some(2_000_000));
+    let key_id = create_owned_test_api_key(&user.id, "admin usage light key", "gpt-5-mini");
+
+    insert_test_request_log(
+        &key_id,
+        "trace-admin-usage-light",
+        "gpt-5-mini",
+        200,
+        20,
+        5,
+        10,
+        0.03,
+        day_start + 10,
+    );
+
+    let admin_resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "dashboard/adminUsageSummary",
+            serde_json::json!({
+                "startTs": day_start,
+                "endTs": day_end,
+                "includeBreakdowns": false
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        admin_resp.result.get("error").is_none(),
+        "{:?}",
+        admin_resp.result
+    );
+    assert_eq!(admin_resp.result["dailyUsage"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        admin_resp.result["dailyUsage"][0]["usage"]["totalTokens"],
+        30
+    );
+    assert_eq!(admin_resp.result["users"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        admin_resp.result["openaiAccounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        admin_resp.result["aggregateApis"].as_array().unwrap().len(),
+        0
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
 fn admin_usage_summary_daily_trend_includes_token_stats_without_request_logs() {
     let _guard = test_env_guard();
     let db_path = setup_dashboard_test_db("codexmanager-admin-usage-orphan-stats");
@@ -953,7 +1726,7 @@ fn admin_usage_summary_daily_trend_includes_token_stats_without_request_logs() {
     );
     assert_eq!(
         admin_resp.result["dailyUsage"][0]["usage"]["requestCount"],
-        0
+        1
     );
     assert_eq!(
         admin_resp.result["dailyUsage"][1]["usage"]["totalTokens"],
@@ -961,7 +1734,7 @@ fn admin_usage_summary_daily_trend_includes_token_stats_without_request_logs() {
     );
     assert_eq!(
         admin_resp.result["dailyUsage"][1]["usage"]["requestCount"],
-        0
+        1
     );
     assert_eq!(
         admin_resp.result["dailyUsage"][2]["usage"]["totalTokens"],
@@ -1269,6 +2042,30 @@ fn member_requestlog_queries_filter_to_owned_keys() {
     assert!(list.result["items"][0]["upstreamModel"].is_null());
     assert!(list.result["items"][0]["actualSourceKind"].is_null());
     assert!(list.result["items"][0]["actualSourceId"].is_null());
+
+    let list_with_summary = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/list_with_summary",
+            serde_json::json!({
+                "page": 1,
+                "pageSize": 20,
+                "query": "trace-log-filter-one",
+                "startTs": day_start,
+                "endTs": day_end
+            }),
+        ),
+        actor_one.clone(),
+    ));
+    assert!(
+        list_with_summary.result.get("error").is_none(),
+        "{:?}",
+        list_with_summary.result
+    );
+    assert_eq!(list_with_summary.result["total"], 1);
+    assert_eq!(list_with_summary.result["items"][0]["keyId"], key_one);
+    assert_eq!(list_with_summary.result["summary"]["totalCount"], 1);
+    assert_eq!(list_with_summary.result["summary"]["filteredCount"], 1);
+    assert_eq!(list_with_summary.result["summary"]["successCount"], 1);
 
     let hidden_model_query = response_result(handle_request_with_actor(
         rpc_request(

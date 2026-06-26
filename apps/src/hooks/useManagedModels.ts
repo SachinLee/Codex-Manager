@@ -95,7 +95,7 @@ export function useManagedModels() {
     options?: { force?: boolean },
   ): Promise<string | null> => {
     if (!catalog) {
-      return t("模型目录为空");
+      return null;
     }
 
     if (!isDesktopRuntime) {
@@ -107,9 +107,6 @@ export function useManagedModels() {
     }
 
     const models = serializeManagedModelCatalogForCodexCache(catalog.items || []);
-    if (models.length === 0) {
-      return t("模型目录为空");
-    }
 
     const fingerprint = JSON.stringify(models);
     if (!options?.force && syncedCatalogFingerprintRef.current === fingerprint) {

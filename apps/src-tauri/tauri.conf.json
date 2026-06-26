@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CodexManager",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "identifier": "com.codexmanager.desktop",
   "build": {
     "beforeDevCommand": "node ./src-tauri/scripts/before-build.mjs dev:desktop",
@@ -17,7 +17,9 @@
         "title": "CodexManager",
         "width": 1100,
         "height": 720,
-        "resizable": true
+        "resizable": true,
+        "visible": false,
+        "create": false
       }
     ],
     "security": {

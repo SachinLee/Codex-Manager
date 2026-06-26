@@ -1,4 +1,6 @@
 use rusqlite::{Connection, Result};
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,7 +9,9 @@ mod account_manager;
 mod account_metadata;
 mod account_subscriptions;
 mod accounts;
+mod accounts_sql;
 mod aggregate_apis;
+mod aggregate_apis_sql;
 mod api_key_quota_limits;
 mod api_keys;
 mod conversation_bindings;
@@ -19,6 +23,7 @@ mod model_price_rules;
 mod model_sources;
 mod plugins;
 mod quota_pools;
+mod request_log_filters;
 mod request_log_query;
 mod request_logs;
 mod request_token_stats;
@@ -38,6 +43,169 @@ pub struct Account {
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountAuthRefreshTarget {
+    pub id: String,
+    pub label: String,
+    pub issuer: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountTokenRefreshIssuer {
+    pub id: String,
+    pub issuer: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountDirectAuthProfile {
+    pub id: String,
+    pub issuer: String,
+    pub chatgpt_account_id: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountUsageRefreshTarget {
+    pub id: String,
+    pub status: String,
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountUsageRefreshTokenTarget {
+    pub account_id: String,
+    pub workspace_id: Option<String>,
+    pub token: Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountWorkspaceIdentity {
+    pub id: String,
+    pub chatgpt_account_id: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountUpsertState {
+    pub group_name: Option<String>,
+    pub sort: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountCodexProfileCandidate {
+    pub id: String,
+    pub label: String,
+    pub issuer: String,
+    pub chatgpt_account_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub group_name: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountCleanupCandidate {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountQuotaSourceSummary {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountQuotaPoolSource {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountDashboardSourceMetadata {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountImportSnapshot {
+    pub id: String,
+    pub label: String,
+    pub issuer: String,
+    pub chatgpt_account_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub sort: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountListSummaryRow {
+    pub id: String,
+    pub label: String,
+    pub group_name: Option<String>,
+    pub sort: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountSummaryStorageSnapshot {
+    pub preferred_account_id: Option<String>,
+    pub status_reasons: std::collections::HashMap<String, String>,
+    pub tokens: Vec<AccountTokenPlan>,
+    pub usage_snapshots: Vec<UsageSnapshotRecord>,
+    pub metadata: Vec<AccountMetadata>,
+    pub subscriptions: Vec<AccountSubscription>,
+    pub model_assignments: Vec<QuotaSourceModelAssignment>,
+    pub quota_overrides: Vec<AccountQuotaCapacityOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountSummaryStorageSnapshotOptions {
+    pub include_preferred: bool,
+    pub include_status_reasons: bool,
+    pub include_tokens: bool,
+    pub include_details: bool,
+}
+
+impl Default for AccountSummaryStorageSnapshotOptions {
+    fn default() -> Self {
+        Self {
+            include_preferred: true,
+            include_status_reasons: true,
+            include_tokens: true,
+            include_details: true,
+        }
+    }
+}
+
+impl AccountSummaryStorageSnapshotOptions {
+    pub fn light() -> Self {
+        Self {
+            include_preferred: true,
+            include_status_reasons: true,
+            include_tokens: true,
+            include_details: false,
+        }
+    }
+
+    pub fn dashboard_light() -> Self {
+        Self {
+            include_preferred: false,
+            include_status_reasons: false,
+            include_tokens: false,
+            include_details: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountStatusCount {
+    pub status: String,
+    pub count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +300,29 @@ pub struct Token {
 }
 
 #[derive(Debug, Clone)]
+pub struct AccountTokenPlan {
+    pub account_id: String,
+    pub id_token: String,
+    pub access_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountImportTokenSubject {
+    pub account_id: String,
+    pub id_token: String,
+    pub access_token: String,
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountTokenCandidate {
+    pub account_id: String,
+    pub has_access_token: bool,
+    pub has_refresh_token: bool,
+    pub last_refresh: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct LoginSession {
     pub login_id: String,
     pub code_verifier: String,
@@ -146,6 +337,29 @@ pub struct LoginSession {
     pub updated_at: i64,
 }
 
+fn login_session_select_columns() -> &'static str {
+    "login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at"
+}
+
+fn insert_login_session_sql() -> &'static str {
+    "INSERT INTO login_sessions (login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+}
+
+fn login_session_by_id_sql() -> String {
+    format!(
+        "SELECT {columns} FROM login_sessions WHERE login_id = ?1",
+        columns = login_session_select_columns(),
+    )
+}
+
+fn update_login_session_status_sql() -> &'static str {
+    "UPDATE login_sessions SET status = ?1, error = ?2, updated_at = ?3 WHERE login_id = ?4"
+}
+
+fn update_login_session_code_verifier_sql() -> &'static str {
+    "UPDATE login_sessions SET code_verifier = ?1, updated_at = ?2 WHERE login_id = ?3"
+}
+
 #[derive(Debug, Clone)]
 pub struct UsageSnapshotRecord {
     pub account_id: String,
@@ -157,6 +371,54 @@ pub struct UsageSnapshotRecord {
     pub secondary_resets_at: Option<i64>,
     pub credits_json: Option<String>,
     pub captured_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsageSnapshotSummaryRow {
+    pub account_id: String,
+    pub used_percent: Option<f64>,
+    pub window_minutes: Option<i64>,
+    pub secondary_used_percent: Option<f64>,
+    pub secondary_window_minutes: Option<i64>,
+    pub credits_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsageSnapshotQuotaSourceRow {
+    pub account_id: String,
+    pub used_percent: Option<f64>,
+    pub secondary_used_percent: Option<f64>,
+    pub captured_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsageSnapshotCleanupRow {
+    pub account_id: String,
+    pub used_percent: Option<f64>,
+    pub window_minutes: Option<i64>,
+    pub secondary_used_percent: Option<f64>,
+    pub secondary_window_minutes: Option<i64>,
+    pub credits_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountQuotaOverviewStats {
+    pub account_count: i64,
+    pub available_count: i64,
+    pub low_quota_count: i64,
+    pub primary_remain_percent_avg: Option<f64>,
+    pub secondary_remain_percent_avg: Option<f64>,
+    pub last_refreshed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApiKeyQuotaOverviewStats {
+    pub key_count: i64,
+    pub limited_key_count: i64,
+    pub total_limit_tokens: i64,
+    pub total_used_tokens: i64,
+    pub total_remaining_tokens: i64,
+    pub estimated_cost_usd: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +503,8 @@ pub struct RequestTokenStat {
     pub aggregate_api_supplier_name: Option<String>,
     pub aggregate_api_url: Option<String>,
     pub model: Option<String>,
+    pub actual_source_kind: Option<String>,
+    pub actual_source_id: Option<String>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -259,7 +523,7 @@ pub struct RequestLogTodaySummary {
     pub estimated_cost_usd: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RequestLogQuerySummary {
     pub count: i64,
     pub success_count: i64,
@@ -296,6 +560,13 @@ pub struct ApiKeyModelTokenUsageSummary {
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
     pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MemberDashboardUsageBreakdownSnapshot {
+    pub today_key_model_usage: Vec<ApiKeyModelTokenUsageSummary>,
+    pub total_key_usage: Vec<ApiKeyTokenUsageSummary>,
+    pub top_model_usage: Vec<TokenUsageSummary>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -342,6 +613,51 @@ pub struct AppUser {
     pub created_at: i64,
     pub updated_at: i64,
     pub last_login_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppUserAccessSummary {
+    pub id: String,
+    pub username: String,
+    pub role: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DashboardAppUserSummary {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub role: String,
+    pub status: String,
+    pub wallet_available_credit_micros: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicAppUserWithWallet {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub role: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_login_at: Option<i64>,
+    pub wallet_id: Option<String>,
+    pub wallet_owner_kind: Option<String>,
+    pub wallet_owner_id: Option<String>,
+    pub wallet_balance_credit_micros: Option<i64>,
+    pub wallet_frozen_credit_micros: Option<i64>,
+    pub wallet_status: Option<String>,
+    pub wallet_created_at: Option<i64>,
+    pub wallet_updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppSessionUserWithWallet {
+    pub session_id: String,
+    pub expires_at: i64,
+    pub user: PublicAppUserWithWallet,
 }
 
 #[derive(Debug, Clone)]
@@ -455,6 +771,13 @@ pub struct UserModelGroup {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ModelGroupListSnapshot {
+    pub groups: Vec<ModelGroup>,
+    pub models: Vec<ModelGroupModel>,
+    pub user_assignments: Vec<UserModelGroup>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelGroupAccess {
     pub group_id: String,
@@ -546,6 +869,68 @@ pub struct ApiKey {
 }
 
 #[derive(Debug, Clone)]
+pub struct ApiKeyStatus {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyGatewayAuth {
+    pub id: String,
+    pub status: String,
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyProfileConfig {
+    pub protocol_type: String,
+    pub upstream_base_url: Option<String>,
+    pub static_headers_json: Option<String>,
+    pub service_tier: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyListSummary {
+    pub id: String,
+    pub name: Option<String>,
+    pub model_slug: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
+    pub rotation_strategy: String,
+    pub aggregate_api_id: Option<String>,
+    pub account_plan_filter: Option<String>,
+    pub aggregate_api_url: Option<String>,
+    pub client_type: String,
+    pub protocol_type: String,
+    pub auth_scheme: String,
+    pub upstream_base_url: Option<String>,
+    pub static_headers_json: Option<String>,
+    pub status: String,
+    pub quota_limit_tokens: Option<i64>,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyQuotaSummary {
+    pub id: String,
+    pub name: Option<String>,
+    pub model_slug: Option<String>,
+    pub status: String,
+    pub quota_limit_tokens: Option<i64>,
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyCodexProfileCandidate {
+    pub id: String,
+    pub name: Option<String>,
+    pub model_slug: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct AggregateApi {
     pub id: String,
     pub provider_type: String,
@@ -573,6 +958,103 @@ pub struct AggregateApi {
     pub last_balance_status: Option<String>,
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiWithSecrets {
+    pub api: AggregateApi,
+    pub secret_value: Option<String>,
+    pub balance_access_token: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiListSummary {
+    pub id: String,
+    pub provider_type: String,
+    pub supplier_name: Option<String>,
+    pub sort: i64,
+    pub url: String,
+    pub auth_type: String,
+    pub auth_params_json: Option<String>,
+    pub action: Option<String>,
+    pub model_override: Option<String>,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_test_at: Option<i64>,
+    pub last_test_status: Option<String>,
+    pub last_test_error: Option<String>,
+    pub balance_query_enabled: bool,
+    pub balance_query_template: Option<String>,
+    pub balance_query_base_url: Option<String>,
+    pub balance_query_user_id: Option<String>,
+    pub balance_query_config_json: Option<String>,
+    pub last_balance_at: Option<i64>,
+    pub last_balance_status: Option<String>,
+    pub last_balance_error: Option<String>,
+    pub last_balance_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AggregateApiListSnapshot {
+    pub items: Vec<AggregateApiListSummary>,
+    pub model_assignments: Vec<QuotaSourceModelAssignment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiUpdateConfig {
+    pub auth_type: String,
+    pub balance_query_enabled: bool,
+    pub balance_query_template: Option<String>,
+    pub balance_query_base_url: Option<String>,
+    pub balance_query_user_id: Option<String>,
+    pub balance_query_config_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiSecretConfig {
+    pub auth_type: String,
+    pub secret_value: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiQuotaSourceSummary {
+    pub id: String,
+    pub provider_type: String,
+    pub supplier_name: Option<String>,
+    pub url: String,
+    pub status: String,
+    pub balance_query_enabled: bool,
+    pub last_balance_at: Option<i64>,
+    pub last_balance_status: Option<String>,
+    pub last_balance_error: Option<String>,
+    pub last_balance_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiDashboardSourceMetadata {
+    pub id: String,
+    pub provider_type: String,
+    pub supplier_name: Option<String>,
+    pub url: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiSupplierIdentity {
+    pub id: String,
+    pub provider_type: String,
+    pub supplier_name: Option<String>,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AggregateApiOverviewStats {
+    pub source_count: i64,
+    pub enabled_balance_query_count: i64,
+    pub ok_count: i64,
+    pub error_count: i64,
+    pub last_refreshed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -607,6 +1089,39 @@ pub struct PluginInstall {
 }
 
 #[derive(Debug, Clone)]
+pub struct PluginInstallListSummary {
+    pub plugin_id: String,
+    pub source_url: Option<String>,
+    pub name: String,
+    pub version: String,
+    pub description: Option<String>,
+    pub author: Option<String>,
+    pub homepage_url: Option<String>,
+    pub script_url: Option<String>,
+    pub permissions_json: String,
+    pub status: String,
+    pub installed_at: i64,
+    pub updated_at: i64,
+    pub last_run_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub manifest_version: Option<String>,
+    pub category: Option<String>,
+    pub runtime_kind: Option<String>,
+    pub tags_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginRuntimeInstall {
+    pub plugin_id: String,
+    pub source_url: Option<String>,
+    pub name: String,
+    pub version: String,
+    pub script_body: String,
+    pub permissions_json: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct PluginTask {
     pub id: String,
     pub plugin_id: String,
@@ -626,10 +1141,72 @@ pub struct PluginTask {
 }
 
 #[derive(Debug, Clone)]
+pub struct PluginTaskListSummary {
+    pub id: String,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub entrypoint: String,
+    pub schedule_kind: String,
+    pub interval_seconds: Option<i64>,
+    pub enabled: bool,
+    pub next_run_at: Option<i64>,
+    pub last_run_at: Option<i64>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginTaskExecutionRow {
+    pub id: String,
+    pub plugin_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub entrypoint: String,
+    pub schedule_kind: String,
+    pub interval_seconds: Option<i64>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginTaskScheduleRepairRow {
+    pub id: String,
+    pub interval_seconds: Option<i64>,
+    pub next_run_at: Option<i64>,
+    pub last_run_at: Option<i64>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PluginTaskCount {
+    pub plugin_id: String,
+    pub task_count: i64,
+    pub enabled_task_count: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PluginRunLog {
     pub id: Option<i64>,
     pub plugin_id: String,
     pub task_id: Option<String>,
+    pub run_type: String,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub output_json: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginRunLogListSummary {
+    pub id: i64,
+    pub plugin_id: String,
+    pub plugin_name: Option<String>,
+    pub task_id: Option<String>,
+    pub task_name: Option<String>,
     pub run_type: String,
     pub status: String,
     pub started_at: i64,
@@ -704,12 +1281,43 @@ pub struct ModelCatalogStringItemRecord {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ModelCatalogStorageSnapshot {
+    pub scope: Option<ModelCatalogScopeRecord>,
+    pub models: Vec<ModelCatalogModelRecord>,
+    pub reasoning_levels: Vec<ModelCatalogReasoningLevelRecord>,
+    pub additional_speed_tiers: Vec<ModelCatalogStringItemRecord>,
+    pub experimental_supported_tools: Vec<ModelCatalogStringItemRecord>,
+    pub input_modalities: Vec<ModelCatalogStringItemRecord>,
+    pub available_in_plans: Vec<ModelCatalogStringItemRecord>,
+}
+
 #[derive(Debug)]
 pub struct Storage {
     conn: Connection,
+    applied_migrations: RefCell<Option<HashSet<String>>>,
 }
 
 impl Storage {
+    fn configure_connection(conn: &Connection) -> Result<()> {
+        // 中文注释：并发写入时给 SQLite 一点等待时间，避免瞬时 lock 导致请求直接失败。
+        conn.busy_timeout(Duration::from_millis(3000))?;
+        // 中文注释：复杂筛选/聚合的临时 B-tree 优先走内存，减少报表查询落盘开销。
+        conn.execute_batch("PRAGMA temp_store=MEMORY;")?;
+        Ok(())
+    }
+
+    fn configure_file_connection(conn: &Connection) -> Result<()> {
+        Self::configure_connection(conn)?;
+        // 中文注释：文件库启用 WAL + NORMAL，可明显降低并发读写互斥开销；
+        // 仅在 open(path) 上设置，避免影响 open_in_memory 的行为预期。
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;",
+        )?;
+        Ok(())
+    }
+
     /// 函数 `open`
     ///
     /// 作者: gaohongshun
@@ -723,15 +1331,11 @@ impl Storage {
     /// 返回函数执行结果
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
-        // 中文注释：并发写入时给 SQLite 一点等待时间，避免瞬时 lock 导致请求直接失败。
-        conn.busy_timeout(Duration::from_millis(3000))?;
-        // 中文注释：文件库启用 WAL + NORMAL，可明显降低并发读写互斥开销；
-        // 仅在 open(path) 上设置，避免影响 open_in_memory 的行为预期。
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;",
-        )?;
-        Ok(Self { conn })
+        Self::configure_file_connection(&conn)?;
+        Ok(Self {
+            conn,
+            applied_migrations: RefCell::new(None),
+        })
     }
 
     /// 函数 `open_in_memory`
@@ -747,8 +1351,11 @@ impl Storage {
     /// 返回函数执行结果
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.busy_timeout(Duration::from_millis(3000))?;
-        Ok(Self { conn })
+        Self::configure_connection(&conn)?;
+        Ok(Self {
+            conn,
+            applied_migrations: RefCell::new(None),
+        })
     }
 
     /// 函数 `init`
@@ -764,6 +1371,7 @@ impl Storage {
     /// 返回函数执行结果
     pub fn init(&self) -> Result<()> {
         self.ensure_migrations_table()?;
+        *self.applied_migrations.borrow_mut() = None;
 
         self.apply_sql_migration("001_init", include_str!("../../migrations/001_init.sql"))?;
         self.apply_sql_migration(
@@ -1111,6 +1719,198 @@ impl Storage {
             include_str!("../../migrations/068_request_logs_route_strategy_source.sql"),
             |s| s.ensure_request_log_route_strategy_columns(),
         )?;
+        self.apply_sql_migration(
+            "069_request_logs_filter_indexes",
+            include_str!("../../migrations/069_request_logs_filter_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "070_request_token_stats_reporting_indexes",
+            include_str!("../../migrations/070_request_token_stats_reporting_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "071_model_source_lookup_indexes",
+            include_str!("../../migrations/071_model_source_lookup_indexes.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "072_accounts_group_name_filter_index",
+            include_str!("../../migrations/072_accounts_group_name_filter_index.sql"),
+            |s| s.ensure_account_group_name_filter_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "073_events_account_status_lookup_index",
+            include_str!("../../migrations/073_events_account_status_lookup_index.sql"),
+            |s| s.ensure_events_account_status_lookup_index(),
+        )?;
+        self.apply_sql_migration(
+            "074_plugin_task_due_lookup_index",
+            include_str!("../../migrations/074_plugin_task_due_lookup_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "075_billing_rules_active_order_index",
+            include_str!("../../migrations/075_billing_rules_active_order_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "076_app_users_lower_username_index",
+            include_str!("../../migrations/076_app_users_lower_username_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "077_api_key_owners_user_key_lookup_index",
+            include_str!("../../migrations/077_api_key_owners_user_key_lookup_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "078_plugin_run_logs_task_lookup_index",
+            include_str!("../../migrations/078_plugin_run_logs_task_lookup_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "079_wallet_ledger_entry_kind_index",
+            include_str!("../../migrations/079_wallet_ledger_entry_kind_index.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "080_accounts_identity_lookup_indexes",
+            include_str!("../../migrations/080_accounts_identity_lookup_indexes.sql"),
+            |s| s.ensure_accounts_identity_lookup_indexes(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "081_aggregate_api_balance_query_lookup_index",
+            include_str!("../../migrations/081_aggregate_api_balance_query_lookup_index.sql"),
+            |s| s.ensure_aggregate_api_balance_query_lookup_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "082_aggregate_api_status_order_index",
+            include_str!("../../migrations/082_aggregate_api_status_order_index.sql"),
+            |s| s.ensure_aggregate_api_status_order_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "083_aggregate_api_balance_query_order_index",
+            include_str!("../../migrations/083_aggregate_api_balance_query_order_index.sql"),
+            |s| s.ensure_aggregate_api_balance_query_order_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "084_aggregate_api_provider_status_order_index",
+            include_str!("../../migrations/084_aggregate_api_provider_status_order_index.sql"),
+            |s| s.ensure_aggregate_api_provider_status_order_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "085_model_price_rules_custom_exact_lookup_index",
+            include_str!("../../migrations/085_model_price_rules_custom_exact_lookup_index.sql"),
+            |s| s.ensure_model_price_rules_custom_exact_lookup_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "086_model_price_rules_enabled_pattern_lookup_index",
+            include_str!("../../migrations/086_model_price_rules_enabled_pattern_lookup_index.sql"),
+            |s| s.ensure_model_price_rules_enabled_pattern_lookup_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "087_request_token_stats_actual_source",
+            include_str!("../../migrations/087_request_token_stats_actual_source.sql"),
+            |s| s.ensure_request_token_stats_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "088_request_token_stat_hourly_rollups",
+            include_str!("../../migrations/088_request_token_stat_hourly_rollups.sql"),
+            |s| s.ensure_request_token_stats_table(),
+        )?;
+        self.apply_sql_migration(
+            "089_request_logs_ordered_filter_indexes",
+            include_str!("../../migrations/089_request_logs_ordered_filter_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "090_drop_redundant_request_log_filter_indexes",
+            include_str!("../../migrations/090_drop_redundant_request_log_filter_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "091_aggregate_api_list_order_index",
+            include_str!("../../migrations/091_aggregate_api_list_order_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "092_drop_redundant_model_source_indexes",
+            include_str!("../../migrations/092_drop_redundant_model_source_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "093_drop_redundant_account_manager_indexes",
+            include_str!("../../migrations/093_drop_redundant_account_manager_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "094_plugin_installs_list_order_index",
+            include_str!("../../migrations/094_plugin_installs_list_order_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "095_model_catalog_scope_order_index",
+            include_str!("../../migrations/095_model_catalog_scope_order_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "096_api_keys_list_order_index",
+            include_str!("../../migrations/096_api_keys_list_order_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "097_tokens_refresh_due_order_index",
+            include_str!("../../migrations/097_tokens_refresh_due_order_index.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "098_accounts_list_order_index",
+            include_str!("../../migrations/098_accounts_list_order_index.sql"),
+            |s| s.ensure_accounts_list_order_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "099_model_groups_list_order_index",
+            include_str!("../../migrations/099_model_groups_list_order_index.sql"),
+            |s| s.ensure_model_group_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "100_user_model_groups_group_lookup_index",
+            include_str!("../../migrations/100_user_model_groups_group_lookup_index.sql"),
+            |s| s.ensure_model_group_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "101_events_account_cleanup_index",
+            include_str!("../../migrations/101_events_account_cleanup_index.sql"),
+            |s| s.ensure_events_account_cleanup_index(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "102_app_users_list_order_index",
+            include_str!("../../migrations/102_app_users_list_order_index.sql"),
+            |s| s.ensure_account_manager_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "103_app_project_user_lookup_indexes",
+            include_str!("../../migrations/103_app_project_user_lookup_indexes.sql"),
+            |s| s.ensure_account_manager_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "104_billing_rules_owner_lookup_indexes",
+            include_str!("../../migrations/104_billing_rules_owner_lookup_indexes.sql"),
+            |s| s.ensure_account_manager_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "105_redeem_records_lookup_indexes",
+            include_str!("../../migrations/105_redeem_records_lookup_indexes.sql"),
+            |s| s.ensure_account_manager_tables(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "106_account_manager_created_by_lookup_indexes",
+            include_str!("../../migrations/106_account_manager_created_by_lookup_indexes.sql"),
+            |s| s.ensure_account_manager_tables(),
+        )?;
+        self.apply_sql_migration(
+            "107_plugin_tasks_list_order_indexes",
+            include_str!("../../migrations/107_plugin_tasks_list_order_indexes.sql"),
+        )?;
+        self.apply_sql_migration(
+            "108_accounts_cleanup_status_lookup_index",
+            include_str!("../../migrations/108_accounts_cleanup_status_lookup_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "109_model_source_platform_kind_order_index",
+            include_str!("../../migrations/109_model_source_platform_kind_order_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "110_accounts_preferred_lookup_index",
+            include_str!("../../migrations/110_accounts_preferred_lookup_index.sql"),
+        )?;
+        self.apply_sql_migration(
+            "111_model_source_platform_slug_lookup_indexes",
+            include_str!("../../migrations/111_model_source_platform_slug_lookup_indexes.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_supplier_model_tables()?;
@@ -1231,7 +2031,7 @@ impl Storage {
     /// 返回函数执行结果
     pub fn insert_login_session(&self, session: &LoginSession) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO login_sessions (login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            insert_login_session_sql(),
             (
                 &session.login_id,
                 &session.code_verifier,
@@ -1261,9 +2061,7 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn get_login_session(&self, login_id: &str) -> Result<Option<LoginSession>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at FROM login_sessions WHERE login_id = ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&login_session_by_id_sql())?;
         let mut rows = stmt.query([login_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(LoginSession {
@@ -1305,7 +2103,7 @@ impl Storage {
         error: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE login_sessions SET status = ?1, error = ?2, updated_at = ?3 WHERE login_id = ?4",
+            update_login_session_status_sql(),
             (status, error, now_ts(), login_id),
         )?;
         Ok(())
@@ -1330,7 +2128,7 @@ impl Storage {
         code_verifier: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE login_sessions SET code_verifier = ?1, updated_at = ?2 WHERE login_id = ?3",
+            update_login_session_code_verifier_sql(),
             (code_verifier, now_ts(), login_id),
         )?;
         Ok(())
@@ -1355,7 +2153,11 @@ impl Storage {
             return Ok(());
         }
         let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}");
-        self.conn.execute(&sql, [])?;
+        match self.conn.execute(&sql, []) {
+            Ok(_) => {}
+            Err(err) if Self::is_schema_conflict_error(&err) => {}
+            Err(err) => return Err(err),
+        }
         Ok(())
     }
 
@@ -1430,11 +2232,25 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     fn has_migration(&self, version: &str) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT 1 FROM schema_migrations WHERE version = ?1 LIMIT 1")?;
-        let mut rows = stmt.query([version])?;
-        Ok(rows.next()?.is_some())
+        if self.applied_migrations.borrow().is_none() {
+            let migrations = self.load_applied_migrations()?;
+            *self.applied_migrations.borrow_mut() = Some(migrations);
+        }
+        Ok(self
+            .applied_migrations
+            .borrow()
+            .as_ref()
+            .is_some_and(|migrations| migrations.contains(version)))
+    }
+
+    fn load_applied_migrations(&self) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT version FROM schema_migrations")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut migrations = HashSet::new();
+        for row in rows {
+            migrations.insert(row?);
+        }
+        Ok(migrations)
     }
 
     /// 函数 `mark_migration`
@@ -1454,6 +2270,9 @@ impl Storage {
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
             (version, now_ts()),
         )?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(version.to_string());
+        }
         Ok(())
     }
 
@@ -1548,6 +2367,10 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     fn is_schema_conflict_error(err: &rusqlite::Error) -> bool {
+        let message = err.to_string();
+        if message.contains("duplicate column name") || message.contains("already exists") {
+            return true;
+        }
         match err {
             rusqlite::Error::SqliteFailure(_, maybe_message) => maybe_message
                 .as_deref()
@@ -1557,6 +2380,68 @@ impl Storage {
                 .unwrap_or(false),
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod login_session_query_plan_tests {
+    use rusqlite::{Params, Result};
+
+    use super::{
+        login_session_by_id_sql, update_login_session_code_verifier_sql,
+        update_login_session_status_sql, Storage,
+    };
+
+    fn collect_query_plan<P>(storage: &Storage, sql: &str, params: P) -> String
+    where
+        P: Params,
+    {
+        let mut stmt = storage.conn.prepare(sql).expect("prepare query plan");
+        let rows = stmt
+            .query_map(params, |row| row.get::<_, String>(3))
+            .expect("collect query plan rows");
+        rows.collect::<Result<Vec<_>>>()
+            .expect("query plan rows")
+            .join("\n")
+    }
+
+    #[test]
+    fn login_session_primary_key_helpers_use_primary_key_index() {
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+
+        let lookup_plan = collect_query_plan(
+            &storage,
+            &format!("EXPLAIN QUERY PLAN {}", login_session_by_id_sql()),
+            ["login-1"],
+        );
+        assert!(
+            lookup_plan.contains("sqlite_autoindex_login_sessions_1"),
+            "login session lookup should use primary key index:\n{lookup_plan}"
+        );
+
+        let status_update_plan = collect_query_plan(
+            &storage,
+            &format!("EXPLAIN QUERY PLAN {}", update_login_session_status_sql()),
+            ("done", Option::<&str>::None, 1_i64, "login-1"),
+        );
+        assert!(
+            status_update_plan.contains("sqlite_autoindex_login_sessions_1"),
+            "login session status update should use primary key index:\n{status_update_plan}"
+        );
+
+        let verifier_update_plan = collect_query_plan(
+            &storage,
+            &format!(
+                "EXPLAIN QUERY PLAN {}",
+                update_login_session_code_verifier_sql()
+            ),
+            ("verifier-2", 1_i64, "login-1"),
+        );
+        assert!(
+            verifier_update_plan.contains("sqlite_autoindex_login_sessions_1"),
+            "login session verifier update should use primary key index:\n{verifier_update_plan}"
+        );
     }
 }
 

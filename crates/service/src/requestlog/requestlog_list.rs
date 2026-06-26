@@ -1,12 +1,42 @@
 use codexmanager_core::rpc::types::{
-    RequestLogListParams, RequestLogListResult, RequestLogSummary,
+    RequestLogFilterSummaryResult, RequestLogListParams, RequestLogListResult,
+    RequestLogListWithSummaryResult, RequestLogSummary,
 };
-use codexmanager_core::storage::RequestLog;
+use codexmanager_core::storage::{RequestLog, Storage};
 
 use crate::storage_helpers::open_storage;
 
 const DEFAULT_REQUEST_LOG_PAGE_SIZE: i64 = 20;
 const MAX_REQUEST_LOG_PAGE_SIZE: i64 = 500;
+const DEFAULT_REQUEST_LOG_SUMMARY_LIMIT: i64 = 200;
+
+pub(crate) struct NormalizedRequestLogParams {
+    pub(crate) query: Option<String>,
+    pub(crate) status_filter: Option<String>,
+    pub(crate) start_ts: Option<i64>,
+    pub(crate) end_ts: Option<i64>,
+    pub(crate) page: i64,
+    pub(crate) page_size: i64,
+}
+
+impl NormalizedRequestLogParams {
+    pub(crate) fn from_params(params: RequestLogListParams) -> Self {
+        let params = params.normalized();
+        let (start_ts, end_ts) = normalize_time_range(params.start_ts, params.end_ts);
+        Self {
+            query: normalize_optional_text(params.query),
+            status_filter: normalize_status_filter(params.status_filter),
+            start_ts,
+            end_ts,
+            page: params.page,
+            page_size: normalize_page_size(params.page_size),
+        }
+    }
+
+    pub(crate) fn clamped_page(&self, total: i64) -> i64 {
+        clamp_page(self.page, total, self.page_size)
+    }
+}
 
 /// 函数 `normalize_upstream_url`
 ///
@@ -92,13 +122,17 @@ fn derive_size_reject_stage(status_code: Option<i64>, error: Option<&str>) -> St
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) fn read_request_logs(
+pub(crate) fn read_request_logs_with_storage(
+    storage: &Storage,
     query: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<RequestLogSummary>, String> {
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let limit = normalize_summary_limit(limit);
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
     let logs = storage
-        .list_request_logs(query.as_deref(), limit.unwrap_or(200))
+        .list_request_logs(query.as_deref(), limit)
         .map_err(|err| format!("list request logs failed: {err}"))?;
     Ok(logs
         .into_iter()
@@ -106,14 +140,21 @@ pub(crate) fn read_request_logs(
         .collect())
 }
 
-pub(crate) fn read_request_logs_for_key_ids(
+pub(crate) fn read_request_logs_for_key_ids_with_storage(
+    storage: &Storage,
     query: Option<String>,
     limit: Option<i64>,
     key_ids: &[String],
 ) -> Result<Vec<RequestLogSummary>, String> {
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    if key_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = normalize_summary_limit(limit);
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
     let logs = storage
-        .list_request_logs_for_keys(query.as_deref(), limit.unwrap_or(200), key_ids)
+        .list_request_logs_for_keys(query.as_deref(), limit, key_ids)
         .map_err(|err| format!("list request logs failed: {err}"))?;
     Ok(logs
         .into_iter()
@@ -135,25 +176,59 @@ pub(crate) fn read_request_logs_for_key_ids(
 pub(crate) fn read_request_log_page(
     params: RequestLogListParams,
 ) -> Result<RequestLogListResult, String> {
-    let params = params.normalized();
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let query = normalize_optional_text(params.query);
-    let status_filter = normalize_status_filter(params.status_filter);
-    let (start_ts, end_ts) = normalize_time_range(params.start_ts, params.end_ts);
-    let page_size = normalize_page_size(params.page_size);
+    read_request_log_page_with_storage(&storage, params)
+}
+
+pub(crate) fn read_request_log_page_with_storage(
+    storage: &Storage,
+    params: RequestLogListParams,
+) -> Result<RequestLogListResult, String> {
+    let params = NormalizedRequestLogParams::from_params(params);
     let total = storage
-        .count_request_logs(query.as_deref(), status_filter.as_deref(), start_ts, end_ts)
+        .count_request_logs(
+            params.query.as_deref(),
+            params.status_filter.as_deref(),
+            params.start_ts,
+            params.end_ts,
+        )
         .map_err(|err| format!("count request logs failed: {err}"))?;
-    let page = clamp_page(params.page, total, page_size);
-    let offset = (page - 1) * page_size;
+    read_request_log_page_with_normalized_total(storage, params, total)
+}
+
+pub(crate) fn read_request_log_page_with_total(
+    storage: &Storage,
+    params: RequestLogListParams,
+    total: i64,
+) -> Result<RequestLogListResult, String> {
+    let params = NormalizedRequestLogParams::from_params(params);
+    read_request_log_page_with_normalized_total(storage, params, total)
+}
+
+fn read_request_log_page_with_normalized_total(
+    storage: &Storage,
+    params: NormalizedRequestLogParams,
+    total: i64,
+) -> Result<RequestLogListResult, String> {
+    let total = total.max(0);
+    let page = params.clamped_page(total);
+    if total == 0 {
+        return Ok(RequestLogListResult {
+            items: Vec::new(),
+            total,
+            page,
+            page_size: params.page_size,
+        });
+    }
+    let offset = (page - 1) * params.page_size;
     let logs = storage
         .list_request_logs_paginated(
-            query.as_deref(),
-            status_filter.as_deref(),
-            start_ts,
-            end_ts,
+            params.query.as_deref(),
+            params.status_filter.as_deref(),
+            params.start_ts,
+            params.end_ts,
             offset,
-            page_size,
+            params.page_size,
         )
         .map_err(|err| format!("list request logs failed: {err}"))?;
 
@@ -164,39 +239,97 @@ pub(crate) fn read_request_log_page(
             .collect(),
         total,
         page,
-        page_size,
+        page_size: params.page_size,
     })
 }
 
-pub(crate) fn read_request_log_page_for_key_ids(
+pub(crate) fn request_log_list_with_summary_result(
+    page: RequestLogListResult,
+    summary: RequestLogFilterSummaryResult,
+) -> RequestLogListWithSummaryResult {
+    RequestLogListWithSummaryResult {
+        items: page.items,
+        total: page.total,
+        page: page.page,
+        page_size: page.page_size,
+        summary,
+    }
+}
+
+pub(crate) fn request_log_page_total_matches_filter_summary(params: &RequestLogListParams) -> bool {
+    let params = NormalizedRequestLogParams::from_params(params.clone());
+    params.query.is_some() || params.status_filter.is_some()
+}
+
+pub(crate) fn read_request_log_page_for_key_ids_with_storage(
+    storage: &Storage,
     params: RequestLogListParams,
     key_ids: &[String],
 ) -> Result<RequestLogListResult, String> {
-    let params = params.normalized();
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let query = normalize_optional_text(params.query);
-    let status_filter = normalize_status_filter(params.status_filter);
-    let (start_ts, end_ts) = normalize_time_range(params.start_ts, params.end_ts);
-    let page_size = normalize_page_size(params.page_size);
+    let params = NormalizedRequestLogParams::from_params(params);
+    if key_ids.is_empty() {
+        return Ok(RequestLogListResult {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            page_size: params.page_size,
+        });
+    }
     let total = storage
         .count_request_logs_for_keys(
-            query.as_deref(),
-            status_filter.as_deref(),
-            start_ts,
-            end_ts,
+            params.query.as_deref(),
+            params.status_filter.as_deref(),
+            params.start_ts,
+            params.end_ts,
             key_ids,
         )
         .map_err(|err| format!("count request logs failed: {err}"))?;
-    let page = clamp_page(params.page, total, page_size);
-    let offset = (page - 1) * page_size;
+    read_request_log_page_for_key_ids_with_normalized_total(storage, params, key_ids, total)
+}
+
+pub(crate) fn read_request_log_page_for_key_ids_with_total(
+    storage: &Storage,
+    params: RequestLogListParams,
+    key_ids: &[String],
+    total: i64,
+) -> Result<RequestLogListResult, String> {
+    let params = NormalizedRequestLogParams::from_params(params);
+    if key_ids.is_empty() {
+        return Ok(RequestLogListResult {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            page_size: params.page_size,
+        });
+    }
+    read_request_log_page_for_key_ids_with_normalized_total(storage, params, key_ids, total)
+}
+
+fn read_request_log_page_for_key_ids_with_normalized_total(
+    storage: &Storage,
+    params: NormalizedRequestLogParams,
+    key_ids: &[String],
+    total: i64,
+) -> Result<RequestLogListResult, String> {
+    let total = total.max(0);
+    let page = params.clamped_page(total);
+    if total == 0 {
+        return Ok(RequestLogListResult {
+            items: Vec::new(),
+            total,
+            page,
+            page_size: params.page_size,
+        });
+    }
+    let offset = (page - 1) * params.page_size;
     let logs = storage
         .list_request_logs_paginated_for_keys(
-            query.as_deref(),
-            status_filter.as_deref(),
-            start_ts,
-            end_ts,
+            params.query.as_deref(),
+            params.status_filter.as_deref(),
+            params.start_ts,
+            params.end_ts,
             offset,
-            page_size,
+            params.page_size,
             key_ids,
         )
         .map_err(|err| format!("list request logs failed: {err}"))?;
@@ -208,7 +341,7 @@ pub(crate) fn read_request_log_page_for_key_ids(
             .collect(),
         total,
         page,
-        page_size,
+        page_size: params.page_size,
     })
 }
 
@@ -284,6 +417,10 @@ fn normalize_page_size(value: i64) -> i64 {
     } else {
         value.min(MAX_REQUEST_LOG_PAGE_SIZE)
     }
+}
+
+fn normalize_summary_limit(value: Option<i64>) -> i64 {
+    value.unwrap_or(DEFAULT_REQUEST_LOG_SUMMARY_LIMIT)
 }
 
 /// 函数 `clamp_page`
@@ -397,205 +534,5 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        derive_canonical_source, derive_size_reject_stage, normalize_optional_text,
-        normalize_status_filter, normalize_upstream_url, RequestLogListParams,
-        DEFAULT_REQUEST_LOG_PAGE_SIZE,
-    };
-
-    /// 函数 `normalize_upstream_url_keeps_official_domains`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn normalize_upstream_url_keeps_official_domains() {
-        assert_eq!(
-            normalize_upstream_url(Some("https://chatgpt.com/backend-api/codex/responses"))
-                .as_deref(),
-            Some("https://chatgpt.com/backend-api/codex/responses")
-        );
-        assert_eq!(
-            normalize_upstream_url(Some("https://api.openai.com/v1/responses")).as_deref(),
-            Some("https://api.openai.com/v1/responses")
-        );
-    }
-
-    /// 函数 `normalize_upstream_url_keeps_local_addresses`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn normalize_upstream_url_keeps_local_addresses() {
-        assert_eq!(
-            normalize_upstream_url(Some("http://127.0.0.1:3000/relay")).as_deref(),
-            Some("http://127.0.0.1:3000/relay")
-        );
-        assert_eq!(
-            normalize_upstream_url(Some("http://localhost:3000/relay")).as_deref(),
-            Some("http://localhost:3000/relay")
-        );
-    }
-
-    /// 函数 `normalize_upstream_url_keeps_custom_addresses`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn normalize_upstream_url_keeps_custom_addresses() {
-        assert_eq!(
-            normalize_upstream_url(Some("https://gateway.example.com/v1")).as_deref(),
-            Some("https://gateway.example.com/v1")
-        );
-    }
-
-    /// 函数 `normalize_upstream_url_trims_empty_values`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn normalize_upstream_url_trims_empty_values() {
-        assert_eq!(normalize_upstream_url(None), None);
-        assert_eq!(normalize_upstream_url(Some("   ")), None);
-        assert_eq!(
-            normalize_upstream_url(Some(" https://api.openai.com/v1/responses ")).as_deref(),
-            Some("https://api.openai.com/v1/responses")
-        );
-    }
-
-    #[test]
-    fn derive_canonical_source_uses_adapter_and_aggregate_context() {
-        assert_eq!(
-            derive_canonical_source(Some("Passthrough"), None, None, &[]),
-            "native_codex"
-        );
-        assert_eq!(
-            derive_canonical_source(Some("OpenAIChatCompletionsSse"), None, None, &[]),
-            "openai_compat"
-        );
-        assert_eq!(
-            derive_canonical_source(Some("AnthropicSse"), None, None, &[]),
-            "anthropic_adapter"
-        );
-        assert_eq!(
-            derive_canonical_source(Some("GeminiJson"), None, None, &[]),
-            "gemini_adapter"
-        );
-        assert_eq!(
-            derive_canonical_source(
-                Some("Passthrough"),
-                Some("supplier"),
-                None,
-                &["agg-1".to_string()],
-            ),
-            "aggregate_passthrough"
-        );
-    }
-
-    #[test]
-    fn derive_size_reject_stage_distinguishes_local_and_upstream() {
-        assert_eq!(
-            derive_size_reject_stage(
-                Some(400),
-                Some("Input exceeds the maximum length of 1048576 characters."),
-            ),
-            "local"
-        );
-        assert_eq!(
-            derive_size_reject_stage(Some(413), Some("upstream request body too large")),
-            "upstream"
-        );
-        assert_eq!(derive_size_reject_stage(Some(413), None), "upstream");
-        assert_eq!(derive_size_reject_stage(Some(200), None), "-");
-    }
-
-    /// 函数 `request_log_list_params_default_to_first_page_with_twenty_items`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn request_log_list_params_default_to_first_page_with_twenty_items() {
-        let params: RequestLogListParams =
-            serde_json::from_value(serde_json::json!({})).expect("deserialize params");
-        let normalized = params.normalized();
-
-        assert_eq!(normalized.page, 1);
-        assert_eq!(normalized.page_size, DEFAULT_REQUEST_LOG_PAGE_SIZE);
-    }
-
-    /// 函数 `normalize_status_filter_accepts_known_values`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn normalize_status_filter_accepts_known_values() {
-        assert_eq!(
-            normalize_status_filter(Some("2xx".to_string())).as_deref(),
-            Some("2xx")
-        );
-        assert_eq!(normalize_status_filter(Some("ALL".to_string())), None);
-        assert_eq!(normalize_status_filter(Some("unknown".to_string())), None);
-    }
-
-    /// 函数 `normalize_optional_text_trims_blank_values`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn normalize_optional_text_trims_blank_values() {
-        assert_eq!(normalize_optional_text(Some("  ".to_string())), None);
-        assert_eq!(
-            normalize_optional_text(Some(" trace:=abc ".to_string())).as_deref(),
-            Some("trace:=abc")
-        );
-    }
-}
+#[path = "requestlog_list_tests.rs"]
+mod tests;

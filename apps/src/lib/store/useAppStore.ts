@@ -86,6 +86,7 @@ export const useAppStore = create<AppState>((set) => ({
       "gpt-5.4-mini",
       "gpt-5.4",
     ],
+    modelCatalogAutoRemoteFetch: true,
     modelForwardRules: "",
     compactModelForwardRules: "",
     accountMaxInflight: 1,

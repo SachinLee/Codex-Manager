@@ -28,7 +28,7 @@ const VALID_UI_LOCALES: &[&str] = &["zh-CN", "en", "ru", "ko"];
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_ui_theme(raw: Option<&str>) -> String {
+pub(super) fn normalize_ui_theme(raw: Option<&str>) -> String {
     let candidate = raw.unwrap_or(DEFAULT_UI_THEME).trim().to_ascii_lowercase();
     if VALID_UI_THEMES.iter().any(|theme| *theme == candidate) {
         candidate
@@ -48,7 +48,7 @@ fn normalize_ui_theme(raw: Option<&str>) -> String {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_ui_appearance_preset(raw: Option<&str>) -> String {
+pub(super) fn normalize_ui_appearance_preset(raw: Option<&str>) -> String {
     let candidate = raw
         .unwrap_or(DEFAULT_UI_APPEARANCE_PRESET)
         .trim()
@@ -63,7 +63,7 @@ fn normalize_ui_appearance_preset(raw: Option<&str>) -> String {
     }
 }
 
-fn normalize_ui_locale(raw: Option<&str>) -> String {
+pub(super) fn normalize_ui_locale(raw: Option<&str>) -> String {
     let candidate = raw.unwrap_or(DEFAULT_UI_LOCALE).trim();
     let normalized = candidate.to_ascii_lowercase();
     let next_value = match normalized.as_str() {
@@ -289,10 +289,6 @@ pub fn set_ui_appearance_preset(preset: Option<&str>) -> Result<String, String> 
     Ok(normalized)
 }
 
-pub fn current_ui_locale() -> String {
-    normalize_ui_locale(get_persisted_app_setting(APP_SETTING_UI_LOCALE_KEY).as_deref())
-}
-
 pub fn set_ui_locale(locale: Option<&str>) -> Result<String, String> {
     let normalized = normalize_ui_locale(locale);
     save_persisted_app_setting(APP_SETTING_UI_LOCALE_KEY, Some(&normalized))?;
@@ -300,21 +296,5 @@ pub fn set_ui_locale(locale: Option<&str>) -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{normalize_ui_locale, DEFAULT_UI_LOCALE};
-
-    #[test]
-    fn ui_locale_normalization_defaults_to_chinese() {
-        assert_eq!(normalize_ui_locale(None), DEFAULT_UI_LOCALE);
-        assert_eq!(normalize_ui_locale(Some("")), DEFAULT_UI_LOCALE);
-        assert_eq!(normalize_ui_locale(Some("unknown")), DEFAULT_UI_LOCALE);
-    }
-
-    #[test]
-    fn ui_locale_normalization_accepts_supported_aliases() {
-        assert_eq!(normalize_ui_locale(Some("zh-cn")), "zh-CN");
-        assert_eq!(normalize_ui_locale(Some("EN-US")), "en");
-        assert_eq!(normalize_ui_locale(Some("ru-RU")), "ru");
-        assert_eq!(normalize_ui_locale(Some("ko-kr")), "ko");
-    }
-}
+#[path = "ui_tests.rs"]
+mod tests;
