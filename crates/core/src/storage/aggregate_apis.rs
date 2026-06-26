@@ -1,6 +1,10 @@
-use rusqlite::{params, Result, Row};
+use rusqlite::{params, params_from_iter, Result, Row};
 
-use super::{now_ts, AggregateApi, AggregateApiSupplierModel, Storage};
+use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
+use super::{
+    now_ts, AggregateApi, AggregateApiOverviewStats, AggregateApiQuotaSourceSummary,
+    AggregateApiSupplierModel, Storage,
+};
 
 const AGGREGATE_API_SELECT_SQL: &str = "SELECT
     id,
@@ -153,6 +157,65 @@ impl Storage {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn list_aggregate_api_quota_source_summaries(
+        &self,
+    ) -> Result<Vec<AggregateApiQuotaSourceSummary>> {
+        let mut stmt = self
+            .conn
+            .prepare(aggregate_api_quota_source_summaries_list_sql())?;
+        let rows = stmt.query_map([], map_aggregate_api_quota_source_summary_row)?;
+        rows.collect()
+    }
+
+    pub fn list_balance_query_aggregate_api_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(balance_query_aggregate_api_ids_sql())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn list_balance_query_aggregate_api_ids_for_ids(
+        &self,
+        api_ids: &[String],
+    ) -> Result<Vec<String>> {
+        let api_ids = normalize_text_ids(api_ids);
+        if api_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for chunk in api_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
+            out.extend(list_balance_query_aggregate_api_ids_for_ids_chunk(
+                self, chunk,
+            )?);
+        }
+        out.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        Ok(out.into_iter().map(|item| item.0).collect())
+    }
+
+    pub fn aggregate_api_overview_stats(&self) -> Result<AggregateApiOverviewStats> {
+        self.conn
+            .query_row(aggregate_api_overview_stats_sql(), [], |row| {
+                Ok(AggregateApiOverviewStats {
+                    source_count: row.get(0)?,
+                    enabled_balance_query_count: row.get(1)?,
+                    ok_count: row.get(2)?,
+                    error_count: row.get(3)?,
+                    last_refreshed_at: row.get(4)?,
+                })
+            })
+    }
+
+    pub fn list_aggregate_api_balance_jsons(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(aggregate_api_balance_jsons_list_sql())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect()
     }
 
     /// 函数 `update_aggregate_api`
@@ -716,6 +779,60 @@ impl Storage {
         ))
     }
 
+    pub(super) fn ensure_aggregate_api_balance_query_lookup_index(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_aggregate_apis_balance_query_lookup
+               ON aggregate_apis(
+                 balance_query_enabled,
+                 LOWER(TRIM(COALESCE(status, ''))),
+                 sort ASC,
+                 updated_at DESC,
+                 id ASC
+               );",
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_aggregate_api_balance_query_order_index(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_aggregate_apis_balance_query_order
+               ON aggregate_apis(
+                 balance_query_enabled,
+                 sort ASC,
+                 updated_at DESC,
+                 id ASC
+               );",
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_aggregate_api_status_order_index(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_aggregate_apis_status_order
+               ON aggregate_apis(
+                 LOWER(TRIM(COALESCE(status, ''))),
+                 sort ASC,
+                 created_at DESC,
+                 id ASC
+               );",
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_aggregate_api_provider_status_order_index(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_aggregate_apis_provider_status_order
+               ON aggregate_apis(
+                 LOWER(TRIM(COALESCE(status, ''))),
+                 REPLACE(LOWER(TRIM(COALESCE(provider_type, ''))), '-', '_'),
+                 sort ASC,
+                 created_at DESC,
+                 id ASC
+               );",
+        )?;
+        Ok(())
+    }
+
     pub fn list_aggregate_api_supplier_models(
         &self,
         supplier_key: Option<&str>,
@@ -837,6 +954,91 @@ fn map_aggregate_api_row(row: &Row<'_>) -> Result<AggregateApi> {
         last_balance_error: row.get(24)?,
         last_balance_json: row.get(25)?,
     })
+}
+
+fn map_aggregate_api_quota_source_summary_row(
+    row: &Row<'_>,
+) -> Result<AggregateApiQuotaSourceSummary> {
+    Ok(AggregateApiQuotaSourceSummary {
+        id: row.get(0)?,
+        provider_type: row.get(1)?,
+        supplier_name: row.get(2)?,
+        url: row.get(3)?,
+        status: row.get(4)?,
+        balance_query_enabled: row.get(5)?,
+        last_balance_at: row.get(6)?,
+        last_balance_status: row.get(7)?,
+        last_balance_error: row.get(8)?,
+        last_balance_json: row.get(9)?,
+    })
+}
+
+fn list_balance_query_aggregate_api_ids_for_ids_chunk(
+    storage: &Storage,
+    api_ids: &[String],
+) -> Result<Vec<(String, i64, i64)>> {
+    let Some((condition, params)) = text_id_in_clause("id", api_ids) else {
+        return Ok(Vec::new());
+    };
+    let sql = balance_query_aggregate_api_ids_for_ids_chunk_sql(&condition);
+    let mut stmt = storage.conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+fn balance_query_aggregate_api_ids_for_ids_chunk_sql(api_condition: &str) -> String {
+    format!(
+        "SELECT id, sort, updated_at
+         FROM aggregate_apis
+         WHERE +balance_query_enabled = 1
+           AND {api_condition}"
+    )
+}
+
+fn aggregate_api_quota_source_summaries_list_sql() -> &'static str {
+    "SELECT
+        id,
+        provider_type,
+        supplier_name,
+        url,
+        status,
+        balance_query_enabled,
+        last_balance_at,
+        last_balance_status,
+        last_balance_error,
+        last_balance_json
+     FROM aggregate_apis
+     ORDER BY sort ASC, updated_at DESC, id ASC"
+}
+
+fn aggregate_api_balance_jsons_list_sql() -> &'static str {
+    "SELECT last_balance_json
+     FROM aggregate_apis
+     WHERE last_balance_json IS NOT NULL
+       AND TRIM(last_balance_json) <> ''
+     ORDER BY sort ASC, updated_at DESC, id ASC"
+}
+
+fn balance_query_aggregate_api_ids_sql() -> &'static str {
+    "SELECT id
+     FROM aggregate_apis
+     WHERE balance_query_enabled = 1
+     ORDER BY sort ASC, updated_at DESC, id ASC"
+}
+
+fn aggregate_api_overview_stats_sql() -> &'static str {
+    "SELECT
+        COUNT(1) AS source_count,
+        IFNULL(SUM(CASE WHEN balance_query_enabled = 1 THEN 1 ELSE 0 END), 0)
+            AS enabled_balance_query_count,
+        IFNULL(SUM(CASE WHEN last_balance_status = 'success' THEN 1 ELSE 0 END), 0)
+            AS ok_count,
+        IFNULL(SUM(CASE WHEN last_balance_status IN ('error', 'failed') THEN 1 ELSE 0 END), 0)
+            AS error_count,
+        MAX(last_balance_at) AS last_refreshed_at
+     FROM aggregate_apis"
 }
 
 fn map_aggregate_api_supplier_model_row(row: &Row<'_>) -> Result<AggregateApiSupplierModel> {

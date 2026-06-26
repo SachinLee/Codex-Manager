@@ -1557,11 +1557,15 @@ fn finalize_ws_request_log(
     if usage.first_response_ms.is_none() {
         usage.first_response_ms = pending.first_response_ms;
     }
-    let prompt_cache_session_id = context.prompt_cache_key.as_deref().and_then(|prompt_cache_key| {
-        crate::gateway::request_log_session_id_candidate_from_value(
-            &serde_json::json!({ "prompt_cache_key": prompt_cache_key }),
-        )
-    });
+    let prompt_cache_session_id =
+        context
+            .prompt_cache_key
+            .as_deref()
+            .and_then(|prompt_cache_key| {
+                crate::gateway::request_log_session_id_candidate_from_value(
+                    &serde_json::json!({ "prompt_cache_key": prompt_cache_key }),
+                )
+            });
     crate::gateway::write_request_log(
         &storage,
         crate::gateway::RequestLogTraceContext {

@@ -157,7 +157,9 @@ fn list_codex_threads(
 }
 
 fn session_index_path_for_db(db_path: &Path) -> Option<PathBuf> {
-    db_path.parent().map(|parent| parent.join("session_index.jsonl"))
+    db_path
+        .parent()
+        .map(|parent| parent.join("session_index.jsonl"))
 }
 
 fn read_session_index_titles(db_path: &Path) -> HashMap<String, String> {
@@ -644,7 +646,7 @@ pub fn delete_all_archived(db_path: &Path) -> Result<Vec<DeleteResult>, String> 
 fn select_rows_json(
     conn: &Connection,
     sql: &str,
-    params: &[&dyn ToSql],
+    params: Vec<SqlValue>,
 ) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare(sql)
@@ -717,7 +719,7 @@ fn backup_related(
     tables: &mut Map<String, Value>,
     table: &str,
     where_clause: &str,
-    params: &[&dyn ToSql],
+    params: Vec<SqlValue>,
 ) -> Result<(), String> {
     if !table_exists(conn, table) {
         return Ok(());
@@ -734,7 +736,7 @@ fn delete_related(
     conn: &Connection,
     table: &str,
     where_clause: &str,
-    params: &[&dyn ToSql],
+    params: Vec<SqlValue>,
 ) -> Result<(), String> {
     if !table_exists(conn, table) {
         return Ok(());

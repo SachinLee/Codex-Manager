@@ -417,7 +417,10 @@ fn sample_incoming_headers_with_platform_key(
             HeaderValue::from_str(session_affinity).expect("header"),
         );
     }
-    headers.insert("x-api-key", HeaderValue::from_str(platform_key).expect("header"));
+    headers.insert(
+        "x-api-key",
+        HeaderValue::from_str(platform_key).expect("header"),
+    );
     super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers)
 }
 

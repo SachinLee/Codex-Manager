@@ -79,7 +79,6 @@ pub(crate) fn workspace_header_for_account(account: &Account) -> Option<String> 
 ///
 /// # 返回
 /// 返回函数执行结果
-#[cfg(test)]
 pub(crate) fn build_workspace_map_from_accounts(
     accounts: &[Account],
 ) -> HashMap<String, Option<String>> {

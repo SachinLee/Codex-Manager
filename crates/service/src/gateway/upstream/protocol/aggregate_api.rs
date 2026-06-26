@@ -20,6 +20,18 @@ const AGGREGATE_API_LARGE_REQUEST_BODY_BYTES: usize = 20 * 1024 * 1024;
 pub(crate) const AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED: &str =
     "aggregate_api_daily_spend_limit_exhausted";
 
+fn aggregate_api_is_in_cooldown(api_id: &str) -> bool {
+    crate::gateway::gateway_is_aggregate_api_in_cooldown(api_id)
+}
+
+fn clear_aggregate_api_cooldown(api_id: &str) {
+    crate::gateway::gateway_clear_aggregate_api_cooldown(api_id)
+}
+
+fn record_aggregate_api_failure(api_id: &str) {
+    crate::gateway::gateway_record_aggregate_api_failure(api_id);
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiKeyAuthParams {
@@ -865,6 +877,31 @@ pub(crate) fn filter_daily_spend_limited_candidates(
         .collect())
 }
 
+pub(crate) fn filter_aggregate_api_cooldown_candidates(
+    candidates: Vec<AggregateApi>,
+) -> Vec<AggregateApi> {
+    if candidates.is_empty() {
+        return candidates;
+    }
+
+    let mut available = Vec::with_capacity(candidates.len());
+    let mut cooled = Vec::new();
+    for api in candidates {
+        if aggregate_api_is_in_cooldown(api.id.as_str()) {
+            cooled.push(api);
+        } else {
+            available.push(api);
+        }
+    }
+
+    if available.is_empty() || cooled.is_empty() {
+        available.extend(cooled);
+        available
+    } else {
+        available
+    }
+}
+
 /// 函数 `proxy_aggregate_request`
 ///
 /// 作者: gaohongshun
@@ -1288,6 +1325,11 @@ pub(in super::super) fn proxy_aggregate_request(
                 status_code
             };
             let usage = bridge.usage;
+            if bridge.upstream_error_hint.is_some() || bridge.stream_terminal_error.is_some() {
+                record_aggregate_api_failure(candidate_id.as_str());
+            } else {
+                clear_aggregate_api_cooldown(candidate_id.as_str());
+            }
 
             super::super::super::record_gateway_request_outcome(
                 path,
@@ -1355,6 +1397,10 @@ pub(in super::super) fn proxy_aggregate_request(
 
         if succeeded {
             return Ok(());
+        }
+
+        if !terminal_failure {
+            record_aggregate_api_failure(candidate_id.as_str());
         }
 
         if terminal_failure {
@@ -1614,9 +1660,10 @@ mod tests {
     use super::{
         aggregate_api_large_body_transport_failure_status, aggregate_api_terminal_failure_status,
         build_anthropic_bridge_aggregate_api_request, build_upstream_url, effective_action_path,
-        filter_daily_spend_limited_candidates, resolve_aggregate_api_rotation_candidates,
-        resolve_passthrough_sse_protocol, responses_to_anthropic_messages_action_path,
-        rewrite_body_model_override, AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
+        filter_aggregate_api_cooldown_candidates, filter_daily_spend_limited_candidates,
+        resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
+        responses_to_anthropic_messages_action_path, rewrite_body_model_override,
+        AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
     };
     use crate::aggregate_api::{
         AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -1911,6 +1958,171 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_candidates_keep_successful_zero_balance_apis() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+
+        let mut zero_balance = aggregate_api_with_action(None);
+        zero_balance.id = "agg-zero-balance".to_string();
+        zero_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        zero_balance.sort = 0;
+        zero_balance.created_at = now;
+        zero_balance.updated_at = now;
+        zero_balance.balance_query_enabled = true;
+        zero_balance.last_balance_status = Some("success".to_string());
+        zero_balance.last_balance_json =
+            Some(r#"{"isValid":true,"remaining":0,"unit":"USD","total":10,"used":10}"#.to_string());
+
+        let mut available = aggregate_api_with_action(None);
+        available.id = "agg-available-balance".to_string();
+        available.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        available.sort = 1;
+        available.created_at = now + 1;
+        available.updated_at = now + 1;
+        available.balance_query_enabled = true;
+        available.last_balance_status = Some("success".to_string());
+        available.last_balance_json = Some(
+            r#"{"isValid":true,"remaining":2.5,"unit":"USD","total":10,"used":7.5}"#.to_string(),
+        );
+
+        storage
+            .insert_aggregate_api(&zero_balance)
+            .expect("insert zero balance aggregate api");
+        storage
+            .insert_aggregate_api(&available)
+            .expect("insert available aggregate api");
+
+        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
+            .expect("resolve candidates");
+        let candidate_ids = candidates
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidate_ids,
+            vec!["agg-zero-balance", "agg-available-balance"]
+        );
+    }
+
+    #[test]
+    fn aggregate_candidates_keep_unknown_or_failed_balance_apis() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+
+        let mut failed_balance = aggregate_api_with_action(None);
+        failed_balance.id = "agg-failed-balance".to_string();
+        failed_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        failed_balance.sort = 0;
+        failed_balance.created_at = now;
+        failed_balance.updated_at = now;
+        failed_balance.balance_query_enabled = true;
+        failed_balance.last_balance_status = Some("failed".to_string());
+        failed_balance.last_balance_error = Some("template=generic; timeout".to_string());
+
+        let mut missing_balance = aggregate_api_with_action(None);
+        missing_balance.id = "agg-missing-balance".to_string();
+        missing_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        missing_balance.sort = 1;
+        missing_balance.created_at = now + 1;
+        missing_balance.updated_at = now + 1;
+        missing_balance.balance_query_enabled = true;
+        missing_balance.last_balance_status = Some("success".to_string());
+        missing_balance.last_balance_json = Some(r#"{"isValid":true,"unit":"USD"}"#.to_string());
+
+        let mut failed_zero_balance = aggregate_api_with_action(None);
+        failed_zero_balance.id = "agg-failed-zero-balance".to_string();
+        failed_zero_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        failed_zero_balance.sort = 2;
+        failed_zero_balance.created_at = now + 2;
+        failed_zero_balance.updated_at = now + 2;
+        failed_zero_balance.balance_query_enabled = true;
+        failed_zero_balance.last_balance_status = Some("failed".to_string());
+        failed_zero_balance.last_balance_json = Some(r#"{"remaining":0,"unit":"USD"}"#.to_string());
+
+        storage
+            .insert_aggregate_api(&failed_balance)
+            .expect("insert failed balance aggregate api");
+        storage
+            .insert_aggregate_api(&missing_balance)
+            .expect("insert missing balance aggregate api");
+        storage
+            .insert_aggregate_api(&failed_zero_balance)
+            .expect("insert failed zero balance aggregate api");
+
+        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
+            .expect("resolve candidates");
+        let candidate_ids = candidates
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidate_ids,
+            vec![
+                "agg-failed-balance",
+                "agg-missing-balance",
+                "agg-failed-zero-balance"
+            ]
+        );
+    }
+
+    #[test]
+    fn preferred_zero_balance_aggregate_candidate_is_retained() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+
+        let mut preferred = aggregate_api_with_action(None);
+        preferred.id = "agg-preferred-zero-balance".to_string();
+        preferred.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        preferred.sort = 10;
+        preferred.created_at = now;
+        preferred.updated_at = now;
+        preferred.balance_query_enabled = true;
+        preferred.last_balance_status = Some("success".to_string());
+        preferred.last_balance_json = Some(r#"{"remaining":0,"unit":"USD"}"#.to_string());
+
+        let mut fallback = aggregate_api_with_action(None);
+        fallback.id = "agg-fallback-positive-balance".to_string();
+        fallback.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+        fallback.sort = 0;
+        fallback.created_at = now + 1;
+        fallback.updated_at = now + 1;
+        fallback.balance_query_enabled = true;
+        fallback.last_balance_status = Some("success".to_string());
+        fallback.last_balance_json = Some(r#"{"remaining":1,"unit":"USD"}"#.to_string());
+
+        storage
+            .insert_aggregate_api(&preferred)
+            .expect("insert preferred aggregate api");
+        storage
+            .insert_aggregate_api(&fallback)
+            .expect("insert fallback aggregate api");
+
+        let candidates = resolve_aggregate_api_rotation_candidates(
+            &storage,
+            "openai_compat",
+            Some("agg-preferred-zero-balance"),
+        )
+        .expect("resolve candidates");
+        let candidate_ids = candidates
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidate_ids,
+            vec![
+                "agg-preferred-zero-balance",
+                "agg-fallback-positive-balance"
+            ]
+        );
+    }
+
+    #[test]
     fn daily_spend_limited_candidates_are_skipped() {
         let storage = Storage::open_in_memory().expect("open storage");
         storage.init().expect("init storage");
@@ -1964,6 +2176,43 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(candidate_ids, vec!["agg-available"]);
+    }
+
+    #[test]
+    fn cooldown_candidates_skip_only_when_others_are_available() {
+        let _guard = crate::test_env_guard();
+        crate::gateway::reload_runtime_config_from_env();
+
+        let mut cooled = aggregate_api_with_action(None);
+        cooled.id = "agg-cooled".to_string();
+        let mut available = aggregate_api_with_action(None);
+        available.id = "agg-available".to_string();
+
+        for _ in 0..5 {
+            crate::gateway::gateway_record_aggregate_api_failure("agg-cooled");
+        }
+        let filtered =
+            filter_aggregate_api_cooldown_candidates(vec![cooled.clone(), available.clone()]);
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agg-available"]
+        );
+
+        for _ in 0..5 {
+            crate::gateway::gateway_record_aggregate_api_failure("agg-only-cooled");
+        }
+        let filtered = filter_aggregate_api_cooldown_candidates(vec![cooled]);
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agg-cooled"]
+        );
+        crate::gateway::reload_runtime_config_from_env();
     }
 
     /// 函数 `final_error_promotes_success_status_to_bad_gateway`

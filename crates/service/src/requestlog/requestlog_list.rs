@@ -287,6 +287,14 @@ pub(crate) fn read_request_log_page_for_key_ids_with_storage(
     read_request_log_page_for_key_ids_with_normalized_total(storage, params, key_ids, total)
 }
 
+pub(crate) fn read_request_log_page_for_key_ids(
+    params: RequestLogListParams,
+    key_ids: &[String],
+) -> Result<RequestLogListResult, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    read_request_log_page_for_key_ids_with_storage(&storage, params, key_ids)
+}
+
 pub(crate) fn read_request_log_page_for_key_ids_with_total(
     storage: &Storage,
     params: RequestLogListParams,

@@ -366,6 +366,8 @@ fn gateway_aggregate_responses_bridge_adds_anthropic_headers_and_messages_path()
             auth_params_json: None,
             action: None,
             model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,

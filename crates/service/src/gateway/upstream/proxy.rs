@@ -361,35 +361,47 @@ fn resolve_aggregate_candidates_for_route(
             super::protocol::aggregate_api::AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED
         ));
     }
-    let Some(model) = model_for_log
+    let model = model_for_log
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(candidates);
-    };
-    let aggregate_mappings = storage
-        .list_enabled_model_source_mappings_for_platform(model)
-        .map_err(|err| format!("model_mapping_read_failed: {err}"))?
-        .into_iter()
-        .filter(|mapping| mapping.source_kind == "aggregate_api")
-        .collect::<Vec<_>>();
-    if aggregate_mappings.is_empty() {
-        return Ok(candidates);
-    }
-    candidates = candidates
-        .into_iter()
-        .filter_map(|mut api| {
-            let mapping = aggregate_mappings
-                .iter()
-                .find(|mapping| mapping.source_id == api.id)?;
-            api.model_override = Some(mapping.upstream_model.clone());
-            Some(api)
-        })
-        .collect();
-    if candidates.is_empty() {
-        Err(format!("model_unavailable: {model}"))
+        .filter(|value| !value.is_empty());
+    let aggregate_mappings = if let Some(model) = model {
+        storage
+            .list_enabled_model_source_mappings_for_platform(model)
+            .map_err(|err| format!("model_mapping_read_failed: {err}"))?
+            .into_iter()
+            .filter(|mapping| mapping.source_kind == "aggregate_api")
+            .collect::<Vec<_>>()
     } else {
-        Ok(candidates)
+        Vec::new()
+    };
+    let original_candidates = candidates.clone();
+    let mapped_candidates = if model.is_none() || aggregate_mappings.is_empty() {
+        candidates
+    } else {
+        candidates
+            .into_iter()
+            .filter_map(|mut api| {
+                let mapping = aggregate_mappings
+                    .iter()
+                    .find(|mapping| mapping.source_id == api.id)?;
+                api.model_override = Some(mapping.upstream_model.clone());
+                Some(api)
+            })
+            .collect::<Vec<_>>()
+    };
+    let filtered_candidates =
+        super::protocol::aggregate_api::filter_aggregate_api_cooldown_candidates(mapped_candidates);
+    if filtered_candidates.is_empty() {
+        if model.is_none() || aggregate_mappings.is_empty() {
+            Ok(original_candidates)
+        } else {
+            Err(format!(
+                "model_unavailable: {}",
+                model.expect("model should exist")
+            ))
+        }
+    } else {
+        Ok(filtered_candidates)
     }
 }
 

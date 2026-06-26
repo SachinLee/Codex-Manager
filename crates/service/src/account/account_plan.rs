@@ -1,6 +1,6 @@
 use codexmanager_core::{
     auth::parse_id_token_claims,
-    storage::{AccountSubscription, AccountTokenPlan, Token, UsageSnapshotRecord},
+    storage::{AccountSubscription, AccountTokenPlan, Storage, Token, UsageSnapshotRecord},
 };
 use serde_json::Value;
 
@@ -245,6 +245,18 @@ pub(crate) fn is_free_or_single_window_account_with_snapshot(
         .unwrap_or(false)
 }
 
+pub(crate) fn is_free_or_single_window_account(
+    storage: &Storage,
+    account_id: &str,
+    token: &Token,
+) -> bool {
+    let snapshot = storage
+        .latest_usage_snapshot_for_account(account_id)
+        .ok()
+        .flatten();
+    is_free_or_single_window_account_with_snapshot(token, snapshot.as_ref())
+}
+
 pub(crate) fn account_matches_plan_filter_with_snapshot(
     token: &Token,
     snapshot: Option<&UsageSnapshotRecord>,
@@ -263,6 +275,19 @@ pub(crate) fn account_matches_plan_filter_with_snapshot(
         Some(plan) => plan.normalized == normalized_filter,
         None => normalized_filter == "unknown",
     }
+}
+
+pub(crate) fn account_matches_plan_filter(
+    storage: &Storage,
+    account_id: &str,
+    token: &Token,
+    plan_filter: Option<&str>,
+) -> bool {
+    let snapshot = storage
+        .latest_usage_snapshot_for_account(account_id)
+        .ok()
+        .flatten();
+    account_matches_plan_filter_with_snapshot(token, snapshot.as_ref(), plan_filter)
 }
 
 /// 函数 `is_long_window`

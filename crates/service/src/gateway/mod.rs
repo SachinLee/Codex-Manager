@@ -62,6 +62,8 @@ pub(crate) fn error_message_for_client(
     message
 }
 
+#[path = "routing/aggregate_api_cooldown.rs"]
+mod aggregate_api_cooldown;
 mod anchor_fingerprint;
 mod concurrency;
 #[path = "routing/conversation_binding.rs"]
@@ -133,12 +135,12 @@ use protocol_adapter::build_gemini_error_body;
 use protocol_adapter::{
     adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
 };
+pub(crate) use request_helpers::request_log_session_id_candidate_from_value;
 pub(super) use request_helpers::{
     inspect_service_tier_for_log, inspect_service_tier_value, is_html_content_type,
     is_upstream_challenge_response, normalize_models_path, parse_request_metadata,
     validate_text_input_limit_for_path,
 };
-pub(crate) use request_helpers::request_log_session_id_candidate_from_value;
 #[cfg(test)]
 use request_helpers::{should_drop_incoming_header, should_drop_incoming_header_for_failover};
 pub(crate) use request_log::{RequestLogTraceContext, RequestLogUsage};
@@ -388,7 +390,6 @@ pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
-pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
 use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
@@ -396,6 +397,7 @@ use runtime_config::{
     upstream_client_for_account, upstream_stream_timeout, upstream_total_timeout,
     DEFAULT_GATEWAY_DEBUG,
 };
+pub(crate) use runtime_config::{fresh_upstream_client, upstream_client};
 use selection::collect_gateway_candidates;
 pub(crate) use selection::{
     collect_gateway_candidates_for_accounts_with_low_quota_mode,
@@ -422,6 +424,7 @@ pub(crate) fn reload_runtime_config_from_env() {
     runtime_config::reload_from_env();
     selection::reload_from_env();
     request_gate::clear_runtime_state();
+    aggregate_api_cooldown::clear_runtime_state();
     cooldown::clear_runtime_state();
     route_quality::clear_runtime_state();
     route_hint::reload_from_env();
@@ -1056,6 +1059,51 @@ pub(crate) fn gateway_collect_routed_candidates_with_log_source(
 /// 无
 pub(crate) fn gateway_record_failover_attempt() {
     record_gateway_failover_attempt();
+}
+
+/// 函数 `gateway_is_aggregate_api_in_cooldown`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-06-18
+///
+/// # 参数
+/// - api_id: 参数 api_id
+///
+/// # 返回
+/// 无
+pub(crate) fn gateway_is_aggregate_api_in_cooldown(api_id: &str) -> bool {
+    aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id)
+}
+
+/// 函数 `gateway_record_aggregate_api_failure`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-06-18
+///
+/// # 参数
+/// - api_id: 参数 api_id
+///
+/// # 返回
+/// 无
+pub(crate) fn gateway_record_aggregate_api_failure(api_id: &str) -> bool {
+    aggregate_api_cooldown::record_aggregate_api_failure(api_id)
+}
+
+/// 函数 `gateway_clear_aggregate_api_cooldown`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-06-18
+///
+/// # 参数
+/// - api_id: 参数 api_id
+///
+/// # 返回
+/// 无
+pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str) {
+    aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id);
 }
 
 /// 函数 `gateway_mark_account_cooldown_for_status`

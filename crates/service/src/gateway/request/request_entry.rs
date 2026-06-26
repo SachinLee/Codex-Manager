@@ -133,7 +133,12 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         .route_conversation_id
         .clone()
         .or(validated.local_conversation_id.clone())
-        .or_else(|| validated.incoming_headers.conversation_id().map(str::to_string))
+        .or_else(|| {
+            validated
+                .incoming_headers
+                .conversation_id()
+                .map(str::to_string)
+        })
         .or_else(|| validated.incoming_headers.session_id().map(str::to_string));
     let request = if validated.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API
         || validated.rotation_strategy == crate::apikey_profile::ROTATION_HYBRID

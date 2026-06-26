@@ -216,6 +216,12 @@ pub struct Statement<'c> {
 }
 
 impl<'c> Statement<'c> {
+    pub fn column_names(&self) -> Vec<String> {
+        table_name_from_select_all(self.sql.as_str())
+            .and_then(|table| table_columns(self.conn, table.as_str()).ok())
+            .unwrap_or_default()
+    }
+
     pub fn query<P: Params>(&mut self, params: P) -> Result<Rows<'_>> {
         let rows = self.conn.block_on(fetch_rows_on_pool(
             &self.conn.pool,
@@ -314,6 +320,14 @@ impl<'r> Row<'r> {
             .ok_or(Error::InvalidColumnIndex(index))?;
         T::from_value(value)
     }
+
+    pub fn get_ref(&self, index: usize) -> Result<types::ValueRef<'_>> {
+        let value = self
+            .values
+            .get(index)
+            .ok_or(Error::InvalidColumnIndex(index))?;
+        Ok(types::ValueRef::from_value(value))
+    }
 }
 
 pub trait RowIndex {
@@ -340,6 +354,40 @@ pub mod types {
         Real(f64),
         Text(String),
         Blob(Vec<u8>),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum ValueRef<'a> {
+        Null,
+        Integer(i64),
+        Real(f64),
+        Text(&'a [u8]),
+        Blob(&'a [u8]),
+    }
+
+    impl<'a> ValueRef<'a> {
+        pub(crate) fn from_value(value: &'a Value) -> Self {
+            match value {
+                Value::Null => Self::Null,
+                Value::Integer(value) => Self::Integer(*value),
+                Value::Real(value) => Self::Real(*value),
+                Value::Text(value) => Self::Text(value.as_bytes()),
+                Value::Blob(value) => Self::Blob(value.as_slice()),
+            }
+        }
+    }
+}
+
+pub trait ToSql {
+    fn to_sql_value(&self) -> types::Value;
+}
+
+impl<T> ToSql for T
+where
+    T: ToValue + Clone,
+{
+    fn to_sql_value(&self) -> types::Value {
+        self.clone().to_value()
     }
 }
 
@@ -560,6 +608,12 @@ impl ToValue for &[u8] {
     }
 }
 
+impl ToValue for &dyn ToSql {
+    fn to_value(self) -> types::Value {
+        self.to_sql_value()
+    }
+}
+
 pub trait IntoParams {
     fn into_params(self) -> Vec<types::Value>;
 }
@@ -583,6 +637,12 @@ impl IntoParams for Vec<types::Value> {
 impl IntoParams for &[types::Value] {
     fn into_params(self) -> Vec<types::Value> {
         self.to_vec()
+    }
+}
+
+impl IntoParams for &[&dyn ToSql] {
+    fn into_params(self) -> Vec<types::Value> {
+        self.iter().map(|value| value.to_sql_value()).collect()
     }
 }
 
@@ -910,6 +970,35 @@ fn row_from_sqlx(row: SqliteRow) -> Result<Row<'static>> {
         values,
         _marker: std::marker::PhantomData,
     })
+}
+
+fn table_name_from_select_all(sql: &str) -> Option<String> {
+    let normalized = sql.trim();
+    let lower = normalized.to_ascii_lowercase();
+    if !lower.starts_with("select * from ") {
+        return None;
+    }
+    let after_from = normalized.get("SELECT * FROM ".len()..)?;
+    let token = after_from.split_whitespace().next()?.trim();
+    let table = token
+        .trim_matches('"')
+        .trim_matches('`')
+        .trim_matches('[')
+        .trim_matches(']');
+    (!table.is_empty()).then(|| table.to_string())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let escaped = table.replace('"', "\"\"");
+    let sql = format!("PRAGMA table_info(\"{escaped}\")");
+    let rows = conn.block_on(fetch_rows_on_pool(&conn.pool, &sql, Vec::new()))?;
+    let mut columns = Vec::new();
+    for row in rows {
+        if let Some(types::Value::Text(name)) = row.values.get(1) {
+            columns.push(name.clone());
+        }
+    }
+    Ok(columns)
 }
 
 fn split_sql_batch(sql: &str) -> impl Iterator<Item = &str> {

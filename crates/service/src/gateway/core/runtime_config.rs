@@ -182,6 +182,11 @@ pub(crate) fn upstream_client() -> Client {
     crate::lock_utils::read_recover(upstream_client_lock(), "upstream_client").clone()
 }
 
+pub(crate) fn fresh_upstream_client() -> Client {
+    ensure_runtime_config_loaded();
+    retry_upstream_client()
+}
+
 /// 函数 `upstream_client_for_account`
 ///
 /// 作者: gaohongshun

@@ -31,6 +31,7 @@ pub(crate) fn read_admin_usage_summary(
     actor: &RpcActor,
     start_ts: Option<i64>,
     end_ts: Option<i64>,
+    _include_breakdowns: bool,
 ) -> Result<DashboardAdminUsageSummaryResult, String> {
     if !actor.is_admin() {
         return Err("permission_denied: admin dashboard usage requires admin session".to_string());
@@ -439,6 +440,7 @@ pub(crate) fn read_member_dashboard_summary(
     requested_user_id: Option<String>,
     day_start_ts: Option<i64>,
     day_end_ts: Option<i64>,
+    _include_details: bool,
 ) -> Result<MemberDashboardSummaryResult, String> {
     crate::initialize_storage_if_needed()?;
     let distribution_enabled = crate::distribution_enabled();

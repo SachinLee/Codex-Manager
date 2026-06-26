@@ -139,7 +139,9 @@ pub(in super::super) fn allow_openai_fallback_for_account(
         .latest_usage_snapshot_for_account(account.id.as_str())
         .ok()
         .flatten();
-    let Some(plan) = crate::account_plan::resolve_account_plan(Some(token), snapshot.as_ref())
+    let token_plan = crate::account_plan::token_plan_from_token(token);
+    let Some(plan) =
+        crate::account_plan::resolve_account_plan(Some(&token_plan), snapshot.as_ref())
     else {
         return false;
     };
@@ -160,7 +162,8 @@ fn should_bypass_cooldown_for_bound_account(account_id: &str) -> bool {
         | Some(CooldownReason::Upstream4xx)
         | Some(CooldownReason::Default) => {
             // 连续失败未超阈值才放行
-            network_consecutive_failure_count(account_id) < BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP
+            network_consecutive_failure_count(account_id)
+                < BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP
         }
         // RateLimited / Challenge：不绕过，直接跳过
         _ => false,

@@ -36,6 +36,11 @@ pub(crate) fn read_api_keys_for_ids_with_storage(
     Ok(keys.into_iter().map(map_api_key_list_summary).collect())
 }
 
+pub(crate) fn read_api_keys_for_ids(key_ids: &[String]) -> Result<Vec<ApiKeySummary>, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    read_api_keys_for_ids_with_storage(&storage, key_ids)
+}
+
 fn map_api_key_list_summary(key: ApiKeyListSummary) -> ApiKeySummary {
     ApiKeySummary {
         quota_limit_tokens: key.quota_limit_tokens,

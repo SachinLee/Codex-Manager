@@ -32,14 +32,16 @@ pub(crate) fn read_api_key_usage_stats_for_actor(
         .user_id
         .as_deref()
         .ok_or_else(|| "permission_denied: apikey usage requires user session".to_string())?;
-    let total_items = storage
-        .summarize_request_token_stats_by_key_for_user(user_id)
-        .map_err(|err| format!("summarize api key token stats failed: {err}"))?;
-    let key_ids: Vec<String> = total_items
-        .iter()
-        .map(|item| item.key_id.clone())
+    let key_ids: Vec<String> = storage
+        .list_api_key_summaries_for_user(user_id)
+        .map_err(|err| format!("list user api keys failed: {err}"))?
+        .into_iter()
+        .map(|item| item.id)
         .filter(|key_id| !key_id.trim().is_empty())
         .collect();
+    let total_items = storage
+        .summarize_request_token_stats_by_key_for_keys(&key_ids)
+        .map_err(|err| format!("summarize api key token stats failed: {err}"))?;
     let today_items = storage
         .summarize_request_token_stats_by_key_and_model_for_keys(
             Some(today_start),

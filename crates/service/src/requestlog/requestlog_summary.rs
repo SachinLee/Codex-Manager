@@ -85,6 +85,14 @@ pub(crate) fn read_request_log_filter_summary_for_key_ids_with_storage(
     Ok(map_filter_summary(total_count, filtered))
 }
 
+pub(crate) fn read_request_log_filter_summary_for_key_ids(
+    params: RequestLogListParams,
+    key_ids: &[String],
+) -> Result<RequestLogFilterSummaryResult, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    read_request_log_filter_summary_for_key_ids_with_storage(&storage, params, key_ids)
+}
+
 fn needs_unfiltered_total_count(status_filter: Option<&str>) -> bool {
     status_filter.is_some()
 }
