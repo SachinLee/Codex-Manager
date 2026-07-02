@@ -111,7 +111,38 @@ export interface AggregateApiDailyUsageStat {
   totalTokens: number;
   reasoningOutputTokens: number;
   estimatedCostUsd: number;
+  guardRetryTotalTokens: number;
+  guardRetryEstimatedCostUsd: number;
+  billableTotalTokens: number;
+  billableEstimatedCostUsd: number;
   cacheHitRate: number;
+}
+
+export interface AggregateApiReasoningGuardStat {
+  aggregateApiId: string;
+  aggregateApiSupplierName: string | null;
+  aggregateApiUrl: string | null;
+  totalRequestCount: number;
+  eventCount: number;
+  affectedRequestCount: number;
+  matchRate: number;
+  internalRetryCount: number;
+  internalRetryRequestCount: number;
+  retryRecoveryCount: number;
+  retryRecoveryRate: number;
+  blockCount: number;
+  blockedRequestCount: number;
+  blockRate: number;
+  observeOnlyCount: number;
+  bypassAfterConsecutiveCount: number;
+  guardInputTokens: number;
+  guardCachedInputTokens: number;
+  guardOutputTokens: number;
+  guardTotalTokens: number;
+  guardReasoningOutputTokens: number;
+  guardEstimatedCostUsd: number;
+  lastTargetToken: number | null;
+  lastEventAt: number | null;
 }
 
 export interface AggregateApiSupplierModel {

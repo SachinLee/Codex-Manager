@@ -80,6 +80,24 @@ fn classify_account_availability_signal_separates_usage_refresh_and_deactivation
     assert!(usage_limit_last.should_mark_account_unavailable);
     assert!(!usage_limit_last.should_mark_default_cooldown);
 
+    let reasoning_guard = analyze_gateway_error(
+        "upstream reasoning guard triggered: reasoning_tokens=516",
+        true,
+    );
+    assert_eq!(reasoning_guard.kind, GatewayErrorKind::ReasoningGuard);
+    assert!(!reasoning_guard.should_failover);
+    assert!(!reasoning_guard.should_mark_account_unavailable);
+    assert!(!reasoning_guard.should_mark_default_cooldown);
+
+    let reasoning_guard_last = analyze_gateway_error(
+        "upstream reasoning guard triggered: reasoning_tokens=516",
+        false,
+    );
+    assert_eq!(reasoning_guard_last.kind, GatewayErrorKind::ReasoningGuard);
+    assert!(!reasoning_guard_last.should_failover);
+    assert!(!reasoning_guard_last.should_mark_account_unavailable);
+    assert!(!reasoning_guard_last.should_mark_default_cooldown);
+
     // Regression: backend-native WS upstream phrasing.
     let ws_usage_limit = analyze_gateway_error("The usage limit has been reached", true);
     assert_eq!(ws_usage_limit.kind, GatewayErrorKind::UsageLimit);

@@ -14,6 +14,7 @@ export function createMiscWebCommands(): Record<string, WebCommandDescriptor> {
     service_requestlog_today_summary: { rpcMethod: "requestlog/today_summary" },
     service_requestlog_account_daily_usage: { rpcMethod: "requestlog/account_daily_usage" },
     service_requestlog_aggregate_api_daily_usage: { rpcMethod: "requestlog/aggregate_api_daily_usage" },
+    service_requestlog_aggregate_api_reasoning_guard: { rpcMethod: "requestlog/aggregate_api_reasoning_guard" },
     service_plugin_catalog_list: { rpcMethod: "plugin/catalog/list" },
     service_plugin_catalog_refresh: { rpcMethod: "plugin/catalog/refresh" },
     service_plugin_install: { rpcMethod: "plugin/install" },

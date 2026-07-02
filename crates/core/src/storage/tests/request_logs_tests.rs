@@ -1,4 +1,5 @@
 use super::{RequestLog, RequestTokenStat, Storage};
+use crate::storage::GatewayReasoningGuardEvent;
 
 /// 函数 `collect_query_plan_details`
 ///
@@ -451,6 +452,71 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
 }
 
 #[test]
+fn request_logs_filtered_summary_includes_guard_retry_billable_usage() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trc-guard-summary".to_string()),
+            key_id: Some("gk-guard-summary".to_string()),
+            account_id: Some("acc-guard-summary".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 2_100,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            key_id: Some("gk-guard-summary".to_string()),
+            account_id: Some("acc-guard-summary".to_string()),
+            total_tokens: Some(100),
+            estimated_cost_usd: Some(0.10),
+            created_at: 2_100,
+            ..Default::default()
+        })
+        .expect("insert token stat");
+    storage
+        .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+            trace_id: Some("trc-guard-summary".to_string()),
+            mode: "non_stream".to_string(),
+            action: "internal_retry".to_string(),
+            source_kind: Some("openai_account".to_string()),
+            source_id: Some("acc-guard-summary".to_string()),
+            total_tokens: Some(40),
+            estimated_cost_usd: Some(0.04),
+            created_at: 2_101,
+            ..Default::default()
+        })
+        .expect("insert guard retry event");
+    storage
+        .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+            trace_id: Some("trc-guard-summary".to_string()),
+            mode: "non_stream".to_string(),
+            action: "block".to_string(),
+            source_kind: Some("openai_account".to_string()),
+            source_id: Some("acc-guard-summary".to_string()),
+            total_tokens: Some(999),
+            estimated_cost_usd: Some(9.99),
+            created_at: 2_102,
+            ..Default::default()
+        })
+        .expect("insert guard block event");
+
+    let summary = storage
+        .summarize_request_logs_filtered(None, Some("all"), Some(2_000), Some(2_200))
+        .expect("summarize filtered logs");
+    assert_eq!(summary.count, 1);
+    assert_eq!(summary.total_tokens, 140);
+    assert!((summary.estimated_cost_usd - 0.14).abs() < f64::EPSILON);
+    assert_eq!(summary.guard_retry_total_tokens, 40);
+    assert!((summary.guard_retry_estimated_cost_usd - 0.04).abs() < f64::EPSILON);
+}
+
+#[test]
 fn request_token_stats_total_includes_current_rows_and_rollups() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
@@ -822,6 +888,34 @@ fn summarizes_daily_usage_by_aggregate_api_from_token_stats() {
     }
 
     storage.clear_request_logs().expect("clear logs");
+    storage
+        .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+            trace_id: Some("trc-ag-a-guard".to_string()),
+            mode: "non_stream".to_string(),
+            action: "internal_retry".to_string(),
+            source_kind: Some("aggregate_api".to_string()),
+            source_id: Some("ag-a".to_string()),
+            supplier_name: Some("Supplier A".to_string()),
+            total_tokens: Some(40),
+            estimated_cost_usd: Some(0.04),
+            created_at: 1_250,
+            ..Default::default()
+        })
+        .expect("insert aggregate guard retry event");
+    storage
+        .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+            trace_id: Some("trc-ag-a-block".to_string()),
+            mode: "non_stream".to_string(),
+            action: "block".to_string(),
+            source_kind: Some("aggregate_api".to_string()),
+            source_id: Some("ag-a".to_string()),
+            supplier_name: Some("Supplier A".to_string()),
+            total_tokens: Some(999),
+            estimated_cost_usd: Some(9.99),
+            created_at: 1_260,
+            ..Default::default()
+        })
+        .expect("insert aggregate guard block event");
 
     let summaries = storage
         .summarize_request_token_stats_by_aggregate_api_between(1_000, 2_000)
@@ -845,6 +939,10 @@ fn summarizes_daily_usage_by_aggregate_api_from_token_stats() {
     assert_eq!(first.output_tokens, 25);
     assert_eq!(first.total_tokens, 185);
     assert!((first.estimated_cost_usd - 0.19).abs() < f64::EPSILON);
+    assert_eq!(first.guard_retry_total_tokens, 40);
+    assert!((first.guard_retry_estimated_cost_usd - 0.04).abs() < f64::EPSILON);
+    assert_eq!(first.billable_total_tokens, 225);
+    assert!((first.billable_estimated_cost_usd - 0.23).abs() < f64::EPSILON);
     assert!((first.cache_hit_rate - 0.25).abs() < f64::EPSILON);
 
     let second = &summaries[1];

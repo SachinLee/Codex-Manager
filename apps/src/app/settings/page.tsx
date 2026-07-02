@@ -331,6 +331,13 @@ function AdminSettingsPage() {
   const [quotaGuardDraft, setQuotaGuardDraft] = useState<Record<string, string>>(
     {},
   );
+  const [reasoningGuardDraft, setReasoningGuardDraft] = useState<string | null>(
+    null,
+  );
+  const [reasoningGuardTargetsDraft, setReasoningGuardTargetsDraft] =
+    useState<string | null>(null);
+  const [reasoningGuardRetryDraft, setReasoningGuardRetryDraft] =
+    useState<string | null>(null);
   const [workerAdvancedDialogOpen, setWorkerAdvancedDialogOpen] =
     useState(false);
   const [webPasswordModalOpen, setWebPasswordModalOpen] = useState(false);
@@ -807,6 +814,15 @@ function AdminSettingsPage() {
       quotaGuardDraft.secondaryMinRemainingPercent ??
       stringifyNumber(snapshot?.quotaGuard.secondaryMinRemainingPercent),
   };
+  const reasoningGuardInputValue =
+    reasoningGuardDraft ??
+    stringifyNumber(snapshot?.reasoningGuardBypassAfterConsecutive);
+  const reasoningGuardTargetsInputValue =
+    reasoningGuardTargetsDraft ??
+    (snapshot?.reasoningGuardTargets?.join(", ") || "516, 1034, 1552");
+  const reasoningGuardRetryInputValue =
+    reasoningGuardRetryDraft ??
+    stringifyNumber(snapshot?.reasoningGuardRetryAttempts);
   const selectedEnvValue = selectedEnvKey
     ? (envDrafts[selectedEnvKey] ??
       snapshot?.envOverrides[selectedEnvKey] ??
@@ -1138,6 +1154,62 @@ function AdminSettingsPage() {
           return nextDraft;
         });
       })
+      .catch(() => undefined);
+  };
+
+  const saveReasoningGuardBypassThreshold = () => {
+    const nextValue = parseIntegerInput(reasoningGuardInputValue, 0);
+    if (nextValue == null) {
+      toast.error(t("请输入合法的数值"));
+      setReasoningGuardDraft(null);
+      return;
+    }
+    void updateSettings
+      .mutateAsync({
+        reasoningGuardBypassAfterConsecutive: nextValue,
+      })
+      .then(() => setReasoningGuardDraft(null))
+      .catch(() => undefined);
+  };
+
+  const parseReasoningGuardTargetsInput = (value: string): number[] | null => {
+    const targets = value
+      .split(/[\s,;]+/)
+      .map((part) => Number(part.trim()))
+      .filter((part) => Number.isInteger(part) && part > 0);
+    const uniqueTargets = Array.from(new Set(targets));
+    return uniqueTargets.length > 0 ? uniqueTargets : null;
+  };
+
+  const saveReasoningGuardTargets = () => {
+    const nextTargets = parseReasoningGuardTargetsInput(
+      reasoningGuardTargetsInputValue,
+    );
+    if (!nextTargets) {
+      toast.error(t("请输入至少一个合法的 token 数值"));
+      setReasoningGuardTargetsDraft(null);
+      return;
+    }
+    void updateSettings
+      .mutateAsync({
+        reasoningGuardTargets: nextTargets,
+      })
+      .then(() => setReasoningGuardTargetsDraft(null))
+      .catch(() => undefined);
+  };
+
+  const saveReasoningGuardRetryAttempts = () => {
+    const nextValue = parseIntegerInput(reasoningGuardRetryInputValue, 0);
+    if (nextValue == null) {
+      toast.error(t("请输入合法的数值"));
+      setReasoningGuardRetryDraft(null);
+      return;
+    }
+    void updateSettings
+      .mutateAsync({
+        reasoningGuardRetryAttempts: nextValue,
+      })
+      .then(() => setReasoningGuardRetryDraft(null))
       .catch(() => undefined);
   };
 
@@ -1475,6 +1547,15 @@ function AdminSettingsPage() {
             snapshot={snapshot}
             updateSettings={updateSettings}
             onModelCatalogAutoRemoteFetchChange={handleModelCatalogAutoRemoteFetchChange}
+            reasoningGuardInputValue={reasoningGuardInputValue}
+            setReasoningGuardDraft={setReasoningGuardDraft}
+            saveReasoningGuardBypassThreshold={saveReasoningGuardBypassThreshold}
+            reasoningGuardTargetsInputValue={reasoningGuardTargetsInputValue}
+            setReasoningGuardTargetsDraft={setReasoningGuardTargetsDraft}
+            saveReasoningGuardTargets={saveReasoningGuardTargets}
+            reasoningGuardRetryInputValue={reasoningGuardRetryInputValue}
+            setReasoningGuardRetryDraft={setReasoningGuardRetryDraft}
+            saveReasoningGuardRetryAttempts={saveReasoningGuardRetryAttempts}
             quotaGuardInputValues={quotaGuardInputValues}
             setQuotaGuardDraft={setQuotaGuardDraft}
             saveQuotaGuardField={saveQuotaGuardField}

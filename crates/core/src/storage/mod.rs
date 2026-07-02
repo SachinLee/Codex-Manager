@@ -23,6 +23,7 @@ mod model_price_rules;
 mod model_sources;
 mod plugins;
 mod quota_pools;
+mod reasoning_guard_events;
 mod request_log_filters;
 mod request_log_query;
 mod request_logs;
@@ -530,6 +531,69 @@ pub struct RequestLogQuerySummary {
     pub error_count: i64,
     pub total_tokens: i64,
     pub estimated_cost_usd: f64,
+    pub guard_retry_total_tokens: i64,
+    pub guard_retry_estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GatewayReasoningGuardEvent {
+    pub trace_id: Option<String>,
+    pub request_log_id: Option<i64>,
+    pub mode: String,
+    pub action: String,
+    pub target_token: Option<i64>,
+    pub source_kind: Option<String>,
+    pub source_id: Option<String>,
+    pub supplier_name: Option<String>,
+    pub upstream_model: Option<String>,
+    pub request_path: Option<String>,
+    pub attempt_index: i64,
+    pub final_status_code: Option<i64>,
+    pub input_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub reasoning_output_tokens: Option<i64>,
+    pub estimated_cost_usd: Option<f64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GatewayReasoningGuardAggregateApiStat {
+    pub aggregate_api_id: String,
+    pub aggregate_api_supplier_name: Option<String>,
+    pub aggregate_api_url: Option<String>,
+    pub total_request_count: i64,
+    pub event_count: i64,
+    pub affected_request_count: i64,
+    pub internal_retry_count: i64,
+    pub internal_retry_request_count: i64,
+    pub block_count: i64,
+    pub blocked_request_count: i64,
+    pub observe_only_count: i64,
+    pub bypass_after_consecutive_count: i64,
+    pub recovered_count: i64,
+    pub guard_input_tokens: i64,
+    pub guard_cached_input_tokens: i64,
+    pub guard_output_tokens: i64,
+    pub guard_total_tokens: i64,
+    pub guard_reasoning_output_tokens: i64,
+    pub guard_estimated_cost_usd: f64,
+    pub last_target_token: Option<i64>,
+    pub last_event_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GatewayReasoningGuardTraceSummary {
+    pub trace_id: String,
+    pub event_count: i64,
+    pub internal_retry_count: i64,
+    pub block_count: i64,
+    pub recovered_count: i64,
+    pub retry_total_tokens: i64,
+    pub retry_estimated_cost_usd: f64,
+    pub last_action: Option<String>,
+    pub last_target_token: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -843,6 +907,10 @@ pub struct AggregateApiDailyUsageSummary {
     pub total_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub estimated_cost_usd: f64,
+    pub guard_retry_total_tokens: i64,
+    pub guard_retry_estimated_cost_usd: f64,
+    pub billable_total_tokens: i64,
+    pub billable_estimated_cost_usd: f64,
     pub cache_hit_rate: f64,
 }
 
@@ -1911,6 +1979,11 @@ impl Storage {
             "111_model_source_platform_slug_lookup_indexes",
             include_str!("../../migrations/111_model_source_platform_slug_lookup_indexes.sql"),
         )?;
+        self.apply_sql_or_compat_migration(
+            "112_gateway_reasoning_guard_events",
+            include_str!("../../migrations/112_gateway_reasoning_guard_events.sql"),
+            |s| s.ensure_gateway_reasoning_guard_events_table(),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_supplier_model_tables()?;
@@ -1936,6 +2009,7 @@ impl Storage {
         self.ensure_aggregate_api_supplier_model_tables()?;
         self.ensure_model_group_tables()?;
         self.ensure_request_token_daily_rollups_table()?;
+        self.ensure_gateway_reasoning_guard_events_table()?;
         Ok(())
     }
 

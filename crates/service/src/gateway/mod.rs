@@ -124,7 +124,8 @@ pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
-    record_gateway_request_outcome, AccountInFlightGuard,
+    record_gateway_reasoning_guard_block, record_gateway_reasoning_guard_internal_retry,
+    record_gateway_reasoning_guard_match, record_gateway_request_outcome, AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus,
@@ -233,6 +234,7 @@ use failover::{
 use http_bridge::respond_with_upstream;
 pub(crate) use http_bridge::summarize_upstream_error_hint_from_body;
 pub(crate) use http_bridge::PassthroughSseProtocol;
+pub(crate) use http_bridge::ReasoningGuardBridgeAction;
 /// 函数 `extract_identity_error_code_from_headers`
 ///
 /// 作者: gaohongshun
@@ -535,6 +537,58 @@ pub(crate) fn current_compact_model_forward_rules() -> String {
 /// 返回函数执行结果
 pub(crate) fn request_compression_enabled() -> bool {
     runtime_config::request_compression_enabled()
+}
+
+pub(crate) fn reasoning_guard_enabled() -> bool {
+    runtime_config::reasoning_guard_enabled()
+}
+
+pub(crate) fn set_reasoning_guard_enabled(enabled: bool) -> bool {
+    runtime_config::set_reasoning_guard_enabled(enabled)
+}
+
+pub(crate) fn current_reasoning_guard_targets() -> Vec<i64> {
+    runtime_config::current_reasoning_guard_targets()
+}
+
+pub(crate) fn set_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {
+    runtime_config::set_reasoning_guard_targets(values)
+}
+
+pub(crate) fn set_reasoning_guard_targets_from_raw(raw: &str) -> Vec<i64> {
+    runtime_config::set_reasoning_guard_targets_from_raw(raw)
+}
+
+pub(crate) fn reasoning_guard_intercept_streaming() -> bool {
+    runtime_config::reasoning_guard_intercept_streaming()
+}
+
+pub(crate) fn set_reasoning_guard_intercept_streaming(enabled: bool) -> bool {
+    runtime_config::set_reasoning_guard_intercept_streaming(enabled)
+}
+
+pub(crate) fn reasoning_guard_intercept_non_streaming() -> bool {
+    runtime_config::reasoning_guard_intercept_non_streaming()
+}
+
+pub(crate) fn set_reasoning_guard_intercept_non_streaming(enabled: bool) -> bool {
+    runtime_config::set_reasoning_guard_intercept_non_streaming(enabled)
+}
+
+pub(crate) fn reasoning_guard_retry_attempts() -> usize {
+    runtime_config::reasoning_guard_retry_attempts()
+}
+
+pub(crate) fn set_reasoning_guard_retry_attempts(attempts: usize) -> usize {
+    runtime_config::set_reasoning_guard_retry_attempts(attempts)
+}
+
+pub(crate) fn reasoning_guard_bypass_after_consecutive() -> usize {
+    runtime_config::reasoning_guard_bypass_after_consecutive()
+}
+
+pub(crate) fn set_reasoning_guard_bypass_after_consecutive(threshold: usize) -> usize {
+    runtime_config::set_reasoning_guard_bypass_after_consecutive(threshold)
 }
 
 /// 函数 `current_originator`

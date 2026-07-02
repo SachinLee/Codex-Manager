@@ -67,6 +67,12 @@ export interface AppSettings {
   modelForwardRules: string;
   compactModelForwardRules: string;
   accountMaxInflight: number;
+  reasoningGuardEnabled: boolean;
+  reasoningGuardTargets: number[];
+  reasoningGuardInterceptStreaming: boolean;
+  reasoningGuardInterceptNonStreaming: boolean;
+  reasoningGuardRetryAttempts: number;
+  reasoningGuardBypassAfterConsecutive: number;
   quotaGuard: QuotaGuardSettings;
   gatewayOriginator: string;
   gatewayOriginatorDefault: string;

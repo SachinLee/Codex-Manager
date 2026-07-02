@@ -30,6 +30,12 @@ static HTTP_QUEUE_ENQUEUE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPT_ERRORS: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPT_DURATION_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GATEWAY_REASONING_GUARD_MATCHES_STREAM: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REASONING_GUARD_MATCHES_NON_STREAM: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REASONING_GUARD_BLOCKS_STREAM: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REASONING_GUARD_BLOCKS_NON_STREAM: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_STREAM: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_NON_STREAM: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct GatewayRequestLabelKey {
@@ -71,6 +77,12 @@ pub(crate) struct GatewayMetricsSnapshot {
     pub gateway_upstream_attempt_duration_ms_total: u64,
     pub gateway_upstream_attempts: usize,
     pub gateway_upstream_attempt_errors: usize,
+    pub reasoning_guard_matches_stream: usize,
+    pub reasoning_guard_matches_non_stream: usize,
+    pub reasoning_guard_blocks_stream: usize,
+    pub reasoning_guard_blocks_non_stream: usize,
+    pub reasoning_guard_internal_retries_stream: usize,
+    pub reasoning_guard_internal_retries_non_stream: usize,
 }
 
 pub(crate) struct GatewayRequestGuard;
@@ -350,6 +362,30 @@ pub(crate) fn record_gateway_upstream_attempt(duration_ms: u64, failed: bool) {
     }
 }
 
+pub(crate) fn record_gateway_reasoning_guard_match(is_stream: bool) {
+    if is_stream {
+        GATEWAY_REASONING_GUARD_MATCHES_STREAM.fetch_add(1, Ordering::Relaxed);
+    } else {
+        GATEWAY_REASONING_GUARD_MATCHES_NON_STREAM.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_gateway_reasoning_guard_block(is_stream: bool) {
+    if is_stream {
+        GATEWAY_REASONING_GUARD_BLOCKS_STREAM.fetch_add(1, Ordering::Relaxed);
+    } else {
+        GATEWAY_REASONING_GUARD_BLOCKS_NON_STREAM.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_gateway_reasoning_guard_internal_retry(is_stream: bool) {
+    if is_stream {
+        GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_STREAM.fetch_add(1, Ordering::Relaxed);
+    } else {
+        GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_NON_STREAM.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// 函数 `record_gateway_request_outcome`
 ///
 /// 作者: gaohongshun
@@ -450,6 +486,18 @@ pub(crate) fn gateway_metrics_snapshot() -> GatewayMetricsSnapshot {
             .load(Ordering::Relaxed),
         gateway_upstream_attempts: GATEWAY_UPSTREAM_ATTEMPTS.load(Ordering::Relaxed),
         gateway_upstream_attempt_errors: GATEWAY_UPSTREAM_ATTEMPT_ERRORS.load(Ordering::Relaxed),
+        reasoning_guard_matches_stream: GATEWAY_REASONING_GUARD_MATCHES_STREAM
+            .load(Ordering::Relaxed),
+        reasoning_guard_matches_non_stream: GATEWAY_REASONING_GUARD_MATCHES_NON_STREAM
+            .load(Ordering::Relaxed),
+        reasoning_guard_blocks_stream: GATEWAY_REASONING_GUARD_BLOCKS_STREAM
+            .load(Ordering::Relaxed),
+        reasoning_guard_blocks_non_stream: GATEWAY_REASONING_GUARD_BLOCKS_NON_STREAM
+            .load(Ordering::Relaxed),
+        reasoning_guard_internal_retries_stream: GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_STREAM
+            .load(Ordering::Relaxed),
+        reasoning_guard_internal_retries_non_stream:
+            GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_NON_STREAM.load(Ordering::Relaxed),
     }
 }
 
@@ -495,6 +543,12 @@ codexmanager_http_queue_enqueue_failures_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_count {}\n\
 codexmanager_gateway_upstream_attempt_errors_total {}\n\
+codexmanager_gateway_reasoning_guard_matches_total{{mode=\"stream\"}} {}\n\
+codexmanager_gateway_reasoning_guard_matches_total{{mode=\"non_stream\"}} {}\n\
+codexmanager_gateway_reasoning_guard_blocks_total{{mode=\"stream\"}} {}\n\
+codexmanager_gateway_reasoning_guard_blocks_total{{mode=\"non_stream\"}} {}\n\
+codexmanager_gateway_reasoning_guard_internal_retries_total{{mode=\"stream\"}} {}\n\
+codexmanager_gateway_reasoning_guard_internal_retries_total{{mode=\"non_stream\"}} {}\n\
 {}",
         m.total_requests,
         m.active_requests,
@@ -523,6 +577,12 @@ codexmanager_gateway_upstream_attempt_errors_total {}\n\
         m.gateway_upstream_attempt_duration_ms_total,
         m.gateway_upstream_attempts,
         m.gateway_upstream_attempt_errors,
+        m.reasoning_guard_matches_stream,
+        m.reasoning_guard_matches_non_stream,
+        m.reasoning_guard_blocks_stream,
+        m.reasoning_guard_blocks_non_stream,
+        m.reasoning_guard_internal_retries_stream,
+        m.reasoning_guard_internal_retries_non_stream,
         labeled,
     )
 }

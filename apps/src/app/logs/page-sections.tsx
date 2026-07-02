@@ -36,8 +36,10 @@ import {
   formatCompactTokenAmount,
   formatDuration,
   formatOutputRate,
+  formatReasoningGuardTarget,
   formatTableTokenAmount,
   getStatusBadge,
+  isReasoningGuardConverted502,
   type StatusFilter,
   type TimeRangePreset,
   type TranslateFn,
@@ -305,6 +307,11 @@ export function RequestLogsTabContent({
         <SummaryCard
           title={t("累计Token")}
           value={formatCompactTokenAmount(summary.totalTokens)}
+          detail={
+            summary.guardRetryTotalTokens > 0
+              ? `Guard +${formatCompactTokenAmount(summary.guardRetryTotalTokens)}`
+              : null
+          }
           description={
             isDirectAccountMode
               ? `${t("当前筛选结果中的总Token")} · ${t("仅网关流量")}`
@@ -316,6 +323,11 @@ export function RequestLogsTabContent({
         <SummaryCard
           title={t("筛选费用")}
           value={formatUsdAmount(summary.totalCostUsd)}
+          detail={
+            summary.guardRetryEstimatedCostUsd > 0
+              ? `Guard +${formatUsdAmount(summary.guardRetryEstimatedCostUsd)}`
+              : null
+          }
           description={t("当前筛选结果估算费用")}
           icon={DollarSign}
           toneClass="bg-emerald-500/12 text-emerald-500"
@@ -430,7 +442,24 @@ export function RequestLogsTabContent({
                       <ModelEffortCell log={log} />
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top">
-                      {getStatusBadge(resolveDisplayedStatusCode(log))}
+                      <div className="flex flex-col items-start gap-1">
+                        {getStatusBadge(resolveDisplayedStatusCode(log))}
+                        {isReasoningGuardConverted502(log) ? (
+                          <span
+                            className="text-[10px] font-medium text-amber-500"
+                            title={t("这是 Reasoning Guard 被网关保护转换成的 502，不是真实上游 502。")}
+                          >
+                            {formatReasoningGuardTarget(log)} -&gt; 502
+                          </span>
+                        ) : log.guardInternalRetryCount > 0 ? (
+                          <span
+                            className="text-[10px] font-medium text-emerald-500"
+                            title={t("Guard 命中后已在网关内部重试并恢复。")}
+                          >
+                            Guard retry {log.guardInternalRetryCount}
+                          </span>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top font-mono">
                       <span
@@ -445,6 +474,17 @@ export function RequestLogsTabContent({
                     <TableCell className="px-4 py-3 align-top">
                       <div className="flex flex-col gap-0.5 text-[10px] text-muted-foreground">
                         <span>{t("总")} {formatTableTokenAmount(log.totalTokens)}</span>
+                        {log.guardRetryTotalTokens > 0 ? (
+                          <span className="text-amber-500">
+                            Guard +{formatTableTokenAmount(log.guardRetryTotalTokens)}
+                          </span>
+                        ) : null}
+                        {log.billableTotalTokens != null &&
+                        log.billableTotalTokens !== log.totalTokens ? (
+                          <span className="text-foreground">
+                            {t("计费")} {formatTableTokenAmount(log.billableTotalTokens)}
+                          </span>
+                        ) : null}
                         <span>{t("输入")} {formatTableTokenAmount(log.inputTokens)}</span>
                         <span className="opacity-60">
                           {t("缓存")} {formatTableTokenAmount(log.cachedInputTokens)}
@@ -455,13 +495,26 @@ export function RequestLogsTabContent({
                       {formatCacheRate(log.inputTokens, log.cachedInputTokens)}
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top font-mono text-xs text-foreground">
-                      {formatUsdAmount(log.estimatedCostUsd)}
+                      <div className="flex flex-col gap-0.5">
+                        <span>{formatUsdAmount(log.estimatedCostUsd)}</span>
+                        {log.guardRetryEstimatedCostUsd > 0 ? (
+                          <span className="text-[10px] text-amber-500">
+                            Guard +{formatUsdAmount(log.guardRetryEstimatedCostUsd)}
+                          </span>
+                        ) : null}
+                        {log.billableEstimatedCostUsd != null &&
+                        log.billableEstimatedCostUsd !== log.estimatedCostUsd ? (
+                          <span className="text-[10px] text-muted-foreground">
+                            {t("计费")} {formatUsdAmount(log.billableEstimatedCostUsd)}
+                          </span>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top">
                       <RequestRouteInfoCell log={log} />
                     </TableCell>
                     <TableCell className="px-4 py-3 text-left align-top">
-                      <ErrorInfoCell error={log.error} />
+                      <ErrorInfoCell log={log} />
                     </TableCell>
                   </TableRow>
                 ))

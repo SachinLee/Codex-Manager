@@ -18,6 +18,12 @@ const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
     "CODEXMANAGER_ROUTE_STRATEGY",
     "CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL",
     "CODEXMANAGER_MODEL_FORWARD_RULES",
+    "CODEXMANAGER_REASONING_GUARD_ENABLED",
+    "CODEXMANAGER_REASONING_GUARD_TARGETS",
+    "CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING",
+    "CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING",
+    "CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS",
+    "CODEXMANAGER_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE",
     "CODEXMANAGER_QUOTA_GUARD_ENABLED",
     "CODEXMANAGER_QUOTA_GUARD_5H_MIN_REMAINING_PERCENT",
     "CODEXMANAGER_QUOTA_GUARD_WEEKLY_MIN_REMAINING_PERCENT",
@@ -84,6 +90,12 @@ fn reset_runtime_defaults() {
         "routeStrategy": "balanced",
         "freeAccountMaxModel": "gpt-5.2",
         "modelForwardRules": "",
+        "reasoningGuardEnabled": true,
+        "reasoningGuardTargets": [516, 1034, 1552],
+        "reasoningGuardInterceptStreaming": true,
+        "reasoningGuardInterceptNonStreaming": true,
+        "reasoningGuardRetryAttempts": 3,
+        "reasoningGuardBypassAfterConsecutive": 0,
         "quotaGuard": {
             "enabled": true,
             "primaryMinRemainingPercent": 5,
@@ -710,6 +722,12 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
             "routeStrategy": "rr",
             "freeAccountMaxModel": "gpt-5.3-codex",
             "modelForwardRules": "spark*=gpt-5.4-mini",
+            "reasoningGuardEnabled": true,
+            "reasoningGuardTargets": [516, 1034, 1552, 1034, -1],
+            "reasoningGuardInterceptStreaming": true,
+            "reasoningGuardInterceptNonStreaming": false,
+            "reasoningGuardRetryAttempts": 2,
+            "reasoningGuardBypassAfterConsecutive": 9,
             "quotaGuard": {
                 "enabled": true,
                 "primaryMinRemainingPercent": 7,
@@ -816,6 +834,22 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 .and_then(|value| value.as_str()),
             Some("spark*=gpt-5.4-mini")
         );
+        assert_eq!(
+            snapshot
+                .get("reasoningGuardTargets")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_i64())
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![516, 1034, 1552])
+        );
+        assert_eq!(snapshot["reasoningGuardInterceptStreaming"], true);
+        assert_eq!(snapshot["reasoningGuardInterceptNonStreaming"], false);
+        assert_eq!(snapshot["reasoningGuardRetryAttempts"], 2);
+        assert_eq!(snapshot["reasoningGuardBypassAfterConsecutive"], 9);
         assert_eq!(snapshot["quotaGuard"]["enabled"], true);
         assert_eq!(snapshot["quotaGuard"]["primaryMinRemainingPercent"], 7.0);
         assert_eq!(snapshot["quotaGuard"]["secondaryMinRemainingPercent"], 12.0);
@@ -894,6 +928,38 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY)
                 .expect("read model forward rules"),
             Some("spark*=gpt-5.4-mini".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY
+                )
+                .expect("read reasoning guard targets"),
+            Some("516,1034,1552".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY
+                )
+                .expect("read reasoning guard stream intercept"),
+            Some("1".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY
+                )
+                .expect("read reasoning guard non-stream intercept"),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY
+                )
+                .expect("read reasoning guard retry attempts"),
+            Some("2".to_string())
         );
         let stored_quota_guard = storage
             .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_QUOTA_GUARD_KEY)
@@ -984,6 +1050,33 @@ fn app_settings_set_preserves_dark_one_theme() {
                 .and_then(|value| value.as_str()),
             Some("classic")
         );
+    });
+}
+
+#[test]
+fn app_settings_rejects_reasoning_guard_with_all_intercepts_disabled() {
+    with_temp_db(|_| {
+        let err = codexmanager_service::app_settings_set(Some(&json!({
+            "reasoningGuardEnabled": true,
+            "reasoningGuardInterceptStreaming": false,
+            "reasoningGuardInterceptNonStreaming": false
+        })))
+        .expect_err("enabled reasoning guard should keep at least one intercept mode");
+
+        assert!(
+            err.contains("at least one intercept mode"),
+            "unexpected error: {err}"
+        );
+
+        let snapshot = codexmanager_service::app_settings_set(Some(&json!({
+            "reasoningGuardEnabled": false,
+            "reasoningGuardInterceptStreaming": false,
+            "reasoningGuardInterceptNonStreaming": false
+        })))
+        .expect("disabled reasoning guard may preserve both intercept switches off");
+        assert_eq!(snapshot["reasoningGuardEnabled"], false);
+        assert_eq!(snapshot["reasoningGuardInterceptStreaming"], false);
+        assert_eq!(snapshot["reasoningGuardInterceptNonStreaming"], false);
     });
 }
 

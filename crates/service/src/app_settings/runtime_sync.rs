@@ -9,9 +9,14 @@ use super::{
     APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
-    APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
-    APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+    APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
     SERVICE_BIND_MODE_SETTING_KEY,
 };
@@ -111,6 +116,53 @@ pub fn sync_runtime_settings_from_storage() {
                 gateway::set_account_max_inflight_limit(limit);
             } else {
                 log::warn!("parse persisted account max inflight failed: {raw}");
+            }
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_ENABLED") {
+        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY) {
+            gateway::set_reasoning_guard_enabled(super::parse_bool_with_default(raw, true));
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_TARGETS") {
+        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY) {
+            gateway::set_reasoning_guard_targets_from_raw(raw);
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING") {
+        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY)
+        {
+            gateway::set_reasoning_guard_intercept_streaming(super::parse_bool_with_default(
+                raw, true,
+            ));
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING") {
+        if let Some(raw) =
+            settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY)
+        {
+            gateway::set_reasoning_guard_intercept_non_streaming(super::parse_bool_with_default(
+                raw, true,
+            ));
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS") {
+        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY) {
+            if let Ok(attempts) = raw.trim().parse::<usize>() {
+                gateway::set_reasoning_guard_retry_attempts(attempts);
+            } else {
+                log::warn!("parse persisted reasoning guard retry attempts failed: {raw}");
+            }
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE") {
+        if let Some(raw) =
+            settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY)
+        {
+            if let Ok(threshold) = raw.trim().parse::<usize>() {
+                gateway::set_reasoning_guard_bypass_after_consecutive(threshold);
+            } else {
+                log::warn!("parse persisted reasoning guard bypass threshold failed: {raw}");
             }
         }
     }

@@ -486,6 +486,7 @@ impl Storage {
         start_ts: Option<i64>,
         end_ts: Option<i64>,
     ) -> Result<RequestLogQuerySummary> {
+        self.ensure_gateway_reasoning_guard_events_table()?;
         let include_account_lookup = self.has_table("accounts")?;
         let filters = build_request_log_filters(
             query,
@@ -497,11 +498,12 @@ impl Storage {
             true,
         );
         let sql = format!(
-            "SELECT
-                COUNT(1),
-                IFNULL(SUM(CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN 1 ELSE 0 END), 0),
-                IFNULL(SUM(CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN 1 ELSE 0 END), 0),
-                IFNULL(SUM(
+            "WITH filtered AS (
+                SELECT
+                    r.id,
+                    r.trace_id,
+                    r.status_code,
+                    r.error,
                     CASE
                         WHEN t.total_tokens IS NOT NULL THEN
                             CASE WHEN t.total_tokens > 0 THEN t.total_tokens ELSE 0 END
@@ -512,12 +514,34 @@ impl Storage {
                                 ELSE 0
                             END
                     END
-                ), 0),
-                IFNULL(SUM(IFNULL(t.estimated_cost_usd, 0.0)), 0.0)
-             FROM request_logs r
-             {account_join}
-             LEFT JOIN request_token_stats t ON t.request_log_id = r.id
-             {where_clause}",
+                    AS total_tokens,
+                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd
+                 FROM request_logs r
+                 {account_join}
+                 LEFT JOIN request_token_stats t ON t.request_log_id = r.id
+                 {where_clause}
+             ),
+             guard_retry AS (
+                SELECT
+                    trace_id,
+                    IFNULL(SUM(CASE WHEN IFNULL(total_tokens, 0) > 0 THEN total_tokens ELSE 0 END), 0) AS retry_total_tokens,
+                    IFNULL(SUM(CASE WHEN IFNULL(estimated_cost_usd, 0.0) > 0.0 THEN estimated_cost_usd ELSE 0.0 END), 0.0) AS retry_estimated_cost_usd
+                FROM gateway_reasoning_guard_events
+                WHERE action = 'internal_retry'
+                  AND trace_id IS NOT NULL
+                  AND TRIM(trace_id) <> ''
+                GROUP BY trace_id
+             )
+             SELECT
+                COUNT(1),
+                IFNULL(SUM(CASE WHEN f.status_code >= 200 AND f.status_code <= 299 THEN 1 ELSE 0 END), 0),
+                IFNULL(SUM(CASE WHEN IFNULL(f.status_code, 0) >= 400 OR TRIM(IFNULL(f.error, '')) <> '' THEN 1 ELSE 0 END), 0),
+                IFNULL(SUM(f.total_tokens + IFNULL(g.retry_total_tokens, 0)), 0),
+                IFNULL(SUM(f.estimated_cost_usd + IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0),
+                IFNULL(SUM(IFNULL(g.retry_total_tokens, 0)), 0),
+                IFNULL(SUM(IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0)
+             FROM filtered f
+             LEFT JOIN guard_retry g ON g.trace_id = f.trace_id",
             account_join = account_join_clause(include_account_lookup),
             where_clause = filters.where_clause
         );
@@ -529,6 +553,8 @@ impl Storage {
                     error_count: row.get(2)?,
                     total_tokens: row.get(3)?,
                     estimated_cost_usd: row.get(4)?,
+                    guard_retry_total_tokens: row.get(5)?,
+                    guard_retry_estimated_cost_usd: row.get(6)?,
                 })
             })
     }
@@ -541,6 +567,7 @@ impl Storage {
         end_ts: Option<i64>,
         key_ids: &[String],
     ) -> Result<RequestLogQuerySummary> {
+        self.ensure_gateway_reasoning_guard_events_table()?;
         let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
             return Ok(empty_request_log_query_summary());
         };
@@ -555,11 +582,12 @@ impl Storage {
             false,
         );
         let sql = format!(
-            "SELECT
-                COUNT(1),
-                IFNULL(SUM(CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN 1 ELSE 0 END), 0),
-                IFNULL(SUM(CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN 1 ELSE 0 END), 0),
-                IFNULL(SUM(
+            "WITH filtered AS (
+                SELECT
+                    r.id,
+                    r.trace_id,
+                    r.status_code,
+                    r.error,
                     CASE
                         WHEN t.total_tokens IS NOT NULL THEN
                             CASE WHEN t.total_tokens > 0 THEN t.total_tokens ELSE 0 END
@@ -570,12 +598,34 @@ impl Storage {
                                 ELSE 0
                             END
                     END
-                ), 0),
-                IFNULL(SUM(IFNULL(t.estimated_cost_usd, 0.0)), 0.0)
-             FROM request_logs r
-             {account_join}
-             LEFT JOIN request_token_stats t ON t.request_log_id = r.id
-             {where_clause}",
+                    AS total_tokens,
+                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd
+                 FROM request_logs r
+                 {account_join}
+                 LEFT JOIN request_token_stats t ON t.request_log_id = r.id
+                 {where_clause}
+             ),
+             guard_retry AS (
+                SELECT
+                    trace_id,
+                    IFNULL(SUM(CASE WHEN IFNULL(total_tokens, 0) > 0 THEN total_tokens ELSE 0 END), 0) AS retry_total_tokens,
+                    IFNULL(SUM(CASE WHEN IFNULL(estimated_cost_usd, 0.0) > 0.0 THEN estimated_cost_usd ELSE 0.0 END), 0.0) AS retry_estimated_cost_usd
+                FROM gateway_reasoning_guard_events
+                WHERE action = 'internal_retry'
+                  AND trace_id IS NOT NULL
+                  AND TRIM(trace_id) <> ''
+                GROUP BY trace_id
+             )
+             SELECT
+                COUNT(1),
+                IFNULL(SUM(CASE WHEN f.status_code >= 200 AND f.status_code <= 299 THEN 1 ELSE 0 END), 0),
+                IFNULL(SUM(CASE WHEN IFNULL(f.status_code, 0) >= 400 OR TRIM(IFNULL(f.error, '')) <> '' THEN 1 ELSE 0 END), 0),
+                IFNULL(SUM(f.total_tokens + IFNULL(g.retry_total_tokens, 0)), 0),
+                IFNULL(SUM(f.estimated_cost_usd + IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0),
+                IFNULL(SUM(IFNULL(g.retry_total_tokens, 0)), 0),
+                IFNULL(SUM(IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0)
+             FROM filtered f
+             LEFT JOIN guard_retry g ON g.trace_id = f.trace_id",
             account_join = account_join_clause(include_account_lookup),
             where_clause = filters.where_clause
         );
@@ -587,6 +637,8 @@ impl Storage {
                     error_count: row.get(2)?,
                     total_tokens: row.get(3)?,
                     estimated_cost_usd: row.get(4)?,
+                    guard_retry_total_tokens: row.get(5)?,
+                    guard_retry_estimated_cost_usd: row.get(6)?,
                 })
             })
     }
@@ -1049,7 +1101,7 @@ impl Storage {
              )
              SELECT
                 id, trace_id, NULL, NULL, key_id, account_id, NULL, NULL, NULL, NULL, request_path, original_path, adapted_path,
-                method, NULL, NULL, NULL, NULL, NULL, NULL, model, NULL, NULL, NULL, NULL, NULL, reasoning_effort, NULL, NULL, NULL, NULL, response_adapter, upstream_url, NULL, NULL, status_code, NULL, NULL, error, created_at
+                method, NULL, NULL, NULL, NULL, NULL, NULL, model, NULL, NULL, NULL, NULL, NULL, NULL, reasoning_effort, NULL, NULL, NULL, NULL, response_adapter, upstream_url, NULL, NULL, status_code, NULL, NULL, error, created_at
              FROM request_logs_legacy_028;
              DROP TABLE request_logs_legacy_028;",
         )?;
@@ -1220,6 +1272,8 @@ fn empty_request_log_query_summary() -> RequestLogQuerySummary {
         error_count: 0,
         total_tokens: 0,
         estimated_cost_usd: 0.0,
+        guard_retry_total_tokens: 0,
+        guard_retry_estimated_cost_usd: 0.0,
     }
 }
 

@@ -14,6 +14,11 @@ use super::{
     current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
     current_gateway_free_account_max_model, current_gateway_model_catalog_auto_remote_fetch,
     current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
+    current_gateway_reasoning_guard_bypass_after_consecutive,
+    current_gateway_reasoning_guard_enabled,
+    current_gateway_reasoning_guard_intercept_non_streaming,
+    current_gateway_reasoning_guard_intercept_streaming,
+    current_gateway_reasoning_guard_retry_attempts, current_gateway_reasoning_guard_targets,
     current_gateway_residency_requirement, current_gateway_sse_keepalive_interval_ms,
     current_gateway_upstream_stream_timeout_ms, current_gateway_upstream_total_timeout_ms,
     current_gateway_user_agent_version, current_saved_service_addr, current_service_bind_mode,
@@ -29,7 +34,13 @@ use super::{
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
     APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
     APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
-    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
     APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
@@ -191,6 +202,14 @@ fn current_app_settings_value_inner(
     let model_forward_rules = current_gateway_model_forward_rules();
     let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
     let account_max_inflight = current_gateway_account_max_inflight();
+    let reasoning_guard_enabled = current_gateway_reasoning_guard_enabled();
+    let reasoning_guard_targets = current_gateway_reasoning_guard_targets();
+    let reasoning_guard_intercept_streaming = current_gateway_reasoning_guard_intercept_streaming();
+    let reasoning_guard_intercept_non_streaming =
+        current_gateway_reasoning_guard_intercept_non_streaming();
+    let reasoning_guard_retry_attempts = current_gateway_reasoning_guard_retry_attempts();
+    let reasoning_guard_bypass_after_consecutive =
+        current_gateway_reasoning_guard_bypass_after_consecutive();
     let quota_guard = current_gateway_quota_guard();
     let gateway_originator = current_gateway_originator();
     let gateway_user_agent_version = current_gateway_user_agent_version();
@@ -262,6 +281,12 @@ fn current_app_settings_value_inner(
             &model_forward_rules,
             &compact_model_forward_rules,
             account_max_inflight,
+            reasoning_guard_enabled,
+            &reasoning_guard_targets,
+            reasoning_guard_intercept_streaming,
+            reasoning_guard_intercept_non_streaming,
+            reasoning_guard_retry_attempts,
+            reasoning_guard_bypass_after_consecutive,
             &gateway_originator,
             &gateway_user_agent_version,
             &gateway_residency_requirement,
@@ -286,6 +311,12 @@ fn current_app_settings_value_inner(
             &free_account_max_model,
             model_catalog_auto_remote_fetch,
             &model_forward_rules,
+            reasoning_guard_enabled,
+            &reasoning_guard_targets,
+            reasoning_guard_intercept_streaming,
+            reasoning_guard_intercept_non_streaming,
+            reasoning_guard_retry_attempts,
+            reasoning_guard_bypass_after_consecutive,
             &gateway_originator,
             &gateway_user_agent_version,
             &gateway_residency_requirement,
@@ -356,6 +387,30 @@ fn current_app_settings_value_inner(
             model_catalog_auto_remote_fetch.into(),
         );
         object.insert("runtimeTimeZone".to_string(), runtime_time_zone);
+        object.insert(
+            "reasoningGuardEnabled".to_string(),
+            reasoning_guard_enabled.into(),
+        );
+        object.insert(
+            "reasoningGuardTargets".to_string(),
+            serde_json::json!(reasoning_guard_targets),
+        );
+        object.insert(
+            "reasoningGuardInterceptStreaming".to_string(),
+            reasoning_guard_intercept_streaming.into(),
+        );
+        object.insert(
+            "reasoningGuardInterceptNonStreaming".to_string(),
+            reasoning_guard_intercept_non_streaming.into(),
+        );
+        object.insert(
+            "reasoningGuardRetryAttempts".to_string(),
+            reasoning_guard_retry_attempts.into(),
+        );
+        object.insert(
+            "reasoningGuardBypassAfterConsecutive".to_string(),
+            reasoning_guard_bypass_after_consecutive.into(),
+        );
         object.insert("webAuthMode".to_string(), current_web_auth_mode().into());
         object.insert(
             "webAuthModeOptions".to_string(),
@@ -548,6 +603,12 @@ fn persist_current_snapshot(
     model_forward_rules: &str,
     compact_model_forward_rules: &str,
     account_max_inflight: usize,
+    reasoning_guard_enabled: bool,
+    reasoning_guard_targets: &[i64],
+    reasoning_guard_intercept_streaming: bool,
+    reasoning_guard_intercept_non_streaming: bool,
+    reasoning_guard_retry_attempts: usize,
+    reasoning_guard_bypass_after_consecutive: usize,
     gateway_originator: &str,
     gateway_user_agent_version: &str,
     gateway_residency_requirement: &str,
@@ -615,6 +676,30 @@ fn persist_current_snapshot(
         APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
         Some(&account_max_inflight.to_string()),
     );
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
+        reasoning_guard_enabled,
+    );
+    let _ = save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
+        Some(&reasoning_guard_targets_text(reasoning_guard_targets)),
+    );
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+        reasoning_guard_intercept_streaming,
+    );
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
+        reasoning_guard_intercept_non_streaming,
+    );
+    let _ = save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+        Some(&reasoning_guard_retry_attempts.to_string()),
+    );
+    let _ = save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+        Some(&reasoning_guard_bypass_after_consecutive.to_string()),
+    );
     let _ =
         save_persisted_app_setting(APP_SETTING_GATEWAY_ORIGINATOR_KEY, Some(gateway_originator));
     let _ = save_persisted_app_setting(
@@ -678,6 +763,14 @@ fn persisted_text_value(value: Option<&str>) -> String {
     normalize_optional_text(value).unwrap_or_default()
 }
 
+fn reasoning_guard_targets_text(values: &[i64]) -> String {
+    values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn save_persisted_bool_setting_if_changed(
     settings: &HashMap<String, String>,
     key: &str,
@@ -723,6 +816,12 @@ fn persist_get_snapshot_if_changed(
     free_account_max_model: &str,
     model_catalog_auto_remote_fetch: bool,
     model_forward_rules: &str,
+    reasoning_guard_enabled: bool,
+    reasoning_guard_targets: &[i64],
+    reasoning_guard_intercept_streaming: bool,
+    reasoning_guard_intercept_non_streaming: bool,
+    reasoning_guard_retry_attempts: usize,
+    reasoning_guard_bypass_after_consecutive: usize,
     gateway_originator: &str,
     gateway_user_agent_version: &str,
     gateway_residency_requirement: &str,
@@ -761,6 +860,36 @@ fn persist_get_snapshot_if_changed(
         } else {
             Some(model_forward_rules)
         },
+    );
+    save_persisted_bool_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
+        reasoning_guard_enabled,
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
+        Some(&reasoning_guard_targets_text(reasoning_guard_targets)),
+    );
+    save_persisted_bool_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+        reasoning_guard_intercept_streaming,
+    );
+    save_persisted_bool_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
+        reasoning_guard_intercept_non_streaming,
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+        Some(&reasoning_guard_retry_attempts.to_string()),
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+        Some(&reasoning_guard_bypass_after_consecutive.to_string()),
     );
     save_app_setting_if_changed(
         settings,

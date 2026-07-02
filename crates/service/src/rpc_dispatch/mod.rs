@@ -222,6 +222,7 @@ const MEMBER_METHOD_ALLOWLIST: &[&str] = &[
     "requestlog/list_with_summary",
     "requestlog/summary",
     "requestlog/today_summary",
+    "requestlog/aggregate_api_reasoning_guard",
     "startup/snapshot",
 ];
 

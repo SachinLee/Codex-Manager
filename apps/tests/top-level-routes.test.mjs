@@ -58,7 +58,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
       ["/models", "/model-groups"],
       ["/account-manager"],
       ["/logs"],
-      ["/settings", "/plugins", "/codex-launcher", "/author"],
+      ["/settings", "/plugins", "/codex-launcher"],
     ]
   );
   assert.equal(

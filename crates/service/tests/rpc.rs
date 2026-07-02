@@ -1,6 +1,7 @@
 use codexmanager_core::rpc::types::JsonRpcRequest;
 use codexmanager_core::storage::{
-    now_ts, Account, Event, RequestLog, RequestTokenStat, Storage, Token, UsageSnapshotRecord,
+    now_ts, Account, Event, GatewayReasoningGuardEvent, RequestLog, RequestTokenStat, Storage,
+    Token, UsageSnapshotRecord,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -2849,6 +2850,20 @@ fn rpc_requestlog_aggregate_api_daily_usage_returns_camel_case_cache_stats() {
             ..Default::default()
         })
         .expect("insert token stat");
+    storage
+        .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+            trace_id: Some("trace-rpc-ag-guard".to_string()),
+            mode: "non_stream".to_string(),
+            action: "internal_retry".to_string(),
+            source_kind: Some("aggregate_api".to_string()),
+            source_id: Some("ag-rpc".to_string()),
+            supplier_name: Some("RPC Supplier".to_string()),
+            total_tokens: Some(30),
+            estimated_cost_usd: Some(0.03),
+            created_at: 1_200,
+            ..Default::default()
+        })
+        .expect("insert aggregate api guard retry event");
 
     let server = codexmanager_service::start_one_shot_server().expect("start server");
     let req = JsonRpcRequest {
@@ -2883,8 +2898,159 @@ fn rpc_requestlog_aggregate_api_daily_usage_returns_camel_case_cache_stats() {
         Some(60)
     );
     assert_eq!(
+        item.get("guardRetryTotalTokens")
+            .and_then(|value| value.as_i64()),
+        Some(30)
+    );
+    assert_eq!(
+        item.get("guardRetryEstimatedCostUsd")
+            .and_then(|value| value.as_f64()),
+        Some(0.03)
+    );
+    assert_eq!(
+        item.get("billableTotalTokens")
+            .and_then(|value| value.as_i64()),
+        Some(98)
+    );
+    assert_eq!(
+        item.get("billableEstimatedCostUsd")
+            .and_then(|value| value.as_f64()),
+        Some(0.11)
+    );
+    assert_eq!(
         item.get("cacheHitRate").and_then(|value| value.as_f64()),
         Some(0.25)
+    );
+}
+
+#[test]
+fn rpc_requestlog_aggregate_api_reasoning_guard_returns_rates() {
+    let ctx = RpcTestContext::new("rpc-aggregate-api-reasoning-guard");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    for (idx, status_code) in [(0, 200), (1, 502)] {
+        storage
+            .insert_request_log(&RequestLog {
+                trace_id: Some(format!("trace-rg-{idx}")),
+                key_id: Some("key-rg".to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                actual_source_kind: Some("aggregate_api".to_string()),
+                actual_source_id: Some("ag-rg".to_string()),
+                aggregate_api_supplier_name: Some("Guard Supplier".to_string()),
+                aggregate_api_url: Some("https://guard.example/v1".to_string()),
+                status_code: Some(status_code),
+                created_at: 1_100 + idx,
+                ..Default::default()
+            })
+            .expect("insert request log");
+    }
+    for (action, trace_id, token, total_tokens, reasoning_tokens, cost) in [
+        (
+            "internal_retry",
+            "trace-rg-0",
+            1034,
+            Some(120),
+            Some(1034),
+            Some(0.12),
+        ),
+        ("recovered", "trace-rg-0", 1034, None, None, None),
+        (
+            "block",
+            "trace-rg-1",
+            1552,
+            Some(160),
+            Some(1552),
+            Some(0.16),
+        ),
+    ] {
+        storage
+            .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+                trace_id: Some(trace_id.to_string()),
+                mode: "non_stream".to_string(),
+                action: action.to_string(),
+                target_token: Some(token),
+                source_kind: Some("aggregate_api".to_string()),
+                source_id: Some("ag-rg".to_string()),
+                supplier_name: Some("Guard Supplier".to_string()),
+                upstream_model: Some("gpt-5".to_string()),
+                request_path: Some("/v1/responses".to_string()),
+                total_tokens,
+                reasoning_output_tokens: reasoning_tokens,
+                estimated_cost_usd: cost,
+                created_at: 1_200,
+                ..Default::default()
+            })
+            .expect("insert reasoning guard event");
+    }
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let req = JsonRpcRequest {
+        id: 78.into(),
+        method: "requestlog/aggregate_api_reasoning_guard".to_string(),
+        params: Some(serde_json::json!({
+            "dayStartTs": 1_000,
+            "dayEndTs": 2_000
+        })),
+        trace: None,
+    };
+    let json = serde_json::to_string(&req).expect("serialize aggregate api reasoning guard");
+    let resp = post_rpc(&server.addr, &json);
+    let item = resp
+        .get("result")
+        .and_then(|value| value.get("items"))
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .expect("first aggregate api reasoning guard item");
+    assert_eq!(
+        item.get("aggregateApiId").and_then(|value| value.as_str()),
+        Some("ag-rg")
+    );
+    assert_eq!(
+        item.get("totalRequestCount")
+            .and_then(|value| value.as_i64()),
+        Some(2)
+    );
+    assert_eq!(
+        item.get("eventCount").and_then(|value| value.as_i64()),
+        Some(3)
+    );
+    assert_eq!(
+        item.get("affectedRequestCount")
+            .and_then(|value| value.as_i64()),
+        Some(2)
+    );
+    assert_eq!(
+        item.get("matchRate").and_then(|value| value.as_f64()),
+        Some(1.0)
+    );
+    assert_eq!(
+        item.get("retryRecoveryRate")
+            .and_then(|value| value.as_f64()),
+        Some(1.0)
+    );
+    assert_eq!(
+        item.get("blockRate").and_then(|value| value.as_f64()),
+        Some(0.5)
+    );
+    assert_eq!(
+        item.get("lastTargetToken").and_then(|value| value.as_i64()),
+        Some(1552)
+    );
+    assert_eq!(
+        item.get("guardTotalTokens")
+            .and_then(|value| value.as_i64()),
+        Some(280)
+    );
+    assert_eq!(
+        item.get("guardReasoningOutputTokens")
+            .and_then(|value| value.as_i64()),
+        Some(2586)
+    );
+    assert_eq!(
+        item.get("guardEstimatedCostUsd")
+            .and_then(|value| value.as_f64()),
+        Some(0.28)
     );
 }
 

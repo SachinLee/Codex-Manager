@@ -10,6 +10,7 @@ import {
   AggregateApiBalanceSnapshot,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
+  AggregateApiReasoningGuardStat,
   AggregateApiSecretResult,
   AggregateApiSupplierModel,
   AggregateApiSupplierModelImportResult,
@@ -480,6 +481,7 @@ export function normalizeAggregateApiDailyUsageStats(
       aggregateApiUrl:
         asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
       ...normalizeDailyUsageBase(record),
+      ...normalizeAggregateApiBillableUsage(record),
     });
     return result;
   }, []);
@@ -1660,6 +1662,56 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     estimatedCostUsd: toNullableNumber(
       source.estimatedCostUsd ?? source.estimated_cost_usd
     ),
+    guardEventCount: Math.max(
+      0,
+      asInteger(source.guardEventCount ?? source.guard_event_count, 0, 0),
+    ),
+    guardInternalRetryCount: Math.max(
+      0,
+      asInteger(
+        source.guardInternalRetryCount ?? source.guard_internal_retry_count,
+        0,
+        0,
+      ),
+    ),
+    guardBlockCount: Math.max(
+      0,
+      asInteger(source.guardBlockCount ?? source.guard_block_count, 0, 0),
+    ),
+    guardRecoveredCount: Math.max(
+      0,
+      asInteger(
+        source.guardRecoveredCount ?? source.guard_recovered_count,
+        0,
+        0,
+      ),
+    ),
+    guardRetryTotalTokens: Math.max(
+      0,
+      asInteger(
+        source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
+        0,
+        0,
+      ),
+    ),
+    guardRetryEstimatedCostUsd:
+      toNullableNumber(
+        source.guardRetryEstimatedCostUsd ??
+          source.guard_retry_estimated_cost_usd,
+      ) ?? 0,
+    guardLastAction:
+      asString(source.guardLastAction ?? source.guard_last_action) || null,
+    guardLastTargetToken:
+      toNullableNumber(
+        source.guardLastTargetToken ?? source.guard_last_target_token,
+      ) ?? null,
+    billableTotalTokens: toNullableNumber(
+      source.billableTotalTokens ?? source.billable_total_tokens,
+    ),
+    billableEstimatedCostUsd: toNullableNumber(
+      source.billableEstimatedCostUsd ??
+        source.billable_estimated_cost_usd,
+    ),
     durationMs,
     firstResponseMs,
     error: asString(source.error),
@@ -1746,6 +1798,18 @@ export function normalizeRequestLogFilterSummary(
     errorCount: asInteger(source.errorCount, 0, 0),
     totalTokens: asInteger(source.totalTokens, 0, 0),
     totalCostUsd: Math.max(0, toNullableNumber(source.totalCostUsd) ?? 0),
+    guardRetryTotalTokens: asInteger(
+      source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
+      0,
+      0,
+    ),
+    guardRetryEstimatedCostUsd: Math.max(
+      0,
+      toNullableNumber(
+        source.guardRetryEstimatedCostUsd ??
+          source.guard_retry_estimated_cost_usd,
+      ) ?? 0,
+    ),
   };
 }
 
@@ -1872,6 +1936,171 @@ export function normalizeQuotaGuard(payload: unknown): QuotaGuardSettings {
   };
 }
 
+function normalizeAggregateApiBillableUsage(source: Record<string, unknown>) {
+  const totalTokens = asInteger(source.totalTokens ?? source.total_tokens, 0, 0);
+  const estimatedCostUsd = Math.max(
+    0,
+    toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0,
+  );
+  return {
+    guardRetryTotalTokens: asInteger(
+      source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
+      0,
+      0,
+    ),
+    guardRetryEstimatedCostUsd: Math.max(
+      0,
+      toNullableNumber(
+        source.guardRetryEstimatedCostUsd ??
+          source.guard_retry_estimated_cost_usd,
+      ) ?? 0,
+    ),
+    billableTotalTokens: asInteger(
+      source.billableTotalTokens ?? source.billable_total_tokens,
+      totalTokens,
+      0,
+    ),
+    billableEstimatedCostUsd: Math.max(
+      0,
+      toNullableNumber(
+        source.billableEstimatedCostUsd ??
+          source.billable_estimated_cost_usd,
+      ) ?? estimatedCostUsd,
+    ),
+  };
+}
+
+export function normalizeAggregateApiReasoningGuardStats(
+  payload: unknown,
+): AggregateApiReasoningGuardStat[] {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload);
+  return items.reduce<AggregateApiReasoningGuardStat[]>((result, item) => {
+    const record = asObject(item);
+    const aggregateApiId = asString(
+      record.aggregateApiId ?? record.aggregate_api_id,
+    );
+    if (!aggregateApiId) return result;
+    const statNumber = (value: unknown) => toNullableNumber(value) ?? 0;
+    result.push({
+      aggregateApiId,
+      aggregateApiSupplierName:
+        asString(
+          record.aggregateApiSupplierName ?? record.aggregate_api_supplier_name,
+        ) || null,
+      aggregateApiUrl:
+        asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
+      totalRequestCount: Math.max(
+        0,
+        statNumber(record.totalRequestCount ?? record.total_request_count),
+      ),
+      eventCount: Math.max(0, statNumber(record.eventCount ?? record.event_count)),
+      affectedRequestCount: Math.max(
+        0,
+        statNumber(record.affectedRequestCount ?? record.affected_request_count),
+      ),
+      matchRate: Math.min(
+        1,
+        Math.max(0, statNumber(record.matchRate ?? record.match_rate)),
+      ),
+      internalRetryCount: Math.max(
+        0,
+        statNumber(record.internalRetryCount ?? record.internal_retry_count),
+      ),
+      internalRetryRequestCount: Math.max(
+        0,
+        statNumber(
+          record.internalRetryRequestCount ??
+            record.internal_retry_request_count,
+        ),
+      ),
+      retryRecoveryCount: Math.max(
+        0,
+        statNumber(record.retryRecoveryCount ?? record.retry_recovery_count),
+      ),
+      retryRecoveryRate: Math.min(
+        1,
+        Math.max(
+          0,
+          statNumber(record.retryRecoveryRate ?? record.retry_recovery_rate),
+        ),
+      ),
+      blockCount: Math.max(0, statNumber(record.blockCount ?? record.block_count)),
+      blockedRequestCount: Math.max(
+        0,
+        statNumber(record.blockedRequestCount ?? record.blocked_request_count),
+      ),
+      blockRate: Math.min(
+        1,
+        Math.max(0, statNumber(record.blockRate ?? record.block_rate)),
+      ),
+      observeOnlyCount: Math.max(
+        0,
+        statNumber(record.observeOnlyCount ?? record.observe_only_count),
+      ),
+      bypassAfterConsecutiveCount: Math.max(
+        0,
+        statNumber(
+          record.bypassAfterConsecutiveCount ??
+            record.bypass_after_consecutive_count,
+        ),
+      ),
+      guardInputTokens: Math.max(
+        0,
+        statNumber(record.guardInputTokens ?? record.guard_input_tokens),
+      ),
+      guardCachedInputTokens: Math.max(
+        0,
+        statNumber(
+          record.guardCachedInputTokens ?? record.guard_cached_input_tokens,
+        ),
+      ),
+      guardOutputTokens: Math.max(
+        0,
+        statNumber(record.guardOutputTokens ?? record.guard_output_tokens),
+      ),
+      guardTotalTokens: Math.max(
+        0,
+        statNumber(record.guardTotalTokens ?? record.guard_total_tokens),
+      ),
+      guardReasoningOutputTokens: Math.max(
+        0,
+        statNumber(
+          record.guardReasoningOutputTokens ??
+            record.guard_reasoning_output_tokens,
+        ),
+      ),
+      guardEstimatedCostUsd: Math.max(
+        0,
+        statNumber(
+          record.guardEstimatedCostUsd ?? record.guard_estimated_cost_usd,
+        ),
+      ),
+      lastTargetToken:
+        toNullableNumber(record.lastTargetToken ?? record.last_target_token) ??
+        null,
+      lastEventAt:
+        toNullableNumber(record.lastEventAt ?? record.last_event_at) ?? null,
+    });
+    return result;
+  }, []);
+}
+
+function normalizeReasoningGuardTargets(payload: unknown): number[] {
+  const rawItems =
+    typeof payload === "string"
+      ? payload.split(/[\s,;]+/)
+      : asArray(payload);
+  const values: number[] = [];
+  for (const item of rawItems) {
+    const value = asInteger(item, 0, 1);
+    if (value > 0 && !values.includes(value)) {
+      values.push(value);
+    }
+  }
+  return values.length > 0 ? values : [516, 1034, 1552];
+}
+
 export function normalizeRuntimeTimeZone(payload: unknown): RuntimeTimeZone {
   const source = asObject(payload);
   return {
@@ -1959,6 +2188,31 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       source.compactModelForwardRules ?? source.compact_model_forward_rules
     ),
     accountMaxInflight: asInteger(source.accountMaxInflight, 1, 0),
+    reasoningGuardEnabled: asBoolean(source.reasoningGuardEnabled, true),
+    reasoningGuardTargets: normalizeReasoningGuardTargets(
+      source.reasoningGuardTargets ?? source.reasoning_guard_targets
+    ),
+    reasoningGuardInterceptStreaming: asBoolean(
+      source.reasoningGuardInterceptStreaming ??
+        source.reasoning_guard_intercept_streaming,
+      true
+    ),
+    reasoningGuardInterceptNonStreaming: asBoolean(
+      source.reasoningGuardInterceptNonStreaming ??
+        source.reasoning_guard_intercept_non_streaming,
+      true
+    ),
+    reasoningGuardRetryAttempts: asInteger(
+      source.reasoningGuardRetryAttempts ??
+        source.reasoning_guard_retry_attempts,
+      3,
+      0
+    ),
+    reasoningGuardBypassAfterConsecutive: asInteger(
+      source.reasoningGuardBypassAfterConsecutive,
+      0,
+      0
+    ),
     quotaGuard: normalizeQuotaGuard(source.quotaGuard ?? source.quota_guard),
     gatewayOriginator:
       asString(source.gatewayOriginator) || DEFAULT_CODEX_ORIGINATOR,

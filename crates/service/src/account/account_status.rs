@@ -13,6 +13,7 @@ pub(crate) enum AccountAvailabilitySignal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayErrorKind {
     Deactivation,
+    ReasoningGuard,
     Timeout,
     UsageLimit,
     Other,
@@ -250,9 +251,19 @@ fn timeout_reason_from_message(message: &str) -> Option<&'static str> {
     None
 }
 
+pub(crate) fn reasoning_guard_reason_from_message(message: &str) -> Option<&'static str> {
+    let normalized = message.trim().to_ascii_lowercase();
+    if normalized.contains("reasoning guard") && normalized.contains("reasoning_tokens=") {
+        return Some("reasoning_guard_triggered");
+    }
+    None
+}
+
 pub(crate) fn analyze_gateway_error(err: &str, has_more_candidates: bool) -> GatewayErrorFollowUp {
     let kind = if deactivation_reason_from_message(err).is_some() {
         GatewayErrorKind::Deactivation
+    } else if reasoning_guard_reason_from_message(err).is_some() {
+        GatewayErrorKind::ReasoningGuard
     } else if timeout_reason_from_message(err).is_some() {
         GatewayErrorKind::Timeout
     } else if usage_limit_reason_from_message(err).is_some() {
@@ -260,7 +271,10 @@ pub(crate) fn analyze_gateway_error(err: &str, has_more_candidates: bool) -> Gat
     } else {
         GatewayErrorKind::Other
     };
-    let is_actionable = !matches!(kind, GatewayErrorKind::Other);
+    let is_actionable = !matches!(
+        kind,
+        GatewayErrorKind::Other | GatewayErrorKind::ReasoningGuard
+    );
     let should_failover = has_more_candidates && is_actionable;
     GatewayErrorFollowUp {
         kind,
@@ -593,6 +607,26 @@ mod tests {
         assert!(usage_limit_last.should_mark_account_unavailable);
         assert!(!usage_limit_last.should_mark_network_cooldown);
         assert!(!usage_limit_last.should_mark_default_cooldown);
+
+        let reasoning_guard = analyze_gateway_error(
+            "upstream reasoning guard triggered: reasoning_tokens=1034",
+            true,
+        );
+        assert_eq!(reasoning_guard.kind, GatewayErrorKind::ReasoningGuard);
+        assert!(!reasoning_guard.should_failover);
+        assert!(!reasoning_guard.should_mark_account_unavailable);
+        assert!(!reasoning_guard.should_mark_network_cooldown);
+        assert!(!reasoning_guard.should_mark_default_cooldown);
+
+        let reasoning_guard_last = analyze_gateway_error(
+            "upstream reasoning guard triggered: reasoning_tokens=1552",
+            false,
+        );
+        assert_eq!(reasoning_guard_last.kind, GatewayErrorKind::ReasoningGuard);
+        assert!(!reasoning_guard_last.should_failover);
+        assert!(!reasoning_guard_last.should_mark_account_unavailable);
+        assert!(!reasoning_guard_last.should_mark_network_cooldown);
+        assert!(!reasoning_guard_last.should_mark_default_cooldown);
 
         // Regression: backend-native WS upstream phrasing.
         let ws_usage_limit = analyze_gateway_error("The usage limit has been reached", true);

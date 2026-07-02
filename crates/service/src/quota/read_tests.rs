@@ -95,6 +95,8 @@ fn aggregate_api(id: &str, balance_json: Option<&str>, now: i64) -> AggregateApi
         auth_params_json: None,
         action: None,
         model_override: None,
+        cost_multiplier: 1.0,
+        daily_spend_limit_usd: None,
         status: "active".to_string(),
         created_at: now,
         updated_at: now,

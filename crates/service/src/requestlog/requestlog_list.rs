@@ -3,12 +3,25 @@ use codexmanager_core::rpc::types::{
     RequestLogListWithSummaryResult, RequestLogSummary,
 };
 use codexmanager_core::storage::{RequestLog, Storage};
+use std::collections::HashMap;
 
 use crate::storage_helpers::open_storage;
 
 const DEFAULT_REQUEST_LOG_PAGE_SIZE: i64 = 20;
 const MAX_REQUEST_LOG_PAGE_SIZE: i64 = 500;
 const DEFAULT_REQUEST_LOG_SUMMARY_LIMIT: i64 = 200;
+
+#[derive(Debug, Clone, Default)]
+struct RequestLogGuardSummary {
+    event_count: i64,
+    internal_retry_count: i64,
+    block_count: i64,
+    recovered_count: i64,
+    retry_total_tokens: i64,
+    retry_estimated_cost_usd: f64,
+    last_action: Option<String>,
+    last_target_token: Option<i64>,
+}
 
 pub(crate) struct NormalizedRequestLogParams {
     pub(crate) query: Option<String>,
@@ -134,10 +147,12 @@ pub(crate) fn read_request_logs_with_storage(
     let logs = storage
         .list_request_logs(query.as_deref(), limit)
         .map_err(|err| format!("list request logs failed: {err}"))?;
-    Ok(logs
+    let mut items: Vec<_> = logs
         .into_iter()
         .map(|item| to_request_log_summary(item, true))
-        .collect())
+        .collect();
+    enrich_request_log_guard_summaries(storage, &mut items)?;
+    Ok(items)
 }
 
 pub(crate) fn read_request_logs_for_key_ids_with_storage(
@@ -156,10 +171,12 @@ pub(crate) fn read_request_logs_for_key_ids_with_storage(
     let logs = storage
         .list_request_logs_for_keys(query.as_deref(), limit, key_ids)
         .map_err(|err| format!("list request logs failed: {err}"))?;
-    Ok(logs
+    let mut items: Vec<_> = logs
         .into_iter()
         .map(|item| to_request_log_summary(item, false))
-        .collect())
+        .collect();
+    enrich_request_log_guard_summaries(storage, &mut items)?;
+    Ok(items)
 }
 
 /// 函数 `read_request_log_page`
@@ -232,11 +249,13 @@ fn read_request_log_page_with_normalized_total(
         )
         .map_err(|err| format!("list request logs failed: {err}"))?;
 
+    let mut items: Vec<_> = logs
+        .into_iter()
+        .map(|item| to_request_log_summary(item, true))
+        .collect();
+    enrich_request_log_guard_summaries(storage, &mut items)?;
     Ok(RequestLogListResult {
-        items: logs
-            .into_iter()
-            .map(|item| to_request_log_summary(item, true))
-            .collect(),
+        items,
         total,
         page,
         page_size: params.page_size,
@@ -342,11 +361,13 @@ fn read_request_log_page_for_key_ids_with_normalized_total(
         )
         .map_err(|err| format!("list request logs failed: {err}"))?;
 
+    let mut items: Vec<_> = logs
+        .into_iter()
+        .map(|item| to_request_log_summary(item, false))
+        .collect();
+    enrich_request_log_guard_summaries(storage, &mut items)?;
     Ok(RequestLogListResult {
-        items: logs
-            .into_iter()
-            .map(|item| to_request_log_summary(item, false))
-            .collect(),
+        items,
         total,
         page,
         page_size: params.page_size,
@@ -429,6 +450,82 @@ fn normalize_page_size(value: i64) -> i64 {
 
 fn normalize_summary_limit(value: Option<i64>) -> i64 {
     value.unwrap_or(DEFAULT_REQUEST_LOG_SUMMARY_LIMIT)
+}
+
+fn enrich_request_log_guard_summaries(
+    storage: &Storage,
+    items: &mut [RequestLogSummary],
+) -> Result<(), String> {
+    let trace_ids: Vec<String> = items
+        .iter()
+        .filter_map(|item| item.trace_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect();
+    if trace_ids.is_empty() {
+        return Ok(());
+    }
+    let guard_summaries = read_guard_summaries_by_trace_id(storage, &trace_ids)?;
+    for item in items {
+        let Some(trace_id) = item.trace_id.as_deref() else {
+            continue;
+        };
+        let Some(summary) = guard_summaries.get(trace_id) else {
+            continue;
+        };
+        item.guard_event_count = summary.event_count;
+        item.guard_internal_retry_count = summary.internal_retry_count;
+        item.guard_block_count = summary.block_count;
+        item.guard_recovered_count = summary.recovered_count;
+        item.guard_retry_total_tokens = summary.retry_total_tokens;
+        item.guard_retry_estimated_cost_usd = summary.retry_estimated_cost_usd;
+        item.guard_last_action = summary.last_action.clone();
+        item.guard_last_target_token = summary.last_target_token;
+        item.billable_total_tokens =
+            add_positive_optional(item.total_tokens, summary.retry_total_tokens);
+        item.billable_estimated_cost_usd =
+            add_positive_optional_f64(item.estimated_cost_usd, summary.retry_estimated_cost_usd);
+    }
+    Ok(())
+}
+
+fn read_guard_summaries_by_trace_id(
+    storage: &Storage,
+    trace_ids: &[String],
+) -> Result<HashMap<String, RequestLogGuardSummary>, String> {
+    let mut out = HashMap::new();
+    let rows = storage
+        .summarize_reasoning_guard_by_trace_ids(trace_ids)
+        .map_err(|err| format!("query request log guard summary failed: {err}"))?;
+    for row in rows {
+        out.insert(
+            row.trace_id,
+            RequestLogGuardSummary {
+                event_count: row.event_count,
+                internal_retry_count: row.internal_retry_count,
+                block_count: row.block_count,
+                recovered_count: row.recovered_count,
+                retry_total_tokens: row.retry_total_tokens,
+                retry_estimated_cost_usd: row.retry_estimated_cost_usd,
+                last_action: row.last_action,
+                last_target_token: row.last_target_token,
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn add_positive_optional(current: Option<i64>, extra: i64) -> Option<i64> {
+    let current = current.unwrap_or(0).max(0);
+    let total = current.saturating_add(extra.max(0));
+    (total > 0).then_some(total)
+}
+
+fn add_positive_optional_f64(current: Option<f64>, extra: f64) -> Option<f64> {
+    let current = current.unwrap_or(0.0).max(0.0);
+    let total = current + extra.max(0.0);
+    (total > 0.0).then_some(total)
 }
 
 /// 函数 `clamp_page`
@@ -536,6 +633,16 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         total_tokens: item.total_tokens,
         reasoning_output_tokens: item.reasoning_output_tokens,
         estimated_cost_usd: item.estimated_cost_usd,
+        guard_event_count: 0,
+        guard_internal_retry_count: 0,
+        guard_block_count: 0,
+        guard_recovered_count: 0,
+        guard_retry_total_tokens: 0,
+        guard_retry_estimated_cost_usd: 0.0,
+        guard_last_action: None,
+        guard_last_target_token: None,
+        billable_total_tokens: item.total_tokens,
+        billable_estimated_cost_usd: item.estimated_cost_usd,
         error: item.error,
         created_at: item.created_at,
     }

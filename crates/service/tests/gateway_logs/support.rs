@@ -175,6 +175,32 @@ pub(super) fn post_http_raw(
     panic!("status parse failed, raw response: {last_raw:?}");
 }
 
+pub(super) fn get_http_raw(addr: &str, path: &str) -> (u16, String) {
+    let mut last_raw = String::new();
+    for _ in 0..20 {
+        let mut stream = TcpStream::connect(addr).expect("connect server");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).expect("write");
+
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf).expect("read");
+        if let Some(status) = buf
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u16>().ok())
+        {
+            let body_raw = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            let body = decode_chunked_body_if_needed(&body_raw);
+            return (status, body);
+        }
+        last_raw = buf;
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("status parse failed, raw response: {last_raw:?}");
+}
+
 /// 函数 `hash_platform_key_for_test`
 ///
 /// 作者: gaohongshun

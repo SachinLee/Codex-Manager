@@ -42,6 +42,12 @@ import {
 import { buildSummaryPlaceholder } from "./page-cells";
 import { AccountListResult, ApiKey, RequestLogListResult, StartupSnapshot } from "@/types";
 
+const REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY = [
+  "codex-launcher",
+  "sessions",
+  "request-log-lookup",
+] as const;
+
 function LogsPageContent() {
   const { t } = useI18n();
   const localDayRange = useLocalDayRange();
@@ -131,10 +137,11 @@ function LogsPageContent() {
   });
 
   const { data: codexSessions = [] } = useQuery({
-    queryKey: ["codex-launcher", "sessions", "request-log-lookup"],
+    queryKey: REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY,
     queryFn: () => codexLauncherClient.listSessions({ limit: 2000 }),
     enabled: areLogQueriesEnabled && isPageActive,
-    staleTime: 60_000,
+    staleTime: 5_000,
+    refetchInterval: 5000,
     retry: 1,
   });
 
@@ -247,6 +254,8 @@ function LogsPageContent() {
     errorCount: 0,
     totalTokens: 0,
     totalCostUsd: 0,
+    guardRetryTotalTokens: 0,
+    guardRetryEstimatedCostUsd: 0,
   };
   const totalPages = Math.max(
     1,
@@ -398,7 +407,12 @@ function LogsPageContent() {
               setPage(1);
             }}
             onRefresh={() => {
-              void queryClient.invalidateQueries({ queryKey: ["logs"] });
+              void Promise.all([
+                queryClient.invalidateQueries({ queryKey: ["logs"] }),
+                queryClient.invalidateQueries({
+                  queryKey: REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY,
+                }),
+              ]);
             }}
             onOpenClearConfirm={() => setClearConfirmOpen(true)}
             onApplyTimePreset={applyTimePreset}

@@ -11,9 +11,25 @@ const pageSectionsPath = path.join(
   "logs",
   "page-sections.tsx",
 );
+const logsPagePath = path.join(appsRoot, "src", "app", "logs", "page.tsx");
+const pageHelpersPath = path.join(
+  appsRoot,
+  "src",
+  "app",
+  "logs",
+  "page-helpers.tsx",
+);
 
 async function readPageSectionsSource() {
   return fs.readFile(pageSectionsPath, "utf8");
+}
+
+async function readLogsPageSource() {
+  return fs.readFile(logsPagePath, "utf8");
+}
+
+async function readPageHelpersSource() {
+  return fs.readFile(pageHelpersPath, "utf8");
 }
 
 function indexOfOrThrow(source, needle) {
@@ -37,4 +53,34 @@ test("request logs table keeps route details after token metrics", async () => {
   assert.ok(modelHeader < tokenHeader);
   assert.ok(tokenHeader < routeHeader);
   assert.ok(routeHeader < errorHeader);
+});
+
+test("request logs refresh keeps Codex session lookup current", async () => {
+  const source = await readLogsPageSource();
+
+  assert.match(source, /const REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY = \[/);
+  assert.match(
+    source,
+    /queryKey:\s*REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY,[\s\S]*staleTime:\s*5_000,[\s\S]*refetchInterval:\s*5000,/,
+  );
+  assert.match(
+    source,
+    /queryClient\.invalidateQueries\(\{\s*queryKey:\s*REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY,\s*\}\)/,
+  );
+});
+
+test("request log summary cards show guard retry usage as a separate hint", async () => {
+  const helpersSource = await readPageHelpersSource();
+  const sectionsSource = await readPageSectionsSource();
+
+  assert.match(helpersSource, /detail\?: ReactNode/);
+  assert.match(helpersSource, /text-\[11px\] font-medium text-amber-500/);
+  assert.match(
+    sectionsSource,
+    /summary\.guardRetryTotalTokens > 0[\s\S]*Guard \+\$\{formatCompactTokenAmount\(summary\.guardRetryTotalTokens\)\}/,
+  );
+  assert.match(
+    sectionsSource,
+    /summary\.guardRetryEstimatedCostUsd > 0[\s\S]*Guard \+\$\{formatUsdAmount\(summary\.guardRetryEstimatedCostUsd\)\}/,
+  );
 });

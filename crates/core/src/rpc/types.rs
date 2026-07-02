@@ -1291,6 +1291,16 @@ pub struct RequestLogSummary {
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
     pub estimated_cost_usd: Option<f64>,
+    pub guard_event_count: i64,
+    pub guard_internal_retry_count: i64,
+    pub guard_block_count: i64,
+    pub guard_recovered_count: i64,
+    pub guard_retry_total_tokens: i64,
+    pub guard_retry_estimated_cost_usd: f64,
+    pub guard_last_action: Option<String>,
+    pub guard_last_target_token: Option<i64>,
+    pub billable_total_tokens: Option<i64>,
+    pub billable_estimated_cost_usd: Option<f64>,
     pub error: Option<String>,
     pub created_at: i64,
 }
@@ -1386,6 +1396,8 @@ pub struct RequestLogFilterSummaryResult {
     pub error_count: i64,
     pub total_tokens: i64,
     pub total_cost_usd: f64,
+    pub guard_retry_total_tokens: i64,
+    pub guard_retry_estimated_cost_usd: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1449,12 +1461,51 @@ pub struct AggregateApiDailyUsageStatSummary {
     pub total_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub estimated_cost_usd: f64,
+    pub guard_retry_total_tokens: i64,
+    pub guard_retry_estimated_cost_usd: f64,
+    pub billable_total_tokens: i64,
+    pub billable_estimated_cost_usd: f64,
     pub cache_hit_rate: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AggregateApiDailyUsageStatsResult {
     pub items: Vec<AggregateApiDailyUsageStatSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiReasoningGuardStatSummary {
+    pub aggregate_api_id: String,
+    pub aggregate_api_supplier_name: Option<String>,
+    pub aggregate_api_url: Option<String>,
+    pub total_request_count: i64,
+    pub event_count: i64,
+    pub affected_request_count: i64,
+    pub match_rate: f64,
+    pub internal_retry_count: i64,
+    pub internal_retry_request_count: i64,
+    pub retry_recovery_count: i64,
+    pub retry_recovery_rate: f64,
+    pub block_count: i64,
+    pub blocked_request_count: i64,
+    pub block_rate: f64,
+    pub observe_only_count: i64,
+    pub bypass_after_consecutive_count: i64,
+    pub guard_input_tokens: i64,
+    pub guard_cached_input_tokens: i64,
+    pub guard_output_tokens: i64,
+    pub guard_total_tokens: i64,
+    pub guard_reasoning_output_tokens: i64,
+    pub guard_estimated_cost_usd: f64,
+    pub last_target_token: Option<i64>,
+    pub last_event_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiReasoningGuardStatsResult {
+    pub items: Vec<AggregateApiReasoningGuardStatSummary>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

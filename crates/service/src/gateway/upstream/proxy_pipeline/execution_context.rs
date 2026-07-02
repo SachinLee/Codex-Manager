@@ -1,5 +1,5 @@
 use super::super::support::candidates;
-use codexmanager_core::storage::Storage;
+use codexmanager_core::storage::{GatewayReasoningGuardEvent, Storage};
 
 pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     trace_id: &'a str,
@@ -393,6 +393,103 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             status_code,
             Some(self.protocol_type),
         );
+    }
+
+    pub(in super::super) fn record_reasoning_guard_event(
+        &self,
+        account_id: Option<&str>,
+        model_for_log: Option<&str>,
+        action: super::super::super::ReasoningGuardBridgeAction,
+        target_token: Option<i64>,
+        is_stream: bool,
+        attempt_index: i64,
+        final_status_code: Option<u16>,
+        usage: super::super::super::request_log::RequestLogUsage,
+    ) {
+        let action = match action {
+            super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
+            super::super::super::ReasoningGuardBridgeAction::InternalRetry => "internal_retry",
+            super::super::super::ReasoningGuardBridgeAction::Block => "block",
+            super::super::super::ReasoningGuardBridgeAction::BypassAfterConsecutive => {
+                "bypass_after_consecutive"
+            }
+        };
+        let platform_model_for_log = self.model_for_log.or(model_for_log);
+        let estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
+            self.storage,
+            platform_model_for_log,
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+        );
+        let event = GatewayReasoningGuardEvent {
+            trace_id: Some(self.trace_id.to_string()),
+            request_log_id: None,
+            mode: if is_stream { "stream" } else { "non_stream" }.to_string(),
+            action: action.to_string(),
+            target_token,
+            source_kind: account_id.map(|_| "openai_account".to_string()),
+            source_id: account_id.map(str::to_string),
+            supplier_name: None,
+            upstream_model: platform_model_for_log.map(str::to_string),
+            request_path: Some(self.path.to_string()),
+            attempt_index,
+            final_status_code: final_status_code.map(i64::from),
+            input_tokens: usage.input_tokens,
+            cached_input_tokens: usage.cached_input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            reasoning_output_tokens: usage.reasoning_output_tokens,
+            estimated_cost_usd: Some(estimated_cost_usd),
+            created_at: codexmanager_core::storage::now_ts(),
+        };
+        if let Err(err) = self.storage.insert_gateway_reasoning_guard_event(&event) {
+            log::warn!(
+                "event=gateway_reasoning_guard_event_insert_failed trace_id={} action={} err={}",
+                self.trace_id,
+                action,
+                err
+            );
+        }
+    }
+
+    pub(in super::super) fn record_reasoning_guard_recovered_event(
+        &self,
+        account_id: Option<&str>,
+        model_for_log: Option<&str>,
+        is_stream: bool,
+        attempt_index: i64,
+        final_status_code: Option<u16>,
+    ) {
+        let platform_model_for_log = self.model_for_log.or(model_for_log);
+        let event = GatewayReasoningGuardEvent {
+            trace_id: Some(self.trace_id.to_string()),
+            request_log_id: None,
+            mode: if is_stream { "stream" } else { "non_stream" }.to_string(),
+            action: "recovered".to_string(),
+            target_token: None,
+            source_kind: account_id.map(|_| "openai_account".to_string()),
+            source_id: account_id.map(str::to_string),
+            supplier_name: None,
+            upstream_model: platform_model_for_log.map(str::to_string),
+            request_path: Some(self.path.to_string()),
+            attempt_index,
+            final_status_code: final_status_code.map(i64::from),
+            input_tokens: None,
+            cached_input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            reasoning_output_tokens: None,
+            estimated_cost_usd: None,
+            created_at: codexmanager_core::storage::now_ts(),
+        };
+        if let Err(err) = self.storage.insert_gateway_reasoning_guard_event(&event) {
+            log::warn!(
+                "event=gateway_reasoning_guard_event_insert_failed trace_id={} action=recovered err={}",
+                self.trace_id,
+                err
+            );
+        }
     }
 }
 

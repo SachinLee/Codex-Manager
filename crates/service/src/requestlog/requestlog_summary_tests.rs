@@ -41,6 +41,8 @@ fn filter_summary_mapping_clamps_negative_aggregate_values() {
             error_count: -4,
             total_tokens: -5,
             estimated_cost_usd: -0.25,
+            guard_retry_total_tokens: -6,
+            guard_retry_estimated_cost_usd: -0.50,
         },
     );
 
@@ -50,6 +52,8 @@ fn filter_summary_mapping_clamps_negative_aggregate_values() {
     assert_eq!(summary.error_count, 0);
     assert_eq!(summary.total_tokens, 0);
     assert_eq!(summary.total_cost_usd, 0.0);
+    assert_eq!(summary.guard_retry_total_tokens, 0);
+    assert_eq!(summary.guard_retry_estimated_cost_usd, 0.0);
 }
 
 #[test]

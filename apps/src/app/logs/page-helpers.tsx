@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -87,15 +88,38 @@ export function getStatusBadge(statusCode: number | null) {
   );
 }
 
+export function isReasoningGuardConverted502(log: RequestLog): boolean {
+  const error = String(log.error || "").toLowerCase();
+  return (
+    resolveDisplayedStatusCode(log) === 502 &&
+    (log.guardBlockCount > 0 ||
+      log.guardLastAction === "block" ||
+      log.reasoningOutputTokens === 516 ||
+      error.includes("reasoning guard"))
+  );
+}
+
+export function formatReasoningGuardTarget(log: RequestLog): string {
+  const target =
+    typeof log.guardLastTargetToken === "number" && log.guardLastTargetToken > 0
+      ? log.guardLastTargetToken
+      : typeof log.reasoningOutputTokens === "number" && log.reasoningOutputTokens > 0
+        ? log.reasoningOutputTokens
+        : null;
+  return target ? `reasoning_tokens=${target}` : "reasoning guard";
+}
+
 export function SummaryCard({
   title,
   value,
+  detail,
   description,
   icon: Icon,
   toneClass,
 }: {
   title: string;
   value: string;
+  detail?: ReactNode;
   description: string;
   icon: LucideIcon;
   toneClass: string;
@@ -110,6 +134,11 @@ export function SummaryCard({
           <div className="mt-2 truncate text-[2rem] leading-none font-semibold tracking-tight">
             {value}
           </div>
+          {detail ? (
+            <div className="mt-1 truncate text-[11px] font-medium text-amber-500">
+              {detail}
+            </div>
+          ) : null}
         </div>
         <div
           className={cn(

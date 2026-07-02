@@ -266,6 +266,8 @@ pub(in super::super) fn execute_candidate_sequence(
             attempt_model_override.as_deref(),
             attempt_prompt_cache_key,
         );
+        let mut reasoning_guard_retry_budget_remaining =
+            super::super::super::reasoning_guard_retry_attempts();
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
         if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, is_bound_account)
         {
@@ -449,11 +451,11 @@ pub(in super::super) fn execute_candidate_sequence(
                     }
                     continue;
                 }
-                let request = request
+                let response_request = request
                     .take()
                     .expect("request should be available before terminal response");
                 return respond_terminal_attempt(
-                    request,
+                    response_request,
                     context,
                     &account.id,
                     attempt_trace.last_attempt_url.as_deref(),
@@ -543,56 +545,176 @@ pub(in super::super) fn execute_candidate_sequence(
                         }
                     }
                 }
-                let request = request
-                    .take()
-                    .expect("request should be available before terminal response");
-                let guard = inflight_guard
-                    .take()
-                    .expect("inflight guard should be available before terminal response");
-                let response_status = resp.status().as_u16();
-                match finalize_upstream_response(
-                    request,
-                    resp,
-                    guard,
-                    context,
-                    &account.id,
-                    attempt_trace.last_attempt_url.as_deref(),
-                    attempt_trace.last_attempt_error.as_deref(),
-                    response_adapter,
-                    gemini_stream_output_mode,
-                    tool_name_restore_map,
-                    client_is_stream,
-                    path,
-                    trace_id,
-                    started_at,
-                    attempt_model_for_log,
-                    Some(attempted_account_ids.as_slice()),
-                    context.has_more_candidates(idx),
-                )? {
-                    FinalizeUpstreamResponseOutcome::Handled => {
-                        if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
-                            storage,
-                            setup.conversation_routing.as_ref(),
-                            &account,
-                            attempt_model_for_log,
-                            response_status,
-                        ) {
+                'finalize_response: loop {
+                    let response_request = request
+                        .take()
+                        .expect("request should be available before terminal response");
+                    let guard = inflight_guard
+                        .take()
+                        .expect("inflight guard should be available before terminal response");
+                    let response_status = resp.status().as_u16();
+                    match finalize_upstream_response(
+                        response_request,
+                        resp,
+                        guard,
+                        context,
+                        &account.id,
+                        attempt_trace.last_attempt_url.as_deref(),
+                        attempt_trace.last_attempt_error.as_deref(),
+                        response_adapter,
+                        gemini_stream_output_mode,
+                        tool_name_restore_map,
+                        client_is_stream,
+                        path,
+                        trace_id,
+                        started_at,
+                        attempt_model_for_log,
+                        Some(attempted_account_ids.as_slice()),
+                        context.has_more_candidates(idx),
+                        reasoning_guard_retry_budget_remaining,
+                    )? {
+                        FinalizeUpstreamResponseOutcome::Handled => {
+                            if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
+                                storage,
+                                setup.conversation_routing.as_ref(),
+                                &account,
+                                attempt_model_for_log,
+                                response_status,
+                            ) {
+                                log::warn!(
+                                    "event=gateway_conversation_binding_update_failed trace_id={} account_id={} err={}",
+                                    trace_id,
+                                    account.id,
+                                    err
+                                );
+                            }
+                            return Ok(CandidateExecutionResult::Handled);
+                        }
+                        FinalizeUpstreamResponseOutcome::Failover {
+                            request: returned_request,
+                        } => {
+                            request = Some(returned_request);
+                            record_failover_attempt(
+                                &mut attempt_trace,
+                                &mut last_attempt_url,
+                                &mut last_attempt_error,
+                            );
+                            continue 'candidates;
+                        }
+                        FinalizeUpstreamResponseOutcome::RetrySameCandidate {
+                            request: returned_request,
+                        } => {
+                            request = Some(returned_request);
+                            if reasoning_guard_retry_budget_remaining == 0 {
+                                log::warn!(
+                                    "event=gateway_reasoning_guard_retry_without_budget trace_id={} account_id={}",
+                                    trace_id,
+                                    account.id
+                                );
+                                continue 'candidates;
+                            }
+                            reasoning_guard_retry_budget_remaining =
+                                reasoning_guard_retry_budget_remaining.saturating_sub(1);
+                            super::super::super::record_gateway_reasoning_guard_internal_retry(
+                                client_is_stream,
+                            );
                             log::warn!(
-                                "event=gateway_conversation_binding_update_failed trace_id={} account_id={} err={}",
+                                "event=gateway_reasoning_guard_internal_retry trace_id={} account_id={} remaining={}",
                                 trace_id,
                                 account.id,
-                                err
+                                reasoning_guard_retry_budget_remaining
                             );
+                            if deadline::is_expired(request_deadline) {
+                                let request = request
+                                    .take()
+                                    .expect("request should be available before timeout response");
+                                respond_total_timeout(
+                                    request,
+                                    context,
+                                    trace_id,
+                                    started_at,
+                                    attempt_model_for_log,
+                                    Some(attempted_account_ids.as_slice()),
+                                )?;
+                                return Ok(CandidateExecutionResult::Handled);
+                            }
+                            let request_ref = request
+                                .as_ref()
+                                .ok_or_else(|| "request already consumed".to_string())?;
+                            let retry_ctx = UpstreamRequestContext::from_request(
+                                request_ref,
+                                context.protocol_type(),
+                            );
+                            inflight_guard =
+                                Some(super::super::super::acquire_account_inflight(&account.id));
+                            let mut retry_trace = CandidateAttemptTrace::default();
+                            let retry_decision = run_candidate_attempt(CandidateAttemptParams {
+                                storage,
+                                method,
+                                request_ctx: retry_ctx,
+                                incoming_headers: &attempt_headers,
+                                body: &body_for_attempt,
+                                upstream_is_stream,
+                                path,
+                                request_deadline,
+                                account: &account,
+                                token: &mut token,
+                                strip_session_affinity,
+                                debug,
+                                allow_openai_fallback: attempt_allow_openai_fallback,
+                                disable_challenge_stateless_retry,
+                                has_more_candidates: context.has_more_candidates(idx),
+                                context,
+                                setup,
+                                trace: &mut retry_trace,
+                            });
+                            attempt_trace = retry_trace;
+                            match retry_decision {
+                                CandidateUpstreamDecision::RespondUpstream(retry_resp) => {
+                                    resp = retry_resp;
+                                    continue 'finalize_response;
+                                }
+                                CandidateUpstreamDecision::Failover => {
+                                    record_failover_attempt(
+                                        &mut attempt_trace,
+                                        &mut last_attempt_url,
+                                        &mut last_attempt_error,
+                                    );
+                                    continue 'candidates;
+                                }
+                                CandidateUpstreamDecision::Terminal {
+                                    status_code,
+                                    message,
+                                } => {
+                                    if should_failover_terminal_gateway_error(
+                                        context,
+                                        &account.id,
+                                        context.has_more_candidates(idx),
+                                        &message,
+                                        &mut attempt_trace,
+                                        &mut last_attempt_url,
+                                        &mut last_attempt_error,
+                                    ) {
+                                        continue 'candidates;
+                                    }
+                                    let request = request.take().expect(
+                                        "request should be available before terminal response",
+                                    );
+                                    return respond_terminal_attempt(
+                                        request,
+                                        context,
+                                        &account.id,
+                                        attempt_trace.last_attempt_url.as_deref(),
+                                        status_code,
+                                        message,
+                                        trace_id,
+                                        started_at,
+                                        attempt_model_for_log,
+                                        Some(attempted_account_ids.as_slice()),
+                                    );
+                                }
+                            }
                         }
-                        return Ok(CandidateExecutionResult::Handled);
-                    }
-                    FinalizeUpstreamResponseOutcome::Failover => {
-                        record_failover_attempt(
-                            &mut attempt_trace,
-                            &mut last_attempt_url,
-                            &mut last_attempt_error,
-                        );
-                        continue;
                     }
                 }
             }

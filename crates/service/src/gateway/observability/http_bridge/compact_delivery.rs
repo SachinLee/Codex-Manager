@@ -39,6 +39,9 @@ fn respond_synthesized_compact_error_body(
         upstream_identity_error_code: None,
         upstream_content_type: Some("application/json".to_string()),
         last_sse_event_type: None,
+        pending_failover_request: None,
+        reasoning_guard_action: None,
+        reasoning_guard_target_token: None,
     }
 }
 
@@ -126,6 +129,9 @@ pub(super) fn respond_compact_success_body(
             upstream_identity_error_code: None,
             upstream_content_type: None,
             last_sse_event_type: None,
+            pending_failover_request: None,
+            reasoning_guard_action: None,
+            reasoning_guard_target_token: None,
         },
         &request_id.map(str::to_string),
         &cf_ray.map(str::to_string),

@@ -17,6 +17,7 @@ import {
   normalizeAppSettings,
   normalizeAccountDailyUsageStats,
   normalizeAggregateApiDailyUsageStats,
+  normalizeAggregateApiReasoningGuardStats,
   normalizeBackgroundTasks,
   normalizeRequestLogFilterSummary,
   normalizeRequestLogListResult,
@@ -28,6 +29,7 @@ import {
   BackgroundTaskSettings,
   AccountDailyUsageStat,
   AggregateApiDailyUsageStat,
+  AggregateApiReasoningGuardStat,
   RequestLogFilterSummary,
   RequestLogListResult,
   RequestLogListWithSummaryResult,
@@ -233,6 +235,16 @@ export const serviceClient = {
       withAddr(params)
     );
     return normalizeAggregateApiDailyUsageStats(result);
+  },
+  async listAggregateApiReasoningGuardStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<AggregateApiReasoningGuardStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_aggregate_api_reasoning_guard",
+      withAddr(params)
+    );
+    return normalizeAggregateApiReasoningGuardStats(result);
   },
 
   async getListenConfig(): Promise<ServiceListenConfig> {

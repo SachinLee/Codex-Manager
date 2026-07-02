@@ -5,6 +5,7 @@ import {
   normalizeAggregateApiBalanceRefreshResult,
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiDailyUsageStats,
+  normalizeAggregateApiReasoningGuardStats,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
   normalizeAggregateApiSupplierModel,
@@ -52,6 +53,7 @@ import {
   AggregateApiBalanceRefreshResult,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
+  AggregateApiReasoningGuardStat,
   AggregateApiSecretResult,
   AggregateApiSupplierModel,
   AggregateApiSupplierModelImportResult,
@@ -774,6 +776,16 @@ export const accountClient = {
       withAddr(params)
     );
     return normalizeAggregateApiDailyUsageStats(result);
+  },
+  async listAggregateApiReasoningGuardStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<AggregateApiReasoningGuardStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_aggregate_api_reasoning_guard",
+      withAddr(params)
+    );
+    return normalizeAggregateApiReasoningGuardStats(result);
   },
   async refreshAggregateApiBalance(apiId: string): Promise<AggregateApiBalanceRefreshResult> {
     const result = await invoke<unknown>(

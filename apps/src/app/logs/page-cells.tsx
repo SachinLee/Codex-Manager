@@ -10,8 +10,10 @@ import {
 import { useI18n } from "@/lib/i18n/provider";
 import {
   formatCompactKeyLabel,
+  formatReasoningGuardTarget,
   formatSessionIdForTable,
   formatModelEffortDisplay,
+  isReasoningGuardConverted502,
   normalizeAggregateApiUrl,
   normalizeRequestType,
   RequestTypeBadge,
@@ -469,21 +471,58 @@ export function RequestRouteInfoCell({ log }: { log: RequestLog }) {
   );
 }
 
-export function ErrorInfoCell({ error }: { error: string }) {
+export function ErrorInfoCell({ log }: { log: RequestLog }) {
+  const { t } = useI18n();
+  const isReasoningGuard = isReasoningGuardConverted502(log);
+  const error = log.error;
   const text = String(error || "").trim();
-  if (!text) {
+  if (!text && !isReasoningGuard) {
     return <span className="text-muted-foreground">-</span>;
   }
+  const guardTarget = formatReasoningGuardTarget(log);
+  const displayText = isReasoningGuard ? text || guardTarget : text;
+  const hasGuardRetry = log.guardInternalRetryCount > 0;
+  const hasGuardEvent = log.guardEventCount > 0;
 
   return (
     <Tooltip>
       <TooltipTrigger render={<div />} className="block text-left">
+        {isReasoningGuard ? (
+          <Badge className="mb-1 h-5 rounded-full border-amber-500/20 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-500">
+            {guardTarget} -&gt; 502
+          </Badge>
+        ) : hasGuardRetry ? (
+          <Badge className="mb-1 h-5 rounded-full border-emerald-500/20 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-500">
+            Guard retry {log.guardInternalRetryCount}
+          </Badge>
+        ) : hasGuardEvent ? (
+          <Badge className="mb-1 h-5 rounded-full border-amber-500/20 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-500">
+            Guard {log.guardLastAction || log.guardEventCount}
+          </Badge>
+        ) : null}
         <span className="block max-w-[220px] truncate font-medium text-red-400">
-          {text}
+          {displayText}
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-md">
-        <div className="max-w-[360px] break-all font-mono text-[11px]">{text}</div>
+        <div className="flex max-w-[360px] flex-col gap-2">
+          {isReasoningGuard ? (
+            <div className="text-[11px] text-background/80">
+              {t("这是 Reasoning Guard 被网关保护转换成的 502，不是真实上游 502。")}
+            </div>
+          ) : null}
+          {hasGuardEvent ? (
+            <div className="grid gap-1 text-[11px] text-background/80">
+              <div>{t("Guard 事件")}: {log.guardEventCount}</div>
+              <div>{t("内部重试")}: {log.guardInternalRetryCount}</div>
+              <div>{t("阻断")}: {log.guardBlockCount}</div>
+              <div>{t("恢复")}: {log.guardRecoveredCount}</div>
+              <div>{t("最近动作")}: {log.guardLastAction || "-"}</div>
+              <div>{t("最近 token")}: {log.guardLastTargetToken || "-"}</div>
+            </div>
+          ) : null}
+          <div className="break-all font-mono text-[11px]">{displayText}</div>
+        </div>
       </TooltipContent>
     </Tooltip>
   );
@@ -592,9 +631,33 @@ export function buildSummaryPlaceholder(
     const statusCode = item.statusCode;
     return Boolean(String(item.error || "").trim()) || (statusCode != null && statusCode >= 400);
   }).length;
-  const totalTokens = logs.reduce((sum, item) => sum + Math.max(0, item.totalTokens || 0), 0);
+  const guardRetryTotalTokens = logs.reduce(
+    (sum, item) => sum + Math.max(0, item.guardRetryTotalTokens || 0),
+    0,
+  );
+  const guardRetryEstimatedCostUsd = logs.reduce(
+    (sum, item) => sum + Math.max(0, item.guardRetryEstimatedCostUsd || 0),
+    0,
+  );
+  const totalTokens = logs.reduce(
+    (sum, item) =>
+      sum +
+      Math.max(
+        0,
+        item.billableTotalTokens ??
+          (item.totalTokens || 0) + Math.max(0, item.guardRetryTotalTokens || 0),
+      ),
+    0,
+  );
   const totalCostUsd = logs.reduce(
-    (sum, item) => sum + Math.max(0, item.estimatedCostUsd || 0),
+    (sum, item) =>
+      sum +
+      Math.max(
+        0,
+        item.billableEstimatedCostUsd ??
+          (item.estimatedCostUsd || 0) +
+            Math.max(0, item.guardRetryEstimatedCostUsd || 0),
+      ),
     0,
   );
 
@@ -605,5 +668,7 @@ export function buildSummaryPlaceholder(
     errorCount,
     totalTokens,
     totalCostUsd,
+    guardRetryTotalTokens,
+    guardRetryEstimatedCostUsd,
   };
 }

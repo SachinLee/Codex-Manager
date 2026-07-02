@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use codexmanager_core::storage::{AggregateApi, Storage};
+use codexmanager_core::storage::{now_ts, AggregateApi, GatewayReasoningGuardEvent, Storage};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -30,6 +30,130 @@ fn clear_aggregate_api_cooldown(api_id: &str) {
 
 fn record_aggregate_api_failure(api_id: &str) {
     crate::gateway::gateway_record_aggregate_api_failure(api_id);
+}
+
+fn should_record_aggregate_api_failure_after_bridge(
+    is_reasoning_guard: bool,
+    upstream_error_hint: bool,
+    stream_terminal_error: bool,
+) -> bool {
+    !is_reasoning_guard && (upstream_error_hint || stream_terminal_error)
+}
+
+fn reasoning_guard_action_label(
+    action: super::super::super::ReasoningGuardBridgeAction,
+) -> &'static str {
+    match action {
+        super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
+        super::super::super::ReasoningGuardBridgeAction::InternalRetry => "internal_retry",
+        super::super::super::ReasoningGuardBridgeAction::Block => "block",
+        super::super::super::ReasoningGuardBridgeAction::BypassAfterConsecutive => {
+            "bypass_after_consecutive"
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_aggregate_api_reasoning_guard_event(
+    storage: &Storage,
+    trace_id: &str,
+    candidate_id: &str,
+    supplier_name: Option<&str>,
+    upstream_model: Option<&str>,
+    cost_multiplier: f64,
+    path: &str,
+    is_stream: bool,
+    action: super::super::super::ReasoningGuardBridgeAction,
+    target_token: Option<i64>,
+    attempt_index: i64,
+    final_status_code: Option<u16>,
+    usage: RequestLogUsage,
+) {
+    let cost_multiplier = if cost_multiplier.is_finite() && cost_multiplier > 0.0 {
+        cost_multiplier
+    } else {
+        1.0
+    };
+    let estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
+        storage,
+        upstream_model,
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.output_tokens,
+    ) * cost_multiplier;
+    let event = GatewayReasoningGuardEvent {
+        trace_id: Some(trace_id.to_string()),
+        request_log_id: None,
+        mode: if is_stream { "stream" } else { "non_stream" }.to_string(),
+        action: reasoning_guard_action_label(action).to_string(),
+        target_token,
+        source_kind: Some("aggregate_api".to_string()),
+        source_id: Some(candidate_id.to_string()),
+        supplier_name: supplier_name.map(str::to_string),
+        upstream_model: upstream_model.map(str::to_string),
+        request_path: Some(path.to_string()),
+        attempt_index,
+        final_status_code: final_status_code.map(i64::from),
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        reasoning_output_tokens: usage.reasoning_output_tokens,
+        estimated_cost_usd: Some(estimated_cost_usd),
+        created_at: now_ts(),
+    };
+    if let Err(err) = storage.insert_gateway_reasoning_guard_event(&event) {
+        log::warn!(
+            "event=aggregate_api_reasoning_guard_event_insert_failed trace_id={} aggregate_api_id={} action={} err={}",
+            trace_id,
+            candidate_id,
+            event.action,
+            err
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_aggregate_api_reasoning_guard_recovered_event(
+    storage: &Storage,
+    trace_id: &str,
+    candidate_id: &str,
+    supplier_name: Option<&str>,
+    upstream_model: Option<&str>,
+    path: &str,
+    is_stream: bool,
+    attempt_index: i64,
+    final_status_code: Option<u16>,
+) {
+    let event = GatewayReasoningGuardEvent {
+        trace_id: Some(trace_id.to_string()),
+        request_log_id: None,
+        mode: if is_stream { "stream" } else { "non_stream" }.to_string(),
+        action: "recovered".to_string(),
+        target_token: None,
+        source_kind: Some("aggregate_api".to_string()),
+        source_id: Some(candidate_id.to_string()),
+        supplier_name: supplier_name.map(str::to_string),
+        upstream_model: upstream_model.map(str::to_string),
+        request_path: Some(path.to_string()),
+        attempt_index,
+        final_status_code: final_status_code.map(i64::from),
+        input_tokens: None,
+        cached_input_tokens: None,
+        output_tokens: None,
+        total_tokens: None,
+        reasoning_output_tokens: None,
+        estimated_cost_usd: None,
+        created_at: now_ts(),
+    };
+    if let Err(err) = storage.insert_gateway_reasoning_guard_event(&event) {
+        log::warn!(
+            "event=aggregate_api_reasoning_guard_recovered_event_insert_failed trace_id={} aggregate_api_id={} err={}",
+            trace_id,
+            candidate_id,
+            err
+        );
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1049,7 +1173,12 @@ pub(in super::super) fn proxy_aggregate_request(
         };
 
         let mut succeeded = false;
-        for attempt_idx in 0..=AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
+        let mut reasoning_guard_retry_budget_remaining =
+            super::super::super::reasoning_guard_retry_attempts();
+        let mut reasoning_guard_retry_attempt_index = 0_i64;
+        let max_attempts_per_channel =
+            AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL + reasoning_guard_retry_budget_remaining;
+        for attempt_idx in 0..=max_attempts_per_channel {
             if super::super::support::deadline::is_expired(request_deadline) {
                 let message = "aggregate api request timeout".to_string();
                 let request = request
@@ -1275,7 +1404,9 @@ pub(in super::super) fn proxy_aggregate_request(
                 is_stream,
                 false,
                 Some(trace_id),
-                None,
+                candidate_upstream_model.as_deref().or(model_for_log),
+                Some(candidate_id.as_str()),
+                reasoning_guard_retry_budget_remaining,
                 started_at,
             )?;
             let bridge_output_text_len = bridge
@@ -1324,8 +1455,79 @@ pub(in super::super) fn proxy_aggregate_request(
             } else {
                 status_code
             };
+            let is_reasoning_guard = bridge.reasoning_guard_action.is_some();
+            if let Some(action) = bridge.reasoning_guard_action {
+                record_aggregate_api_reasoning_guard_event(
+                    storage,
+                    trace_id,
+                    candidate_id.as_str(),
+                    candidate_supplier_name.as_deref(),
+                    candidate_upstream_model.as_deref(),
+                    candidate_cost_multiplier,
+                    path,
+                    is_stream,
+                    action,
+                    bridge.reasoning_guard_target_token,
+                    reasoning_guard_retry_attempt_index,
+                    Some(status_code),
+                    RequestLogUsage {
+                        input_tokens: bridge.usage.input_tokens,
+                        cached_input_tokens: bridge.usage.cached_input_tokens,
+                        output_tokens: bridge.usage.output_tokens,
+                        total_tokens: bridge.usage.total_tokens,
+                        reasoning_output_tokens: bridge.usage.reasoning_output_tokens,
+                        first_response_ms: bridge.usage.first_response_ms,
+                    },
+                );
+                if action == super::super::super::ReasoningGuardBridgeAction::InternalRetry {
+                    if let Some(returned_request) = bridge.pending_failover_request {
+                        request = Some(returned_request);
+                        if reasoning_guard_retry_budget_remaining == 0 {
+                            log::warn!(
+                                "event=aggregate_api_reasoning_guard_retry_without_budget trace_id={} aggregate_api_id={}",
+                                trace_id,
+                                candidate_id
+                            );
+                            break;
+                        }
+                        reasoning_guard_retry_budget_remaining =
+                            reasoning_guard_retry_budget_remaining.saturating_sub(1);
+                        reasoning_guard_retry_attempt_index =
+                            reasoning_guard_retry_attempt_index.saturating_add(1);
+                        super::super::super::record_gateway_reasoning_guard_internal_retry(
+                            is_stream,
+                        );
+                        log::warn!(
+                            "event=aggregate_api_reasoning_guard_internal_retry trace_id={} aggregate_api_id={} remaining={}",
+                            trace_id,
+                            candidate_id,
+                            reasoning_guard_retry_budget_remaining
+                        );
+                        continue;
+                    }
+                }
+            }
             let usage = bridge.usage;
-            if bridge.upstream_error_hint.is_some() || bridge.stream_terminal_error.is_some() {
+            if reasoning_guard_retry_attempt_index > 0 && !is_reasoning_guard && bridge_ok {
+                record_aggregate_api_reasoning_guard_recovered_event(
+                    storage,
+                    trace_id,
+                    candidate_id.as_str(),
+                    candidate_supplier_name.as_deref(),
+                    candidate_upstream_model.as_deref(),
+                    path,
+                    is_stream,
+                    reasoning_guard_retry_attempt_index,
+                    Some(status_code),
+                );
+            }
+            if is_reasoning_guard {
+                // Reasoning Guard is a synthetic gateway decision, not aggregate API health.
+            } else if should_record_aggregate_api_failure_after_bridge(
+                is_reasoning_guard,
+                bridge.upstream_error_hint.is_some(),
+                bridge.stream_terminal_error.is_some(),
+            ) {
                 record_aggregate_api_failure(candidate_id.as_str());
             } else {
                 clear_aggregate_api_cooldown(candidate_id.as_str());
@@ -1663,7 +1865,7 @@ mod tests {
         filter_aggregate_api_cooldown_candidates, filter_daily_spend_limited_candidates,
         resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
         responses_to_anthropic_messages_action_path, rewrite_body_model_override,
-        AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
+        should_record_aggregate_api_failure_after_bridge, AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
     };
     use crate::aggregate_api::{
         AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -2213,6 +2415,25 @@ mod tests {
             vec!["agg-cooled"]
         );
         crate::gateway::reload_runtime_config_from_env();
+    }
+
+    #[test]
+    fn reasoning_guard_bridge_result_does_not_count_as_aggregate_api_failure() {
+        assert!(!should_record_aggregate_api_failure_after_bridge(
+            true, true, false
+        ));
+        assert!(!should_record_aggregate_api_failure_after_bridge(
+            true, false, true
+        ));
+        assert!(should_record_aggregate_api_failure_after_bridge(
+            false, true, false
+        ));
+        assert!(should_record_aggregate_api_failure_after_bridge(
+            false, false, true
+        ));
+        assert!(!should_record_aggregate_api_failure_after_bridge(
+            false, false, false
+        ));
     }
 
     /// 函数 `final_error_promotes_success_status_to_bad_gateway`

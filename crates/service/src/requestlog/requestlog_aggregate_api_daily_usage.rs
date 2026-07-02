@@ -27,6 +27,10 @@ pub(crate) fn read_aggregate_api_daily_usage_stats(
             total_tokens: item.total_tokens.max(0),
             reasoning_output_tokens: item.reasoning_output_tokens.max(0),
             estimated_cost_usd: item.estimated_cost_usd.max(0.0),
+            guard_retry_total_tokens: item.guard_retry_total_tokens.max(0),
+            guard_retry_estimated_cost_usd: item.guard_retry_estimated_cost_usd.max(0.0),
+            billable_total_tokens: item.billable_total_tokens.max(0),
+            billable_estimated_cost_usd: item.billable_estimated_cost_usd.max(0.0),
             cache_hit_rate: item.cache_hit_rate.clamp(0.0, 1.0),
         })
         .collect();

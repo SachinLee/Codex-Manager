@@ -27,6 +27,15 @@ static UPSTREAM_CONNECT_TIMEOUT_SECS: AtomicU64 =
 static UPSTREAM_TOTAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS);
 static UPSTREAM_STREAM_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS);
 static ACCOUNT_MAX_INFLIGHT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_INFLIGHT);
+static REASONING_GUARD_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_REASONING_GUARD_ENABLED);
+static REASONING_GUARD_INTERCEPT_STREAMING: AtomicBool =
+    AtomicBool::new(DEFAULT_REASONING_GUARD_INTERCEPT_STREAMING);
+static REASONING_GUARD_INTERCEPT_NON_STREAMING: AtomicBool =
+    AtomicBool::new(DEFAULT_REASONING_GUARD_INTERCEPT_NON_STREAMING);
+static REASONING_GUARD_RETRY_ATTEMPTS: AtomicUsize =
+    AtomicUsize::new(DEFAULT_REASONING_GUARD_RETRY_ATTEMPTS);
+static REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE: AtomicUsize =
+    AtomicUsize::new(DEFAULT_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE);
 static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
     AtomicBool::new(DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST);
 static ENABLE_REQUEST_COMPRESSION: AtomicBool = AtomicBool::new(DEFAULT_ENABLE_REQUEST_COMPRESSION);
@@ -41,6 +50,7 @@ static COMPACT_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static COMPACT_API_PATH: OnceLock<RwLock<String>> = OnceLock::new();
 static MODEL_FORWARD_RULES: OnceLock<RwLock<Vec<ModelForwardRule>>> = OnceLock::new();
 static COMPACT_MODEL_FORWARD_RULES: OnceLock<RwLock<Vec<ModelForwardRule>>> = OnceLock::new();
+static REASONING_GUARD_TARGETS: OnceLock<RwLock<Vec<i64>>> = OnceLock::new();
 static CODEX_IMAGE_MAIN_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_IMAGE_TOOL_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
@@ -54,6 +64,12 @@ const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS: u64 = 0;
 const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 0;
+const DEFAULT_REASONING_GUARD_ENABLED: bool = true;
+pub(crate) const DEFAULT_REASONING_GUARD_TARGETS: &[i64] = &[516, 1034, 1552];
+const DEFAULT_REASONING_GUARD_INTERCEPT_STREAMING: bool = true;
+const DEFAULT_REASONING_GUARD_INTERCEPT_NON_STREAMING: bool = true;
+const DEFAULT_REASONING_GUARD_RETRY_ATTEMPTS: usize = 3;
+const DEFAULT_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE: usize = 0;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = false;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_USE_WEBSOCKET_UPSTREAM: bool = false;
@@ -79,6 +95,15 @@ const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_T
 const ENV_UPSTREAM_TOTAL_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS";
 const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS";
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
+const ENV_REASONING_GUARD_ENABLED: &str = "CODEXMANAGER_REASONING_GUARD_ENABLED";
+const ENV_REASONING_GUARD_TARGETS: &str = "CODEXMANAGER_REASONING_GUARD_TARGETS";
+const ENV_REASONING_GUARD_INTERCEPT_STREAMING: &str =
+    "CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING";
+const ENV_REASONING_GUARD_INTERCEPT_NON_STREAMING: &str =
+    "CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING";
+const ENV_REASONING_GUARD_RETRY_ATTEMPTS: &str = "CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS";
+const ENV_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE: &str =
+    "CODEXMANAGER_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE";
 const ENV_STRICT_REQUEST_PARAM_ALLOWLIST: &str = "CODEXMANAGER_STRICT_REQUEST_PARAM_ALLOWLIST";
 const ENV_ENABLE_REQUEST_COMPRESSION: &str = "CODEXMANAGER_ENABLE_REQUEST_COMPRESSION";
 const ENV_USE_WEBSOCKET_UPSTREAM: &str = "CODEXMANAGER_USE_WEBSOCKET_UPSTREAM";
@@ -546,6 +571,91 @@ pub(crate) fn set_account_max_inflight_limit(limit: usize) -> usize {
     limit
 }
 
+pub(crate) fn reasoning_guard_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_ENABLED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_reasoning_guard_enabled(enabled: bool) -> bool {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_ENABLED.store(enabled, Ordering::Relaxed);
+    std::env::set_var(ENV_REASONING_GUARD_ENABLED, if enabled { "1" } else { "0" });
+    enabled
+}
+
+pub(crate) fn set_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {
+    ensure_runtime_config_loaded();
+    let normalized = normalize_reasoning_guard_targets(values);
+    let raw = serialize_reasoning_guard_targets(&normalized);
+    std::env::set_var(ENV_REASONING_GUARD_TARGETS, raw);
+    let mut cached =
+        crate::lock_utils::write_recover(reasoning_guard_targets_cell(), "reasoning_guard_targets");
+    *cached = normalized.clone();
+    normalized
+}
+
+pub(crate) fn set_reasoning_guard_targets_from_raw(raw: &str) -> Vec<i64> {
+    let parsed = parse_reasoning_guard_targets(raw);
+    set_reasoning_guard_targets(&parsed)
+}
+
+pub(crate) fn reasoning_guard_intercept_streaming() -> bool {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_INTERCEPT_STREAMING.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_reasoning_guard_intercept_streaming(enabled: bool) -> bool {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_INTERCEPT_STREAMING.store(enabled, Ordering::Relaxed);
+    std::env::set_var(
+        ENV_REASONING_GUARD_INTERCEPT_STREAMING,
+        if enabled { "1" } else { "0" },
+    );
+    enabled
+}
+
+pub(crate) fn reasoning_guard_intercept_non_streaming() -> bool {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_INTERCEPT_NON_STREAMING.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_reasoning_guard_intercept_non_streaming(enabled: bool) -> bool {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_INTERCEPT_NON_STREAMING.store(enabled, Ordering::Relaxed);
+    std::env::set_var(
+        ENV_REASONING_GUARD_INTERCEPT_NON_STREAMING,
+        if enabled { "1" } else { "0" },
+    );
+    enabled
+}
+
+pub(crate) fn reasoning_guard_retry_attempts() -> usize {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_RETRY_ATTEMPTS.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_reasoning_guard_retry_attempts(attempts: usize) -> usize {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_RETRY_ATTEMPTS.store(attempts, Ordering::Relaxed);
+    std::env::set_var(ENV_REASONING_GUARD_RETRY_ATTEMPTS, attempts.to_string());
+    attempts
+}
+
+pub(crate) fn reasoning_guard_bypass_after_consecutive() -> usize {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_reasoning_guard_bypass_after_consecutive(threshold: usize) -> usize {
+    ensure_runtime_config_loaded();
+    REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE.store(threshold, Ordering::Relaxed);
+    std::env::set_var(
+        ENV_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE,
+        threshold.to_string(),
+    );
+    threshold
+}
+
 /// 函数 `strict_request_param_allowlist_enabled`
 ///
 /// 作者: gaohongshun
@@ -713,6 +823,12 @@ pub(crate) fn current_compact_model_forward_rules() -> String {
         compact_model_forward_rules_cell(),
         "compact_model_forward_rules",
     ))
+}
+
+pub(crate) fn current_reasoning_guard_targets() -> Vec<i64> {
+    ensure_runtime_config_loaded();
+    crate::lock_utils::read_recover(reasoning_guard_targets_cell(), "reasoning_guard_targets")
+        .clone()
 }
 
 /// 函数 `resolve_forwarded_model`
@@ -1185,6 +1301,38 @@ pub(super) fn reload_from_env() {
         env_usize_or(ENV_ACCOUNT_MAX_INFLIGHT, DEFAULT_ACCOUNT_MAX_INFLIGHT),
         Ordering::Relaxed,
     );
+    REASONING_GUARD_ENABLED.store(
+        env_bool_or(ENV_REASONING_GUARD_ENABLED, DEFAULT_REASONING_GUARD_ENABLED),
+        Ordering::Relaxed,
+    );
+    REASONING_GUARD_INTERCEPT_STREAMING.store(
+        env_bool_or(
+            ENV_REASONING_GUARD_INTERCEPT_STREAMING,
+            DEFAULT_REASONING_GUARD_INTERCEPT_STREAMING,
+        ),
+        Ordering::Relaxed,
+    );
+    REASONING_GUARD_INTERCEPT_NON_STREAMING.store(
+        env_bool_or(
+            ENV_REASONING_GUARD_INTERCEPT_NON_STREAMING,
+            DEFAULT_REASONING_GUARD_INTERCEPT_NON_STREAMING,
+        ),
+        Ordering::Relaxed,
+    );
+    REASONING_GUARD_RETRY_ATTEMPTS.store(
+        env_usize_or(
+            ENV_REASONING_GUARD_RETRY_ATTEMPTS,
+            DEFAULT_REASONING_GUARD_RETRY_ATTEMPTS,
+        ),
+        Ordering::Relaxed,
+    );
+    REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE.store(
+        env_usize_or(
+            ENV_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE,
+            DEFAULT_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE,
+        ),
+        Ordering::Relaxed,
+    );
     STRICT_REQUEST_PARAM_ALLOWLIST.store(
         env_bool_or(
             ENV_STRICT_REQUEST_PARAM_ALLOWLIST,
@@ -1317,6 +1465,14 @@ pub(super) fn reload_from_env() {
     );
     *cached_compact_model_forward_rules = compact_model_forward_rules;
     drop(cached_compact_model_forward_rules);
+
+    let reasoning_guard_targets = env_non_empty(ENV_REASONING_GUARD_TARGETS)
+        .map(|value| parse_reasoning_guard_targets(value.as_str()))
+        .unwrap_or_else(|| DEFAULT_REASONING_GUARD_TARGETS.to_vec());
+    let mut cached_reasoning_guard_targets =
+        crate::lock_utils::write_recover(reasoning_guard_targets_cell(), "reasoning_guard_targets");
+    *cached_reasoning_guard_targets = normalize_reasoning_guard_targets(&reasoning_guard_targets);
+    drop(cached_reasoning_guard_targets);
 
     let codex_image_main_model = env_non_empty(ENV_CODEX_IMAGE_MAIN_MODEL)
         .and_then(|value| normalize_model_slug(value.as_str()).ok())
@@ -1627,6 +1783,10 @@ fn compact_model_forward_rules_cell() -> &'static RwLock<Vec<ModelForwardRule>> 
     })
 }
 
+fn reasoning_guard_targets_cell() -> &'static RwLock<Vec<i64>> {
+    REASONING_GUARD_TARGETS.get_or_init(|| RwLock::new(DEFAULT_REASONING_GUARD_TARGETS.to_vec()))
+}
+
 fn codex_image_main_model_cell() -> &'static RwLock<String> {
     CODEX_IMAGE_MAIN_MODEL.get_or_init(|| RwLock::new(DEFAULT_CODEX_IMAGE_MAIN_MODEL.to_string()))
 }
@@ -1801,6 +1961,43 @@ fn env_bool_or(name: &str, default: bool) -> bool {
         "0" | "false" | "no" | "off" => false,
         _ => default,
     }
+}
+
+fn normalize_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {
+    let mut normalized = Vec::new();
+    for value in values {
+        if *value <= 0 || normalized.contains(value) {
+            continue;
+        }
+        normalized.push(*value);
+    }
+    if normalized.is_empty() {
+        DEFAULT_REASONING_GUARD_TARGETS.to_vec()
+    } else {
+        normalized
+    }
+}
+
+fn parse_reasoning_guard_targets(raw: &str) -> Vec<i64> {
+    let parsed = raw
+        .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
+        .filter_map(|part| {
+            let value = part.trim();
+            if value.is_empty() {
+                return None;
+            }
+            value.parse::<i64>().ok()
+        })
+        .collect::<Vec<_>>();
+    normalize_reasoning_guard_targets(&parsed)
+}
+
+fn serialize_reasoning_guard_targets(values: &[i64]) -> String {
+    normalize_reasoning_guard_targets(values)
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// 函数 `normalize_model_forward_pattern`

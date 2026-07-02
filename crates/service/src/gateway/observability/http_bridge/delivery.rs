@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::io::Read as _;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Request, Response, StatusCode};
 
@@ -28,18 +29,25 @@ use super::metadata::{
     copy_upstream_response_headers, log_bridge_stream_diagnostics,
     terminal_bridge_result_with_debug_meta, upstream_response_metadata, with_bridge_debug_meta,
 };
+use super::reasoning_guard::{
+    decide, reset as reset_reasoning_guard, ReasoningGuardDecision, ReasoningGuardResponseMode,
+    ReasoningGuardScope,
+};
 use super::response_helpers::{
     extract_error_message_from_json_bytes, force_openai_responses_stream_content_type,
     replace_content_type_header, respond_json_bytes,
 };
 use super::{
     collect_non_stream_json_from_sse_bytes, extract_error_hint_from_body, looks_like_sse_payload,
-    parse_usage_from_json, usage_has_signal, AnthropicSseReader,
-    ChatCompletionsFromResponsesSseReader, GeminiSseReader, ImagesFromResponsesSseReader,
-    ImagesResponseFormat, OpenAIResponsesPassthroughSseReader, PassthroughSseCollector,
-    PassthroughSseProtocol, PassthroughSseUsageReader, ResponsesFromAnthropicSseReader,
-    SseKeepAliveFrame, UpstreamResponseBridgeResult, UpstreamResponseUsage,
+    parse_usage_from_json, reasoning_guard_error, reasoning_guard_target_token, usage_has_signal,
+    AnthropicSseReader, ChatCompletionsFromResponsesSseReader, GeminiSseReader,
+    ImagesFromResponsesSseReader, ImagesResponseFormat, OpenAIResponsesPassthroughSseReader,
+    PassthroughSseCollector, PassthroughSseProtocol, PassthroughSseUsageReader,
+    ReasoningGuardBridgeAction, ResponsesFromAnthropicSseReader, SseKeepAliveFrame,
+    UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
+
+const REASONING_GUARD_STREAM_BUFFER_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 /// 函数 `is_compact_request_path`
 ///
@@ -86,12 +94,186 @@ fn should_suppress_deactivation_delivery(
         })
 }
 
+#[derive(Clone, Copy)]
 struct UpstreamDebugMetaRefs<'a> {
     request_id: &'a Option<String>,
     cf_ray: &'a Option<String>,
     auth_error: &'a Option<String>,
     identity_error_code: &'a Option<String>,
     content_type: &'a Option<String>,
+}
+
+struct ReasoningGuardOutcome {
+    message: String,
+    action: ReasoningGuardBridgeAction,
+    is_stream: bool,
+    target_token: i64,
+}
+
+fn reasoning_guard_body(message: &str) -> Vec<u8> {
+    serde_json::json!({
+        "error": {
+            "message": message,
+            "type": "codexmanager_reasoning_guard",
+            "code": "reasoning_guard_triggered"
+        }
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn reasoning_guard_bridge_result(
+    usage: UpstreamResponseUsage,
+    message: String,
+    delivered_status_code: Option<u16>,
+    pending_failover_request: Option<Request>,
+    action: ReasoningGuardBridgeAction,
+    target_token: Option<i64>,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> UpstreamResponseBridgeResult {
+    with_bridge_debug_meta(
+        UpstreamResponseBridgeResult {
+            usage,
+            stream_terminal_seen: true,
+            upstream_error_hint: Some(message),
+            delivered_status_code,
+            pending_failover_request,
+            reasoning_guard_action: Some(action),
+            reasoning_guard_target_token: target_token,
+            ..UpstreamResponseBridgeResult::default()
+        },
+        meta.request_id,
+        meta.cf_ray,
+        meta.auth_error,
+        meta.identity_error_code,
+        meta.content_type,
+        None,
+    )
+}
+
+fn respond_reasoning_guard(
+    request: Request,
+    headers: Vec<Header>,
+    usage: UpstreamResponseUsage,
+    message: String,
+    target_token: i64,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> UpstreamResponseBridgeResult {
+    let status = StatusCode(502);
+    let delivery_error =
+        respond_json_bytes(request, status, headers, reasoning_guard_body(&message));
+    let mut result = reasoning_guard_bridge_result(
+        usage,
+        message,
+        Some(502),
+        None,
+        ReasoningGuardBridgeAction::Block,
+        Some(target_token),
+        meta,
+    );
+    result.delivery_error = delivery_error;
+    result
+}
+
+fn should_apply_reasoning_guard_to_path(request_path: &str) -> bool {
+    let path = request_path.split('?').next().unwrap_or(request_path);
+    matches!(
+        path,
+        "/responses" | "/chat/completions" | "/v1/responses" | "/v1/chat/completions"
+    )
+}
+
+fn reasoning_guard_outcome(
+    usage: &UpstreamResponseUsage,
+    guard_scope: &ReasoningGuardScope,
+    mode: ReasoningGuardResponseMode,
+    retry_budget_remaining: usize,
+) -> Option<ReasoningGuardOutcome> {
+    let Some(target_token) = reasoning_guard_target_token(usage) else {
+        reset_reasoning_guard(guard_scope);
+        return None;
+    };
+    let message = format!("upstream reasoning guard triggered: reasoning_tokens={target_token}");
+    let is_stream = matches!(mode, ReasoningGuardResponseMode::Stream);
+    crate::gateway::record_gateway_reasoning_guard_match(is_stream);
+    match decide(guard_scope, mode, retry_budget_remaining) {
+        ReasoningGuardDecision::BypassDisabled => None,
+        ReasoningGuardDecision::ObserveOnly { .. } => Some(ReasoningGuardOutcome {
+            message,
+            action: ReasoningGuardBridgeAction::ObserveOnly,
+            is_stream,
+            target_token,
+        }),
+        ReasoningGuardDecision::BypassAfterConsecutive { .. } => Some(ReasoningGuardOutcome {
+            message,
+            action: ReasoningGuardBridgeAction::BypassAfterConsecutive,
+            is_stream,
+            target_token,
+        }),
+        ReasoningGuardDecision::InternalRetry { .. } => Some(ReasoningGuardOutcome {
+            message,
+            action: ReasoningGuardBridgeAction::InternalRetry,
+            is_stream,
+            target_token,
+        }),
+        ReasoningGuardDecision::Block { .. } => Some(ReasoningGuardOutcome {
+            message,
+            action: ReasoningGuardBridgeAction::Block,
+            is_stream,
+            target_token,
+        }),
+    }
+}
+
+fn handle_reasoning_guard_outcome(
+    request: Request,
+    headers: Vec<Header>,
+    usage: UpstreamResponseUsage,
+    outcome: ReasoningGuardOutcome,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> Result<UpstreamResponseBridgeResult, (Request, Vec<Header>)> {
+    match outcome.action {
+        ReasoningGuardBridgeAction::ObserveOnly
+        | ReasoningGuardBridgeAction::BypassAfterConsecutive => Err((request, headers)),
+        ReasoningGuardBridgeAction::InternalRetry => Ok(reasoning_guard_bridge_result(
+            usage,
+            outcome.message,
+            None,
+            Some(request),
+            ReasoningGuardBridgeAction::InternalRetry,
+            Some(outcome.target_token),
+            meta,
+        )),
+        ReasoningGuardBridgeAction::Block => {
+            crate::gateway::record_gateway_reasoning_guard_block(outcome.is_stream);
+            Ok(respond_reasoning_guard(
+                request,
+                headers,
+                usage,
+                outcome.message,
+                outcome.target_token,
+                meta,
+            ))
+        }
+    }
+}
+
+fn maybe_handle_reasoning_guard(
+    request: Request,
+    headers: Vec<Header>,
+    usage: UpstreamResponseUsage,
+    guard_scope: &ReasoningGuardScope,
+    mode: ReasoningGuardResponseMode,
+    retry_budget_remaining: usize,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> Result<UpstreamResponseBridgeResult, (Request, Vec<Header>)> {
+    if let Some(outcome) =
+        reasoning_guard_outcome(&usage, guard_scope, mode, retry_budget_remaining)
+    {
+        handle_reasoning_guard_outcome(request, headers, usage, outcome, meta)
+    } else {
+        Err((request, headers))
+    }
 }
 
 fn respond_usage_collector_stream(
@@ -118,6 +300,103 @@ fn respond_usage_collector_stream(
         meta.auth_error,
         meta.identity_error_code,
         meta.content_type,
+    )
+}
+
+fn respond_passthrough_collector_stream_strict_guard(
+    mut request: Request,
+    status: StatusCode,
+    mut headers: Vec<Header>,
+    mut response_body: Box<dyn std::io::Read + Send>,
+    usage_collector: Arc<Mutex<PassthroughSseCollector>>,
+    _allow_failover: bool,
+    guard_scope: &ReasoningGuardScope,
+    reasoning_guard_retry_budget_remaining: usize,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> UpstreamResponseBridgeResult {
+    let mut body = Vec::new();
+    let mut read_error = None;
+    let mut buf = [0_u8; 8192];
+    loop {
+        match response_body.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => {
+                if body.len().saturating_add(read) > REASONING_GUARD_STREAM_BUFFER_LIMIT_BYTES {
+                    read_error = Some(format!(
+                        "upstream response too large for reasoning guard scan: max {} bytes",
+                        REASONING_GUARD_STREAM_BUFFER_LIMIT_BYTES
+                    ));
+                    break;
+                }
+                body.extend_from_slice(&buf[..read]);
+            }
+            Err(err) => {
+                read_error = Some(err.to_string());
+                break;
+            }
+        }
+    }
+    let collector = usage_collector
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+
+    if read_error.is_none() {
+        if let Some(outcome) = reasoning_guard_outcome(
+            &collector.usage,
+            guard_scope,
+            ReasoningGuardResponseMode::Stream,
+            reasoning_guard_retry_budget_remaining,
+        ) {
+            match handle_reasoning_guard_outcome(
+                request,
+                headers,
+                collector.usage.clone(),
+                outcome,
+                meta,
+            ) {
+                Ok(result) => return result,
+                Err((returned_request, returned_headers)) => {
+                    request = returned_request;
+                    headers = returned_headers;
+                }
+            }
+        } else if reasoning_guard_error(&collector.usage).is_none() {
+            reset_reasoning_guard(guard_scope);
+        }
+    }
+
+    let delivery_error = if read_error.is_none() {
+        respond_streaming_chunked(request, status, headers, std::io::Cursor::new(body))
+            .err()
+            .map(|err| err.to_string())
+    } else {
+        read_error
+    };
+    with_bridge_debug_meta(
+        UpstreamResponseBridgeResult {
+            usage: collector.usage,
+            stream_terminal_seen: collector.saw_terminal,
+            stream_terminal_error: collector.terminal_error,
+            delivery_error,
+            upstream_error_hint: collector.upstream_error_hint,
+            delivered_status_code: None,
+            upstream_request_id: None,
+            upstream_cf_ray: None,
+            upstream_auth_error: None,
+            upstream_identity_error_code: None,
+            upstream_content_type: None,
+            last_sse_event_type: collector.last_event_type.clone(),
+            pending_failover_request: None,
+            reasoning_guard_action: None,
+            reasoning_guard_target_token: None,
+        },
+        meta.request_id,
+        meta.cf_ray,
+        meta.auth_error,
+        meta.identity_error_code,
+        meta.content_type,
+        collector.last_event_type,
     )
 }
 
@@ -150,6 +429,9 @@ fn respond_passthrough_collector_stream(
             upstream_identity_error_code: None,
             upstream_content_type: None,
             last_sse_event_type: collector.last_event_type,
+            pending_failover_request: None,
+            reasoning_guard_action: None,
+            reasoning_guard_target_token: None,
         },
         meta.request_id,
         meta.cf_ray,
@@ -172,7 +454,7 @@ fn respond_passthrough_collector_stream(
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn respond_with_upstream(
-    request: Request,
+    mut request: Request,
     upstream: reqwest::blocking::Response,
     _inflight_guard: super::super::AccountInFlightGuard,
     response_adapter: ResponseAdapter,
@@ -184,8 +466,12 @@ pub(crate) fn respond_with_upstream(
     allow_failover_for_deactivation: bool,
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
+    reasoning_guard_source_id: Option<&str>,
+    reasoning_guard_retry_budget_remaining: usize,
     request_started_at: std::time::Instant,
 ) -> Result<UpstreamResponseBridgeResult, String> {
+    let reasoning_guard_scope =
+        ReasoningGuardScope::new(reasoning_guard_source_id, fallback_model, request_path);
     let keepalive_frame = resolve_stream_keepalive_frame(response_adapter, request_path);
     let passthrough_sse_protocol =
         passthrough_sse_protocol.unwrap_or(PassthroughSseProtocol::Generic);
@@ -220,6 +506,29 @@ pub(crate) fn respond_with_upstream(
                     .unwrap_or_default();
                 (upstream_body.to_vec(), usage)
             };
+            if should_apply_reasoning_guard_to_path(request_path) {
+                match maybe_handle_reasoning_guard(
+                    request,
+                    headers,
+                    usage.clone(),
+                    &reasoning_guard_scope,
+                    ReasoningGuardResponseMode::NonStream,
+                    reasoning_guard_retry_budget_remaining,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ) {
+                    Ok(result) => return Ok(result),
+                    Err((returned_request, returned_headers)) => {
+                        request = returned_request;
+                        headers = returned_headers;
+                    }
+                }
+            }
             let response_body = if status.0 >= 400 {
                 let message = with_upstream_debug_suffix(
                     extract_error_hint_from_body_or_headers(
@@ -466,6 +775,29 @@ pub(crate) fn respond_with_upstream(
                         upstream_auth_error.as_deref(),
                         upstream_identity_error_code.as_deref(),
                     );
+                    if should_apply_reasoning_guard_to_path(request_path) {
+                        match maybe_handle_reasoning_guard(
+                            request,
+                            headers,
+                            usage.clone(),
+                            &reasoning_guard_scope,
+                            ReasoningGuardResponseMode::NonStream,
+                            reasoning_guard_retry_budget_remaining,
+                            UpstreamDebugMetaRefs {
+                                request_id: &upstream_request_id,
+                                cf_ray: &upstream_cf_ray,
+                                auth_error: &upstream_auth_error,
+                                identity_error_code: &upstream_identity_error_code,
+                                content_type: &upstream_content_type,
+                            },
+                        ) {
+                            Ok(result) => return Ok(result),
+                            Err((returned_request, returned_headers)) => {
+                                request = returned_request;
+                                headers = returned_headers;
+                            }
+                        }
+                    }
                     if should_suppress_deactivation_delivery(
                         upstream_error_hint.as_deref(),
                         allow_failover_for_deactivation,
@@ -569,6 +901,29 @@ pub(crate) fn respond_with_upstream(
                 } else {
                     UpstreamResponseUsage::default()
                 };
+                if should_apply_reasoning_guard_to_path(request_path) {
+                    match maybe_handle_reasoning_guard(
+                        request,
+                        headers,
+                        usage.clone(),
+                        &reasoning_guard_scope,
+                        ReasoningGuardResponseMode::NonStream,
+                        reasoning_guard_retry_budget_remaining,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ) {
+                        Ok(result) => return Ok(result),
+                        Err((returned_request, returned_headers)) => {
+                            request = returned_request;
+                            headers = returned_headers;
+                        }
+                    }
+                }
                 if status.0 < 400
                     && is_compact_request
                     && !compact_success_body_is_valid(upstream_body.as_ref())
@@ -789,6 +1144,27 @@ pub(crate) fn respond_with_upstream(
                         ))
                     };
                 force_openai_responses_stream_content_type(&mut headers, request_path, is_stream);
+                if should_apply_reasoning_guard_to_path(request_path) {
+                    let result = respond_passthrough_collector_stream_strict_guard(
+                        request,
+                        status,
+                        headers,
+                        response_body,
+                        usage_collector,
+                        allow_failover_for_deactivation,
+                        &reasoning_guard_scope,
+                        reasoning_guard_retry_budget_remaining,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    );
+                    log_bridge_stream_diagnostics(response_adapter, request_path, &result);
+                    return Ok(result);
+                }
                 let delivery_error =
                     respond_streaming_chunked(request, status, headers, response_body)
                         .err()
@@ -819,6 +1195,9 @@ pub(crate) fn respond_with_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        pending_failover_request: None,
+                        reasoning_guard_action: None,
+                        reasoning_guard_target_token: None,
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -846,7 +1225,7 @@ pub(crate) fn respond_with_upstream(
         }
         ResponseAdapter::CompactFromChatCompletions => {
             let status = StatusCode(upstream.status().as_u16());
-            let headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+            let mut headers = copy_upstream_response_headers(upstream.headers(), trace_id);
             let upstream_body = upstream
                 .bytes()
                 .map_err(|err| format!("read upstream body failed: {err}"))?;
@@ -854,6 +1233,29 @@ pub(crate) fn respond_with_upstream(
                 .ok()
                 .map(|value| parse_usage_from_json(&value))
                 .unwrap_or_default();
+            if should_apply_reasoning_guard_to_path(request_path) {
+                match maybe_handle_reasoning_guard(
+                    request,
+                    headers,
+                    usage.clone(),
+                    &reasoning_guard_scope,
+                    ReasoningGuardResponseMode::NonStream,
+                    reasoning_guard_retry_budget_remaining,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ) {
+                    Ok(result) => return Ok(result),
+                    Err((returned_request, returned_headers)) => {
+                        request = returned_request;
+                        headers = returned_headers;
+                    }
+                }
+            }
             let response_body = if status.0 < 400 {
                 convert_chat_completions_body_to_compact(upstream_body.as_ref())
                     .unwrap_or_else(|| upstream_body.to_vec())
@@ -898,7 +1300,7 @@ pub(crate) fn respond_with_upstream(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn respond_with_stream_upstream(
-    request: Request,
+    mut request: Request,
     upstream: GatewayStreamResponse,
     _inflight_guard: super::super::AccountInFlightGuard,
     response_adapter: ResponseAdapter,
@@ -910,8 +1312,12 @@ pub(crate) fn respond_with_stream_upstream(
     _allow_failover_for_deactivation: bool,
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
+    reasoning_guard_source_id: Option<&str>,
+    reasoning_guard_retry_budget_remaining: usize,
     request_started_at: std::time::Instant,
 ) -> Result<UpstreamResponseBridgeResult, String> {
+    let reasoning_guard_scope =
+        ReasoningGuardScope::new(reasoning_guard_source_id, fallback_model, request_path);
     let keepalive_frame = resolve_stream_keepalive_frame(response_adapter, request_path);
     let upstream_meta = upstream_response_metadata(upstream.headers());
     let upstream_request_id = upstream_meta.request_id;
@@ -944,6 +1350,29 @@ pub(crate) fn respond_with_stream_upstream(
                     .unwrap_or_default();
                 (upstream_body.to_vec(), usage)
             };
+            if should_apply_reasoning_guard_to_path(request_path) {
+                match maybe_handle_reasoning_guard(
+                    request,
+                    headers,
+                    usage.clone(),
+                    &reasoning_guard_scope,
+                    ReasoningGuardResponseMode::NonStream,
+                    reasoning_guard_retry_budget_remaining,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ) {
+                    Ok(result) => return Ok(result),
+                    Err((returned_request, returned_headers)) => {
+                        request = returned_request;
+                        headers = returned_headers;
+                    }
+                }
+            }
             let response_body = if status.0 >= 400 {
                 let message = with_upstream_debug_suffix(
                     extract_error_hint_from_body_or_headers(
@@ -1088,6 +1517,29 @@ pub(crate) fn respond_with_stream_upstream(
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
                 merge_usage_from_body_without_output_text(&mut usage, &body);
+                if should_apply_reasoning_guard_to_path(request_path) {
+                    match maybe_handle_reasoning_guard(
+                        request,
+                        headers,
+                        usage.clone(),
+                        &reasoning_guard_scope,
+                        ReasoningGuardResponseMode::NonStream,
+                        reasoning_guard_retry_budget_remaining,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ) {
+                        Ok(result) => return Ok(result),
+                        Err((returned_request, returned_headers)) => {
+                            request = returned_request;
+                            headers = returned_headers;
+                        }
+                    }
+                }
                 let chat_body =
                     convert_responses_body_to_chat_completions(&body).unwrap_or_else(|| body);
                 let response_body = chat_completion_body_to_single_sse(&chat_body);
@@ -1127,6 +1579,29 @@ pub(crate) fn respond_with_stream_upstream(
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
                 merge_usage_from_body_without_output_text(&mut usage, &body);
+                if should_apply_reasoning_guard_to_path(request_path) {
+                    match maybe_handle_reasoning_guard(
+                        request,
+                        headers,
+                        usage.clone(),
+                        &reasoning_guard_scope,
+                        ReasoningGuardResponseMode::NonStream,
+                        reasoning_guard_retry_budget_remaining,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ) {
+                        Ok(result) => return Ok(result),
+                        Err((returned_request, returned_headers)) => {
+                            request = returned_request;
+                            headers = returned_headers;
+                        }
+                    }
+                }
                 let response_body = images_response_body_to_sse(&body, response_format);
                 let len = Some(response_body.len());
                 let response = Response::new(
@@ -1215,6 +1690,29 @@ pub(crate) fn respond_with_stream_upstream(
                         upstream_auth_error.as_deref(),
                         upstream_identity_error_code.as_deref(),
                     );
+                    if should_apply_reasoning_guard_to_path(request_path) {
+                        match maybe_handle_reasoning_guard(
+                            request,
+                            headers,
+                            usage.clone(),
+                            &reasoning_guard_scope,
+                            ReasoningGuardResponseMode::NonStream,
+                            reasoning_guard_retry_budget_remaining,
+                            UpstreamDebugMetaRefs {
+                                request_id: &upstream_request_id,
+                                cf_ray: &upstream_cf_ray,
+                                auth_error: &upstream_auth_error,
+                                identity_error_code: &upstream_identity_error_code,
+                                content_type: &upstream_content_type,
+                            },
+                        ) {
+                            Ok(result) => return Ok(result),
+                            Err((returned_request, returned_headers)) => {
+                                request = returned_request;
+                                headers = returned_headers;
+                            }
+                        }
+                    }
                     if should_suppress_deactivation_delivery(
                         upstream_error_hint.as_deref(),
                         _allow_failover_for_deactivation,
@@ -1318,6 +1816,29 @@ pub(crate) fn respond_with_stream_upstream(
                 } else {
                     UpstreamResponseUsage::default()
                 };
+                if should_apply_reasoning_guard_to_path(request_path) {
+                    match maybe_handle_reasoning_guard(
+                        request,
+                        headers,
+                        usage.clone(),
+                        &reasoning_guard_scope,
+                        ReasoningGuardResponseMode::NonStream,
+                        reasoning_guard_retry_budget_remaining,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ) {
+                        Ok(result) => return Ok(result),
+                        Err((returned_request, returned_headers)) => {
+                            request = returned_request;
+                            headers = returned_headers;
+                        }
+                    }
+                }
                 if status.0 >= 400
                     && non_success_body_should_be_normalized(
                         status.0,
@@ -1486,6 +2007,27 @@ pub(crate) fn respond_with_stream_upstream(
                         ));
                     };
                 force_openai_responses_stream_content_type(&mut headers, request_path, is_stream);
+                if should_apply_reasoning_guard_to_path(request_path) {
+                    let result = respond_passthrough_collector_stream_strict_guard(
+                        request,
+                        status,
+                        headers,
+                        response_body,
+                        usage_collector,
+                        _allow_failover_for_deactivation,
+                        &reasoning_guard_scope,
+                        reasoning_guard_retry_budget_remaining,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    );
+                    log_bridge_stream_diagnostics(response_adapter, request_path, &result);
+                    return Ok(result);
+                }
                 let delivery_error =
                     respond_streaming_chunked(request, status, headers, response_body)
                         .err()
@@ -1516,6 +2058,9 @@ pub(crate) fn respond_with_stream_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        pending_failover_request: None,
+                        reasoning_guard_action: None,
+                        reasoning_guard_target_token: None,
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,

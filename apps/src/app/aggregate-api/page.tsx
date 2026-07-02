@@ -77,6 +77,7 @@ import {
   AggregateApi,
   AggregateApiBalanceSnapshot,
   AggregateApiDailyUsageStat,
+  AggregateApiReasoningGuardStat,
   AggregateApiSecretResult,
   AggregateApiSupplierModel,
   ManagedModelSourceModel,
@@ -144,6 +145,18 @@ function buildAggregateApiDailyUsageMap(
   items: AggregateApiDailyUsageStat[],
 ): Map<string, AggregateApiDailyUsageStat> {
   return new Map(items.map((item) => [item.aggregateApiId, item]));
+}
+
+function buildAggregateApiReasoningGuardMap(
+  items: AggregateApiReasoningGuardStat[],
+): Map<string, AggregateApiReasoningGuardStat> {
+  return new Map(items.map((item) => [item.aggregateApiId, item]));
+}
+
+function formatPercent(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0%";
+  if (value < 0.001) return "<0.1%";
+  return `${(value * 100).toFixed(value < 0.01 ? 2 : 1)}%`;
 }
 
 function formatCostMultiplier(value: number | null | undefined) {
@@ -269,6 +282,23 @@ export default function AggregateApiPage() {
     staleTime: 10_000,
   });
 
+  const { data: aggregateApiReasoningGuard = [] } = useQuery({
+    queryKey: [
+      "requestlog",
+      "aggregate-api-reasoning-guard",
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      accountClient.listAggregateApiReasoningGuardStats({
+        dayStartTs: localDayRange.dayStartTs,
+        dayEndTs: localDayRange.dayEndTs,
+      }),
+    enabled: isQueryEnabled,
+    retry: 1,
+    staleTime: 10_000,
+  });
+
   const { data: modelRouting, isLoading: modelRoutingLoading } = useQuery({
     queryKey: ["model-routing"],
     queryFn: () => accountClient.listManagedModelRouting(),
@@ -369,6 +399,10 @@ export default function AggregateApiPage() {
   const aggregateApiDailyUsageById = useMemo(
     () => buildAggregateApiDailyUsageMap(aggregateApiDailyUsage),
     [aggregateApiDailyUsage],
+  );
+  const aggregateApiReasoningGuardById = useMemo(
+    () => buildAggregateApiReasoningGuardMap(aggregateApiReasoningGuard),
+    [aggregateApiReasoningGuard],
   );
 
   const filteredAggregateApis = useMemo(() => {
@@ -1121,6 +1155,7 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[130px]">{t("测试连通性")}</TableHead>
                   <TableHead className="w-[150px]">{t("余额")}</TableHead>
                   <TableHead className="w-[150px]">{t("今日使用")}</TableHead>
+                  <TableHead className="w-[138px]">{t("Guard")}</TableHead>
                   <TableHead className="w-[112px] text-right pr-4">{t("状态")}</TableHead>
                   <TableHead className="table-sticky-action-head w-[144px] text-center">
                     {t("操作")}
@@ -1197,6 +1232,13 @@ export default function AggregateApiPage() {
                         ? Array.from(quotaInfo.models).slice(0, 2)
                         : [];
                     const dailyUsage = aggregateApiDailyUsageById.get(api.id);
+                    const guardStats = aggregateApiReasoningGuardById.get(api.id);
+                    const dailyDisplayTokens =
+                      dailyUsage?.billableTotalTokens ?? dailyUsage?.totalTokens ?? 0;
+                    const dailyDisplayCost =
+                      dailyUsage?.billableEstimatedCostUsd ??
+                      dailyUsage?.estimatedCostUsd ??
+                      0;
 
                     return (
                       <TableRow key={api.id} className="group">
@@ -1476,20 +1518,78 @@ export default function AggregateApiPage() {
                                 className="grid max-w-[145px] cursor-help gap-0.5 text-left"
                               >
                                 <span className="truncate text-xs font-semibold text-foreground">
-                                  {formatMillionTokenAmount(dailyUsage.totalTokens)} tok
+                                  {formatMillionTokenAmount(dailyDisplayTokens)} tok
                                 </span>
                                 <span className="truncate text-[10px] text-muted-foreground">
-                                  {formatUsdAmount(dailyUsage.estimatedCostUsd)} · cache{" "}
+                                  {formatUsdAmount(dailyDisplayCost)} · cache{" "}
                                   {formatCacheRateValue(dailyUsage.cacheHitRate)}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
-                                {`${t("请求")} ${dailyUsage.requestCount}\n${t("输入")} ${formatMillionTokenAmount(dailyUsage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(dailyUsage.cachedInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(dailyUsage.billableInputTokens)}\n${t("输出")} ${formatMillionTokenAmount(dailyUsage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(dailyUsage.reasoningOutputTokens)}`}
+                                {[
+                                  `${t("请求")} ${dailyUsage.requestCount}`,
+                                  `${t("输入")} ${formatMillionTokenAmount(dailyUsage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(dailyUsage.cachedInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(dailyUsage.billableInputTokens)}`,
+                                  `${t("输出")} ${formatMillionTokenAmount(dailyUsage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(dailyUsage.reasoningOutputTokens)}`,
+                                  `${t("费用")} ${formatUsdAmount(dailyUsage.estimatedCostUsd)}${dailyUsage.guardRetryEstimatedCostUsd > 0 ? ` / Guard +${formatUsdAmount(dailyUsage.guardRetryEstimatedCostUsd)} / ${t("计费")} ${formatUsdAmount(dailyUsage.billableEstimatedCostUsd)}` : ""}`,
+                                  dailyUsage.guardRetryTotalTokens > 0
+                                    ? `Guard retry ${formatMillionTokenAmount(dailyUsage.guardRetryTotalTokens)} tok`
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join("\n")}
                               </TooltipContent>
                             </Tooltip>
                           ) : (
                             <span className="text-xs text-muted-foreground">
                               {t("今日无请求")}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap align-middle">
+                          {guardStats && guardStats.eventCount > 0 ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="grid max-w-[132px] cursor-help gap-0.5 text-left"
+                              >
+                                <span className="truncate text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                  {t("命中")} {formatPercent(guardStats.matchRate)}
+                                </span>
+                                <span className="truncate text-[10px] text-muted-foreground">
+                                  {t("阻断")} {formatPercent(guardStats.blockRate)} · retry{" "}
+                                  {guardStats.internalRetryCount}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                                {[
+                                  `${t("总请求")} ${guardStats.totalRequestCount}`,
+                                  `${t("命中请求")} ${guardStats.affectedRequestCount} / ${t("事件")} ${guardStats.eventCount}`,
+                                  `${t("内部重试")} ${guardStats.internalRetryCount} / ${t("恢复")} ${guardStats.retryRecoveryCount} (${formatPercent(guardStats.retryRecoveryRate)})`,
+                                  `${t("阻断")} ${guardStats.blockedRequestCount} / ${guardStats.blockCount} (${formatPercent(guardStats.blockRate)})`,
+                                  `${t("观察")} ${guardStats.observeOnlyCount} / ${t("连续放行")} ${guardStats.bypassAfterConsecutiveCount}`,
+                                  guardStats.guardTotalTokens > 0
+                                    ? `Guard token ${formatMillionTokenAmount(guardStats.guardTotalTokens)}`
+                                    : null,
+                                  guardStats.guardEstimatedCostUsd > 0
+                                    ? `Guard ${t("费用")} ${formatUsdAmount(guardStats.guardEstimatedCostUsd)}`
+                                    : null,
+                                  guardStats.guardReasoningOutputTokens > 0
+                                    ? `${t("推理输出")} ${formatMillionTokenAmount(guardStats.guardReasoningOutputTokens)}`
+                                    : null,
+                                  guardStats.lastTargetToken
+                                    ? `${t("最近 token")} ${guardStats.lastTargetToken}`
+                                    : null,
+                                  guardStats.lastEventAt
+                                    ? `${t("最近时间")} ${formatTsFromSeconds(guardStats.lastEventAt, t("未知时间"))}`
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join("\n")}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              {t("无命中")}
                             </span>
                           )}
                         </TableCell>

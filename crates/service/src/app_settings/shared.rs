@@ -18,6 +18,16 @@ pub const APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY: &str =
 pub const APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY: &str =
     "gateway.model_catalog_auto_remote_fetch";
 pub const APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY: &str = "gateway.account_max_inflight";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY: &str = "gateway.reasoning_guard_enabled";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY: &str = "gateway.reasoning_guard_targets";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY: &str =
+    "gateway.reasoning_guard_intercept_streaming";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY: &str =
+    "gateway.reasoning_guard_intercept_non_streaming";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY: &str =
+    "gateway.reasoning_guard_retry_attempts";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY: &str =
+    "gateway.reasoning_guard_bypass_after_consecutive";
 pub const APP_SETTING_GATEWAY_QUOTA_GUARD_KEY: &str = "gateway.quota_guard";
 pub const APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY: &str =
     "gateway.request_compression_enabled";

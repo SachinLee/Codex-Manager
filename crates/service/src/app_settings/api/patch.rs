@@ -6,11 +6,18 @@ use super::author_links::{
     normalize_author_link_items, serialize_author_link_items, AuthorLinkItem,
 };
 use super::{
-    save_persisted_app_setting, set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed,
-    set_env_overrides, set_gateway_account_max_inflight, set_gateway_background_tasks,
+    current_gateway_reasoning_guard_enabled,
+    current_gateway_reasoning_guard_intercept_non_streaming,
+    current_gateway_reasoning_guard_intercept_streaming, save_persisted_app_setting,
+    set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed, set_env_overrides,
+    set_gateway_account_max_inflight, set_gateway_background_tasks,
     set_gateway_compact_model_forward_rules, set_gateway_free_account_max_model,
     set_gateway_model_catalog_auto_remote_fetch, set_gateway_model_forward_rules,
-    set_gateway_originator, set_gateway_quota_guard, set_gateway_residency_requirement,
+    set_gateway_originator, set_gateway_quota_guard,
+    set_gateway_reasoning_guard_bypass_after_consecutive, set_gateway_reasoning_guard_enabled,
+    set_gateway_reasoning_guard_intercept_non_streaming,
+    set_gateway_reasoning_guard_intercept_streaming, set_gateway_reasoning_guard_retry_attempts,
+    set_gateway_reasoning_guard_targets, set_gateway_residency_requirement,
     set_gateway_route_strategy, set_gateway_sse_keepalive_interval_ms,
     set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
     set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version,
@@ -40,6 +47,12 @@ pub(super) struct AppSettingsPatch {
     model_forward_rules: Option<String>,
     compact_model_forward_rules: Option<String>,
     account_max_inflight: Option<usize>,
+    reasoning_guard_enabled: Option<bool>,
+    reasoning_guard_targets: Option<Vec<i64>>,
+    reasoning_guard_intercept_streaming: Option<bool>,
+    reasoning_guard_intercept_non_streaming: Option<bool>,
+    reasoning_guard_retry_attempts: Option<usize>,
+    reasoning_guard_bypass_after_consecutive: Option<usize>,
     gateway_originator: Option<String>,
     gateway_user_agent_version: Option<String>,
     gateway_residency_requirement: Option<String>,
@@ -90,6 +103,25 @@ pub(super) fn parse_app_settings_patch(params: Option<&Value>) -> Result<AppSett
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), String> {
+    let next_reasoning_guard_enabled = patch
+        .reasoning_guard_enabled
+        .unwrap_or_else(current_gateway_reasoning_guard_enabled);
+    let next_reasoning_guard_intercept_streaming = patch
+        .reasoning_guard_intercept_streaming
+        .unwrap_or_else(current_gateway_reasoning_guard_intercept_streaming);
+    let next_reasoning_guard_intercept_non_streaming = patch
+        .reasoning_guard_intercept_non_streaming
+        .unwrap_or_else(current_gateway_reasoning_guard_intercept_non_streaming);
+    if next_reasoning_guard_enabled
+        && !next_reasoning_guard_intercept_streaming
+        && !next_reasoning_guard_intercept_non_streaming
+    {
+        return Err(
+            "reasoningGuardEnabled requires at least one intercept mode to stay enabled"
+                .to_string(),
+        );
+    }
+
     if let Some(enabled) = patch.update_auto_check {
         set_update_auto_check_enabled(enabled)?;
     }
@@ -137,6 +169,24 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(limit) = patch.account_max_inflight {
         let _ = set_gateway_account_max_inflight(limit)?;
+    }
+    if let Some(enabled) = patch.reasoning_guard_enabled {
+        let _ = set_gateway_reasoning_guard_enabled(enabled)?;
+    }
+    if let Some(targets) = patch.reasoning_guard_targets {
+        let _ = set_gateway_reasoning_guard_targets(&targets)?;
+    }
+    if let Some(enabled) = patch.reasoning_guard_intercept_streaming {
+        let _ = set_gateway_reasoning_guard_intercept_streaming(enabled)?;
+    }
+    if let Some(enabled) = patch.reasoning_guard_intercept_non_streaming {
+        let _ = set_gateway_reasoning_guard_intercept_non_streaming(enabled)?;
+    }
+    if let Some(attempts) = patch.reasoning_guard_retry_attempts {
+        let _ = set_gateway_reasoning_guard_retry_attempts(attempts)?;
+    }
+    if let Some(threshold) = patch.reasoning_guard_bypass_after_consecutive {
+        let _ = set_gateway_reasoning_guard_bypass_after_consecutive(threshold)?;
     }
     if let Some(originator) = patch.gateway_originator {
         let _ = set_gateway_originator(&originator)?;

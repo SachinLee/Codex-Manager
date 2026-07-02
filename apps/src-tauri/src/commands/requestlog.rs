@@ -152,3 +152,16 @@ pub async fn service_requestlog_aggregate_api_daily_usage(
     });
     rpc_call_in_background("requestlog/aggregate_api_daily_usage", addr, Some(params)).await
 }
+
+#[tauri::command]
+pub async fn service_requestlog_aggregate_api_reasoning_guard(
+    addr: Option<String>,
+    day_start_ts: Option<i64>,
+    day_end_ts: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "dayStartTs": day_start_ts,
+        "dayEndTs": day_end_ts
+    });
+    rpc_call_in_background("requestlog/aggregate_api_reasoning_guard", addr, Some(params)).await
+}

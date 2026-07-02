@@ -33,6 +33,15 @@ export function GatewayTabContent({
   snapshot,
   updateSettings,
   onModelCatalogAutoRemoteFetchChange,
+  reasoningGuardInputValue,
+  setReasoningGuardDraft,
+  saveReasoningGuardBypassThreshold,
+  reasoningGuardTargetsInputValue,
+  setReasoningGuardTargetsDraft,
+  saveReasoningGuardTargets,
+  reasoningGuardRetryInputValue,
+  setReasoningGuardRetryDraft,
+  saveReasoningGuardRetryAttempts,
   quotaGuardInputValues,
   setQuotaGuardDraft,
   saveQuotaGuardField,
@@ -60,6 +69,15 @@ export function GatewayTabContent({
     mutateAsync: (patch: Partial<AppSettings>) => Promise<unknown>;
   };
   onModelCatalogAutoRemoteFetchChange: (checked: boolean) => void;
+  reasoningGuardInputValue: string;
+  setReasoningGuardDraft: React.Dispatch<React.SetStateAction<string | null>>;
+  saveReasoningGuardBypassThreshold: () => void;
+  reasoningGuardTargetsInputValue: string;
+  setReasoningGuardTargetsDraft: React.Dispatch<React.SetStateAction<string | null>>;
+  saveReasoningGuardTargets: () => void;
+  reasoningGuardRetryInputValue: string;
+  setReasoningGuardRetryDraft: React.Dispatch<React.SetStateAction<string | null>>;
+  saveReasoningGuardRetryAttempts: () => void;
   quotaGuardInputValues: {
     primaryMinRemainingPercent: string;
     secondaryMinRemainingPercent: string;
@@ -149,6 +167,118 @@ export function GatewayTabContent({
               onModelCatalogAutoRemoteFetchChange(checked)
             }
           />
+        </div>
+        <div className="grid gap-4 border-t pt-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <Label>{t("Reasoning Guard 推理保护")}</Label>
+              <p className="text-[10px] text-muted-foreground">
+                {t("命中配置的 reasoning_tokens 时先在网关内部重试，超限后返回 502；不会计入供应商失败。")}
+              </p>
+            </div>
+            <Switch
+              checked={snapshot.reasoningGuardEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings.mutate({ reasoningGuardEnabled: checked })
+              }
+            />
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-2">
+              <Label>{t("目标 token 列表")}</Label>
+              <Input
+                value={reasoningGuardTargetsInputValue}
+                onChange={(event) =>
+                  setReasoningGuardTargetsDraft(event.target.value)
+                }
+                onBlur={saveReasoningGuardTargets}
+                disabled={!snapshot.reasoningGuardEnabled}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                {t("支持逗号、空格或分号分隔；默认 516, 1034, 1552。")}
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>{t("内部重试次数")}</Label>
+              <Input
+                type="number"
+                min={0}
+                value={reasoningGuardRetryInputValue}
+                onChange={(event) =>
+                  setReasoningGuardRetryDraft(event.target.value)
+                }
+                onBlur={saveReasoningGuardRetryAttempts}
+                disabled={!snapshot.reasoningGuardEnabled}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                {t("0 表示命中后不重试，直接按拦截规则返回。")}
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>{t("连续命中后放行次数")}</Label>
+              <Input
+                type="number"
+                min={0}
+                value={reasoningGuardInputValue}
+                onChange={(event) => setReasoningGuardDraft(event.target.value)}
+                onBlur={saveReasoningGuardBypassThreshold}
+                disabled={!snapshot.reasoningGuardEnabled}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                {t("0 表示一直拦截；同一来源和模型达到阈值时放行本次响应并重新计数。")}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+              <div className="space-y-1">
+                <Label>{t("拦截流式响应")}</Label>
+                <p className="text-[10px] text-muted-foreground">
+                  {t("开启后会缓存扫描流式终止 usage，命中时不泄漏已缓存 delta。")}
+                </p>
+              </div>
+              <Switch
+                checked={snapshot.reasoningGuardInterceptStreaming}
+                disabled={!snapshot.reasoningGuardEnabled}
+                onCheckedChange={(checked) => {
+                  if (
+                    !checked &&
+                    snapshot.reasoningGuardEnabled &&
+                    !snapshot.reasoningGuardInterceptNonStreaming
+                  ) {
+                    return;
+                  }
+                  updateSettings.mutate({
+                    reasoningGuardInterceptStreaming: checked,
+                  });
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+              <div className="space-y-1">
+                <Label>{t("拦截非流式响应")}</Label>
+                <p className="text-[10px] text-muted-foreground">
+                  {t("关闭后只记录命中并放行对应非流式响应。")}
+                </p>
+              </div>
+              <Switch
+                checked={snapshot.reasoningGuardInterceptNonStreaming}
+                disabled={!snapshot.reasoningGuardEnabled}
+                onCheckedChange={(checked) => {
+                  if (
+                    !checked &&
+                    snapshot.reasoningGuardEnabled &&
+                    !snapshot.reasoningGuardInterceptStreaming
+                  ) {
+                    return;
+                  }
+                  updateSettings.mutate({
+                    reasoningGuardInterceptNonStreaming: checked,
+                  });
+                }}
+              />
+            </div>
+          </div>
         </div>
         <div className="grid gap-4 border-t pt-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

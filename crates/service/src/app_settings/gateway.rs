@@ -32,7 +32,14 @@ use super::{
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
     APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
     APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
-    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
+    APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
@@ -270,6 +277,93 @@ pub fn set_gateway_account_max_inflight(limit: usize) -> Result<usize, String> {
 /// 返回函数执行结果
 pub fn current_gateway_account_max_inflight() -> usize {
     gateway::account_max_inflight_limit()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_enabled(enabled: bool) -> Result<bool, String> {
+    let applied = gateway::set_reasoning_guard_enabled(enabled);
+    save_persisted_bool_setting(APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY, applied)?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_enabled() -> bool {
+    gateway::reasoning_guard_enabled()
+}
+
+fn serialize_reasoning_guard_targets(values: &[i64]) -> String {
+    values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn set_gateway_reasoning_guard_targets(values: &[i64]) -> Result<Vec<i64>, String> {
+    let applied = gateway::set_reasoning_guard_targets(values);
+    let raw = serialize_reasoning_guard_targets(&applied);
+    save_persisted_app_setting(APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY, Some(&raw))?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_targets() -> Vec<i64> {
+    gateway::current_reasoning_guard_targets()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_intercept_streaming(
+    enabled: bool,
+) -> Result<bool, String> {
+    let applied = gateway::set_reasoning_guard_intercept_streaming(enabled);
+    save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+        applied,
+    )?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_intercept_streaming() -> bool {
+    gateway::reasoning_guard_intercept_streaming()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_intercept_non_streaming(
+    enabled: bool,
+) -> Result<bool, String> {
+    let applied = gateway::set_reasoning_guard_intercept_non_streaming(enabled);
+    save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
+        applied,
+    )?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_intercept_non_streaming() -> bool {
+    gateway::reasoning_guard_intercept_non_streaming()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_retry_attempts(attempts: usize) -> Result<usize, String> {
+    let applied = gateway::set_reasoning_guard_retry_attempts(attempts);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_retry_attempts() -> usize {
+    gateway::reasoning_guard_retry_attempts()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_bypass_after_consecutive(
+    threshold: usize,
+) -> Result<usize, String> {
+    let applied = gateway::set_reasoning_guard_bypass_after_consecutive(threshold);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_bypass_after_consecutive() -> usize {
+    gateway::reasoning_guard_bypass_after_consecutive()
 }
 
 pub(crate) fn set_gateway_quota_guard(

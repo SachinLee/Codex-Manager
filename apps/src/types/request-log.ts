@@ -43,6 +43,16 @@ export interface RequestLog {
   totalTokens: number | null;
   reasoningOutputTokens: number | null;
   estimatedCostUsd: number | null;
+  guardEventCount: number;
+  guardInternalRetryCount: number;
+  guardBlockCount: number;
+  guardRecoveredCount: number;
+  guardRetryTotalTokens: number;
+  guardRetryEstimatedCostUsd: number;
+  guardLastAction: string | null;
+  guardLastTargetToken: number | null;
+  billableTotalTokens: number | null;
+  billableEstimatedCostUsd: number | null;
   durationMs: number | null;
   firstResponseMs: number | null;
   error: string;
@@ -63,6 +73,8 @@ export interface RequestLogFilterSummary {
   errorCount: number;
   totalTokens: number;
   totalCostUsd: number;
+  guardRetryTotalTokens: number;
+  guardRetryEstimatedCostUsd: number;
 }
 
 export interface RequestLogListWithSummaryResult extends RequestLogListResult {

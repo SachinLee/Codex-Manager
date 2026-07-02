@@ -11,9 +11,11 @@ mod manual_chunked;
 mod metadata;
 #[cfg(test)]
 mod openai;
+mod reasoning_guard;
 mod response_helpers;
 use aggregate::openai_responses_event::{OpenAIResponsesEvent, OpenAIResponsesOutputTextState};
 pub(crate) use aggregate::PassthroughSseProtocol;
+pub(crate) use aggregate::ReasoningGuardBridgeAction;
 #[allow(unused_imports)]
 use aggregate::{
     append_output_text, collect_output_text_from_event_fields, collect_response_output_text,
@@ -22,8 +24,9 @@ use aggregate::{
 use aggregate::{
     collect_non_stream_json_from_sse_bytes, extract_error_hint_from_body,
     extract_error_message_from_json, inspect_sse_frame_for_protocol, looks_like_sse_payload,
-    merge_usage, parse_usage_from_json, reload_output_text_from_env, usage_has_signal, SseTerminal,
-    UpstreamResponseBridgeResult, UpstreamResponseUsage,
+    merge_usage, parse_usage_from_json, reasoning_guard_error, reasoning_guard_target_token,
+    reload_output_text_from_env, usage_has_signal, SseTerminal, UpstreamResponseBridgeResult,
+    UpstreamResponseUsage,
 };
 #[cfg(test)]
 use aggregate::{
@@ -51,6 +54,7 @@ use images::{
 pub(super) fn reload_from_env() {
     reload_output_text_from_env();
     stream_readers::reload_from_env();
+    reasoning_guard::clear_runtime_state();
 }
 
 /// 函数 `current_sse_keepalive_interval_ms`
@@ -127,6 +131,8 @@ pub(super) fn respond_with_upstream(
     allow_failover_for_deactivation: bool,
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
+    reasoning_guard_source_id: Option<&str>,
+    reasoning_guard_retry_budget_remaining: usize,
     request_started_at: std::time::Instant,
 ) -> Result<UpstreamResponseBridgeResult, String> {
     match upstream {
@@ -143,6 +149,8 @@ pub(super) fn respond_with_upstream(
             allow_failover_for_deactivation,
             trace_id,
             fallback_model,
+            reasoning_guard_source_id,
+            reasoning_guard_retry_budget_remaining,
             request_started_at,
         ),
         GatewayUpstreamResponse::Stream(upstream) => delivery::respond_with_stream_upstream(
@@ -158,6 +166,8 @@ pub(super) fn respond_with_upstream(
             allow_failover_for_deactivation,
             trace_id,
             fallback_model,
+            reasoning_guard_source_id,
+            reasoning_guard_retry_budget_remaining,
             request_started_at,
         ),
     }

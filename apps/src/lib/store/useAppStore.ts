@@ -90,6 +90,12 @@ export const useAppStore = create<AppState>((set) => ({
     modelForwardRules: "",
     compactModelForwardRules: "",
     accountMaxInflight: 1,
+    reasoningGuardEnabled: true,
+    reasoningGuardTargets: [516, 1034, 1552],
+    reasoningGuardInterceptStreaming: true,
+    reasoningGuardInterceptNonStreaming: true,
+    reasoningGuardRetryAttempts: 3,
+    reasoningGuardBypassAfterConsecutive: 0,
     quotaGuard: {
       enabled: true,
       primaryMinRemainingPercent: 5,

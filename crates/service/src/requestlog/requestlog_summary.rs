@@ -108,6 +108,8 @@ fn map_filter_summary(
         error_count: filtered.error_count.max(0),
         total_tokens: filtered.total_tokens.max(0),
         total_cost_usd: filtered.estimated_cost_usd.max(0.0),
+        guard_retry_total_tokens: filtered.guard_retry_total_tokens.max(0),
+        guard_retry_estimated_cost_usd: filtered.guard_retry_estimated_cost_usd.max(0.0),
     }
 }
 

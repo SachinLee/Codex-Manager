@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use tiny_http::Request;
 
 const OUTPUT_TEXT_LIMIT_BYTES_ENV: &str = "CODEXMANAGER_HTTP_BRIDGE_OUTPUT_TEXT_LIMIT_BYTES";
 const DEFAULT_OUTPUT_TEXT_LIMIT_BYTES: usize = 0;
@@ -21,7 +22,7 @@ pub(crate) struct UpstreamResponseUsage {
     pub output_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub(crate) struct UpstreamResponseBridgeResult {
     pub usage: UpstreamResponseUsage,
     pub stream_terminal_seen: bool,
@@ -35,6 +36,17 @@ pub(crate) struct UpstreamResponseBridgeResult {
     pub upstream_identity_error_code: Option<String>,
     pub upstream_content_type: Option<String>,
     pub last_sse_event_type: Option<String>,
+    pub pending_failover_request: Option<Request>,
+    pub reasoning_guard_action: Option<ReasoningGuardBridgeAction>,
+    pub reasoning_guard_target_token: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReasoningGuardBridgeAction {
+    ObserveOnly,
+    InternalRetry,
+    Block,
+    BypassAfterConsecutive,
 }
 
 impl UpstreamResponseBridgeResult {
@@ -93,6 +105,18 @@ impl UpstreamResponseBridgeResult {
         }
         None
     }
+}
+
+pub(in super::super) fn reasoning_guard_target_token(usage: &UpstreamResponseUsage) -> Option<i64> {
+    let token = usage.reasoning_output_tokens?;
+    crate::gateway::current_reasoning_guard_targets()
+        .contains(&token)
+        .then_some(token)
+}
+
+pub(in super::super) fn reasoning_guard_error(usage: &UpstreamResponseUsage) -> Option<String> {
+    reasoning_guard_target_token(usage)
+        .map(|token| format!("upstream reasoning guard triggered: reasoning_tokens={token}"))
 }
 
 /// 函数 `merge_usage`

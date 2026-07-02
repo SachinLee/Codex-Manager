@@ -703,40 +703,75 @@ impl Storage {
         start_ts: i64,
         end_ts: i64,
     ) -> Result<Vec<AggregateApiDailyUsageSummary>> {
+        self.ensure_gateway_reasoning_guard_events_table()?;
         let mut stmt = self.conn.prepare(
-            "SELECT
-                aggregate_api_id,
-                MAX(aggregate_api_supplier_name) AS aggregate_api_supplier_name,
-                MAX(aggregate_api_url) AS aggregate_api_url,
-                COUNT(1) AS request_count,
-                IFNULL(SUM(CASE WHEN IFNULL(input_tokens, 0) > 0 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
-                IFNULL(SUM(CASE
-                    WHEN IFNULL(cached_input_tokens, 0) < 0 THEN 0
-                    WHEN IFNULL(input_tokens, 0) > 0 AND IFNULL(cached_input_tokens, 0) > input_tokens THEN input_tokens
-                    ELSE IFNULL(cached_input_tokens, 0)
-                END), 0) AS cached_input_tokens,
-                IFNULL(SUM(CASE WHEN IFNULL(output_tokens, 0) > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
-                IFNULL(SUM(
-                    CASE
-                        WHEN total_tokens IS NOT NULL THEN
-                            CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
-                        ELSE
-                            CASE
-                                WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
-                                    THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
-                                ELSE 0
-                            END
-                    END
-                ), 0) AS total_tokens,
-                IFNULL(SUM(CASE WHEN IFNULL(reasoning_output_tokens, 0) > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
-                IFNULL(SUM(estimated_cost_usd), 0.0) AS estimated_cost_usd
-             FROM request_token_stats
-             WHERE created_at >= ?1
-                AND created_at < ?2
-                AND aggregate_api_id IS NOT NULL
-                AND TRIM(aggregate_api_id) <> ''
-             GROUP BY aggregate_api_id
-             ORDER BY estimated_cost_usd DESC, total_tokens DESC, aggregate_api_id ASC",
+            "WITH base_rollup AS (
+                SELECT
+                    aggregate_api_id,
+                    MAX(aggregate_api_supplier_name) AS aggregate_api_supplier_name,
+                    MAX(aggregate_api_url) AS aggregate_api_url,
+                    COUNT(1) AS request_count,
+                    IFNULL(SUM(CASE WHEN IFNULL(input_tokens, 0) > 0 THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                    IFNULL(SUM(CASE
+                        WHEN IFNULL(cached_input_tokens, 0) < 0 THEN 0
+                        WHEN IFNULL(input_tokens, 0) > 0 AND IFNULL(cached_input_tokens, 0) > input_tokens THEN input_tokens
+                        ELSE IFNULL(cached_input_tokens, 0)
+                    END), 0) AS cached_input_tokens,
+                    IFNULL(SUM(CASE WHEN IFNULL(output_tokens, 0) > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                    IFNULL(SUM(
+                        CASE
+                            WHEN total_tokens IS NOT NULL THEN
+                                CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
+                            ELSE
+                                CASE
+                                    WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
+                                        THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
+                                    ELSE 0
+                                END
+                        END
+                    ), 0) AS total_tokens,
+                    IFNULL(SUM(CASE WHEN IFNULL(reasoning_output_tokens, 0) > 0 THEN reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
+                    IFNULL(SUM(estimated_cost_usd), 0.0) AS estimated_cost_usd
+                 FROM request_token_stats
+                 WHERE created_at >= ?1
+                    AND created_at < ?2
+                    AND aggregate_api_id IS NOT NULL
+                    AND TRIM(aggregate_api_id) <> ''
+                 GROUP BY aggregate_api_id
+             ),
+             guard_retry_rollup AS (
+                SELECT
+                    source_id AS aggregate_api_id,
+                    IFNULL(SUM(CASE WHEN IFNULL(total_tokens, 0) > 0 THEN total_tokens ELSE 0 END), 0) AS guard_retry_total_tokens,
+                    IFNULL(SUM(CASE WHEN IFNULL(estimated_cost_usd, 0.0) > 0.0 THEN estimated_cost_usd ELSE 0.0 END), 0.0) AS guard_retry_estimated_cost_usd
+                 FROM gateway_reasoning_guard_events
+                 WHERE action = 'internal_retry'
+                    AND source_kind = 'aggregate_api'
+                    AND source_id IS NOT NULL
+                    AND TRIM(source_id) <> ''
+                    AND created_at >= ?1
+                    AND created_at < ?2
+                 GROUP BY source_id
+             )
+             SELECT
+                b.aggregate_api_id,
+                b.aggregate_api_supplier_name,
+                b.aggregate_api_url,
+                b.request_count,
+                b.input_tokens,
+                b.cached_input_tokens,
+                b.output_tokens,
+                b.total_tokens,
+                b.reasoning_output_tokens,
+                b.estimated_cost_usd,
+                COALESCE(g.guard_retry_total_tokens, 0) AS guard_retry_total_tokens,
+                COALESCE(g.guard_retry_estimated_cost_usd, 0.0) AS guard_retry_estimated_cost_usd
+             FROM base_rollup b
+             LEFT JOIN guard_retry_rollup g ON g.aggregate_api_id = b.aggregate_api_id
+             ORDER BY
+                b.estimated_cost_usd + COALESCE(g.guard_retry_estimated_cost_usd, 0.0) DESC,
+                b.total_tokens + COALESCE(g.guard_retry_total_tokens, 0) DESC,
+                b.aggregate_api_id ASC",
         )?;
         let mut rows = stmt.query((start_ts, end_ts))?;
         let mut items = Vec::new();
@@ -744,6 +779,10 @@ impl Storage {
             let input_tokens = row.get::<_, i64>(4)?;
             let cached_input_tokens = row.get::<_, i64>(5)?;
             let billable_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
+            let total_tokens = row.get::<_, i64>(7)?;
+            let estimated_cost_usd = row.get::<_, f64>(9)?;
+            let guard_retry_total_tokens = row.get::<_, i64>(10)?;
+            let guard_retry_estimated_cost_usd = row.get::<_, f64>(11)?;
             items.push(AggregateApiDailyUsageSummary {
                 aggregate_api_id: row.get(0)?,
                 aggregate_api_supplier_name: row.get(1)?,
@@ -753,9 +792,13 @@ impl Storage {
                 cached_input_tokens,
                 billable_input_tokens,
                 output_tokens: row.get(6)?,
-                total_tokens: row.get(7)?,
+                total_tokens,
                 reasoning_output_tokens: row.get(8)?,
-                estimated_cost_usd: row.get(9)?,
+                estimated_cost_usd,
+                guard_retry_total_tokens,
+                guard_retry_estimated_cost_usd,
+                billable_total_tokens: total_tokens.saturating_add(guard_retry_total_tokens),
+                billable_estimated_cost_usd: estimated_cost_usd + guard_retry_estimated_cost_usd,
                 cache_hit_rate: cache_hit_rate(input_tokens, cached_input_tokens),
             });
         }
@@ -1258,6 +1301,10 @@ impl Storage {
         self.ensure_column("request_token_stats", "aggregate_api_id", "TEXT")?;
         self.ensure_column("request_token_stats", "aggregate_api_supplier_name", "TEXT")?;
         self.ensure_column("request_token_stats", "aggregate_api_url", "TEXT")?;
+        // 中文注释：087 回填依赖这两列；历史库可能未经过 087 的 ALTER，这里兜底补齐，
+        // 兼容 apply_sql_or_compat_migration 在 "duplicate column name" 时走到此 fallback 的场景。
+        self.ensure_column("request_token_stats", "actual_source_kind", "TEXT")?;
+        self.ensure_column("request_token_stats", "actual_source_id", "TEXT")?;
         self.ensure_request_token_daily_rollups_table()?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_token_stats_aggregate_api_id_created_at

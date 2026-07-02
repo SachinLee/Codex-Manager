@@ -6,7 +6,8 @@ use super::execution_context::GatewayUpstreamExecutionContext;
 
 pub(super) enum FinalizeUpstreamResponseOutcome {
     Handled,
-    Failover,
+    RetrySameCandidate { request: Request },
+    Failover { request: Request },
 }
 
 /// 函数 `respond_terminal`
@@ -198,6 +199,7 @@ pub(super) fn finalize_upstream_response(
     model_for_log: Option<&str>,
     attempted_account_ids: Option<&[String]>,
     has_more_candidates: bool,
+    reasoning_guard_retry_budget_remaining: usize,
 ) -> Result<FinalizeUpstreamResponseOutcome, String> {
     let status_code = response.status().as_u16();
 
@@ -214,6 +216,8 @@ pub(super) fn finalize_upstream_response(
         has_more_candidates,
         Some(trace_id),
         model_for_log,
+        Some(account_id),
+        reasoning_guard_retry_budget_remaining,
         started_at,
     )?;
     let bridge_output_text_len = bridge
@@ -251,15 +255,48 @@ pub(super) fn finalize_upstream_response(
             .error_message(client_is_stream)
             .unwrap_or_else(|| "upstream response incomplete".to_string())
     });
+    let should_retry_same_candidate = bridge.reasoning_guard_action
+        == Some(super::super::super::ReasoningGuardBridgeAction::InternalRetry);
+    let reasoning_guard_retry_attempt_index = crate::gateway::reasoning_guard_retry_attempts()
+        .saturating_sub(reasoning_guard_retry_budget_remaining)
+        as i64;
+    if let Some(action) = bridge.reasoning_guard_action {
+        context.record_reasoning_guard_event(
+            Some(account_id),
+            model_for_log,
+            action,
+            bridge.reasoning_guard_target_token,
+            client_is_stream,
+            reasoning_guard_retry_attempt_index,
+            bridge.delivered_status_code,
+            RequestLogUsage {
+                input_tokens: bridge.usage.input_tokens,
+                cached_input_tokens: bridge.usage.cached_input_tokens,
+                output_tokens: bridge.usage.output_tokens,
+                total_tokens: bridge.usage.total_tokens,
+                reasoning_output_tokens: bridge.usage.reasoning_output_tokens,
+                first_response_ms: bridge.usage.first_response_ms,
+            },
+        );
+    }
+    if should_retry_same_candidate {
+        if let Some(request) = bridge.pending_failover_request {
+            return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate { request });
+        }
+    }
     let final_error = derive_final_error(
         status_code,
         last_attempt_error,
         bridge.upstream_error_hint.as_deref(),
         bridge_error_message,
     );
-    let gateway_error_follow_up = final_error
-        .as_deref()
-        .map(|error| context.apply_gateway_error_follow_up(account_id, error, has_more_candidates));
+    let gateway_error_follow_up = if should_retry_same_candidate {
+        None
+    } else {
+        final_error.as_deref().map(|error| {
+            context.apply_gateway_error_follow_up(account_id, error, has_more_candidates)
+        })
+    };
     let gateway_failover =
         gateway_error_follow_up.is_some_and(|follow_up| follow_up.should_failover);
 
@@ -287,6 +324,18 @@ pub(super) fn finalize_upstream_response(
     }
 
     let usage = bridge.usage;
+    if reasoning_guard_retry_attempt_index > 0
+        && bridge.reasoning_guard_action.is_none()
+        && bridge_ok
+    {
+        context.record_reasoning_guard_recovered_event(
+            Some(account_id),
+            model_for_log,
+            client_is_stream,
+            reasoning_guard_retry_attempt_index,
+            Some(status_for_log),
+        );
+    }
     context.log_final_result_with_model(
         Some(account_id),
         last_attempt_url,
@@ -305,7 +354,9 @@ pub(super) fn finalize_upstream_response(
         attempted_account_ids,
     );
     if gateway_failover {
-        return Ok(FinalizeUpstreamResponseOutcome::Failover);
+        if let Some(request) = bridge.pending_failover_request {
+            return Ok(FinalizeUpstreamResponseOutcome::Failover { request });
+        }
     }
     Ok(FinalizeUpstreamResponseOutcome::Handled)
 }

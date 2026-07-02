@@ -1,3 +1,9 @@
+-- request_token_stats 需要先具备 actual_source_kind / actual_source_id 两列，
+-- 才能从 request_logs 回填实际来源。历史库可能缺这两列（早期仅 request_logs 有）。
+-- 若列已存在，ALTER 会以 "duplicate column name" 失败，由调用方的 compat fallback 兜底。
+ALTER TABLE request_token_stats ADD COLUMN actual_source_kind TEXT;
+ALTER TABLE request_token_stats ADD COLUMN actual_source_id TEXT;
+
 UPDATE request_token_stats
 SET
   actual_source_kind = (

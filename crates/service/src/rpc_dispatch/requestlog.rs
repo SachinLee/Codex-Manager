@@ -4,8 +4,9 @@ use codexmanager_core::rpc::types::{
 
 use crate::RpcActor;
 use crate::{
-    requestlog_account_daily_usage, requestlog_aggregate_api_daily_usage, requestlog_clear,
-    requestlog_list, requestlog_summary, requestlog_today_summary,
+    requestlog_account_daily_usage, requestlog_aggregate_api_daily_usage,
+    requestlog_aggregate_api_reasoning_guard, requestlog_clear, requestlog_list,
+    requestlog_summary, requestlog_today_summary,
 };
 
 fn actor_key_ids(actor: &RpcActor) -> Result<Vec<String>, String> {
@@ -110,6 +111,20 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 });
             super::value_or_error(params.and_then(
                 requestlog_aggregate_api_daily_usage::read_aggregate_api_daily_usage_stats,
+            ))
+        }
+        "requestlog/aggregate_api_reasoning_guard" => {
+            let params = req
+                .params
+                .clone()
+                .map(serde_json::from_value::<DailyUsageStatsParams>)
+                .transpose()
+                .map(|params| params.unwrap_or_default())
+                .map_err(|err| {
+                    format!("invalid requestlog/aggregate_api_reasoning_guard params: {err}")
+                });
+            super::value_or_error(params.and_then(
+                requestlog_aggregate_api_reasoning_guard::read_aggregate_api_reasoning_guard_stats,
             ))
         }
         _ => return None,

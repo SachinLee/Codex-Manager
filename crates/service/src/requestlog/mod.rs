@@ -2,6 +2,8 @@
 pub(crate) mod account_daily_usage;
 #[path = "requestlog_aggregate_api_daily_usage.rs"]
 pub(crate) mod aggregate_api_daily_usage;
+#[path = "requestlog_aggregate_api_reasoning_guard.rs"]
+pub(crate) mod aggregate_api_reasoning_guard;
 #[path = "requestlog_clear.rs"]
 pub(crate) mod clear;
 #[path = "requestlog_day_range.rs"]

@@ -139,6 +139,7 @@ export const TOP_LEVEL_ROUTE_CONFIG = [
     path: "/author",
     label: "赞助与推荐",
     section: "system",
+    hideInNavigation: true,
     roles: ["system_admin", "admin"],
   },
 ] as const;
@@ -210,6 +211,10 @@ function isAccountSystemMode(mode: string | null): boolean {
 
 function isAccountSystemOnlyRoute(route: TopLevelRouteConfig): boolean {
   return "accountSystemOnly" in route && route.accountSystemOnly === true;
+}
+
+function isNavigationHiddenRoute(route: TopLevelRouteConfig): boolean {
+  return "hideInNavigation" in route && route.hideInNavigation === true;
 }
 
 function isRouteAllowedForAccess(
@@ -288,6 +293,9 @@ export function getAllowedTopLevelRouteSections(
   const sectionOrder = adminRole ? ADMIN_ROUTE_SECTIONS : MEMBER_ROUTE_SECTIONS;
   const sectionMap = new Map<TopLevelRouteSectionId, TopLevelRouteConfig[]>();
   for (const route of getAllowedTopLevelRoutes(normalizedAccess)) {
+    if (isNavigationHiddenRoute(route)) {
+      continue;
+    }
     const sectionId =
       !adminRole && "memberSection" in route ? route.memberSection : route.section;
     const current = sectionMap.get(sectionId) ?? [];
