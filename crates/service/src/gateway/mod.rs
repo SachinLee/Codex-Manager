@@ -62,6 +62,26 @@ pub(crate) fn error_message_for_client(
     message
 }
 
+pub(crate) fn is_selected_model_capacity_error(message: &str) -> bool {
+    let trimmed = message.trim();
+    let base_message = trimmed
+        .split_once(" [")
+        .map(|(base, _)| base)
+        .unwrap_or(trimmed);
+    let mut base_message = base_message.trim();
+    while let Some((prefix, rest)) = base_message.split_once(' ') {
+        if !prefix.contains('=') {
+            break;
+        }
+        base_message = rest.trim_start();
+    }
+    let normalized = base_message
+        .trim_end_matches('.')
+        .trim()
+        .to_ascii_lowercase();
+    normalized == "selected model is at capacity. please try a different model"
+}
+
 #[path = "routing/aggregate_api_cooldown.rs"]
 mod aggregate_api_cooldown;
 mod anchor_fingerprint;
@@ -125,7 +145,8 @@ use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
     record_gateway_reasoning_guard_block, record_gateway_reasoning_guard_internal_retry,
-    record_gateway_reasoning_guard_match, record_gateway_request_outcome, AccountInFlightGuard,
+    record_gateway_reasoning_guard_match, record_gateway_request_outcome,
+    record_gateway_upstream_capacity_internal_retry, AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus,

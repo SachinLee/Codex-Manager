@@ -6,8 +6,19 @@ use super::execution_context::GatewayUpstreamExecutionContext;
 
 pub(super) enum FinalizeUpstreamResponseOutcome {
     Handled,
-    RetrySameCandidate { request: Request },
-    Failover { request: Request },
+    RetrySameCandidate {
+        request: Request,
+        reason: RetrySameCandidateReason,
+    },
+    Failover {
+        request: Request,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RetrySameCandidateReason {
+    ReasoningGuard,
+    UpstreamCapacity,
 }
 
 /// 函数 `respond_terminal`
@@ -200,10 +211,11 @@ pub(super) fn finalize_upstream_response(
     attempted_account_ids: Option<&[String]>,
     has_more_candidates: bool,
     reasoning_guard_retry_budget_remaining: usize,
+    capacity_retry_budget_remaining: usize,
 ) -> Result<FinalizeUpstreamResponseOutcome, String> {
     let status_code = response.status().as_u16();
 
-    let bridge = super::super::super::respond_with_upstream(
+    let mut bridge = super::super::super::respond_with_upstream(
         request,
         response,
         inflight_guard,
@@ -255,8 +267,18 @@ pub(super) fn finalize_upstream_response(
             .error_message(client_is_stream)
             .unwrap_or_else(|| "upstream response incomplete".to_string())
     });
-    let should_retry_same_candidate = bridge.reasoning_guard_action
+    let final_error = derive_final_error(
+        status_code,
+        last_attempt_error,
+        bridge.upstream_error_hint.as_deref(),
+        bridge_error_message,
+    );
+    let should_retry_reasoning_guard = bridge.reasoning_guard_action
         == Some(super::super::super::ReasoningGuardBridgeAction::InternalRetry);
+    let should_retry_upstream_capacity = final_error
+        .as_deref()
+        .is_some_and(super::super::super::is_selected_model_capacity_error)
+        && bridge.pending_failover_request.is_some();
     let reasoning_guard_retry_attempt_index = crate::gateway::reasoning_guard_retry_attempts()
         .saturating_sub(reasoning_guard_retry_budget_remaining)
         as i64;
@@ -279,18 +301,24 @@ pub(super) fn finalize_upstream_response(
             },
         );
     }
-    if should_retry_same_candidate {
-        if let Some(request) = bridge.pending_failover_request {
-            return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate { request });
+    if should_retry_reasoning_guard {
+        if let Some(request) = bridge.pending_failover_request.take() {
+            return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate {
+                request,
+                reason: RetrySameCandidateReason::ReasoningGuard,
+            });
         }
     }
-    let final_error = derive_final_error(
-        status_code,
-        last_attempt_error,
-        bridge.upstream_error_hint.as_deref(),
-        bridge_error_message,
-    );
-    let gateway_error_follow_up = if should_retry_same_candidate {
+    if should_retry_upstream_capacity && capacity_retry_budget_remaining > 0 {
+        if let Some(request) = bridge.pending_failover_request.take() {
+            return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate {
+                request,
+                reason: RetrySameCandidateReason::UpstreamCapacity,
+            });
+        }
+    }
+    let gateway_error_follow_up = if should_retry_reasoning_guard || should_retry_upstream_capacity
+    {
         None
     } else {
         final_error.as_deref().map(|error| {
@@ -353,8 +381,19 @@ pub(super) fn finalize_upstream_response(
         started_at.elapsed().as_millis(),
         attempted_account_ids,
     );
+    if should_retry_upstream_capacity {
+        if let Some(request) = bridge.pending_failover_request.take() {
+            return respond_terminal(
+                request,
+                status_code,
+                final_error.unwrap_or_else(|| "upstream capacity error".to_string()),
+                Some(trace_id),
+            )
+            .map(|_| FinalizeUpstreamResponseOutcome::Handled);
+        }
+    }
     if gateway_failover {
-        if let Some(request) = bridge.pending_failover_request {
+        if let Some(request) = bridge.pending_failover_request.take() {
             return Ok(FinalizeUpstreamResponseOutcome::Failover { request });
         }
     }

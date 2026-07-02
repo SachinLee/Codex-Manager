@@ -17,8 +17,10 @@ use super::execution_context::GatewayUpstreamExecutionContext;
 use super::request_setup::UpstreamRequestSetup;
 use super::response_finalize::{
     finalize_terminal_candidate, finalize_upstream_response, respond_total_timeout,
-    FinalizeUpstreamResponseOutcome,
+    FinalizeUpstreamResponseOutcome, RetrySameCandidateReason,
 };
+
+const MAX_UPSTREAM_CAPACITY_RETRIES: usize = 1;
 
 /// 函数 `extract_prompt_cache_key_for_trace`
 ///
@@ -268,6 +270,7 @@ pub(in super::super) fn execute_candidate_sequence(
         );
         let mut reasoning_guard_retry_budget_remaining =
             super::super::super::reasoning_guard_retry_attempts();
+        let mut capacity_retry_budget_remaining = MAX_UPSTREAM_CAPACITY_RETRIES;
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
         if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, is_bound_account)
         {
@@ -572,6 +575,7 @@ pub(in super::super) fn execute_candidate_sequence(
                         Some(attempted_account_ids.as_slice()),
                         context.has_more_candidates(idx),
                         reasoning_guard_retry_budget_remaining,
+                        capacity_retry_budget_remaining,
                     )? {
                         FinalizeUpstreamResponseOutcome::Handled => {
                             if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
@@ -603,27 +607,51 @@ pub(in super::super) fn execute_candidate_sequence(
                         }
                         FinalizeUpstreamResponseOutcome::RetrySameCandidate {
                             request: returned_request,
+                            reason,
                         } => {
                             request = Some(returned_request);
-                            if reasoning_guard_retry_budget_remaining == 0 {
-                                log::warn!(
-                                    "event=gateway_reasoning_guard_retry_without_budget trace_id={} account_id={}",
-                                    trace_id,
-                                    account.id
-                                );
-                                continue 'candidates;
+                            match reason {
+                                RetrySameCandidateReason::ReasoningGuard => {
+                                    if reasoning_guard_retry_budget_remaining == 0 {
+                                        log::warn!(
+                                            "event=gateway_reasoning_guard_retry_without_budget trace_id={} account_id={}",
+                                            trace_id,
+                                            account.id
+                                        );
+                                        continue 'candidates;
+                                    }
+                                    reasoning_guard_retry_budget_remaining =
+                                        reasoning_guard_retry_budget_remaining.saturating_sub(1);
+                                    super::super::super::record_gateway_reasoning_guard_internal_retry(
+                                        client_is_stream,
+                                    );
+                                    log::warn!(
+                                        "event=gateway_reasoning_guard_internal_retry trace_id={} account_id={} remaining={}",
+                                        trace_id,
+                                        account.id,
+                                        reasoning_guard_retry_budget_remaining
+                                    );
+                                }
+                                RetrySameCandidateReason::UpstreamCapacity => {
+                                    if capacity_retry_budget_remaining == 0 {
+                                        log::warn!(
+                                            "event=gateway_upstream_capacity_retry_without_budget trace_id={} account_id={}",
+                                            trace_id,
+                                            account.id
+                                        );
+                                        continue 'candidates;
+                                    }
+                                    capacity_retry_budget_remaining =
+                                        capacity_retry_budget_remaining.saturating_sub(1);
+                                    super::super::super::record_gateway_upstream_capacity_internal_retry();
+                                    log::warn!(
+                                        "event=gateway_upstream_capacity_internal_retry trace_id={} account_id={} remaining={}",
+                                        trace_id,
+                                        account.id,
+                                        capacity_retry_budget_remaining
+                                    );
+                                }
                             }
-                            reasoning_guard_retry_budget_remaining =
-                                reasoning_guard_retry_budget_remaining.saturating_sub(1);
-                            super::super::super::record_gateway_reasoning_guard_internal_retry(
-                                client_is_stream,
-                            );
-                            log::warn!(
-                                "event=gateway_reasoning_guard_internal_retry trace_id={} account_id={} remaining={}",
-                                trace_id,
-                                account.id,
-                                reasoning_guard_retry_budget_remaining
-                            );
                             if deadline::is_expired(request_deadline) {
                                 let request = request
                                     .take()

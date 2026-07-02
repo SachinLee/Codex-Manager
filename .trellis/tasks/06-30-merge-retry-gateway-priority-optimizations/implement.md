@@ -41,20 +41,28 @@
    - Record match/block/internal retry with stream vs non-stream classification.
    - Update metrics tests.
 
-6. Passive model consistency foundation
+6. Capacity retry wiring
+   - Add a narrow helper for `Selected model is at capacity. Please try a different model.` matching.
+   - Preserve bridge pending requests for matching upstream errors before writing them to the client.
+   - Return `RetrySameCandidateReason::UpstreamCapacity` from response finalization and retry the same candidate once.
+   - Record `codexmanager_gateway_upstream_capacity_internal_retries_total`.
+   - Add gateway regression coverage for same-candidate retry, no ordinary failover, and metric increment.
+
+7. Passive model consistency foundation
    - Add low-risk extraction/logging of request/effective/upstream/stream model signals where already available.
    - Avoid persistence/schema unless clearly required by existing request log shape.
 
-7. Frontend settings
+8. Frontend settings
    - Extend `AppSettings` type, zustand defaults, normalize defaults.
    - Update settings page state/drafts for targets and retry attempts.
    - Update `GatewayTabContent` UI labels and controls.
    - Update frontend tests for normalize/defaults and settings page helpers.
 
-8. Validation
+9. Validation
    - Run focused Rust tests first:
      - `cargo test -p codexmanager-service reasoning_guard`
      - `cargo test -p codexmanager-service gateway_reasoning_guard`
+     - `cargo test -p codexmanager-service --test gateway_logs capacity`
      - `cargo test -p codexmanager-service gateway_metrics`
    - Run focused app runtime tests:
      - `pnpm -C apps run test:runtime -- gateway-settings`

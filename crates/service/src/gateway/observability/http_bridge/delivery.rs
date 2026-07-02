@@ -151,6 +151,29 @@ fn reasoning_guard_bridge_result(
     )
 }
 
+fn upstream_capacity_bridge_result(
+    request: Request,
+    usage: UpstreamResponseUsage,
+    message: String,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> UpstreamResponseBridgeResult {
+    with_bridge_debug_meta(
+        UpstreamResponseBridgeResult {
+            usage,
+            stream_terminal_seen: true,
+            upstream_error_hint: Some(message),
+            pending_failover_request: Some(request),
+            ..UpstreamResponseBridgeResult::default()
+        },
+        meta.request_id,
+        meta.cf_ray,
+        meta.auth_error,
+        meta.identity_error_code,
+        meta.content_type,
+        None,
+    )
+}
+
 fn respond_reasoning_guard(
     request: Request,
     headers: Vec<Header>,
@@ -547,6 +570,20 @@ pub(crate) fn respond_with_upstream(
                     upstream_identity_error_code.as_deref(),
                 )
                 .unwrap_or_else(|| "upstream compatibility bridge failed".to_string());
+                if crate::gateway::is_selected_model_capacity_error(&message) {
+                    return Ok(upstream_capacity_bridge_result(
+                        request,
+                        usage,
+                        message,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ));
+                }
                 convert_error_body_for_adapter(response_adapter, &message)
             } else {
                 convert_success_body_for_adapter(
@@ -591,6 +628,20 @@ pub(crate) fn respond_with_upstream(
                 upstream_identity_error_code.as_deref(),
             )
             .unwrap_or_else(|| "upstream compatibility bridge failed".to_string());
+            if crate::gateway::is_selected_model_capacity_error(&message) {
+                return Ok(upstream_capacity_bridge_result(
+                    request,
+                    UpstreamResponseUsage::default(),
+                    message,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ));
+            }
             let response_body = convert_error_body_for_adapter(response_adapter, &message);
             let delivery_error = respond_json_bytes(request, status, headers, response_body);
             return Ok(terminal_bridge_result_with_debug_meta(
@@ -768,7 +819,8 @@ pub(crate) fn respond_with_upstream(
                             upstream_cf_ray.as_deref(),
                             upstream_auth_error.as_deref(),
                             upstream_identity_error_code.as_deref(),
-                        ),
+                        )
+                        .or_else(|| extract_error_message_from_json_bytes(&body)),
                         None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
@@ -815,6 +867,23 @@ pub(crate) fn respond_with_upstream(
                     }
                     if synthesized_response {
                         replace_content_type_header(&mut headers, "application/json");
+                    }
+                    if upstream_error_hint
+                        .as_deref()
+                        .is_some_and(crate::gateway::is_selected_model_capacity_error)
+                    {
+                        return Ok(upstream_capacity_bridge_result(
+                            request,
+                            usage,
+                            upstream_error_hint.expect("checked capacity error hint"),
+                            UpstreamDebugMetaRefs {
+                                request_id: &upstream_request_id,
+                                cf_ray: &upstream_cf_ray,
+                                auth_error: &upstream_auth_error,
+                                identity_error_code: &upstream_identity_error_code,
+                                content_type: &upstream_content_type,
+                            },
+                        ));
                     }
                     if status.0 < 400
                         && is_compact_request
@@ -924,6 +993,22 @@ pub(crate) fn respond_with_upstream(
                         }
                     }
                 }
+                let upstream_error_hint = with_upstream_debug_suffix(
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                    .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
+                    None,
+                    upstream_request_id.as_deref(),
+                    upstream_cf_ray.as_deref(),
+                    upstream_auth_error.as_deref(),
+                    upstream_identity_error_code.as_deref(),
+                );
                 if status.0 < 400
                     && is_compact_request
                     && !compact_success_body_is_valid(upstream_body.as_ref())
@@ -937,6 +1022,23 @@ pub(crate) fn respond_with_upstream(
                         upstream_auth_error.as_deref(),
                         upstream_identity_error_code.as_deref(),
                         trace_id,
+                    ));
+                }
+                if upstream_error_hint
+                    .as_deref()
+                    .is_some_and(crate::gateway::is_selected_model_capacity_error)
+                {
+                    return Ok(upstream_capacity_bridge_result(
+                        request,
+                        usage,
+                        upstream_error_hint.expect("checked capacity error hint"),
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
                     ));
                 }
                 if is_compact_request
@@ -982,21 +1084,6 @@ pub(crate) fn respond_with_upstream(
                         trace_id,
                     ));
                 }
-                let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body_or_headers(
-                        status.0,
-                        upstream_content_type.as_deref(),
-                        upstream_body.as_ref(),
-                        upstream_cf_ray.as_deref(),
-                        upstream_auth_error.as_deref(),
-                        upstream_identity_error_code.as_deref(),
-                    ),
-                    None,
-                    upstream_request_id.as_deref(),
-                    upstream_cf_ray.as_deref(),
-                    upstream_auth_error.as_deref(),
-                    upstream_identity_error_code.as_deref(),
-                );
                 if should_suppress_deactivation_delivery(
                     upstream_error_hint.as_deref(),
                     allow_failover_for_deactivation,
@@ -1044,6 +1131,39 @@ pub(crate) fn respond_with_upstream(
                 } else {
                     UpstreamResponseUsage::default()
                 };
+                let upstream_error_hint = with_upstream_debug_suffix(
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                    .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
+                    None,
+                    upstream_request_id.as_deref(),
+                    upstream_cf_ray.as_deref(),
+                    upstream_auth_error.as_deref(),
+                    upstream_identity_error_code.as_deref(),
+                );
+                if upstream_error_hint
+                    .as_deref()
+                    .is_some_and(crate::gateway::is_selected_model_capacity_error)
+                {
+                    return Ok(upstream_capacity_bridge_result(
+                        request,
+                        usage,
+                        upstream_error_hint.expect("checked capacity error hint"),
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ));
+                }
                 if non_success_body_should_be_normalized(
                     status.0,
                     upstream_content_type.as_deref(),
@@ -1063,21 +1183,6 @@ pub(crate) fn respond_with_upstream(
                         trace_id,
                     ));
                 }
-                let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body_or_headers(
-                        status.0,
-                        upstream_content_type.as_deref(),
-                        upstream_body.as_ref(),
-                        upstream_cf_ray.as_deref(),
-                        upstream_auth_error.as_deref(),
-                        upstream_identity_error_code.as_deref(),
-                    ),
-                    None,
-                    upstream_request_id.as_deref(),
-                    upstream_cf_ray.as_deref(),
-                    upstream_auth_error.as_deref(),
-                    upstream_identity_error_code.as_deref(),
-                );
                 let len = Some(upstream_body.len());
                 let response = Response::new(
                     status,
@@ -1274,6 +1379,23 @@ pub(crate) fn respond_with_upstream(
                     )
                 })
                 .flatten();
+            if upstream_error_hint
+                .as_deref()
+                .is_some_and(crate::gateway::is_selected_model_capacity_error)
+            {
+                return Ok(upstream_capacity_bridge_result(
+                    request,
+                    usage,
+                    upstream_error_hint.expect("checked capacity error hint"),
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ));
+            }
             let delivery_error = respond_json_bytes(request, status, headers, response_body);
             Ok(terminal_bridge_result_with_debug_meta(
                 usage,
@@ -1391,6 +1513,20 @@ pub(crate) fn respond_with_stream_upstream(
                     upstream_identity_error_code.as_deref(),
                 )
                 .unwrap_or_else(|| "upstream compatibility bridge failed".to_string());
+                if crate::gateway::is_selected_model_capacity_error(&message) {
+                    return Ok(upstream_capacity_bridge_result(
+                        request,
+                        usage,
+                        message,
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ));
+                }
                 convert_error_body_for_adapter(response_adapter, &message)
             } else {
                 convert_success_body_for_adapter(
@@ -1435,6 +1571,20 @@ pub(crate) fn respond_with_stream_upstream(
                 upstream_identity_error_code.as_deref(),
             )
             .unwrap_or_else(|| "upstream compatibility bridge failed".to_string());
+            if crate::gateway::is_selected_model_capacity_error(&message) {
+                return Ok(upstream_capacity_bridge_result(
+                    request,
+                    UpstreamResponseUsage::default(),
+                    message,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ));
+            }
             let response_body = convert_error_body_for_adapter(response_adapter, &message);
             let delivery_error = respond_json_bytes(request, status, headers, response_body);
             return Ok(terminal_bridge_result_with_debug_meta(
@@ -1683,7 +1833,8 @@ pub(crate) fn respond_with_stream_upstream(
                             upstream_cf_ray.as_deref(),
                             upstream_auth_error.as_deref(),
                             upstream_identity_error_code.as_deref(),
-                        ),
+                        )
+                        .or_else(|| extract_error_message_from_json_bytes(&body)),
                         None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
@@ -1839,6 +1990,39 @@ pub(crate) fn respond_with_stream_upstream(
                         }
                     }
                 }
+                let upstream_error_hint = with_upstream_debug_suffix(
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                    .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
+                    None,
+                    upstream_request_id.as_deref(),
+                    upstream_cf_ray.as_deref(),
+                    upstream_auth_error.as_deref(),
+                    upstream_identity_error_code.as_deref(),
+                );
+                if upstream_error_hint
+                    .as_deref()
+                    .is_some_and(crate::gateway::is_selected_model_capacity_error)
+                {
+                    return Ok(upstream_capacity_bridge_result(
+                        request,
+                        usage,
+                        upstream_error_hint.expect("checked capacity error hint"),
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ));
+                }
                 if status.0 >= 400
                     && non_success_body_should_be_normalized(
                         status.0,
@@ -1860,21 +2044,6 @@ pub(crate) fn respond_with_stream_upstream(
                         trace_id,
                     ));
                 }
-                let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body_or_headers(
-                        status.0,
-                        upstream_content_type.as_deref(),
-                        upstream_body.as_ref(),
-                        upstream_cf_ray.as_deref(),
-                        upstream_auth_error.as_deref(),
-                        upstream_identity_error_code.as_deref(),
-                    ),
-                    None,
-                    upstream_request_id.as_deref(),
-                    upstream_cf_ray.as_deref(),
-                    upstream_auth_error.as_deref(),
-                    upstream_identity_error_code.as_deref(),
-                );
                 if should_suppress_deactivation_delivery(
                     upstream_error_hint.as_deref(),
                     _allow_failover_for_deactivation,
@@ -1916,6 +2085,39 @@ pub(crate) fn respond_with_stream_upstream(
                     .read_all_bytes()
                     .map_err(|err| format!("read upstream body failed: {err}"))?;
                 let usage = UpstreamResponseUsage::default();
+                let upstream_error_hint = with_upstream_debug_suffix(
+                    extract_error_hint_from_body_or_headers(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_cf_ray.as_deref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                    .or_else(|| extract_error_message_from_json_bytes(upstream_body.as_ref())),
+                    None,
+                    upstream_request_id.as_deref(),
+                    upstream_cf_ray.as_deref(),
+                    upstream_auth_error.as_deref(),
+                    upstream_identity_error_code.as_deref(),
+                );
+                if upstream_error_hint
+                    .as_deref()
+                    .is_some_and(crate::gateway::is_selected_model_capacity_error)
+                {
+                    return Ok(upstream_capacity_bridge_result(
+                        request,
+                        usage,
+                        upstream_error_hint.expect("checked capacity error hint"),
+                        UpstreamDebugMetaRefs {
+                            request_id: &upstream_request_id,
+                            cf_ray: &upstream_cf_ray,
+                            auth_error: &upstream_auth_error,
+                            identity_error_code: &upstream_identity_error_code,
+                            content_type: &upstream_content_type,
+                        },
+                    ));
+                }
                 if non_success_body_should_be_normalized(
                     status.0,
                     upstream_content_type.as_deref(),
@@ -1935,21 +2137,6 @@ pub(crate) fn respond_with_stream_upstream(
                         trace_id,
                     ));
                 }
-                let upstream_error_hint = with_upstream_debug_suffix(
-                    extract_error_hint_from_body_or_headers(
-                        status.0,
-                        upstream_content_type.as_deref(),
-                        upstream_body.as_ref(),
-                        upstream_cf_ray.as_deref(),
-                        upstream_auth_error.as_deref(),
-                        upstream_identity_error_code.as_deref(),
-                    ),
-                    None,
-                    upstream_request_id.as_deref(),
-                    upstream_cf_ray.as_deref(),
-                    upstream_auth_error.as_deref(),
-                    upstream_identity_error_code.as_deref(),
-                );
                 let len = Some(upstream_body.len());
                 let response = Response::new(
                     status,

@@ -85,6 +85,17 @@ fn guard_non_stream_response(id: &str) -> String {
     .to_string()
 }
 
+fn upstream_capacity_error_response() -> String {
+    serde_json::json!({
+        "error": {
+            "message": "Selected model is at capacity. Please try a different model.",
+            "type": "server_error",
+            "code": null
+        }
+    })
+    .to_string()
+}
+
 fn stream_response_with_reasoning_tokens(reasoning_tokens: i64, delta: &str) -> String {
     format!(
         "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{delta}\"}}\n\n\
@@ -595,6 +606,155 @@ fn gateway_reasoning_guard_non_stream_retries_same_candidate_before_blocking() {
             "mode=\"non_stream\"",
         ),
         blocks_before
+    );
+    assert_eq!(
+        metric_value(
+            &metrics_after,
+            "codexmanager_gateway_failover_attempts_total",
+            "",
+        ),
+        failovers_before
+    );
+}
+
+#[test]
+fn gateway_upstream_capacity_error_retries_same_candidate_without_failover() {
+    let _lock = test_env_guard();
+    let _guard_env = reasoning_guard_test_env(true, 0, 0);
+    codexmanager_service::set_gateway_background_tasks(
+        codexmanager_service::BackgroundTasksInput {
+            usage_polling_enabled: Some(false),
+            gateway_keepalive_enabled: Some(false),
+            token_refresh_polling_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .expect("disable background tasks for capacity retry test");
+    let dir = new_test_dir("codexmanager-gateway-upstream-capacity-retry");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let ok_response = serde_json::json!({
+        "id": "resp_capacity_retry_ok",
+        "model": "gpt-5.3-codex",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "capacity recovered" }]
+        }],
+        "usage": {
+            "input_tokens": 3,
+            "output_tokens": 2,
+            "total_tokens": 5
+        }
+    })
+    .to_string();
+
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![
+                (
+                    418,
+                    upstream_capacity_error_response(),
+                    "application/json".to_string(),
+                ),
+                (200, ok_response, "application/json".to_string()),
+                (
+                    200,
+                    r#"{"object":"list","data":[{"id":"gpt-5.3-codex","object":"model"}]}"#
+                        .to_string(),
+                    "application/json".to_string(),
+                ),
+            ],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
+    let now = now_ts();
+    insert_reasoning_guard_test_account(&storage, "acc_capacity_retry_primary", 0, now);
+    insert_reasoning_guard_test_account(&storage, "acc_capacity_retry_secondary", 1, now);
+    let platform_key = "pk_capacity_retry";
+    insert_reasoning_guard_test_key(&storage, "gk_capacity_retry", platform_key, now);
+
+    let server = TestServer::start();
+    let (_, metrics_before) = get_http_raw(&server.addr, "/metrics");
+    let capacity_retries_before = metric_value(
+        &metrics_before,
+        "codexmanager_gateway_upstream_capacity_internal_retries_total",
+        "",
+    );
+    let failovers_before = metric_value(
+        &metrics_before,
+        "codexmanager_gateway_failover_attempts_total",
+        "",
+    );
+
+    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":false}"#;
+    let (status, gateway_body) = post_http_raw(
+        &server.addr,
+        "/v1/responses",
+        request_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+        ],
+    );
+
+    assert_eq!(status, 200, "gateway response: {gateway_body}");
+    assert!(
+        gateway_body.contains("capacity recovered"),
+        "successful retry should return the second upstream response: {gateway_body}"
+    );
+    assert!(
+        !gateway_body.contains("Selected model is at capacity"),
+        "capacity error response must not leak after recovery: {gateway_body}"
+    );
+
+    let first = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive first upstream request");
+    let second = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive retry upstream request");
+    drop(server);
+    upstream_join.join().expect("join mock upstream");
+
+    for captured in [&first, &second] {
+        assert!(
+            captured
+                .headers
+                .get("authorization")
+                .is_some_and(|auth| auth.contains("access_acc_capacity_retry_primary")),
+            "capacity retry should stay on the same primary account"
+        );
+    }
+    while let Ok(extra) = upstream_rx.try_recv() {
+        let auth = extra
+            .headers
+            .get("authorization")
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(
+            !extra.path.contains("/responses"),
+            "capacity retry should not make an extra responses request; extra path={} auth={auth}",
+            extra.path
+        );
+    }
+
+    let server = TestServer::start();
+    let (_, metrics_after) = get_http_raw(&server.addr, "/metrics");
+    drop(server);
+    assert_eq!(
+        metric_value(
+            &metrics_after,
+            "codexmanager_gateway_upstream_capacity_internal_retries_total",
+            "",
+        ),
+        capacity_retries_before + 1
     );
     assert_eq!(
         metric_value(

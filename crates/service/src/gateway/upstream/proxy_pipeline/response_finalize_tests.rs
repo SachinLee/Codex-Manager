@@ -62,3 +62,22 @@ fn client_disconnect_error_matches_common_socket_messages() {
     assert!(is_client_disconnect_error("connection reset by peer"));
     assert!(!is_client_disconnect_error("upstream timeout"));
 }
+
+#[test]
+fn selected_model_capacity_error_matching_stays_narrow() {
+    assert!(crate::gateway::is_selected_model_capacity_error(
+        "Selected model is at capacity. Please try a different model."
+    ));
+    assert!(crate::gateway::is_selected_model_capacity_error(
+        " selected model is at capacity. please try a different model [request_id=req_1] "
+    ));
+    assert!(crate::gateway::is_selected_model_capacity_error(
+        "type=server_error Selected model is at capacity. Please try a different model."
+    ));
+    assert!(!crate::gateway::is_selected_model_capacity_error(
+        "model capacity is temporarily exhausted"
+    ));
+    assert!(!crate::gateway::is_selected_model_capacity_error(
+        "Selected model is unavailable. Please try a different model."
+    ));
+}

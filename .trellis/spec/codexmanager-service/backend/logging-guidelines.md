@@ -75,6 +75,7 @@ Questions to answer:
   - `codexmanager_gateway_reasoning_guard_matches_total{mode="stream|non_stream"}`
   - `codexmanager_gateway_reasoning_guard_blocks_total{mode="stream|non_stream"}`
   - `codexmanager_gateway_reasoning_guard_internal_retries_total{mode="stream|non_stream"}`
+  - `codexmanager_gateway_upstream_capacity_internal_retries_total`
 
 ### 3. Contracts
 - Default targets are `[516, 1034, 1552]`; invalid, duplicate, or non-positive target values are ignored, and an empty normalized list falls back to defaults.
@@ -82,6 +83,8 @@ Questions to answer:
 - When `reasoningGuardEnabled` is true, streaming and non-streaming intercepts must not both be false.
 - A reasoning guard match is account-neutral: it must not mark an account unavailable, set provider failure state, or record normal failover unless a separate non-guard upstream error occurs.
 - Internal retry actions must return through `RetrySameCandidate`, reacquire the same account inflight guard, and retry the same account/candidate rather than moving to the next candidate.
+- Upstream capacity retry uses the same `RetrySameCandidate` transport path with a distinct reason. It must not reuse the reasoning guard retry budget or metrics.
+- Capacity matching is intentionally narrow: match only `Selected model is at capacity. Please try a different model.` plus project-generated `key=value` prefixes or debug suffixes; do not use generic substring matching for `capacity`.
 - Gateway tests that mutate `reasoningGuard*` env or runtime settings must initialize the full guard config under `test_env_guard`, including enabled state, targets, both intercept switches, retry attempts, and consecutive-bypass threshold. Runtime setters mirror values back into env vars, so partial per-test setup can leak state into later server startups.
 
 ### 4. Validation & Error Matrix
@@ -92,6 +95,8 @@ Questions to answer:
 - Match + retry budget exhausted -> count match and block, synthesize 502 with `codexmanager_reasoning_guard`.
 - Non-matching reasoning tokens -> reset consecutive guard state and pass through normally.
 - Test only sets one guard env key after a previous test disabled the guard -> later startup may inherit stale runtime/env state; set the full guard env matrix for every reasoning guard gateway test.
+- Capacity message match + capacity retry budget remains -> count capacity internal retry, retry the same candidate, and skip ordinary gateway error follow-up/failover.
+- Capacity message match + capacity retry budget exhausted -> return the upstream capacity error to the client without ordinary failover follow-up.
 
 ### 5. Good/Base/Bad Cases
 - Good: first upstream response has `reasoning_tokens=1034`, retry budget is `1`, second same-account response is clean; client receives the second response, metrics increment match and internal retry only.
@@ -103,6 +108,7 @@ Questions to answer:
 - Gateway tests must cover non-stream block, stream strict buffering without leaked delta, observe-only/disabled behavior, consecutive bypass, configurable non-516 targets, and same-candidate internal retry.
 - Gateway reasoning guard tests should use a shared helper for complete guard env initialization so default parallel execution does not depend on test order.
 - Metrics tests should assert match, block, and internal retry counters via `/metrics` or the narrowest available metrics API.
+- Capacity retry tests should assert same-account retry and `codexmanager_gateway_upstream_capacity_internal_retries_total` without depending on unrelated async usage refresh side effects.
 
 ### 7. Wrong vs Correct
 #### Wrong

@@ -36,6 +36,7 @@ static GATEWAY_REASONING_GUARD_BLOCKS_STREAM: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_REASONING_GUARD_BLOCKS_NON_STREAM: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_STREAM: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_NON_STREAM: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_UPSTREAM_CAPACITY_INTERNAL_RETRIES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct GatewayRequestLabelKey {
@@ -83,6 +84,7 @@ pub(crate) struct GatewayMetricsSnapshot {
     pub reasoning_guard_blocks_non_stream: usize,
     pub reasoning_guard_internal_retries_stream: usize,
     pub reasoning_guard_internal_retries_non_stream: usize,
+    pub upstream_capacity_internal_retries: usize,
 }
 
 pub(crate) struct GatewayRequestGuard;
@@ -386,6 +388,10 @@ pub(crate) fn record_gateway_reasoning_guard_internal_retry(is_stream: bool) {
     }
 }
 
+pub(crate) fn record_gateway_upstream_capacity_internal_retry() {
+    GATEWAY_UPSTREAM_CAPACITY_INTERNAL_RETRIES.fetch_add(1, Ordering::Relaxed);
+}
+
 /// 函数 `record_gateway_request_outcome`
 ///
 /// 作者: gaohongshun
@@ -498,6 +504,8 @@ pub(crate) fn gateway_metrics_snapshot() -> GatewayMetricsSnapshot {
             .load(Ordering::Relaxed),
         reasoning_guard_internal_retries_non_stream:
             GATEWAY_REASONING_GUARD_INTERNAL_RETRIES_NON_STREAM.load(Ordering::Relaxed),
+        upstream_capacity_internal_retries: GATEWAY_UPSTREAM_CAPACITY_INTERNAL_RETRIES
+            .load(Ordering::Relaxed),
     }
 }
 
@@ -549,6 +557,7 @@ codexmanager_gateway_reasoning_guard_blocks_total{{mode=\"stream\"}} {}\n\
 codexmanager_gateway_reasoning_guard_blocks_total{{mode=\"non_stream\"}} {}\n\
 codexmanager_gateway_reasoning_guard_internal_retries_total{{mode=\"stream\"}} {}\n\
 codexmanager_gateway_reasoning_guard_internal_retries_total{{mode=\"non_stream\"}} {}\n\
+codexmanager_gateway_upstream_capacity_internal_retries_total {}\n\
 {}",
         m.total_requests,
         m.active_requests,
@@ -583,6 +592,7 @@ codexmanager_gateway_reasoning_guard_internal_retries_total{{mode=\"non_stream\"
         m.reasoning_guard_blocks_non_stream,
         m.reasoning_guard_internal_retries_stream,
         m.reasoning_guard_internal_retries_non_stream,
+        m.upstream_capacity_internal_retries,
         labeled,
     )
 }

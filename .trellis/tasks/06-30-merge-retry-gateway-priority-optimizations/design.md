@@ -74,6 +74,26 @@
 
 当前 metrics 已有 labeled map，可选择复用 label map 或添加少量原子计数。为保持简单和低风险，第一版可用固定原子计数加 Prometheus 行输出。
 
+Capacity retry 额外暴露：
+
+- `codexmanager_gateway_upstream_capacity_internal_retries_total`
+
+该计数只记录由固定 capacity 文案触发的同候选内部重试，不混入普通 429/stateless retry 或 reasoning guard retry。
+
+## Upstream Capacity Retry
+
+固定 capacity 文案：
+
+`Selected model is at capacity. Please try a different model.`
+
+处理规则：
+
+- 在 HTTP bridge 写回客户端前识别该错误，把 `Request` 保存在 bridge result 的 `pending_failover_request` 中。
+- `response_finalize` 根据 `RetrySameCandidateReason::UpstreamCapacity` 返回同候选重试，不调用 `apply_gateway_error_follow_up`。
+- candidate executor 使用独立的固定预算 `MAX_UPSTREAM_CAPACITY_RETRIES = 1`，不复用 reasoning guard retry attempts。
+- 匹配函数兼容项目内 `type=...` / `code=...` 前缀和 `[request_id=...]` 等 debug 后缀，但不做宽泛 capacity 关键词匹配。
+- 如果 capacity 预算耗尽，gateway 返回该上游错误给客户端，但仍跳过普通 failover follow-up。
+
 ## Passive Model Consistency
 
 本批只做基础观测，不做 UI 大面板。建议先记录/聚合最小信号：
