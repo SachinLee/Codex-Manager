@@ -576,6 +576,7 @@ pub(in super::super) fn execute_candidate_sequence(
                         context.has_more_candidates(idx),
                         reasoning_guard_retry_budget_remaining,
                         capacity_retry_budget_remaining,
+                        &body_for_attempt,
                     )? {
                         FinalizeUpstreamResponseOutcome::Handled => {
                             if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
@@ -608,6 +609,7 @@ pub(in super::super) fn execute_candidate_sequence(
                         FinalizeUpstreamResponseOutcome::RetrySameCandidate {
                             request: returned_request,
                             reason,
+                            body_override,
                         } => {
                             request = Some(returned_request);
                             match reason {
@@ -676,12 +678,13 @@ pub(in super::super) fn execute_candidate_sequence(
                             inflight_guard =
                                 Some(super::super::super::acquire_account_inflight(&account.id));
                             let mut retry_trace = CandidateAttemptTrace::default();
+                            let retry_body = body_override.as_ref().unwrap_or(&body_for_attempt);
                             let retry_decision = run_candidate_attempt(CandidateAttemptParams {
                                 storage,
                                 method,
                                 request_ctx: retry_ctx,
                                 incoming_headers: &attempt_headers,
-                                body: &body_for_attempt,
+                                body: retry_body,
                                 upstream_is_stream,
                                 path,
                                 request_deadline,

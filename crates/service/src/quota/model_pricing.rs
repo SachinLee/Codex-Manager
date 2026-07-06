@@ -371,6 +371,69 @@ const PRICE_SEEDS: &[PriceSeed] = &[
     },
 ];
 
+const PRIORITY_PRICE_SEEDS: &[PriceSeed] = &[
+    PriceSeed {
+        provider: "openai",
+        model_pattern: "gpt-5.5",
+        input_price_per_1m: 12.5,
+        cached_input_price_per_1m: Some(1.25),
+        output_price_per_1m: 75.0,
+        long_context_threshold_tokens: None,
+        long_context_input_price_per_1m: None,
+        long_context_cached_input_price_per_1m: None,
+        long_context_output_price_per_1m: None,
+        source_url: OPENAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "openai",
+        model_pattern: "gpt-5.4-mini",
+        input_price_per_1m: 1.5,
+        cached_input_price_per_1m: Some(0.15),
+        output_price_per_1m: 9.0,
+        long_context_threshold_tokens: None,
+        long_context_input_price_per_1m: None,
+        long_context_cached_input_price_per_1m: None,
+        long_context_output_price_per_1m: None,
+        source_url: OPENAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "openai",
+        model_pattern: "gpt-5.4",
+        input_price_per_1m: 5.0,
+        cached_input_price_per_1m: Some(0.5),
+        output_price_per_1m: 30.0,
+        long_context_threshold_tokens: None,
+        long_context_input_price_per_1m: None,
+        long_context_cached_input_price_per_1m: None,
+        long_context_output_price_per_1m: None,
+        source_url: OPENAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "openai",
+        model_pattern: "gpt-5.3-codex",
+        input_price_per_1m: 3.5,
+        cached_input_price_per_1m: Some(0.35),
+        output_price_per_1m: 28.0,
+        long_context_threshold_tokens: None,
+        long_context_input_price_per_1m: None,
+        long_context_cached_input_price_per_1m: None,
+        long_context_output_price_per_1m: None,
+        source_url: OPENAI_PRICE_SOURCE,
+    },
+];
+
+pub(crate) fn normalize_billing_mode_for_service_tier(service_tier: Option<&str>) -> &'static str {
+    match service_tier
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("fast" | "priority") => "priority",
+        _ => "standard",
+    }
+}
+
 pub(crate) fn infer_provider(model_pattern: &str) -> &str {
     let normalized = model_pattern.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -385,47 +448,72 @@ pub(crate) fn infer_provider(model_pattern: &str) -> &str {
 }
 
 pub(crate) fn ensure_official_price_seed(storage: &Storage) -> Result<(), String> {
+    let total_seed_count = PRICE_SEEDS.len() + PRIORITY_PRICE_SEEDS.len();
     let count = storage
         .count_model_price_rules_for_seed(PRICE_SEED_VERSION)
         .map_err(|err| format!("count model price seeds failed: {err}"))?;
-    if count as usize >= PRICE_SEEDS.len() {
+    if count as usize >= total_seed_count {
         return Ok(());
     }
 
     let now = now_ts();
     for (index, seed) in PRICE_SEEDS.iter().enumerate() {
-        storage
-            .upsert_model_price_rule(&ModelPriceRule {
-                id: format!("official-{PRICE_SEED_VERSION}-{}", seed.model_pattern),
-                provider: seed.provider.to_string(),
-                model_pattern: seed.model_pattern.to_string(),
-                match_type: "prefix".to_string(),
-                billing_mode: "standard".to_string(),
-                currency: "USD".to_string(),
-                unit: "per_1m_tokens".to_string(),
-                input_price_per_1m: Some(seed.input_price_per_1m),
-                cached_input_price_per_1m: seed.cached_input_price_per_1m,
-                output_price_per_1m: Some(seed.output_price_per_1m),
-                reasoning_output_price_per_1m: None,
-                cache_write_5m_price_per_1m: None,
-                cache_write_1h_price_per_1m: None,
-                cache_hit_price_per_1m: None,
-                long_context_threshold_tokens: seed.long_context_threshold_tokens,
-                long_context_input_price_per_1m: seed.long_context_input_price_per_1m,
-                long_context_cached_input_price_per_1m: seed.long_context_cached_input_price_per_1m,
-                long_context_output_price_per_1m: seed.long_context_output_price_per_1m,
-                source: "official_seed".to_string(),
-                source_url: Some(seed.source_url.to_string()),
-                seed_version: Some(PRICE_SEED_VERSION.to_string()),
-                enabled: true,
-                priority: 10_000 - index as i64,
-                created_at: now,
-                updated_at: now,
-            })
-            .map_err(|err| format!("insert official model price seed failed: {err}"))?;
+        upsert_official_price_seed(storage, seed, "standard", index, now)?;
+    }
+    for (index, seed) in PRIORITY_PRICE_SEEDS.iter().enumerate() {
+        upsert_official_price_seed(storage, seed, "priority", index, now)?;
     }
     invalidate_price_rule_cache();
     Ok(())
+}
+
+fn official_price_seed_id(seed: &PriceSeed, billing_mode: &str) -> String {
+    if billing_mode == "standard" {
+        format!("official-{PRICE_SEED_VERSION}-{}", seed.model_pattern)
+    } else {
+        format!(
+            "official-{PRICE_SEED_VERSION}-{billing_mode}-{}",
+            seed.model_pattern
+        )
+    }
+}
+
+fn upsert_official_price_seed(
+    storage: &Storage,
+    seed: &PriceSeed,
+    billing_mode: &str,
+    index: usize,
+    now: i64,
+) -> Result<(), String> {
+    storage
+        .upsert_model_price_rule(&ModelPriceRule {
+            id: official_price_seed_id(seed, billing_mode),
+            provider: seed.provider.to_string(),
+            model_pattern: seed.model_pattern.to_string(),
+            match_type: "prefix".to_string(),
+            billing_mode: billing_mode.to_string(),
+            currency: "USD".to_string(),
+            unit: "per_1m_tokens".to_string(),
+            input_price_per_1m: Some(seed.input_price_per_1m),
+            cached_input_price_per_1m: seed.cached_input_price_per_1m,
+            output_price_per_1m: Some(seed.output_price_per_1m),
+            reasoning_output_price_per_1m: None,
+            cache_write_5m_price_per_1m: None,
+            cache_write_1h_price_per_1m: None,
+            cache_hit_price_per_1m: None,
+            long_context_threshold_tokens: seed.long_context_threshold_tokens,
+            long_context_input_price_per_1m: seed.long_context_input_price_per_1m,
+            long_context_cached_input_price_per_1m: seed.long_context_cached_input_price_per_1m,
+            long_context_output_price_per_1m: seed.long_context_output_price_per_1m,
+            source: "official_seed".to_string(),
+            source_url: Some(seed.source_url.to_string()),
+            seed_version: Some(PRICE_SEED_VERSION.to_string()),
+            enabled: true,
+            priority: 10_000 - index as i64,
+            created_at: now,
+            updated_at: now,
+        })
+        .map_err(|err| format!("insert official model price seed failed: {err}"))
 }
 
 pub(crate) fn load_enabled_price_rules(storage: &Storage) -> Result<Vec<ModelPriceRule>, String> {
@@ -516,6 +604,14 @@ fn rule_matches(rule: &ModelPriceRule, normalized_model: &str) -> bool {
     }
 }
 
+fn rule_matches_billing_mode(rule: &ModelPriceRule, billing_mode: &str) -> bool {
+    let normalized = rule.billing_mode.trim().to_ascii_lowercase();
+    match billing_mode {
+        "priority" => normalized == "priority",
+        _ => normalized.is_empty() || normalized == "standard",
+    }
+}
+
 fn price_from_rule(rule: &ModelPriceRule, input_tokens: i64) -> Option<ModelPriceMatch> {
     if !rule.enabled
         || !rule.currency.eq_ignore_ascii_case("USD")
@@ -553,6 +649,15 @@ pub(crate) fn resolve_model_price_from_rules(
     model: &str,
     input_tokens: i64,
 ) -> Option<ModelPriceMatch> {
+    resolve_model_price_from_rules_by_mode(rules, model, input_tokens, "standard")
+}
+
+fn resolve_model_price_from_rules_by_mode(
+    rules: &[ModelPriceRule],
+    model: &str,
+    input_tokens: i64,
+    billing_mode: &str,
+) -> Option<ModelPriceMatch> {
     let normalized = model.trim().to_ascii_lowercase();
     if normalized.is_empty() || normalized == "unknown" {
         return None;
@@ -560,19 +665,44 @@ pub(crate) fn resolve_model_price_from_rules(
 
     let matched = rules
         .iter()
+        .filter(|rule| rule_matches_billing_mode(rule, billing_mode))
         .filter(|rule| rule_matches(rule, &normalized))
         .max_by_key(|rule| (rule.priority, rule.model_pattern.len() as i64))?;
 
     price_from_rule(matched, input_tokens)
 }
 
+pub(crate) fn resolve_model_price_from_rules_for_billing_mode(
+    rules: &[ModelPriceRule],
+    model: &str,
+    service_tier: Option<&str>,
+    input_tokens: i64,
+) -> Option<ModelPriceMatch> {
+    let billing_mode = normalize_billing_mode_for_service_tier(service_tier);
+    if billing_mode == "priority" {
+        return resolve_model_price_from_rules_by_mode(rules, model, input_tokens, "priority")
+            .or_else(|| {
+                resolve_model_price_from_rules_by_mode(rules, model, input_tokens, "standard")
+            });
+    }
+    resolve_model_price_from_rules_by_mode(rules, model, input_tokens, "standard")
+}
+
 pub(crate) fn resolve_model_price(model: &str, input_tokens: i64) -> Option<ModelPriceMatch> {
+    resolve_model_price_from_seeds(PRICE_SEEDS, model, input_tokens)
+}
+
+fn resolve_model_price_from_seeds(
+    seeds: &[PriceSeed],
+    model: &str,
+    input_tokens: i64,
+) -> Option<ModelPriceMatch> {
     let normalized = model.trim().to_ascii_lowercase();
     if normalized.is_empty() || normalized == "unknown" {
         return None;
     }
 
-    let matched = PRICE_SEEDS
+    let matched = seeds
         .iter()
         .filter(|seed| normalized.starts_with(seed.model_pattern))
         .max_by_key(|seed| seed.model_pattern.len())?;
@@ -604,6 +734,18 @@ pub(crate) fn resolve_model_price(model: &str, input_tokens: i64) -> Option<Mode
         cached_input_price_per_1m: cached,
         output_price_per_1m: output,
     })
+}
+
+pub(crate) fn resolve_model_price_for_billing_mode(
+    model: &str,
+    service_tier: Option<&str>,
+    input_tokens: i64,
+) -> Option<ModelPriceMatch> {
+    if normalize_billing_mode_for_service_tier(service_tier) == "priority" {
+        return resolve_model_price_from_seeds(PRIORITY_PRICE_SEEDS, model, input_tokens)
+            .or_else(|| resolve_model_price(model, input_tokens));
+    }
+    resolve_model_price(model, input_tokens)
 }
 
 fn estimate_cost_from_price(
@@ -658,6 +800,24 @@ pub(crate) fn estimate_cost_with_rules(
     cached_input_tokens: i64,
     output_tokens: i64,
 ) -> CostEstimate {
+    estimate_cost_with_rules_for_billing_mode(
+        rules,
+        model,
+        None,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+    )
+}
+
+pub(crate) fn estimate_cost_with_rules_for_billing_mode(
+    rules: &[ModelPriceRule],
+    model: Option<&str>,
+    service_tier: Option<&str>,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+) -> CostEstimate {
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return CostEstimate {
             provider: None,
@@ -666,9 +826,13 @@ pub(crate) fn estimate_cost_with_rules(
         };
     };
 
-    let Some(price) = resolve_model_price_from_rules(rules, model, input_tokens.max(0))
-        .or_else(|| resolve_model_price(model, input_tokens.max(0)))
-    else {
+    let Some(price) = resolve_model_price_from_rules_for_billing_mode(
+        rules,
+        model,
+        service_tier,
+        input_tokens.max(0),
+    )
+    .or_else(|| resolve_model_price_for_billing_mode(model, service_tier, input_tokens.max(0))) else {
         return CostEstimate {
             provider: None,
             cost_usd: None,
@@ -706,14 +870,59 @@ pub(crate) fn estimate_cost_usd_for_log(
     cached_input_tokens: Option<i64>,
     output_tokens: Option<i64>,
 ) -> f64 {
+    estimate_cost_usd_for_log_with_tier(
+        storage,
+        model,
+        None,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+    )
+}
+
+pub(crate) fn estimate_cost_usd_for_log_with_tier(
+    storage: &Storage,
+    model: Option<&str>,
+    service_tier: Option<&str>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+) -> f64 {
     let input = input_tokens.unwrap_or(0);
     let cached = cached_input_tokens.unwrap_or(0);
     let output = output_tokens.unwrap_or(0);
     let cost = load_enabled_price_rules_cached(storage)
         .ok()
         .filter(|rules| !rules.is_empty())
-        .map(|rules| estimate_cost_with_rules(&rules, model, input, cached, output))
-        .unwrap_or_else(|| estimate_cost(model, input, cached, output));
+        .map(|rules| {
+            estimate_cost_with_rules_for_billing_mode(
+                &rules,
+                model,
+                service_tier,
+                input,
+                cached,
+                output,
+            )
+        })
+        .unwrap_or_else(|| {
+            let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+                return CostEstimate {
+                    provider: None,
+                    cost_usd: None,
+                    price_status: "missing",
+                };
+            };
+            let Some(price) =
+                resolve_model_price_for_billing_mode(model, service_tier, input.max(0))
+            else {
+                return CostEstimate {
+                    provider: None,
+                    cost_usd: None,
+                    price_status: "missing",
+                };
+            };
+            estimate_cost_from_price(price, input, cached, output)
+        });
 
     cost.cost_usd.unwrap_or(0.0)
 }

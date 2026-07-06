@@ -338,6 +338,10 @@ function AdminSettingsPage() {
     useState<string | null>(null);
   const [reasoningGuardRetryDraft, setReasoningGuardRetryDraft] =
     useState<string | null>(null);
+  const [
+    reasoningGuardContinuationMarkerDraft,
+    setReasoningGuardContinuationMarkerDraft,
+  ] = useState<string | null>(null);
   const [workerAdvancedDialogOpen, setWorkerAdvancedDialogOpen] =
     useState(false);
   const [webPasswordModalOpen, setWebPasswordModalOpen] = useState(false);
@@ -823,6 +827,9 @@ function AdminSettingsPage() {
   const reasoningGuardRetryInputValue =
     reasoningGuardRetryDraft ??
     stringifyNumber(snapshot?.reasoningGuardRetryAttempts);
+  const reasoningGuardContinuationMarkerInputValue =
+    reasoningGuardContinuationMarkerDraft ??
+    (snapshot?.reasoningGuardContinuationMarkerText || "Continue thinking...");
   const selectedEnvValue = selectedEnvKey
     ? (envDrafts[selectedEnvKey] ??
       snapshot?.envOverrides[selectedEnvKey] ??
@@ -1213,6 +1220,21 @@ function AdminSettingsPage() {
       .catch(() => undefined);
   };
 
+  const saveReasoningGuardContinuationMarkerText = () => {
+    const nextValue = reasoningGuardContinuationMarkerInputValue.trim();
+    if (!nextValue) {
+      toast.error(t("请输入续写提示文本"));
+      setReasoningGuardContinuationMarkerDraft(null);
+      return;
+    }
+    void updateSettings
+      .mutateAsync({
+        reasoningGuardContinuationMarkerText: nextValue,
+      })
+      .then(() => setReasoningGuardContinuationMarkerDraft(null))
+      .catch(() => undefined);
+  };
+
   /**
    * 函数 `saveBackgroundTaskField`
    *
@@ -1556,6 +1578,15 @@ function AdminSettingsPage() {
             reasoningGuardRetryInputValue={reasoningGuardRetryInputValue}
             setReasoningGuardRetryDraft={setReasoningGuardRetryDraft}
             saveReasoningGuardRetryAttempts={saveReasoningGuardRetryAttempts}
+            reasoningGuardContinuationMarkerInputValue={
+              reasoningGuardContinuationMarkerInputValue
+            }
+            setReasoningGuardContinuationMarkerDraft={
+              setReasoningGuardContinuationMarkerDraft
+            }
+            saveReasoningGuardContinuationMarkerText={
+              saveReasoningGuardContinuationMarkerText
+            }
             quotaGuardInputValues={quotaGuardInputValues}
             setQuotaGuardDraft={setQuotaGuardDraft}
             saveQuotaGuardField={saveQuotaGuardField}

@@ -1,6 +1,8 @@
+use bytes::Bytes;
 use tiny_http::Request;
 
 use super::super::super::request_log::RequestLogUsage;
+use super::super::support::payload_rewrite::build_continuation_recovery_body;
 use super::super::GatewayUpstreamResponse;
 use super::execution_context::GatewayUpstreamExecutionContext;
 
@@ -9,6 +11,7 @@ pub(super) enum FinalizeUpstreamResponseOutcome {
     RetrySameCandidate {
         request: Request,
         reason: RetrySameCandidateReason,
+        body_override: Option<Bytes>,
     },
     Failover {
         request: Request,
@@ -212,6 +215,7 @@ pub(super) fn finalize_upstream_response(
     has_more_candidates: bool,
     reasoning_guard_retry_budget_remaining: usize,
     capacity_retry_budget_remaining: usize,
+    attempt_body: &Bytes,
 ) -> Result<FinalizeUpstreamResponseOutcome, String> {
     let status_code = response.status().as_u16();
 
@@ -273,8 +277,11 @@ pub(super) fn finalize_upstream_response(
         bridge.upstream_error_hint.as_deref(),
         bridge_error_message,
     );
-    let should_retry_reasoning_guard = bridge.reasoning_guard_action
-        == Some(super::super::super::ReasoningGuardBridgeAction::InternalRetry);
+    let should_retry_reasoning_guard = matches!(
+        bridge.reasoning_guard_action,
+        Some(super::super::super::ReasoningGuardBridgeAction::InternalRetry)
+            | Some(super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery)
+    );
     let should_retry_upstream_capacity = final_error
         .as_deref()
         .is_some_and(super::super::super::is_selected_model_capacity_error)
@@ -303,9 +310,30 @@ pub(super) fn finalize_upstream_response(
     }
     if should_retry_reasoning_guard {
         if let Some(request) = bridge.pending_failover_request.take() {
+            let body_override = if bridge.reasoning_guard_action
+                == Some(super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery)
+            {
+                build_continuation_recovery_body(
+                    attempt_body.as_ref(),
+                    bridge.continuation_reasoning_items.as_slice(),
+                    &crate::gateway::current_reasoning_guard_continuation_marker_text(),
+                )
+                .map(Bytes::from)
+                .or_else(|| {
+                    log::warn!(
+                        "event=gateway_reasoning_guard_continuation_body_unavailable trace_id={} account_id={}",
+                        trace_id,
+                        account_id
+                    );
+                    None
+                })
+            } else {
+                None
+            };
             return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate {
                 request,
                 reason: RetrySameCandidateReason::ReasoningGuard,
+                body_override,
             });
         }
     }
@@ -314,6 +342,7 @@ pub(super) fn finalize_upstream_response(
             return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate {
                 request,
                 reason: RetrySameCandidateReason::UpstreamCapacity,
+                body_override: None,
             });
         }
     }

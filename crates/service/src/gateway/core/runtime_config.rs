@@ -51,6 +51,10 @@ static COMPACT_API_PATH: OnceLock<RwLock<String>> = OnceLock::new();
 static MODEL_FORWARD_RULES: OnceLock<RwLock<Vec<ModelForwardRule>>> = OnceLock::new();
 static COMPACT_MODEL_FORWARD_RULES: OnceLock<RwLock<Vec<ModelForwardRule>>> = OnceLock::new();
 static REASONING_GUARD_TARGETS: OnceLock<RwLock<Vec<i64>>> = OnceLock::new();
+static REASONING_GUARD_MATCH_MODE: OnceLock<RwLock<ReasoningGuardMatchMode>> = OnceLock::new();
+static REASONING_GUARD_STREAM_ACTION: OnceLock<RwLock<ReasoningGuardStreamAction>> =
+    OnceLock::new();
+static REASONING_GUARD_CONTINUATION_MARKER_TEXT: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_IMAGE_MAIN_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_IMAGE_TOOL_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
@@ -66,6 +70,11 @@ const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 0;
 const DEFAULT_REASONING_GUARD_ENABLED: bool = true;
 pub(crate) const DEFAULT_REASONING_GUARD_TARGETS: &[i64] = &[516, 1034, 1552];
+const DEFAULT_REASONING_GUARD_MATCH_MODE: ReasoningGuardMatchMode =
+    ReasoningGuardMatchMode::Targets;
+const DEFAULT_REASONING_GUARD_STREAM_ACTION: ReasoningGuardStreamAction =
+    ReasoningGuardStreamAction::StrictRetry;
+const DEFAULT_REASONING_GUARD_CONTINUATION_MARKER_TEXT: &str = "Continue thinking...";
 const DEFAULT_REASONING_GUARD_INTERCEPT_STREAMING: bool = true;
 const DEFAULT_REASONING_GUARD_INTERCEPT_NON_STREAMING: bool = true;
 const DEFAULT_REASONING_GUARD_RETRY_ATTEMPTS: usize = 3;
@@ -97,6 +106,10 @@ const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEO
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
 const ENV_REASONING_GUARD_ENABLED: &str = "CODEXMANAGER_REASONING_GUARD_ENABLED";
 const ENV_REASONING_GUARD_TARGETS: &str = "CODEXMANAGER_REASONING_GUARD_TARGETS";
+const ENV_REASONING_GUARD_MATCH_MODE: &str = "CODEXMANAGER_REASONING_GUARD_MATCH_MODE";
+const ENV_REASONING_GUARD_STREAM_ACTION: &str = "CODEXMANAGER_REASONING_GUARD_STREAM_ACTION";
+const ENV_REASONING_GUARD_CONTINUATION_MARKER_TEXT: &str =
+    "CODEXMANAGER_REASONING_GUARD_CONTINUATION_MARKER_TEXT";
 const ENV_REASONING_GUARD_INTERCEPT_STREAMING: &str =
     "CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING";
 const ENV_REASONING_GUARD_INTERCEPT_NON_STREAMING: &str =
@@ -138,6 +151,36 @@ struct UpstreamClientPool {
 pub(crate) struct ModelForwardRule {
     pub from_pattern: String,
     pub to_model: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReasoningGuardMatchMode {
+    Targets,
+    Formula518nMinus2,
+}
+
+impl ReasoningGuardMatchMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Targets => "targets",
+            Self::Formula518nMinus2 => "formula518nMinus2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReasoningGuardStreamAction {
+    StrictRetry,
+    ContinuationRecovery,
+}
+
+impl ReasoningGuardStreamAction {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::StrictRetry => "strictRetry",
+            Self::ContinuationRecovery => "continuationRecovery",
+        }
+    }
 }
 
 impl UpstreamClientPool {
@@ -597,6 +640,75 @@ pub(crate) fn set_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {
 pub(crate) fn set_reasoning_guard_targets_from_raw(raw: &str) -> Vec<i64> {
     let parsed = parse_reasoning_guard_targets(raw);
     set_reasoning_guard_targets(&parsed)
+}
+
+pub(crate) fn current_reasoning_guard_match_mode() -> ReasoningGuardMatchMode {
+    ensure_runtime_config_loaded();
+    *crate::lock_utils::read_recover(
+        reasoning_guard_match_mode_cell(),
+        "reasoning_guard_match_mode",
+    )
+}
+
+pub(crate) fn set_reasoning_guard_match_mode(raw: &str) -> ReasoningGuardMatchMode {
+    ensure_runtime_config_loaded();
+    let mode = normalize_reasoning_guard_match_mode(raw);
+    std::env::set_var(ENV_REASONING_GUARD_MATCH_MODE, mode.as_str());
+    let mut cached = crate::lock_utils::write_recover(
+        reasoning_guard_match_mode_cell(),
+        "reasoning_guard_match_mode",
+    );
+    *cached = mode;
+    mode
+}
+
+pub(crate) fn current_reasoning_guard_stream_action() -> ReasoningGuardStreamAction {
+    ensure_runtime_config_loaded();
+    *crate::lock_utils::read_recover(
+        reasoning_guard_stream_action_cell(),
+        "reasoning_guard_stream_action",
+    )
+}
+
+pub(crate) fn set_reasoning_guard_stream_action(raw: &str) -> ReasoningGuardStreamAction {
+    ensure_runtime_config_loaded();
+    let action = normalize_reasoning_guard_stream_action(raw);
+    *crate::lock_utils::write_recover(
+        reasoning_guard_stream_action_cell(),
+        "reasoning_guard_stream_action",
+    ) = action;
+    std::env::set_var(ENV_REASONING_GUARD_STREAM_ACTION, action.as_str());
+    action
+}
+
+pub(crate) fn current_reasoning_guard_continuation_marker_text() -> String {
+    ensure_runtime_config_loaded();
+    crate::lock_utils::read_recover(
+        reasoning_guard_continuation_marker_text_cell(),
+        "reasoning_guard_continuation_marker_text",
+    )
+    .clone()
+}
+
+pub(crate) fn set_reasoning_guard_continuation_marker_text(raw: &str) -> String {
+    ensure_runtime_config_loaded();
+    let value = normalize_reasoning_guard_continuation_marker_text(raw);
+    *crate::lock_utils::write_recover(
+        reasoning_guard_continuation_marker_text_cell(),
+        "reasoning_guard_continuation_marker_text",
+    ) = value.clone();
+    std::env::set_var(ENV_REASONING_GUARD_CONTINUATION_MARKER_TEXT, value.as_str());
+    value
+}
+
+pub(crate) fn reasoning_guard_token_matches(token: i64) -> bool {
+    ensure_runtime_config_loaded();
+    match current_reasoning_guard_match_mode() {
+        ReasoningGuardMatchMode::Targets => current_reasoning_guard_targets().contains(&token),
+        ReasoningGuardMatchMode::Formula518nMinus2 => {
+            token >= 516 && token.saturating_add(2) % 518 == 0
+        }
+    }
 }
 
 pub(crate) fn reasoning_guard_intercept_streaming() -> bool {
@@ -1473,6 +1585,34 @@ pub(super) fn reload_from_env() {
         crate::lock_utils::write_recover(reasoning_guard_targets_cell(), "reasoning_guard_targets");
     *cached_reasoning_guard_targets = normalize_reasoning_guard_targets(&reasoning_guard_targets);
     drop(cached_reasoning_guard_targets);
+    let reasoning_guard_match_mode = env_non_empty(ENV_REASONING_GUARD_MATCH_MODE)
+        .map(|value| normalize_reasoning_guard_match_mode(value.as_str()))
+        .unwrap_or(DEFAULT_REASONING_GUARD_MATCH_MODE);
+    let reasoning_guard_stream_action = env_non_empty(ENV_REASONING_GUARD_STREAM_ACTION)
+        .map(|value| normalize_reasoning_guard_stream_action(value.as_str()))
+        .unwrap_or(DEFAULT_REASONING_GUARD_STREAM_ACTION);
+    let reasoning_guard_continuation_marker_text =
+        env_non_empty(ENV_REASONING_GUARD_CONTINUATION_MARKER_TEXT)
+            .map(|value| normalize_reasoning_guard_continuation_marker_text(value.as_str()))
+            .unwrap_or_else(|| DEFAULT_REASONING_GUARD_CONTINUATION_MARKER_TEXT.to_string());
+    let mut cached_reasoning_guard_match_mode = crate::lock_utils::write_recover(
+        reasoning_guard_match_mode_cell(),
+        "reasoning_guard_match_mode",
+    );
+    *cached_reasoning_guard_match_mode = reasoning_guard_match_mode;
+    drop(cached_reasoning_guard_match_mode);
+    let mut cached_reasoning_guard_stream_action = crate::lock_utils::write_recover(
+        reasoning_guard_stream_action_cell(),
+        "reasoning_guard_stream_action",
+    );
+    *cached_reasoning_guard_stream_action = reasoning_guard_stream_action;
+    drop(cached_reasoning_guard_stream_action);
+    let mut cached_reasoning_guard_continuation_marker_text = crate::lock_utils::write_recover(
+        reasoning_guard_continuation_marker_text_cell(),
+        "reasoning_guard_continuation_marker_text",
+    );
+    *cached_reasoning_guard_continuation_marker_text = reasoning_guard_continuation_marker_text;
+    drop(cached_reasoning_guard_continuation_marker_text);
 
     let codex_image_main_model = env_non_empty(ENV_CODEX_IMAGE_MAIN_MODEL)
         .and_then(|value| normalize_model_slug(value.as_str()).ok())
@@ -1787,6 +1927,19 @@ fn reasoning_guard_targets_cell() -> &'static RwLock<Vec<i64>> {
     REASONING_GUARD_TARGETS.get_or_init(|| RwLock::new(DEFAULT_REASONING_GUARD_TARGETS.to_vec()))
 }
 
+fn reasoning_guard_match_mode_cell() -> &'static RwLock<ReasoningGuardMatchMode> {
+    REASONING_GUARD_MATCH_MODE.get_or_init(|| RwLock::new(DEFAULT_REASONING_GUARD_MATCH_MODE))
+}
+
+fn reasoning_guard_stream_action_cell() -> &'static RwLock<ReasoningGuardStreamAction> {
+    REASONING_GUARD_STREAM_ACTION.get_or_init(|| RwLock::new(DEFAULT_REASONING_GUARD_STREAM_ACTION))
+}
+
+fn reasoning_guard_continuation_marker_text_cell() -> &'static RwLock<String> {
+    REASONING_GUARD_CONTINUATION_MARKER_TEXT
+        .get_or_init(|| RwLock::new(DEFAULT_REASONING_GUARD_CONTINUATION_MARKER_TEXT.to_string()))
+}
+
 fn codex_image_main_model_cell() -> &'static RwLock<String> {
     CODEX_IMAGE_MAIN_MODEL.get_or_init(|| RwLock::new(DEFAULT_CODEX_IMAGE_MAIN_MODEL.to_string()))
 }
@@ -1998,6 +2151,37 @@ fn serialize_reasoning_guard_targets(values: &[i64]) -> String {
         .map(|value| value.to_string())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn normalize_reasoning_guard_match_mode(raw: &str) -> ReasoningGuardMatchMode {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "formula518nminus2" | "formula_518n_minus_2" | "518nminus2" | "518*n-2" => {
+            ReasoningGuardMatchMode::Formula518nMinus2
+        }
+        "targets" | "manual" | "reasoning_equals" => ReasoningGuardMatchMode::Targets,
+        _ => DEFAULT_REASONING_GUARD_MATCH_MODE,
+    }
+}
+
+fn normalize_reasoning_guard_stream_action(raw: &str) -> ReasoningGuardStreamAction {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "continuationrecovery" | "continuation_recovery" | "continuation-recovery" => {
+            ReasoningGuardStreamAction::ContinuationRecovery
+        }
+        "strictretry" | "strict_retry" | "strict-retry" | "strict_502" | "strict502" => {
+            ReasoningGuardStreamAction::StrictRetry
+        }
+        _ => DEFAULT_REASONING_GUARD_STREAM_ACTION,
+    }
+}
+
+fn normalize_reasoning_guard_continuation_marker_text(raw: &str) -> String {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        DEFAULT_REASONING_GUARD_CONTINUATION_MARKER_TEXT.to_string()
+    } else {
+        normalized.to_string()
+    }
 }
 
 /// 函数 `normalize_model_forward_pattern`

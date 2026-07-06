@@ -1707,6 +1707,8 @@ pub struct ModelPriceRuleEntry {
     pub model_pattern: String,
     pub match_type: String,
     #[serde(default)]
+    pub billing_mode: String,
+    #[serde(default)]
     pub input_price_per_1m: Option<f64>,
     #[serde(default)]
     pub cached_input_price_per_1m: Option<f64>,
@@ -1741,6 +1743,8 @@ pub struct ModelPriceRuleUpsertInput {
     pub model_pattern: String,
     #[serde(default)]
     pub match_type: Option<String>,
+    #[serde(default)]
+    pub billing_mode: Option<String>,
     #[serde(default)]
     pub input_price_per_1m: Option<f64>,
     #[serde(default)]

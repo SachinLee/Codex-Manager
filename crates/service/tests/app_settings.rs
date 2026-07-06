@@ -20,6 +20,9 @@ const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
     "CODEXMANAGER_MODEL_FORWARD_RULES",
     "CODEXMANAGER_REASONING_GUARD_ENABLED",
     "CODEXMANAGER_REASONING_GUARD_TARGETS",
+    "CODEXMANAGER_REASONING_GUARD_MATCH_MODE",
+    "CODEXMANAGER_REASONING_GUARD_STREAM_ACTION",
+    "CODEXMANAGER_REASONING_GUARD_CONTINUATION_MARKER_TEXT",
     "CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING",
     "CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING",
     "CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS",
@@ -92,6 +95,9 @@ fn reset_runtime_defaults() {
         "modelForwardRules": "",
         "reasoningGuardEnabled": true,
         "reasoningGuardTargets": [516, 1034, 1552],
+        "reasoningGuardMatchMode": "targets",
+        "reasoningGuardStreamAction": "strictRetry",
+        "reasoningGuardContinuationMarkerText": "Continue thinking...",
         "reasoningGuardInterceptStreaming": true,
         "reasoningGuardInterceptNonStreaming": true,
         "reasoningGuardRetryAttempts": 3,
@@ -724,6 +730,9 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
             "modelForwardRules": "spark*=gpt-5.4-mini",
             "reasoningGuardEnabled": true,
             "reasoningGuardTargets": [516, 1034, 1552, 1034, -1],
+            "reasoningGuardMatchMode": "formula_518n_minus_2",
+            "reasoningGuardStreamAction": "continuation_recovery",
+            "reasoningGuardContinuationMarkerText": "Continue with encrypted context",
             "reasoningGuardInterceptStreaming": true,
             "reasoningGuardInterceptNonStreaming": false,
             "reasoningGuardRetryAttempts": 2,
@@ -845,6 +854,24 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                         .collect::<Vec<_>>()
                 }),
             Some(vec![516, 1034, 1552])
+        );
+        assert_eq!(
+            snapshot
+                .get("reasoningGuardMatchMode")
+                .and_then(|value| value.as_str()),
+            Some("formula518nMinus2")
+        );
+        assert_eq!(
+            snapshot
+                .get("reasoningGuardStreamAction")
+                .and_then(|value| value.as_str()),
+            Some("continuationRecovery")
+        );
+        assert_eq!(
+            snapshot
+                .get("reasoningGuardContinuationMarkerText")
+                .and_then(|value| value.as_str()),
+            Some("Continue with encrypted context")
         );
         assert_eq!(snapshot["reasoningGuardInterceptStreaming"], true);
         assert_eq!(snapshot["reasoningGuardInterceptNonStreaming"], false);

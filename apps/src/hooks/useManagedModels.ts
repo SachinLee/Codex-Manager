@@ -434,9 +434,9 @@ export function useManagedModels() {
       }
       await accountClient.upsertModelPriceRule(params);
     },
-    readModelPriceRule: async (modelPattern: string) => {
+    readModelPriceRule: async (modelPattern: string, billingMode?: string | null) => {
       if (!ensureServiceReady("读取模型价格")) return null;
-      return accountClient.readModelPriceRule(modelPattern);
+      return accountClient.readModelPriceRule(modelPattern, billingMode);
     },
     deleteModel: async (slug: string) => {
       if (!ensureServiceReady("删除模型")) return false;

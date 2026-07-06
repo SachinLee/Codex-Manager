@@ -66,6 +66,7 @@ pub(in super::super) struct OpenAIResponsesOutputTextState {
 pub(in super::super) struct OpenAIResponsesEvent {
     pub(in super::super) event_type: Option<String>,
     pub(in super::super) usage: UpstreamResponseUsage,
+    pub(in super::super) continuation_reasoning_items: Vec<Value>,
     output_text_kind: Option<OpenAIResponsesOutputTextKind>,
     output_text_snapshot_key: Option<String>,
     pub(in super::super) terminal: Option<SseTerminal>,
@@ -100,10 +101,12 @@ impl OpenAIResponsesEvent {
                 output_text_kind
             },
         );
+        let continuation_reasoning_items = collect_continuation_reasoning_items(&value);
 
         Some(Self {
             event_type,
             usage,
+            continuation_reasoning_items,
             output_text_kind,
             output_text_snapshot_key,
             terminal,
@@ -157,6 +160,44 @@ impl OpenAIResponsesEvent {
             None => {}
         }
     }
+}
+
+fn reasoning_item_has_encrypted_content(item: &Value) -> bool {
+    item.as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "reasoning")
+        && item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+}
+
+fn collect_reasoning_item_candidate(candidate: Option<&Value>, out: &mut Vec<Value>) {
+    let Some(item) = candidate else {
+        return;
+    };
+    if reasoning_item_has_encrypted_content(item) {
+        out.push(item.clone());
+    }
+}
+
+fn collect_reasoning_items_from_array(candidate: Option<&Value>, out: &mut Vec<Value>) {
+    let Some(Value::Array(items)) = candidate else {
+        return;
+    };
+    for item in items {
+        collect_reasoning_item_candidate(Some(item), out);
+    }
+}
+
+fn collect_continuation_reasoning_items(value: &Value) -> Vec<Value> {
+    let mut items = Vec::new();
+    collect_reasoning_item_candidate(value.get("item"), &mut items);
+    collect_reasoning_items_from_array(value.get("output"), &mut items);
+    collect_reasoning_items_from_array(value.pointer("/response/output"), &mut items);
+    items
 }
 
 fn terminal_for_event(

@@ -14,9 +14,11 @@ use super::{
     set_gateway_compact_model_forward_rules, set_gateway_free_account_max_model,
     set_gateway_model_catalog_auto_remote_fetch, set_gateway_model_forward_rules,
     set_gateway_originator, set_gateway_quota_guard,
-    set_gateway_reasoning_guard_bypass_after_consecutive, set_gateway_reasoning_guard_enabled,
+    set_gateway_reasoning_guard_bypass_after_consecutive,
+    set_gateway_reasoning_guard_continuation_marker_text, set_gateway_reasoning_guard_enabled,
     set_gateway_reasoning_guard_intercept_non_streaming,
-    set_gateway_reasoning_guard_intercept_streaming, set_gateway_reasoning_guard_retry_attempts,
+    set_gateway_reasoning_guard_intercept_streaming, set_gateway_reasoning_guard_match_mode,
+    set_gateway_reasoning_guard_retry_attempts, set_gateway_reasoning_guard_stream_action,
     set_gateway_reasoning_guard_targets, set_gateway_residency_requirement,
     set_gateway_route_strategy, set_gateway_sse_keepalive_interval_ms,
     set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
@@ -49,6 +51,9 @@ pub(super) struct AppSettingsPatch {
     account_max_inflight: Option<usize>,
     reasoning_guard_enabled: Option<bool>,
     reasoning_guard_targets: Option<Vec<i64>>,
+    reasoning_guard_match_mode: Option<String>,
+    reasoning_guard_stream_action: Option<String>,
+    reasoning_guard_continuation_marker_text: Option<String>,
     reasoning_guard_intercept_streaming: Option<bool>,
     reasoning_guard_intercept_non_streaming: Option<bool>,
     reasoning_guard_retry_attempts: Option<usize>,
@@ -175,6 +180,15 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(targets) = patch.reasoning_guard_targets {
         let _ = set_gateway_reasoning_guard_targets(&targets)?;
+    }
+    if let Some(mode) = patch.reasoning_guard_match_mode {
+        let _ = set_gateway_reasoning_guard_match_mode(&mode)?;
+    }
+    if let Some(action) = patch.reasoning_guard_stream_action {
+        let _ = set_gateway_reasoning_guard_stream_action(&action)?;
+    }
+    if let Some(marker_text) = patch.reasoning_guard_continuation_marker_text {
+        let _ = set_gateway_reasoning_guard_continuation_marker_text(&marker_text)?;
     }
     if let Some(enabled) = patch.reasoning_guard_intercept_streaming {
         let _ = set_gateway_reasoning_guard_intercept_streaming(enabled)?;

@@ -79,7 +79,10 @@ fn find_enabled_custom_exact_model_price_rule_uses_lookup_index() {
             "EXPLAIN QUERY PLAN {}",
             enabled_custom_exact_model_price_rule_sql()
         ),
-        vec![Value::Text("gpt-5".to_string())],
+        vec![
+            Value::Text("gpt-5".to_string()),
+            Value::Text("standard".to_string()),
+        ],
     );
 
     assert!(
@@ -113,6 +116,33 @@ fn find_enabled_custom_exact_model_price_rule_filters_in_sql() {
         .expect("rule exists");
 
     assert_eq!(rule.id, "custom-high");
+}
+
+#[test]
+fn find_enabled_custom_exact_model_price_rule_filters_billing_mode() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let standard = price_rule("custom-standard", "gpt-5", "custom", 100);
+    let mut priority = price_rule("custom-priority", "gpt-5", "custom", 100);
+    priority.billing_mode = "priority".to_string();
+    storage
+        .upsert_model_price_rule(&standard)
+        .expect("insert standard");
+    storage
+        .upsert_model_price_rule(&priority)
+        .expect("insert priority");
+
+    let standard_rule = storage
+        .find_enabled_custom_exact_model_price_rule_for_billing_mode("gpt-5", "standard")
+        .expect("find standard")
+        .expect("standard exists");
+    let priority_rule = storage
+        .find_enabled_custom_exact_model_price_rule_for_billing_mode("gpt-5", "priority")
+        .expect("find priority")
+        .expect("priority exists");
+
+    assert_eq!(standard_rule.id, "custom-standard");
+    assert_eq!(priority_rule.id, "custom-priority");
 }
 
 #[test]

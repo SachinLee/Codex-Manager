@@ -68,6 +68,9 @@ export interface AppSettings {
   compactModelForwardRules: string;
   accountMaxInflight: number;
   reasoningGuardEnabled: boolean;
+  reasoningGuardMatchMode: string;
+  reasoningGuardStreamAction: string;
+  reasoningGuardContinuationMarkerText: string;
   reasoningGuardTargets: number[];
   reasoningGuardInterceptStreaming: boolean;
   reasoningGuardInterceptNonStreaming: boolean;

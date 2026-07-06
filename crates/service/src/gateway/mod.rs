@@ -112,6 +112,8 @@ mod official_responses_http;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
 mod protocol_adapter;
+#[path = "observability/reasoning_guard_events.rs"]
+mod reasoning_guard_events;
 #[path = "request/request_entry.rs"]
 mod request_entry;
 #[path = "routing/request_gate.rs"]
@@ -157,6 +159,7 @@ use protocol_adapter::build_gemini_error_body;
 use protocol_adapter::{
     adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
 };
+pub(crate) use reasoning_guard_events::record_gateway_reasoning_guard_event;
 pub(crate) use request_helpers::request_log_session_id_candidate_from_value;
 pub(super) use request_helpers::{
     inspect_service_tier_for_log, inspect_service_tier_value, is_html_content_type,
@@ -423,7 +426,6 @@ use runtime_config::{
 pub(crate) use runtime_config::{fresh_upstream_client, upstream_client};
 use selection::collect_gateway_candidates;
 pub(crate) use selection::{
-    collect_gateway_candidates_for_accounts_with_low_quota_mode,
     collect_gateway_candidates_with_low_quota_mode, current_quota_guard_config,
     invalidate_candidate_cache, set_quota_guard_config, LowQuotaCandidateMode, QuotaGuardConfig,
 };
@@ -570,6 +572,39 @@ pub(crate) fn set_reasoning_guard_enabled(enabled: bool) -> bool {
 
 pub(crate) fn current_reasoning_guard_targets() -> Vec<i64> {
     runtime_config::current_reasoning_guard_targets()
+}
+
+pub(crate) fn current_reasoning_guard_match_mode() -> &'static str {
+    runtime_config::current_reasoning_guard_match_mode().as_str()
+}
+
+pub(crate) fn set_reasoning_guard_match_mode(raw: &str) -> &'static str {
+    runtime_config::set_reasoning_guard_match_mode(raw).as_str()
+}
+
+pub(crate) fn current_reasoning_guard_stream_action() -> &'static str {
+    runtime_config::current_reasoning_guard_stream_action().as_str()
+}
+
+pub(crate) fn set_reasoning_guard_stream_action(raw: &str) -> &'static str {
+    runtime_config::set_reasoning_guard_stream_action(raw).as_str()
+}
+
+pub(crate) fn reasoning_guard_uses_continuation_recovery() -> bool {
+    runtime_config::current_reasoning_guard_stream_action()
+        == runtime_config::ReasoningGuardStreamAction::ContinuationRecovery
+}
+
+pub(crate) fn current_reasoning_guard_continuation_marker_text() -> String {
+    runtime_config::current_reasoning_guard_continuation_marker_text()
+}
+
+pub(crate) fn set_reasoning_guard_continuation_marker_text(raw: &str) -> String {
+    runtime_config::set_reasoning_guard_continuation_marker_text(raw)
+}
+
+pub(crate) fn reasoning_guard_token_matches(token: i64) -> bool {
+    runtime_config::reasoning_guard_token_matches(token)
 }
 
 pub(crate) fn set_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {

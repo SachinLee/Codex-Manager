@@ -34,10 +34,13 @@ use super::{
     APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
     APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
+    APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
     APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
@@ -306,6 +309,49 @@ pub(crate) fn set_gateway_reasoning_guard_targets(values: &[i64]) -> Result<Vec<
 
 pub(crate) fn current_gateway_reasoning_guard_targets() -> Vec<i64> {
     gateway::current_reasoning_guard_targets()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_match_mode(raw: &str) -> Result<String, String> {
+    let applied = gateway::set_reasoning_guard_match_mode(raw);
+    let value = applied.to_string();
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
+        Some(value.as_str()),
+    )?;
+    Ok(value)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_match_mode() -> String {
+    gateway::current_reasoning_guard_match_mode().to_string()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_stream_action(raw: &str) -> Result<String, String> {
+    let applied = gateway::set_reasoning_guard_stream_action(raw);
+    let value = applied.to_string();
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
+        Some(value.as_str()),
+    )?;
+    Ok(value)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_stream_action() -> String {
+    gateway::current_reasoning_guard_stream_action().to_string()
+}
+
+pub(crate) fn set_gateway_reasoning_guard_continuation_marker_text(
+    raw: &str,
+) -> Result<String, String> {
+    let applied = gateway::set_reasoning_guard_continuation_marker_text(raw);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
+        Some(applied.as_str()),
+    )?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_reasoning_guard_continuation_marker_text() -> String {
+    gateway::current_reasoning_guard_continuation_marker_text()
 }
 
 pub(crate) fn set_gateway_reasoning_guard_intercept_streaming(

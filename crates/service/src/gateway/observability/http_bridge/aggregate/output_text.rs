@@ -39,12 +39,14 @@ pub(crate) struct UpstreamResponseBridgeResult {
     pub pending_failover_request: Option<Request>,
     pub reasoning_guard_action: Option<ReasoningGuardBridgeAction>,
     pub reasoning_guard_target_token: Option<i64>,
+    pub continuation_reasoning_items: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReasoningGuardBridgeAction {
     ObserveOnly,
     InternalRetry,
+    ContinuationRecovery,
     Block,
     BypassAfterConsecutive,
 }
@@ -109,9 +111,7 @@ impl UpstreamResponseBridgeResult {
 
 pub(in super::super) fn reasoning_guard_target_token(usage: &UpstreamResponseUsage) -> Option<i64> {
     let token = usage.reasoning_output_tokens?;
-    crate::gateway::current_reasoning_guard_targets()
-        .contains(&token)
-        .then_some(token)
+    crate::gateway::reasoning_guard_token_matches(token).then_some(token)
 }
 
 pub(in super::super) fn reasoning_guard_error(usage: &UpstreamResponseUsage) -> Option<String> {

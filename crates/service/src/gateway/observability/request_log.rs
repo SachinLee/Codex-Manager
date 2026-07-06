@@ -462,9 +462,19 @@ pub(crate) fn write_request_log_with_attempts(
     let duration_ms = normalize_duration_ms(duration_ms);
     let first_response_ms = usage.first_response_ms.map(|value| value.max(0));
     let created_at = now_ts();
-    let estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
+    let service_tier = trace_context
+        .service_tier
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let effective_service_tier = trace_context
+        .effective_service_tier
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let billing_service_tier = effective_service_tier.or(service_tier);
+    let estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log_with_tier(
         storage,
         model,
+        billing_service_tier,
         input_tokens,
         cached_input_tokens,
         output_tokens,
@@ -477,14 +487,6 @@ pub(crate) fn write_request_log_with_attempts(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("http");
-    let service_tier = trace_context
-        .service_tier
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let effective_service_tier = trace_context
-        .effective_service_tier
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let service_tier_source = resolve_service_tier_source(
         service_tier,
         effective_service_tier,

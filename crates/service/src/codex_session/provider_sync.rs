@@ -395,7 +395,7 @@ fn apply_sqlite_update(
     if !path.exists() {
         return Ok(0);
     }
-    let mut db = rusqlite::Connection::open(path)?;
+    let db = rusqlite::Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
     if !columns.contains("model_provider") {
         return Ok(0);

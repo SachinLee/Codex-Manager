@@ -162,6 +162,9 @@ export default function ModelsPage() {
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
   const [deleteSlugs, setDeleteSlugs] = useState<string[]>([]);
+  const [editingPriceBillingMode, setEditingPriceBillingMode] = useState<
+    "standard" | "priority"
+  >("standard");
   const [editingPriceRule, setEditingPriceRule] = useState<ModelPriceRuleEntry | null>(null);
   const [activeModelSlug, setActiveModelSlug] = useState<string>("");
   const [routingDialogOpen, setRoutingDialogOpen] = useState(false);
@@ -258,7 +261,7 @@ export default function ModelsPage() {
       return;
     }
     setEditingPriceRule(null);
-    readModelPriceRule(slug)
+    readModelPriceRule(slug, editingPriceBillingMode)
       .then((result) => {
         if (!cancelled) setEditingPriceRule(result);
       })
@@ -270,7 +273,7 @@ export default function ModelsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingModel]);
+  }, [editingModel, editingPriceBillingMode]);
 
   const nextSortIndex = useMemo(
     () => models.reduce((maxValue, item) => Math.max(maxValue, item.sortIndex), -1) + 1,
@@ -1458,6 +1461,8 @@ export default function ModelsPage() {
         isSaving={isSaving}
         onSave={saveModel}
         onSavePriceRule={saveModelPriceRule}
+        priceBillingMode={editingPriceBillingMode}
+        onPriceBillingModeChange={setEditingPriceBillingMode}
         priceRule={editingPriceRule}
       />
       ) : null}

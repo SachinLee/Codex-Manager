@@ -133,10 +133,18 @@ impl Storage {
         &self,
         model_pattern: &str,
     ) -> Result<Option<ModelPriceRule>> {
+        self.find_enabled_custom_exact_model_price_rule_for_billing_mode(model_pattern, "standard")
+    }
+
+    pub fn find_enabled_custom_exact_model_price_rule_for_billing_mode(
+        &self,
+        model_pattern: &str,
+        billing_mode: &str,
+    ) -> Result<Option<ModelPriceRule>> {
         let mut stmt = self
             .conn
             .prepare(enabled_custom_exact_model_price_rule_sql())?;
-        let mut rows = stmt.query([model_pattern.trim()])?;
+        let mut rows = stmt.query([model_pattern.trim(), billing_mode.trim()])?;
         rows.next()?.map(map_model_price_rule_row).transpose()
     }
 
@@ -313,6 +321,7 @@ fn enabled_custom_exact_model_price_rule_sql() -> &'static str {
        AND enabled = 1
        AND match_type = 'exact' COLLATE NOCASE
        AND model_pattern = ?1 COLLATE NOCASE
+       AND billing_mode = ?2 COLLATE NOCASE
      ORDER BY priority DESC, id ASC
      LIMIT 1"
 }

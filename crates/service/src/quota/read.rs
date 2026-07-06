@@ -193,6 +193,18 @@ fn normalize_billing_status(value: Option<String>) -> Result<String, String> {
     }
 }
 
+fn normalize_model_price_billing_mode(value: Option<String>) -> Result<String, String> {
+    match normalize_optional_text(value)
+        .unwrap_or_else(|| "standard".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "standard" => Ok("standard".to_string()),
+        "priority" | "fast" => Ok("priority".to_string()),
+        _ => Err("价格档位只能是 standard 或 priority".to_string()),
+    }
+}
+
 fn generate_id(prefix: &str, bytes_len: usize) -> String {
     let mut bytes = vec![0u8; bytes_len];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -1561,10 +1573,12 @@ pub(crate) fn list_model_price_rules() -> Result<ModelPriceRuleListResult, Strin
 
 pub(crate) fn read_model_price_rule(
     model_pattern: &str,
+    billing_mode: Option<String>,
 ) -> Result<Option<ModelPriceRuleEntry>, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let billing_mode = normalize_model_price_billing_mode(billing_mode)?;
     storage
-        .find_enabled_custom_exact_model_price_rule(model_pattern)
+        .find_enabled_custom_exact_model_price_rule_for_billing_mode(model_pattern, &billing_mode)
         .map_err(|err| format!("read model price rule failed: {err}"))
         .map(|rule| rule.map(price_rule_entry))
 }
@@ -1578,10 +1592,14 @@ pub(crate) fn upsert_model_price_rule(
     if model_pattern.is_empty() {
         return Err("model_pattern 不能为空".to_string());
     }
-    let id = input
-        .id
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| format!("user-{}", model_pattern));
+    let billing_mode = normalize_model_price_billing_mode(input.billing_mode)?;
+    let id = input.id.filter(|v| !v.is_empty()).unwrap_or_else(|| {
+        if billing_mode == "standard" {
+            format!("user-{}", model_pattern)
+        } else {
+            format!("user-{billing_mode}-{}", model_pattern)
+        }
+    });
     let rule = ModelPriceRule {
         id,
         provider: input.provider.unwrap_or_else(|| {
@@ -1589,7 +1607,7 @@ pub(crate) fn upsert_model_price_rule(
         }),
         model_pattern,
         match_type: input.match_type.unwrap_or_else(|| "exact".to_string()),
-        billing_mode: "standard".to_string(),
+        billing_mode,
         currency: "USD".to_string(),
         unit: "per_1m_tokens".to_string(),
         input_price_per_1m: input.input_price_per_1m,
@@ -1639,6 +1657,7 @@ fn price_rule_entry(rule: ModelPriceRule) -> ModelPriceRuleEntry {
         provider: rule.provider,
         model_pattern: rule.model_pattern,
         match_type: rule.match_type,
+        billing_mode: rule.billing_mode,
         input_price_per_1m: rule.input_price_per_1m,
         cached_input_price_per_1m: rule.cached_input_price_per_1m,
         output_price_per_1m: rule.output_price_per_1m,

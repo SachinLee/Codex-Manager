@@ -150,6 +150,89 @@ fn write_request_log_persists_cost_with_aggregate_api_multiplier() {
 }
 
 #[test]
+fn write_request_log_uses_priority_price_for_fast_service_tier() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let usage = RequestLogUsage {
+        input_tokens: Some(1000),
+        cached_input_tokens: Some(200),
+        output_tokens: Some(500),
+        total_tokens: Some(1500),
+        reasoning_output_tokens: None,
+        first_response_ms: Some(120),
+    };
+
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            service_tier: Some("fast"),
+            ..Default::default()
+        },
+        Some("gk_fast_price"),
+        None,
+        "/v1/chat/completions",
+        "POST",
+        Some("gpt-5.4-mini"),
+        None,
+        Some("https://api.openai.com/v1/chat/completions"),
+        Some(200),
+        usage,
+        None,
+        Some(250),
+    );
+
+    let logs = storage
+        .list_request_logs_paginated(None, None, None, None, 0, 10)
+        .expect("list request logs");
+    assert_eq!(logs.len(), 1);
+    assert_close(logs[0].estimated_cost_usd.expect("estimated cost"), 0.00573);
+}
+
+#[test]
+fn write_request_log_uses_effective_priority_price_with_multiplier() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let usage = RequestLogUsage {
+        input_tokens: Some(1000),
+        cached_input_tokens: Some(200),
+        output_tokens: Some(500),
+        total_tokens: Some(1500),
+        reasoning_output_tokens: None,
+        first_response_ms: Some(120),
+    };
+
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            service_tier: Some("standard"),
+            effective_service_tier: Some("priority"),
+            cost_multiplier: Some(2.5),
+            ..Default::default()
+        },
+        Some("gk_effective_priority_price"),
+        None,
+        "/v1/chat/completions",
+        "POST",
+        Some("gpt-5.4-mini"),
+        None,
+        Some("https://api.openai.com/v1/chat/completions"),
+        Some(200),
+        usage,
+        None,
+        Some(250),
+    );
+
+    let logs = storage
+        .list_request_logs_paginated(None, None, None, None, 0, 10)
+        .expect("list request logs");
+    assert_eq!(logs.len(), 1);
+    assert_close(
+        logs[0].estimated_cost_usd.expect("estimated cost"),
+        0.014325,
+    );
+}
+
+#[test]
 fn estimate_cost_matches_openai_gpt55_prices() {
     // gpt-5.5：输入 5/M，缓存 0.5/M，输出 30/M
     // 样本：输入 1000，缓存 200，输出 500

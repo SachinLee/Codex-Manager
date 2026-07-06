@@ -370,8 +370,12 @@ pub async fn service_model_price_rules_list(
 pub async fn service_model_price_rule_read(
     addr: Option<String>,
     model_pattern: String,
+    billing_mode: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let params = serde_json::json!({ "modelPattern": model_pattern });
+    let params = serde_json::json!({
+        "modelPattern": model_pattern,
+        "billingMode": billing_mode,
+    });
     rpc_call_in_background("quota/modelPriceRule/read", addr, Some(params)).await
 }
 

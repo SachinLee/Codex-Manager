@@ -87,7 +87,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "quota/modelPriceRules/list" => super::value_or_error(read::list_model_price_rules()),
         "quota/modelPriceRule/read" => {
             let model_pattern = super::str_param(req, "modelPattern").unwrap_or("");
-            super::value_or_error(read::read_model_price_rule(model_pattern))
+            let billing_mode = super::string_param(req, "billingMode");
+            super::value_or_error(read::read_model_price_rule(model_pattern, billing_mode))
         }
         "quota/modelPriceRule/upsert" => {
             let input = ModelPriceRuleUpsertInput {
@@ -97,6 +98,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                     .unwrap_or("")
                     .to_string(),
                 match_type: super::string_param(req, "matchType"),
+                billing_mode: super::string_param(req, "billingMode"),
                 input_price_per_1m: req
                     .params
                     .as_ref()

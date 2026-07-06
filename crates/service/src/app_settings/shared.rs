@@ -20,6 +20,12 @@ pub const APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY: &str =
 pub const APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY: &str = "gateway.account_max_inflight";
 pub const APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY: &str = "gateway.reasoning_guard_enabled";
 pub const APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY: &str = "gateway.reasoning_guard_targets";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY: &str =
+    "gateway.reasoning_guard_match_mode";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY: &str =
+    "gateway.reasoning_guard_stream_action";
+pub const APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY: &str =
+    "gateway.reasoning_guard_continuation_marker_text";
 pub const APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY: &str =
     "gateway.reasoning_guard_intercept_streaming";
 pub const APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY: &str =

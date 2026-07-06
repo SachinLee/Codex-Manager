@@ -52,3 +52,41 @@ fn parse_openai_responses_event_treats_partial_image_as_non_terminal() {
     );
     assert!(event.terminal.is_none());
 }
+
+#[test]
+fn parse_openai_responses_event_collects_encrypted_reasoning_item() {
+    let lines = vec![
+        "event: response.output_item.done\n".to_string(),
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"enc-1\"}}\n".to_string(),
+        "\n".to_string(),
+    ];
+
+    let event = OpenAIResponsesEvent::parse(&lines).expect("parsed event");
+
+    assert_eq!(event.continuation_reasoning_items.len(), 1);
+    assert_eq!(
+        event.continuation_reasoning_items[0]
+            .get("encrypted_content")
+            .and_then(serde_json::Value::as_str),
+        Some("enc-1")
+    );
+}
+
+#[test]
+fn parse_openai_responses_event_collects_terminal_response_reasoning_items() {
+    let lines = vec![
+        "event: response.completed\n".to_string(),
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"role\":\"assistant\"},{\"type\":\"reasoning\",\"encrypted_content\":\"enc-2\"}]}}\n".to_string(),
+        "\n".to_string(),
+    ];
+
+    let event = OpenAIResponsesEvent::parse(&lines).expect("parsed event");
+
+    assert_eq!(event.continuation_reasoning_items.len(), 1);
+    assert_eq!(
+        event.continuation_reasoning_items[0]
+            .get("encrypted_content")
+            .and_then(serde_json::Value::as_str),
+        Some("enc-2")
+    );
+}

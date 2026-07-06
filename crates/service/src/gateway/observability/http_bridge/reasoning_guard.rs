@@ -134,11 +134,18 @@ mod tests {
         decide, reset, ReasoningGuardDecision, ReasoningGuardResponseMode, ReasoningGuardScope,
     };
 
+    fn reset_reasoning_guard_test_config() {
+        crate::gateway::reload_runtime_config_from_env();
+        crate::gateway::set_reasoning_guard_enabled(true);
+        crate::gateway::set_reasoning_guard_intercept_streaming(true);
+        crate::gateway::set_reasoning_guard_intercept_non_streaming(true);
+        crate::gateway::set_reasoning_guard_bypass_after_consecutive(0);
+    }
+
     #[test]
     fn bypasses_only_on_configured_consecutive_threshold() {
         let _guard = crate::test_env_guard();
-        crate::gateway::reload_runtime_config_from_env();
-        crate::gateway::set_reasoning_guard_enabled(true);
+        reset_reasoning_guard_test_config();
         crate::gateway::set_reasoning_guard_bypass_after_consecutive(3);
         let scope = ReasoningGuardScope::new(Some("agg-a"), Some("gpt-5.5"), "/v1/responses");
         reset(&scope);
@@ -176,10 +183,7 @@ mod tests {
     #[test]
     fn returns_internal_retry_when_budget_remains() {
         let _guard = crate::test_env_guard();
-        crate::gateway::reload_runtime_config_from_env();
-        crate::gateway::set_reasoning_guard_enabled(true);
-        crate::gateway::set_reasoning_guard_intercept_non_streaming(true);
-        crate::gateway::set_reasoning_guard_bypass_after_consecutive(0);
+        reset_reasoning_guard_test_config();
         let scope = ReasoningGuardScope::new(Some("agg-a"), Some("gpt-5.5"), "/v1/responses");
         reset(&scope);
 
@@ -195,10 +199,8 @@ mod tests {
     #[test]
     fn observes_only_when_mode_intercept_disabled() {
         let _guard = crate::test_env_guard();
-        crate::gateway::reload_runtime_config_from_env();
-        crate::gateway::set_reasoning_guard_enabled(true);
+        reset_reasoning_guard_test_config();
         crate::gateway::set_reasoning_guard_intercept_non_streaming(false);
-        crate::gateway::set_reasoning_guard_bypass_after_consecutive(0);
         let scope = ReasoningGuardScope::new(Some("agg-a"), Some("gpt-5.5"), "/v1/responses");
         reset(&scope);
 

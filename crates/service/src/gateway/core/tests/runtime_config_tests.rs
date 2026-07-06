@@ -154,6 +154,80 @@ fn reload_from_env_defaults_keep_request_gate_legacy_unbounded() {
     assert_eq!(current_codex_image_tool_model(), "gpt-image-2");
 }
 
+#[test]
+fn reasoning_guard_match_mode_switches_between_targets_and_formula() {
+    let _guard = crate::test_env_guard();
+    let _mode_guard = EnvGuard::clear(ENV_REASONING_GUARD_MATCH_MODE);
+    let _targets_guard = EnvGuard::clear(ENV_REASONING_GUARD_TARGETS);
+
+    let _ = set_reasoning_guard_targets(DEFAULT_REASONING_GUARD_TARGETS);
+    let mode = set_reasoning_guard_match_mode("targets");
+
+    assert_eq!(mode.as_str(), "targets");
+    assert!(reasoning_guard_token_matches(516));
+    assert!(reasoning_guard_token_matches(1034));
+    assert!(reasoning_guard_token_matches(1552));
+    assert!(!reasoning_guard_token_matches(2070));
+
+    let mode = set_reasoning_guard_match_mode("formula_518n_minus_2");
+
+    assert_eq!(mode.as_str(), "formula518nMinus2");
+    for token in [516, 1034, 1552, 2070] {
+        assert!(
+            reasoning_guard_token_matches(token),
+            "{token} should match the 518*n - 2 formula"
+        );
+    }
+    for token in [0, 18, 515, 517, 1035] {
+        assert!(
+            !reasoning_guard_token_matches(token),
+            "{token} should not match the 518*n - 2 formula"
+        );
+    }
+
+    let _ = set_reasoning_guard_match_mode("targets");
+    let _ = set_reasoning_guard_targets(DEFAULT_REASONING_GUARD_TARGETS);
+}
+
+#[test]
+fn reasoning_guard_stream_action_and_marker_normalize_conservatively() {
+    let _guard = crate::test_env_guard();
+    let _action_guard = EnvGuard::clear(ENV_REASONING_GUARD_STREAM_ACTION);
+    let _marker_guard = EnvGuard::clear(ENV_REASONING_GUARD_CONTINUATION_MARKER_TEXT);
+
+    assert_eq!(
+        set_reasoning_guard_stream_action(""),
+        ReasoningGuardStreamAction::StrictRetry
+    );
+    assert_eq!(
+        current_reasoning_guard_stream_action().as_str(),
+        "strictRetry"
+    );
+
+    assert_eq!(
+        set_reasoning_guard_stream_action("continuation_recovery").as_str(),
+        "continuationRecovery"
+    );
+    assert_eq!(
+        current_reasoning_guard_stream_action(),
+        ReasoningGuardStreamAction::ContinuationRecovery
+    );
+
+    assert_eq!(
+        set_reasoning_guard_continuation_marker_text("   "),
+        DEFAULT_REASONING_GUARD_CONTINUATION_MARKER_TEXT
+    );
+    assert_eq!(
+        set_reasoning_guard_continuation_marker_text("Keep going"),
+        "Keep going"
+    );
+
+    let _ = set_reasoning_guard_stream_action("strictRetry");
+    let _ = set_reasoning_guard_continuation_marker_text(
+        DEFAULT_REASONING_GUARD_CONTINUATION_MARKER_TEXT,
+    );
+}
+
 /// 函数 `parse_proxy_list_env_limits_to_five_entries`
 ///
 /// 作者: gaohongshun

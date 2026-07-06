@@ -92,3 +92,55 @@ test("formatRuntimeTimeZoneLabel 显示后端传回的时区和偏移", () => {
     "Server local time zone (UTC+01:00)"
   );
 });
+
+test("Reasoning Guard 高级模式贯穿 normalize、store 和设置页", async () => {
+  const normalizeSource = await fs.readFile(
+    path.join(appsRoot, "src", "lib", "api", "normalize.ts"),
+    "utf8"
+  );
+  assert.match(normalizeSource, /reasoningGuardMatchMode: normalizeReasoningGuardMatchMode/);
+  assert.match(normalizeSource, /reasoningGuardStreamAction: normalizeReasoningGuardStreamAction/);
+  assert.match(
+    normalizeSource,
+    /reasoningGuardContinuationMarkerText:\s*normalizeReasoningGuardContinuationMarkerText/
+  );
+  assert.match(normalizeSource, /formula518nMinus2/);
+  assert.match(normalizeSource, /continuationRecovery/);
+  assert.match(normalizeSource, /return "targets"/);
+  assert.match(normalizeSource, /return "strictRetry"/);
+
+  const storeSource = await fs.readFile(
+    path.join(appsRoot, "src", "lib", "store", "useAppStore.ts"),
+    "utf8"
+  );
+  assert.match(storeSource, /reasoningGuardMatchMode: "targets"/);
+  assert.match(storeSource, /reasoningGuardStreamAction: "strictRetry"/);
+  assert.match(storeSource, /reasoningGuardContinuationMarkerText: "Continue thinking\.\.\."/);
+
+  const gatewayTabSource = await fs.readFile(
+    path.join(
+      appsRoot,
+      "src",
+      "app",
+      "settings",
+      "components",
+      "gateway-tab-content.tsx"
+    ),
+    "utf8"
+  );
+  assert.match(gatewayTabSource, /reasoningGuardMatchMode/);
+  assert.match(gatewayTabSource, /reasoningGuardStreamAction/);
+  assert.match(gatewayTabSource, /reasoningGuardContinuationMarkerInputValue/);
+  assert.match(gatewayTabSource, /手动 token 列表/);
+  assert.match(gatewayTabSource, /518\*n - 2 公式/);
+  assert.match(gatewayTabSource, /严格重试 \(默认\)/);
+  assert.match(gatewayTabSource, /续写恢复/);
+  assert.match(
+    gatewayTabSource,
+    /disabled=\{[\s\S]*snapshot\.reasoningGuardMatchMode === "formula518nMinus2"/
+  );
+  assert.match(
+    gatewayTabSource,
+    /disabled=\{[\s\S]*snapshot\.reasoningGuardStreamAction !== "continuationRecovery"/
+  );
+});

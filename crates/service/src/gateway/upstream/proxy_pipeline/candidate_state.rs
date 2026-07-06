@@ -2,7 +2,9 @@ use bytes::Bytes;
 use codexmanager_core::storage::Account;
 use std::collections::HashMap;
 
-use super::super::support::payload_rewrite::strip_encrypted_content_from_body;
+use super::super::support::payload_rewrite::{
+    add_reasoning_encrypted_include_to_stream_body, strip_encrypted_content_from_body,
+};
 use super::request_setup::UpstreamRequestSetup;
 
 #[derive(Default)]
@@ -173,6 +175,22 @@ impl CandidateExecutionState {
             .clone()
     }
 
+    fn should_add_reasoning_encrypted_include(path: &str) -> bool {
+        matches!(path, "/responses" | "/v1/responses")
+            && super::super::super::reasoning_guard_enabled()
+            && super::super::super::reasoning_guard_intercept_streaming()
+            && super::super::super::reasoning_guard_uses_continuation_recovery()
+    }
+
+    fn maybe_add_reasoning_encrypted_include(path: &str, body: Bytes) -> Bytes {
+        if !Self::should_add_reasoning_encrypted_include(path) {
+            return body;
+        }
+        add_reasoning_encrypted_include_to_stream_body(body.as_ref())
+            .map(Bytes::from)
+            .unwrap_or(body)
+    }
+
     /// 函数 `body_for_attempt`
     ///
     /// 作者: gaohongshun
@@ -195,30 +213,31 @@ impl CandidateExecutionState {
     ) -> Bytes {
         let rewritten =
             self.rewrite_body_for_model(path, body, setup, model_override, prompt_cache_key);
-        if strip_session_affinity && setup.has_body_encrypted_content {
+        let body = if strip_session_affinity && setup.has_body_encrypted_content {
             if let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) {
-                return self
-                    .stripped_rewritten_bodies
+                self.stripped_rewritten_bodies
                     .entry(cache_key)
                     .or_insert_with(|| {
                         strip_encrypted_content_from_body(rewritten.as_ref())
                             .map(Bytes::from)
                             .unwrap_or_else(|| rewritten.clone())
                     })
-                    .clone();
+                    .clone()
+            } else {
+                if self.stripped_body.is_none() {
+                    self.stripped_body = strip_encrypted_content_from_body(rewritten.as_ref())
+                        .map(Bytes::from)
+                        .or_else(|| Some(rewritten.clone()));
+                }
+                self.stripped_body
+                    .as_ref()
+                    .expect("stripped body should be initialized")
+                    .clone()
             }
-            if self.stripped_body.is_none() {
-                self.stripped_body = strip_encrypted_content_from_body(rewritten.as_ref())
-                    .map(Bytes::from)
-                    .or_else(|| Some(rewritten.clone()));
-            }
-            self.stripped_body
-                .as_ref()
-                .expect("stripped body should be initialized")
-                .clone()
         } else {
             rewritten
-        }
+        };
+        Self::maybe_add_reasoning_encrypted_include(path, body)
     }
 
     /// 函数 `retry_body`

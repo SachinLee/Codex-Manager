@@ -409,6 +409,9 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         let action = match action {
             super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
             super::super::super::ReasoningGuardBridgeAction::InternalRetry => "internal_retry",
+            super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery => {
+                "continuation_recovery"
+            }
             super::super::super::ReasoningGuardBridgeAction::Block => "block",
             super::super::super::ReasoningGuardBridgeAction::BypassAfterConsecutive => {
                 "bypass_after_consecutive"
@@ -443,14 +446,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             estimated_cost_usd: Some(estimated_cost_usd),
             created_at: codexmanager_core::storage::now_ts(),
         };
-        if let Err(err) = self.storage.insert_gateway_reasoning_guard_event(&event) {
-            log::warn!(
-                "event=gateway_reasoning_guard_event_insert_failed trace_id={} action={} err={}",
-                self.trace_id,
-                action,
-                err
-            );
-        }
+        super::super::super::record_gateway_reasoning_guard_event(event);
     }
 
     pub(in super::super) fn record_reasoning_guard_recovered_event(
@@ -483,13 +479,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             estimated_cost_usd: None,
             created_at: codexmanager_core::storage::now_ts(),
         };
-        if let Err(err) = self.storage.insert_gateway_reasoning_guard_event(&event) {
-            log::warn!(
-                "event=gateway_reasoning_guard_event_insert_failed trace_id={} action=recovered err={}",
-                self.trace_id,
-                err
-            );
-        }
+        super::super::super::record_gateway_reasoning_guard_event(event);
     }
 }
 

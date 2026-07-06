@@ -42,6 +42,9 @@ export function GatewayTabContent({
   reasoningGuardRetryInputValue,
   setReasoningGuardRetryDraft,
   saveReasoningGuardRetryAttempts,
+  reasoningGuardContinuationMarkerInputValue,
+  setReasoningGuardContinuationMarkerDraft,
+  saveReasoningGuardContinuationMarkerText,
   quotaGuardInputValues,
   setQuotaGuardDraft,
   saveQuotaGuardField,
@@ -78,6 +81,9 @@ export function GatewayTabContent({
   reasoningGuardRetryInputValue: string;
   setReasoningGuardRetryDraft: React.Dispatch<React.SetStateAction<string | null>>;
   saveReasoningGuardRetryAttempts: () => void;
+  reasoningGuardContinuationMarkerInputValue: string;
+  setReasoningGuardContinuationMarkerDraft: React.Dispatch<React.SetStateAction<string | null>>;
+  saveReasoningGuardContinuationMarkerText: () => void;
   quotaGuardInputValues: {
     primaryMinRemainingPercent: string;
     secondaryMinRemainingPercent: string;
@@ -183,7 +189,35 @@ export function GatewayTabContent({
               }
             />
           </div>
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid gap-2">
+              <Label>{t("命中条件来源")}</Label>
+              <Select
+                value={snapshot.reasoningGuardMatchMode || "targets"}
+                onValueChange={(value) =>
+                  updateSettings.mutate({
+                    reasoningGuardMatchMode:
+                      value === "formula518nMinus2"
+                        ? "formula518nMinus2"
+                        : "targets",
+                  })
+                }
+                disabled={!snapshot.reasoningGuardEnabled}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="targets">{t("手动 token 列表")}</SelectItem>
+                  <SelectItem value="formula518nMinus2">
+                    {t("518*n - 2 公式")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground">
+                {t("公式会匹配 516、1034、1552、2070 等 reasoning_tokens。")}
+              </p>
+            </div>
             <div className="grid gap-2">
               <Label>{t("目标 token 列表")}</Label>
               <Input
@@ -192,10 +226,15 @@ export function GatewayTabContent({
                   setReasoningGuardTargetsDraft(event.target.value)
                 }
                 onBlur={saveReasoningGuardTargets}
-                disabled={!snapshot.reasoningGuardEnabled}
+                disabled={
+                  !snapshot.reasoningGuardEnabled ||
+                  snapshot.reasoningGuardMatchMode === "formula518nMinus2"
+                }
               />
               <p className="text-[10px] text-muted-foreground">
-                {t("支持逗号、空格或分号分隔；默认 516, 1034, 1552。")}
+                {snapshot.reasoningGuardMatchMode === "formula518nMinus2"
+                  ? t("公式模式下保留为回退/参考列表。")
+                  : t("支持逗号、空格或分号分隔；默认 516, 1034, 1552。")}
               </p>
             </div>
             <div className="grid gap-2">
@@ -226,6 +265,55 @@ export function GatewayTabContent({
               />
               <p className="text-[10px] text-muted-foreground">
                 {t("0 表示一直拦截；同一来源和模型达到阈值时放行本次响应并重新计数。")}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-2">
+              <Label>{t("流式命中处理")}</Label>
+              <Select
+                value={snapshot.reasoningGuardStreamAction || "strictRetry"}
+                onValueChange={(value) =>
+                  updateSettings.mutate({
+                    reasoningGuardStreamAction:
+                      value === "continuationRecovery"
+                        ? "continuationRecovery"
+                        : "strictRetry",
+                  })
+                }
+                disabled={!snapshot.reasoningGuardEnabled}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="strictRetry">
+                    {t("严格重试 (默认)")}
+                  </SelectItem>
+                  <SelectItem value="continuationRecovery">
+                    {t("续写恢复")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground">
+                {t("续写恢复仅用于 Responses 流式请求，并会携带 encrypted reasoning 继续同账号重试。")}
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>{t("续写提示文本")}</Label>
+              <Input
+                value={reasoningGuardContinuationMarkerInputValue}
+                onChange={(event) =>
+                  setReasoningGuardContinuationMarkerDraft(event.target.value)
+                }
+                onBlur={saveReasoningGuardContinuationMarkerText}
+                disabled={
+                  !snapshot.reasoningGuardEnabled ||
+                  snapshot.reasoningGuardStreamAction !== "continuationRecovery"
+                }
+              />
+              <p className="text-[10px] text-muted-foreground">
+                {t("仅在续写恢复开启时写入下一轮 input；默认 Continue thinking...。")}
               </p>
             </div>
           </div>

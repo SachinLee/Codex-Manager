@@ -13,6 +13,7 @@ use crate::aggregate_api::{
 };
 use crate::gateway::protocol_adapter::adapt_openai_responses_to_anthropic_messages;
 use crate::gateway::request_log::RequestLogUsage;
+use crate::gateway::upstream::support::payload_rewrite::build_continuation_recovery_body;
 use serde_json::Value;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
@@ -46,6 +47,9 @@ fn reasoning_guard_action_label(
     match action {
         super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
         super::super::super::ReasoningGuardBridgeAction::InternalRetry => "internal_retry",
+        super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery => {
+            "continuation_recovery"
+        }
         super::super::super::ReasoningGuardBridgeAction::Block => "block",
         super::super::super::ReasoningGuardBridgeAction::BypassAfterConsecutive => {
             "bypass_after_consecutive"
@@ -102,20 +106,11 @@ fn record_aggregate_api_reasoning_guard_event(
         estimated_cost_usd: Some(estimated_cost_usd),
         created_at: now_ts(),
     };
-    if let Err(err) = storage.insert_gateway_reasoning_guard_event(&event) {
-        log::warn!(
-            "event=aggregate_api_reasoning_guard_event_insert_failed trace_id={} aggregate_api_id={} action={} err={}",
-            trace_id,
-            candidate_id,
-            event.action,
-            err
-        );
-    }
+    super::super::super::record_gateway_reasoning_guard_event(event);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn record_aggregate_api_reasoning_guard_recovered_event(
-    storage: &Storage,
     trace_id: &str,
     candidate_id: &str,
     supplier_name: Option<&str>,
@@ -146,14 +141,7 @@ fn record_aggregate_api_reasoning_guard_recovered_event(
         estimated_cost_usd: None,
         created_at: now_ts(),
     };
-    if let Err(err) = storage.insert_gateway_reasoning_guard_event(&event) {
-        log::warn!(
-            "event=aggregate_api_reasoning_guard_recovered_event_insert_failed trace_id={} aggregate_api_id={} err={}",
-            trace_id,
-            candidate_id,
-            err
-        );
-    }
+    super::super::super::record_gateway_reasoning_guard_event(event);
 }
 
 #[derive(Debug, Deserialize)]
@@ -1178,6 +1166,7 @@ pub(in super::super) fn proxy_aggregate_request(
         let mut reasoning_guard_retry_attempt_index = 0_i64;
         let max_attempts_per_channel =
             AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL + reasoning_guard_retry_budget_remaining;
+        let mut retry_body_override: Option<Bytes> = None;
         for attempt_idx in 0..=max_attempts_per_channel {
             if super::super::support::deadline::is_expired(request_deadline) {
                 let message = "aggregate api request timeout".to_string();
@@ -1271,8 +1260,9 @@ pub(in super::super) fn proxy_aggregate_request(
                 _ => {}
             }
 
+            let attempt_body = retry_body_override.as_ref().unwrap_or(body);
             let rewritten_body =
-                rewrite_body_model_override(body, candidate.model_override.as_deref());
+                rewrite_body_model_override(attempt_body, candidate.model_override.as_deref());
             let upstream_body = if bridge_responses_to_anthropic {
                 Bytes::from(adapt_openai_responses_to_anthropic_messages(
                     rewritten_body.as_ref(),
@@ -1479,7 +1469,11 @@ pub(in super::super) fn proxy_aggregate_request(
                         first_response_ms: bridge.usage.first_response_ms,
                     },
                 );
-                if action == super::super::super::ReasoningGuardBridgeAction::InternalRetry {
+                if matches!(
+                    action,
+                    super::super::super::ReasoningGuardBridgeAction::InternalRetry
+                        | super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
+                ) {
                     if let Some(returned_request) = bridge.pending_failover_request {
                         request = Some(returned_request);
                         if reasoning_guard_retry_budget_remaining == 0 {
@@ -1494,6 +1488,26 @@ pub(in super::super) fn proxy_aggregate_request(
                             reasoning_guard_retry_budget_remaining.saturating_sub(1);
                         reasoning_guard_retry_attempt_index =
                             reasoning_guard_retry_attempt_index.saturating_add(1);
+                        retry_body_override = if action
+                            == super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
+                        {
+                            build_continuation_recovery_body(
+                                upstream_body.as_ref(),
+                                bridge.continuation_reasoning_items.as_slice(),
+                                &crate::gateway::current_reasoning_guard_continuation_marker_text(),
+                            )
+                            .map(Bytes::from)
+                            .or_else(|| {
+                                log::warn!(
+                                    "event=aggregate_api_reasoning_guard_continuation_body_unavailable trace_id={} aggregate_api_id={}",
+                                    trace_id,
+                                    candidate_id
+                                );
+                                None
+                            })
+                        } else {
+                            None
+                        };
                         super::super::super::record_gateway_reasoning_guard_internal_retry(
                             is_stream,
                         );
@@ -1510,7 +1524,6 @@ pub(in super::super) fn proxy_aggregate_request(
             let usage = bridge.usage;
             if reasoning_guard_retry_attempt_index > 0 && !is_reasoning_guard && bridge_ok {
                 record_aggregate_api_reasoning_guard_recovered_event(
-                    storage,
                     trace_id,
                     candidate_id.as_str(),
                     candidate_supplier_name.as_deref(),

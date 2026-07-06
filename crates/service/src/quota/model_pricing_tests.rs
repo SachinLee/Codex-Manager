@@ -5,6 +5,7 @@ fn test_rule(
     id: &str,
     model_pattern: &str,
     match_type: &str,
+    billing_mode: &str,
     priority: i64,
     input: f64,
     cached: Option<f64>,
@@ -15,7 +16,7 @@ fn test_rule(
         provider: "test".to_string(),
         model_pattern: model_pattern.to_string(),
         match_type: match_type.to_string(),
-        billing_mode: "standard".to_string(),
+        billing_mode: billing_mode.to_string(),
         currency: "USD".to_string(),
         unit: "per_1m_tokens".to_string(),
         input_price_per_1m: Some(input),
@@ -87,11 +88,21 @@ impl Drop for EnvGuard {
 #[test]
 fn resolves_exact_and_wildcard_database_rules() {
     let rules = vec![
-        test_rule("wild", "vendor-*-mini", "wildcard", 10, 1.0, Some(0.1), 2.0),
+        test_rule(
+            "wild",
+            "vendor-*-mini",
+            "wildcard",
+            "standard",
+            10,
+            1.0,
+            Some(0.1),
+            2.0,
+        ),
         test_rule(
             "exact",
             "vendor-model-mini",
             "exact",
+            "standard",
             100,
             3.0,
             Some(0.3),
@@ -192,6 +203,7 @@ fn estimate_cost_usd_for_log_reuses_cached_enabled_price_rules_until_invalidated
         "cached-rule",
         "cache-model",
         "exact",
+        "standard",
         50_000,
         1.0,
         Some(1.0),
@@ -222,4 +234,116 @@ fn estimate_cost_usd_for_log_reuses_cached_enabled_price_rules_until_invalidated
     let refreshed =
         estimate_cost_usd_for_log(&storage, Some("cache-model"), Some(1_000_000), None, None);
     assert_close(refreshed, 2.0);
+}
+
+#[test]
+fn priority_billing_mode_prefers_priority_rule() {
+    let rules = vec![
+        test_rule(
+            "standard",
+            "tiered-model",
+            "exact",
+            "standard",
+            50,
+            1.0,
+            Some(0.1),
+            2.0,
+        ),
+        test_rule(
+            "priority",
+            "tiered-model",
+            "exact",
+            "priority",
+            50,
+            3.0,
+            Some(0.3),
+            6.0,
+        ),
+    ];
+
+    let price =
+        resolve_model_price_from_rules_for_billing_mode(&rules, "tiered-model", Some("fast"), 0)
+            .expect("priority rule");
+
+    assert_close(price.input_price_per_1m, 3.0);
+    assert_close(price.cached_input_price_per_1m, 0.3);
+    assert_close(price.output_price_per_1m, 6.0);
+}
+
+#[test]
+fn priority_billing_mode_falls_back_to_standard_rule() {
+    let rules = vec![test_rule(
+        "standard",
+        "fallback-model",
+        "exact",
+        "standard",
+        50,
+        1.0,
+        Some(0.1),
+        2.0,
+    )];
+
+    let price = resolve_model_price_from_rules_for_billing_mode(
+        &rules,
+        "fallback-model",
+        Some("priority"),
+        0,
+    )
+    .expect("standard fallback");
+
+    assert_close(price.input_price_per_1m, 1.0);
+    assert_close(price.cached_input_price_per_1m, 0.1);
+    assert_close(price.output_price_per_1m, 2.0);
+}
+
+#[test]
+fn standard_billing_mode_does_not_use_priority_rule() {
+    let rules = vec![test_rule(
+        "priority",
+        "priority-only-model",
+        "exact",
+        "priority",
+        50,
+        3.0,
+        Some(0.3),
+        6.0,
+    )];
+
+    let price =
+        resolve_model_price_from_rules_for_billing_mode(&rules, "priority-only-model", None, 0);
+
+    assert!(price.is_none());
+}
+
+#[test]
+fn official_priority_prices_are_mode_specific() {
+    let standard =
+        resolve_model_price_for_billing_mode("gpt-5.5", None, 0).expect("standard gpt-5.5");
+    assert_close(standard.input_price_per_1m, 5.0);
+    assert_close(standard.cached_input_price_per_1m, 0.5);
+    assert_close(standard.output_price_per_1m, 30.0);
+
+    let priority =
+        resolve_model_price_for_billing_mode("gpt-5.5", Some("fast"), 0).expect("priority gpt-5.5");
+    assert_close(priority.input_price_per_1m, 12.5);
+    assert_close(priority.cached_input_price_per_1m, 1.25);
+    assert_close(priority.output_price_per_1m, 75.0);
+
+    let gpt54 = resolve_model_price_for_billing_mode("gpt-5.4", Some("priority"), 0)
+        .expect("priority gpt-5.4");
+    assert_close(gpt54.input_price_per_1m, 5.0);
+    assert_close(gpt54.cached_input_price_per_1m, 0.5);
+    assert_close(gpt54.output_price_per_1m, 30.0);
+
+    let gpt54_mini = resolve_model_price_for_billing_mode("gpt-5.4-mini", Some("fast"), 0)
+        .expect("priority gpt-5.4-mini");
+    assert_close(gpt54_mini.input_price_per_1m, 1.5);
+    assert_close(gpt54_mini.cached_input_price_per_1m, 0.15);
+    assert_close(gpt54_mini.output_price_per_1m, 9.0);
+
+    let codex = resolve_model_price_for_billing_mode("gpt-5.3-codex", Some("priority"), 0)
+        .expect("priority gpt-5.3-codex");
+    assert_close(codex.input_price_per_1m, 3.5);
+    assert_close(codex.cached_input_price_per_1m, 0.35);
+    assert_close(codex.output_price_per_1m, 28.0);
 }

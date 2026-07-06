@@ -76,6 +76,8 @@ Questions to answer:
   - `codexmanager_gateway_reasoning_guard_blocks_total{mode="stream|non_stream"}`
   - `codexmanager_gateway_reasoning_guard_internal_retries_total{mode="stream|non_stream"}`
   - `codexmanager_gateway_upstream_capacity_internal_retries_total`
+- Service event recorder:
+  - `record_gateway_reasoning_guard_event(event: GatewayReasoningGuardEvent)`
 
 ### 3. Contracts
 - Default targets are `[516, 1034, 1552]`; invalid, duplicate, or non-positive target values are ignored, and an empty normalized list falls back to defaults.
@@ -86,6 +88,9 @@ Questions to answer:
 - Upstream capacity retry uses the same `RetrySameCandidate` transport path with a distinct reason. It must not reuse the reasoning guard retry budget or metrics.
 - Capacity matching is intentionally narrow: match only `Selected model is at capacity. Please try a different model.` plus project-generated `key=value` prefixes or debug suffixes; do not use generic substring matching for `capacity`.
 - Gateway tests that mutate `reasoningGuard*` env or runtime settings must initialize the full guard config under `test_env_guard`, including enabled state, targets, both intercept switches, retry attempts, and consecutive-bypass threshold. Runtime setters mirror values back into env vars, so partial per-test setup can leak state into later server startups.
+- Persist reasoning guard request-log events through `record_gateway_reasoning_guard_event`; do not call `storage.insert_gateway_reasoning_guard_event` directly from gateway request execution or HTTP bridge code.
+- Production event persistence must keep synchronous SQLite work out of the request hot path. Use a bounded async queue for normal writes and fall back to synchronous insertion only when the queue is full or disconnected, so events are not silently lost under pressure.
+- Tests should keep reasoning guard event insertion synchronous. This avoids background threads opening storage after a test-specific DB path or env guard has been reset.
 
 ### 4. Validation & Error Matrix
 - Enabled + both intercepts false -> reject app settings patch.
@@ -97,11 +102,16 @@ Questions to answer:
 - Test only sets one guard env key after a previous test disabled the guard -> later startup may inherit stale runtime/env state; set the full guard env matrix for every reasoning guard gateway test.
 - Capacity message match + capacity retry budget remains -> count capacity internal retry, retry the same candidate, and skip ordinary gateway error follow-up/failover.
 - Capacity message match + capacity retry budget exhausted -> return the upstream capacity error to the client without ordinary failover follow-up.
+- Event queue accepts a reasoning guard event in production -> return to the request flow immediately; a background worker writes the event to SQLite.
+- Event queue is full or disconnected -> synchronously insert the event and log only if storage is unavailable or insertion fails.
+- Test records a reasoning guard event -> insert synchronously in the same call so assertions do not race a background writer.
 
 ### 5. Good/Base/Bad Cases
 - Good: first upstream response has `reasoning_tokens=1034`, retry budget is `1`, second same-account response is clean; client receives the second response, metrics increment match and internal retry only.
+- Good: bridge and proxy pipeline call `record_gateway_reasoning_guard_event`, keeping production request handling non-blocking while preserving event durability on queue backpressure.
 - Base: retry attempts are `0`; a matching response returns 502 and does not call the next candidate.
 - Bad: a guard match enters generic gateway error follow-up before the internal retry decision; this can mark the account unavailable or trigger ordinary failover.
+- Bad: bridge code opens storage and inserts the reasoning guard event directly before returning; this can add SQLite latency to every matching request and makes tests race background storage state.
 
 ### 6. Tests Required
 - Runtime/app settings tests must cover default fields, persisted snapshot round-trip, normalized targets, and rejecting enabled guard with both intercept modes disabled.
@@ -109,6 +119,8 @@ Questions to answer:
 - Gateway reasoning guard tests should use a shared helper for complete guard env initialization so default parallel execution does not depend on test order.
 - Metrics tests should assert match, block, and internal retry counters via `/metrics` or the narrowest available metrics API.
 - Capacity retry tests should assert same-account retry and `codexmanager_gateway_upstream_capacity_internal_retries_total` without depending on unrelated async usage refresh side effects.
+- Event persistence tests should assert through request-log/gateway-log surfaces after the request completes; do not depend on production background worker timing.
+- Unit tests that directly exercise event recording should run against the test-only synchronous path.
 
 ### 7. Wrong vs Correct
 #### Wrong
@@ -130,6 +142,18 @@ let follow_up = if should_retry_same_candidate {
         .as_deref()
         .map(|error| context.apply_gateway_error_follow_up(account_id, error, has_more_candidates))
 };
+```
+
+#### Wrong
+```rust
+if let Some(storage) = crate::storage_helpers::open_storage() {
+    let _ = storage.insert_gateway_reasoning_guard_event(&event);
+}
+```
+
+#### Correct
+```rust
+record_gateway_reasoning_guard_event(event);
 ```
 
 #### Wrong

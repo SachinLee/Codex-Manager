@@ -39,6 +39,8 @@ interface ModelCatalogModalProps {
   isSaving?: boolean;
   onSave: (payload: ManagedModelPayload) => Promise<ManagedModelInfo | null>;
   onSavePriceRule?: (payload: ModelPriceRuleUpsertPayload) => Promise<void>;
+  priceBillingMode?: "standard" | "priority";
+  onPriceBillingModeChange?: (value: "standard" | "priority") => void;
   priceRule?: ModelPriceRuleEntry | null;
 }
 
@@ -288,6 +290,8 @@ export function ModelCatalogModal({
   isSaving = false,
   onSave,
   onSavePriceRule,
+  priceBillingMode = "standard",
+  onPriceBillingModeChange,
   priceRule,
 }: ModelCatalogModalProps) {
   const { t } = useI18n();
@@ -405,6 +409,7 @@ export function ModelCatalogModal({
             id: priceRule?.id,
             provider: priceRule?.provider ?? undefined,
             modelPattern: slug,
+            billingMode: priceBillingMode,
             inputPricePer1m: isClearingExistingOverride ? 0 : Number(ip),
             cachedInputPricePer1m: isClearingExistingOverride
               ? null
@@ -611,6 +616,27 @@ export function ModelCatalogModal({
               {priceError ? (
                 <p className="text-xs text-destructive">{priceError}</p>
               ) : null}
+            </div>
+            <div className="space-y-2">
+              <Label>{t("价格档位")}</Label>
+              <Select
+                value={priceBillingMode}
+                onValueChange={(value) =>
+                  onPriceBillingModeChange?.(
+                    value === "priority" ? "priority" : "standard",
+                  )
+                }
+              >
+                <SelectTrigger className="w-full md:w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="priority">Fast / Priority</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">

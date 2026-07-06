@@ -116,17 +116,6 @@ pub(crate) fn collect_gateway_candidates_with_low_quota_mode(
     Ok(candidates)
 }
 
-pub(crate) fn collect_gateway_candidates_for_accounts_with_low_quota_mode(
-    storage: &Storage,
-    account_ids: &[String],
-    low_quota_mode: LowQuotaCandidateMode,
-) -> Result<Vec<(Account, Token)>, String> {
-    if account_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    collect_gateway_candidates_uncached(storage, low_quota_mode, Some(account_ids))
-}
-
 /// 函数 `collect_gateway_candidates_uncached`
 ///
 /// 作者: gaohongshun

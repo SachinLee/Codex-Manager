@@ -2101,6 +2101,34 @@ function normalizeReasoningGuardTargets(payload: unknown): number[] {
   return values.length > 0 ? values : [516, 1034, 1552];
 }
 
+function normalizeReasoningGuardMatchMode(payload: unknown): string {
+  const normalized = asString(payload).toLowerCase();
+  if (
+    normalized === "formula518nminus2" ||
+    normalized === "formula_518n_minus_2"
+  ) {
+    return "formula518nMinus2";
+  }
+  return "targets";
+}
+
+function normalizeReasoningGuardStreamAction(payload: unknown): string {
+  const normalized = asString(payload).toLowerCase();
+  if (
+    normalized === "continuationrecovery" ||
+    normalized === "continuation_recovery" ||
+    normalized === "continuation-recovery"
+  ) {
+    return "continuationRecovery";
+  }
+  return "strictRetry";
+}
+
+function normalizeReasoningGuardContinuationMarkerText(payload: unknown): string {
+  const value = asString(payload).trim();
+  return value || "Continue thinking...";
+}
+
 export function normalizeRuntimeTimeZone(payload: unknown): RuntimeTimeZone {
   const source = asObject(payload);
   return {
@@ -2189,6 +2217,17 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     ),
     accountMaxInflight: asInteger(source.accountMaxInflight, 1, 0),
     reasoningGuardEnabled: asBoolean(source.reasoningGuardEnabled, true),
+    reasoningGuardMatchMode: normalizeReasoningGuardMatchMode(
+      source.reasoningGuardMatchMode ?? source.reasoning_guard_match_mode
+    ),
+    reasoningGuardStreamAction: normalizeReasoningGuardStreamAction(
+      source.reasoningGuardStreamAction ?? source.reasoning_guard_stream_action
+    ),
+    reasoningGuardContinuationMarkerText:
+      normalizeReasoningGuardContinuationMarkerText(
+        source.reasoningGuardContinuationMarkerText ??
+          source.reasoning_guard_continuation_marker_text
+      ),
     reasoningGuardTargets: normalizeReasoningGuardTargets(
       source.reasoningGuardTargets ?? source.reasoning_guard_targets
     ),

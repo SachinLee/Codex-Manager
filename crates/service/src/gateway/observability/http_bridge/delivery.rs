@@ -129,6 +129,7 @@ fn reasoning_guard_bridge_result(
     pending_failover_request: Option<Request>,
     action: ReasoningGuardBridgeAction,
     target_token: Option<i64>,
+    continuation_reasoning_items: Vec<Value>,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> UpstreamResponseBridgeResult {
     with_bridge_debug_meta(
@@ -140,6 +141,7 @@ fn reasoning_guard_bridge_result(
             pending_failover_request,
             reasoning_guard_action: Some(action),
             reasoning_guard_target_token: target_token,
+            continuation_reasoning_items,
             ..UpstreamResponseBridgeResult::default()
         },
         meta.request_id,
@@ -192,6 +194,7 @@ fn respond_reasoning_guard(
         None,
         ReasoningGuardBridgeAction::Block,
         Some(target_token),
+        Vec::new(),
         meta,
     );
     result.delivery_error = delivery_error;
@@ -204,6 +207,11 @@ fn should_apply_reasoning_guard_to_path(request_path: &str) -> bool {
         path,
         "/responses" | "/chat/completions" | "/v1/responses" | "/v1/chat/completions"
     )
+}
+
+fn is_responses_request_path(request_path: &str) -> bool {
+    let path = request_path.split('?').next().unwrap_or(request_path);
+    matches!(path, "/responses" | "/v1/responses")
 }
 
 fn reasoning_guard_outcome(
@@ -253,18 +261,21 @@ fn handle_reasoning_guard_outcome(
     headers: Vec<Header>,
     usage: UpstreamResponseUsage,
     outcome: ReasoningGuardOutcome,
+    continuation_reasoning_items: Vec<Value>,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> Result<UpstreamResponseBridgeResult, (Request, Vec<Header>)> {
     match outcome.action {
         ReasoningGuardBridgeAction::ObserveOnly
         | ReasoningGuardBridgeAction::BypassAfterConsecutive => Err((request, headers)),
-        ReasoningGuardBridgeAction::InternalRetry => Ok(reasoning_guard_bridge_result(
+        ReasoningGuardBridgeAction::InternalRetry
+        | ReasoningGuardBridgeAction::ContinuationRecovery => Ok(reasoning_guard_bridge_result(
             usage,
             outcome.message,
             None,
             Some(request),
-            ReasoningGuardBridgeAction::InternalRetry,
+            outcome.action,
             Some(outcome.target_token),
+            continuation_reasoning_items,
             meta,
         )),
         ReasoningGuardBridgeAction::Block => {
@@ -293,7 +304,7 @@ fn maybe_handle_reasoning_guard(
     if let Some(outcome) =
         reasoning_guard_outcome(&usage, guard_scope, mode, retry_budget_remaining)
     {
-        handle_reasoning_guard_outcome(request, headers, usage, outcome, meta)
+        handle_reasoning_guard_outcome(request, headers, usage, outcome, Vec::new(), meta)
     } else {
         Err((request, headers))
     }
@@ -328,6 +339,7 @@ fn respond_usage_collector_stream(
 
 fn respond_passthrough_collector_stream_strict_guard(
     mut request: Request,
+    request_path: &str,
     status: StatusCode,
     mut headers: Vec<Header>,
     mut response_body: Box<dyn std::io::Read + Send>,
@@ -365,17 +377,26 @@ fn respond_passthrough_collector_stream_strict_guard(
         .unwrap_or_default();
 
     if read_error.is_none() {
-        if let Some(outcome) = reasoning_guard_outcome(
+        if let Some(mut outcome) = reasoning_guard_outcome(
             &collector.usage,
             guard_scope,
             ReasoningGuardResponseMode::Stream,
             reasoning_guard_retry_budget_remaining,
         ) {
+            if outcome.action == ReasoningGuardBridgeAction::InternalRetry
+                && crate::gateway::reasoning_guard_uses_continuation_recovery()
+                && is_responses_request_path(request_path)
+                && !collector.continuation_reasoning_items.is_empty()
+                && reasoning_guard_retry_budget_remaining > 0
+            {
+                outcome.action = ReasoningGuardBridgeAction::ContinuationRecovery;
+            }
             match handle_reasoning_guard_outcome(
                 request,
                 headers,
                 collector.usage.clone(),
                 outcome,
+                collector.continuation_reasoning_items.clone(),
                 meta,
             ) {
                 Ok(result) => return result,
@@ -413,6 +434,7 @@ fn respond_passthrough_collector_stream_strict_guard(
             pending_failover_request: None,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
+            continuation_reasoning_items: Vec::new(),
         },
         meta.request_id,
         meta.cf_ray,
@@ -455,6 +477,7 @@ fn respond_passthrough_collector_stream(
             pending_failover_request: None,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
+            continuation_reasoning_items: Vec::new(),
         },
         meta.request_id,
         meta.cf_ray,
@@ -1252,6 +1275,7 @@ pub(crate) fn respond_with_upstream(
                 if should_apply_reasoning_guard_to_path(request_path) {
                     let result = respond_passthrough_collector_stream_strict_guard(
                         request,
+                        request_path,
                         status,
                         headers,
                         response_body,
@@ -1303,6 +1327,7 @@ pub(crate) fn respond_with_upstream(
                         pending_failover_request: None,
                         reasoning_guard_action: None,
                         reasoning_guard_target_token: None,
+                        continuation_reasoning_items: Vec::new(),
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -2197,6 +2222,7 @@ pub(crate) fn respond_with_stream_upstream(
                 if should_apply_reasoning_guard_to_path(request_path) {
                     let result = respond_passthrough_collector_stream_strict_guard(
                         request,
+                        request_path,
                         status,
                         headers,
                         response_body,
@@ -2248,6 +2274,7 @@ pub(crate) fn respond_with_stream_upstream(
                         pending_failover_request: None,
                         reasoning_guard_action: None,
                         reasoning_guard_target_token: None,
+                        continuation_reasoning_items: Vec::new(),
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
