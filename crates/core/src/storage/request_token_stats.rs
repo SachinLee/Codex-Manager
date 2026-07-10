@@ -3,6 +3,7 @@ use serde_json::Value as JsonValue;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::key_id_filters::TempKeyIdFilter;
+use super::reasoning_guard_events::GUARD_RETRY_ACTION_SQL;
 use super::{
     now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary, ApiKeyModelTokenUsageSummary,
     ApiKeyTokenUsageSummary, DailyTokenUsageRollup, RequestLogTodaySummary, RequestTokenStat,
@@ -704,7 +705,7 @@ impl Storage {
         end_ts: i64,
     ) -> Result<Vec<AggregateApiDailyUsageSummary>> {
         self.ensure_gateway_reasoning_guard_events_table()?;
-        let mut stmt = self.conn.prepare(
+        let sql = format!(
             "WITH base_rollup AS (
                 SELECT
                     aggregate_api_id,
@@ -744,11 +745,11 @@ impl Storage {
                     source_id AS aggregate_api_id,
                     IFNULL(SUM(CASE WHEN IFNULL(total_tokens, 0) > 0 THEN total_tokens ELSE 0 END), 0) AS guard_retry_total_tokens,
                     IFNULL(SUM(CASE WHEN IFNULL(estimated_cost_usd, 0.0) > 0.0 THEN estimated_cost_usd ELSE 0.0 END), 0.0) AS guard_retry_estimated_cost_usd
-                 FROM gateway_reasoning_guard_events
-                 WHERE action = 'internal_retry'
-                    AND source_kind = 'aggregate_api'
-                    AND source_id IS NOT NULL
-                    AND TRIM(source_id) <> ''
+                  FROM gateway_reasoning_guard_events
+                  WHERE {retry_action_sql}
+                     AND source_kind = 'aggregate_api'
+                     AND source_id IS NOT NULL
+                     AND TRIM(source_id) <> ''
                     AND created_at >= ?1
                     AND created_at < ?2
                  GROUP BY source_id
@@ -772,7 +773,9 @@ impl Storage {
                 b.estimated_cost_usd + COALESCE(g.guard_retry_estimated_cost_usd, 0.0) DESC,
                 b.total_tokens + COALESCE(g.guard_retry_total_tokens, 0) DESC,
                 b.aggregate_api_id ASC",
-        )?;
+            retry_action_sql = GUARD_RETRY_ACTION_SQL
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query((start_ts, end_ts))?;
         let mut items = Vec::new();
         while let Some(row) = rows.next()? {

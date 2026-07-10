@@ -483,7 +483,7 @@ fn request_logs_filtered_summary_includes_guard_retry_billable_usage() {
         .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
             trace_id: Some("trc-guard-summary".to_string()),
             mode: "non_stream".to_string(),
-            action: "internal_retry".to_string(),
+            action: "continuation_recovery".to_string(),
             source_kind: Some("openai_account".to_string()),
             source_id: Some("acc-guard-summary".to_string()),
             total_tokens: Some(40),
@@ -514,6 +514,36 @@ fn request_logs_filtered_summary_includes_guard_retry_billable_usage() {
     assert!((summary.estimated_cost_usd - 0.14).abs() < f64::EPSILON);
     assert_eq!(summary.guard_retry_total_tokens, 40);
     assert!((summary.guard_retry_estimated_cost_usd - 0.04).abs() < f64::EPSILON);
+}
+
+#[test]
+fn reasoning_guard_trace_summary_counts_continuation_recovery_as_retry_usage() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    storage
+        .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
+            trace_id: Some("trc-continuation-summary".to_string()),
+            mode: "stream".to_string(),
+            action: "continuation_recovery".to_string(),
+            total_tokens: Some(22),
+            estimated_cost_usd: Some(0.022),
+            created_at: 2_200,
+            ..Default::default()
+        })
+        .expect("insert continuation recovery event");
+
+    let summaries = storage
+        .summarize_reasoning_guard_by_trace_ids(&["trc-continuation-summary".to_string()])
+        .expect("summarize guard trace");
+    assert_eq!(summaries.len(), 1);
+    let summary = &summaries[0];
+    assert_eq!(summary.internal_retry_count, 1);
+    assert_eq!(summary.retry_total_tokens, 22);
+    assert!((summary.retry_estimated_cost_usd - 0.022).abs() < f64::EPSILON);
+    assert_eq!(
+        summary.last_action.as_deref(),
+        Some("continuation_recovery")
+    );
 }
 
 #[test]
@@ -892,7 +922,7 @@ fn summarizes_daily_usage_by_aggregate_api_from_token_stats() {
         .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
             trace_id: Some("trc-ag-a-guard".to_string()),
             mode: "non_stream".to_string(),
-            action: "internal_retry".to_string(),
+            action: "continuation_recovery".to_string(),
             source_kind: Some("aggregate_api".to_string()),
             source_id: Some("ag-a".to_string()),
             supplier_name: Some("Supplier A".to_string()),

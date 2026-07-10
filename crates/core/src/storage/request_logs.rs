@@ -1,6 +1,7 @@
 use rusqlite::{params, params_from_iter, types::Value, Result, Row};
 
 use super::key_id_filters::KeyIdSqlFilter;
+use super::reasoning_guard_events::GUARD_RETRY_ACTION_SQL;
 use super::{
     request_log_query, RequestLog, RequestLogQuerySummary, RequestLogTodaySummary,
     RequestTokenStat, Storage,
@@ -527,7 +528,7 @@ impl Storage {
                     IFNULL(SUM(CASE WHEN IFNULL(total_tokens, 0) > 0 THEN total_tokens ELSE 0 END), 0) AS retry_total_tokens,
                     IFNULL(SUM(CASE WHEN IFNULL(estimated_cost_usd, 0.0) > 0.0 THEN estimated_cost_usd ELSE 0.0 END), 0.0) AS retry_estimated_cost_usd
                 FROM gateway_reasoning_guard_events
-                WHERE action = 'internal_retry'
+                WHERE {retry_action_sql}
                   AND trace_id IS NOT NULL
                   AND TRIM(trace_id) <> ''
                 GROUP BY trace_id
@@ -543,7 +544,8 @@ impl Storage {
              FROM filtered f
              LEFT JOIN guard_retry g ON g.trace_id = f.trace_id",
             account_join = account_join_clause(include_account_lookup),
-            where_clause = filters.where_clause
+            where_clause = filters.where_clause,
+            retry_action_sql = GUARD_RETRY_ACTION_SQL
         );
         self.conn
             .query_row(&sql, params_from_iter(filters.params.iter()), |row| {
@@ -611,7 +613,7 @@ impl Storage {
                     IFNULL(SUM(CASE WHEN IFNULL(total_tokens, 0) > 0 THEN total_tokens ELSE 0 END), 0) AS retry_total_tokens,
                     IFNULL(SUM(CASE WHEN IFNULL(estimated_cost_usd, 0.0) > 0.0 THEN estimated_cost_usd ELSE 0.0 END), 0.0) AS retry_estimated_cost_usd
                 FROM gateway_reasoning_guard_events
-                WHERE action = 'internal_retry'
+                WHERE {retry_action_sql}
                   AND trace_id IS NOT NULL
                   AND TRIM(trace_id) <> ''
                 GROUP BY trace_id
@@ -627,7 +629,8 @@ impl Storage {
              FROM filtered f
              LEFT JOIN guard_retry g ON g.trace_id = f.trace_id",
             account_join = account_join_clause(include_account_lookup),
-            where_clause = filters.where_clause
+            where_clause = filters.where_clause,
+            retry_action_sql = GUARD_RETRY_ACTION_SQL
         );
         self.conn
             .query_row(&sql, params_from_iter(filters.params.iter()), |row| {

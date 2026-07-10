@@ -74,34 +74,20 @@ pub(in super::super) fn strip_encrypted_content_from_body(body: &[u8]) -> Option
     serde_json::to_vec(&value).ok()
 }
 
-fn request_stream_enabled(value: &Value) -> bool {
-    value
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn merge_encrypted_include(value: &mut Value) -> bool {
+fn remove_continuation_encrypted_include(value: &mut Value) {
     let Some(object) = value.as_object_mut() else {
-        return false;
+        return;
     };
-    let include = object
-        .entry("include".to_string())
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if !include.is_array() {
-        *include = Value::Array(Vec::new());
-    }
+    let Some(include) = object.get_mut("include") else {
+        return;
+    };
     let Some(items) = include.as_array_mut() else {
-        return false;
+        return;
     };
-    if items
-        .iter()
-        .any(|item| item.as_str() == Some(CONTINUATION_ENCRYPTED_INCLUDE))
-    {
-        return false;
+    items.retain(|item| item.as_str() != Some(CONTINUATION_ENCRYPTED_INCLUDE));
+    if items.is_empty() {
+        object.remove("include");
     }
-    items.push(Value::String(CONTINUATION_ENCRYPTED_INCLUDE.to_string()));
-    true
 }
 
 fn normalize_continuation_input_item(item: &Value) -> Value {
@@ -116,39 +102,39 @@ fn normalize_continuation_input_item(item: &Value) -> Value {
     }
 }
 
+fn sanitize_continuation_input_item(item: &Value) -> Option<Value> {
+    let mut normalized = normalize_continuation_input_item(item);
+    if normalized
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|item_type| item_type == "reasoning")
+    {
+        return None;
+    }
+    strip_encrypted_content_value(&mut normalized);
+    Some(normalized)
+}
+
 fn continuation_input_items(input: Option<&Value>) -> Vec<Value> {
     match input {
         Some(Value::Array(items)) => items
             .iter()
-            .map(normalize_continuation_input_item)
+            .filter_map(sanitize_continuation_input_item)
             .collect(),
-        Some(value) => vec![normalize_continuation_input_item(value)],
+        Some(value) => sanitize_continuation_input_item(value)
+            .into_iter()
+            .collect(),
         None => Vec::new(),
     }
 }
 
-pub(in super::super) fn add_reasoning_encrypted_include_to_stream_body(
-    body: &[u8],
-) -> Option<Vec<u8>> {
-    let mut value: Value = serde_json::from_slice(body).ok()?;
-    if !request_stream_enabled(&value) || !merge_encrypted_include(&mut value) {
-        return None;
-    }
-    serde_json::to_vec(&value).ok()
-}
-
 pub(in super::super) fn build_continuation_recovery_body(
     body: &[u8],
-    reasoning_items: &[Value],
     marker_text: &str,
 ) -> Option<Vec<u8>> {
-    if reasoning_items.is_empty() {
-        return None;
-    }
     let mut value: Value = serde_json::from_slice(body).ok()?;
     let input = continuation_input_items(value.get("input"));
     let mut next_input = input;
-    next_input.extend(reasoning_items.iter().cloned());
     next_input.push(serde_json::json!({
         "type": "message",
         "role": "assistant",
@@ -159,8 +145,9 @@ pub(in super::super) fn build_continuation_recovery_body(
         }],
     }));
     let object = value.as_object_mut()?;
+    object.remove("previous_response_id");
     object.insert("stream".to_string(), Value::Bool(true));
-    merge_encrypted_include(&mut value);
+    remove_continuation_encrypted_include(&mut value);
     value["input"] = Value::Array(next_input);
     serde_json::to_vec(&value).ok()
 }
@@ -170,38 +157,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_reasoning_encrypted_include_to_stream_body_preserves_existing_include() {
-        let body = br#"{"stream":true,"include":["usage"]}"#;
+    fn build_continuation_recovery_body_replays_clean_input_and_marker() {
+        let body = br#"{
+            "stream": false,
+            "previous_response_id": "resp_previous",
+            "include": ["usage", "reasoning.encrypted_content"],
+            "input": [
+                "hello",
+                {"type": "reasoning", "encrypted_content": "enc-1"},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "world", "encrypted_content": "enc-2"}
+                ]}
+            ]
+        }"#;
 
-        let rewritten = add_reasoning_encrypted_include_to_stream_body(body).expect("rewritten");
-        let value: Value = serde_json::from_slice(&rewritten).expect("json");
-
-        assert_eq!(
-            value.get("include").and_then(Value::as_array).cloned(),
-            Some(vec![
-                Value::String("usage".to_string()),
-                Value::String(CONTINUATION_ENCRYPTED_INCLUDE.to_string()),
-            ])
-        );
-    }
-
-    #[test]
-    fn add_reasoning_encrypted_include_to_stream_body_skips_duplicate_include() {
-        let body = br#"{"stream":true,"include":["reasoning.encrypted_content"]}"#;
-
-        assert!(add_reasoning_encrypted_include_to_stream_body(body).is_none());
-    }
-
-    #[test]
-    fn build_continuation_recovery_body_appends_reasoning_and_marker() {
-        let body = br#"{"stream":false,"input":"hello"}"#;
-        let reasoning_items = vec![serde_json::json!({
-            "type": "reasoning",
-            "encrypted_content": "enc-1"
-        })];
-
-        let rewritten =
-            build_continuation_recovery_body(body, &reasoning_items, "Continue").expect("body");
+        let rewritten = build_continuation_recovery_body(body, "Continue").expect("body");
         let value: Value = serde_json::from_slice(&rewritten).expect("json");
         let input = value
             .get("input")
@@ -209,21 +179,27 @@ mod tests {
             .expect("input array");
 
         assert_eq!(value.get("stream").and_then(Value::as_bool), Some(true));
+        assert!(value.get("previous_response_id").is_none());
         assert!(value
             .get("include")
             .and_then(Value::as_array)
             .is_some_and(|items| items
                 .iter()
-                .any(|item| item.as_str() == Some(CONTINUATION_ENCRYPTED_INCLUDE))));
+                .all(|item| item.as_str() != Some(CONTINUATION_ENCRYPTED_INCLUDE))));
         assert_eq!(input.len(), 3);
         assert_eq!(
             input[0].get("content").and_then(Value::as_str),
             Some("hello")
         );
         assert_eq!(
-            input[1].get("encrypted_content").and_then(Value::as_str),
-            Some("enc-1")
+            input[1].get("type").and_then(Value::as_str),
+            Some("message")
         );
+        let input_json = serde_json::to_string(input).expect("input json");
+        assert!(input_json.contains("world"));
+        assert!(!input_json.contains("encrypted_content"));
+        assert!(!input_json.contains("enc-1"));
+        assert!(!input_json.contains("enc-2"));
         assert_eq!(
             input[2].pointer("/content/0/text").and_then(Value::as_str),
             Some("Continue")

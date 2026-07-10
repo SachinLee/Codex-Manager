@@ -2854,7 +2854,7 @@ fn rpc_requestlog_aggregate_api_daily_usage_returns_camel_case_cache_stats() {
         .insert_gateway_reasoning_guard_event(&GatewayReasoningGuardEvent {
             trace_id: Some("trace-rpc-ag-guard".to_string()),
             mode: "non_stream".to_string(),
-            action: "internal_retry".to_string(),
+            action: "continuation_recovery".to_string(),
             source_kind: Some("aggregate_api".to_string()),
             source_id: Some("ag-rpc".to_string()),
             supplier_name: Some("RPC Supplier".to_string()),

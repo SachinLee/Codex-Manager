@@ -36,8 +36,9 @@ use aggregate::{
 use images::{
     build_images_api_response, chat_image_payload, collect_image_generation_chat_images,
     collect_image_generation_data_urls, collect_image_generation_results,
-    image_generation_result_payload, images_usage_value, mime_type_from_codex_output_format,
-    ImagesResponseFormat,
+    hosted_image_generation_semantic_error, image_generation_result_payload,
+    images_usage_value, mime_type_from_codex_output_format,
+    image_generation_semantic_error_body, ImagesResponseFormat,
 };
 
 /// 函数 `reload_from_env`

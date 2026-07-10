@@ -41,6 +41,30 @@ struct UserPassSecret {
     password: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AggregateApiCapabilityProbeResult {
+    pub name: String,
+    pub status: String,
+    pub reason: String,
+    pub http_status: Option<i64>,
+    pub risk: Option<String>,
+    pub recommended_mode: Option<String>,
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AggregateApiCapabilityDiagnosticsResult {
+    pub id: String,
+    pub provider_type: String,
+    pub diagnosed_at: i64,
+    pub latency_ms: i64,
+    pub non_mutating: bool,
+    pub live_smoke: bool,
+    pub probes: Vec<AggregateApiCapabilityProbeResult>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CustomBalanceQueryConfig {
@@ -568,12 +592,12 @@ mod tests {
 
     use super::{
         action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
-        extract_custom_balance, extract_generic_balance, extract_model_ids_from_models_response,
-        extract_new_api_balance, normalize_action_override, normalize_custom_balance_query_config,
-        normalize_provider_type, normalize_provider_type_value, probe_claude_endpoint,
-        probe_codex_endpoint, provider_default_url, CustomBalanceQueryConfig,
-        AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_GEMINI,
-        ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
+        diagnostic_status_for_http, extract_custom_balance, extract_generic_balance,
+        extract_model_ids_from_models_response, extract_new_api_balance, normalize_action_override,
+        normalize_custom_balance_query_config, normalize_provider_type,
+        normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint,
+        provider_default_url, CustomBalanceQueryConfig, AGGREGATE_API_PROVIDER_CLAUDE,
+        AGGREGATE_API_PROVIDER_GEMINI, ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
     };
 
     fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
@@ -605,6 +629,17 @@ mod tests {
             last_balance_error: None,
             last_balance_json: None,
         }
+    }
+
+    #[test]
+    fn diagnostic_status_classifies_endpoint_capability() {
+        assert_eq!(diagnostic_status_for_http("responses", 200).0, "supported");
+        assert_eq!(diagnostic_status_for_http("responses", 400).0, "supported");
+        assert_eq!(
+            diagnostic_status_for_http("responses", 404).0,
+            "unsupported"
+        );
+        assert_eq!(diagnostic_status_for_http("responses", 401).0, "unknown");
     }
 
     #[test]
@@ -2243,6 +2278,274 @@ fn probe_codex_endpoint(
         .err()
         .unwrap_or_else(|| "codex responses probe failed".to_string());
     Err(format!("{models_err}; {responses_err}"))
+}
+
+fn diagnostic_status_for_http(probe_name: &str, status: i64) -> (&'static str, String) {
+    match status {
+        200..=299 => ("supported", format!("{probe_name} returned HTTP {status}")),
+        400 | 422 => (
+            "supported",
+            format!("{probe_name} endpoint exists but rejected the minimal probe body"),
+        ),
+        404 | 405 | 501 => (
+            "unsupported",
+            format!("{probe_name} endpoint is not exposed by this upstream"),
+        ),
+        401 | 403 => (
+            "unknown",
+            format!("{probe_name} returned auth error HTTP {status}; verify credentials first"),
+        ),
+        _ => ("unknown", format!("{probe_name} returned HTTP {status}")),
+    }
+}
+
+fn diagnostic_probe_result(
+    name: &str,
+    status: &str,
+    reason: impl Into<String>,
+    http_status: Option<i64>,
+    risk: Option<&str>,
+    recommended_mode: Option<&str>,
+    latency_ms: i64,
+) -> AggregateApiCapabilityProbeResult {
+    AggregateApiCapabilityProbeResult {
+        name: name.to_string(),
+        status: status.to_string(),
+        reason: reason.into(),
+        http_status,
+        risk: risk.map(str::to_string),
+        recommended_mode: recommended_mode.map(str::to_string),
+        latency_ms,
+    }
+}
+
+fn send_diagnostic_request(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    method: &str,
+    url: String,
+    body: Option<serde_json::Value>,
+) -> Result<i64, String> {
+    let builder = if method.eq_ignore_ascii_case("POST") {
+        client.post(url.as_str())
+    } else {
+        client.get(url.as_str())
+    };
+    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    let builder = if updated_url != url {
+        let rebuilt = if method.eq_ignore_ascii_case("POST") {
+            client.post(updated_url.as_str())
+        } else {
+            client.get(updated_url.as_str())
+        };
+        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+        rebuilt
+    } else {
+        builder
+    };
+    let mut builder = add_codex_probe_headers(builder)?
+        .header("content-type", "application/json")
+        .header("accept", "application/json");
+    if let Some(body) = body {
+        builder = builder.json(&body);
+    }
+    let response = builder.send().map_err(|err| err.to_string())?;
+    Ok(response.status().as_u16() as i64)
+}
+
+fn run_http_capability_probe(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    name: &str,
+    method: &str,
+    url: String,
+    body: Option<serde_json::Value>,
+    risk: Option<&str>,
+    recommended_mode: Option<&str>,
+) -> AggregateApiCapabilityProbeResult {
+    let started_at = Instant::now();
+    match send_diagnostic_request(client, api, secret, method, url, body) {
+        Ok(status) => {
+            let (capability_status, reason) = diagnostic_status_for_http(name, status);
+            diagnostic_probe_result(
+                name,
+                capability_status,
+                reason,
+                Some(status),
+                risk,
+                recommended_mode,
+                started_at.elapsed().as_millis() as i64,
+            )
+        }
+        Err(err) => diagnostic_probe_result(
+            name,
+            "unknown",
+            err,
+            None,
+            risk,
+            recommended_mode,
+            started_at.elapsed().as_millis() as i64,
+        ),
+    }
+}
+
+fn aggregate_api_diagnostic_probes(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    live_smoke: bool,
+) -> Vec<AggregateApiCapabilityProbeResult> {
+    let mut probes = Vec::new();
+    probes.push(run_http_capability_probe(
+        client,
+        api,
+        secret,
+        "models",
+        "GET",
+        build_codex_models_probe_url(api),
+        None,
+        None,
+        Some("sync_models"),
+    ));
+
+    let mut responses_body = build_codex_probe_body();
+    if let Some(obj) = responses_body.as_object_mut() {
+        obj.insert("stream".to_string(), json!(false));
+        if let Some(model_override) = api
+            .model_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            obj.insert("model".to_string(), json!(model_override));
+        }
+    }
+    if live_smoke {
+        probes.push(run_http_capability_probe(
+            client,
+            api,
+            secret,
+            "responses",
+            "POST",
+            normalize_probe_url(api.url.as_str(), "/responses"),
+            Some(responses_body.clone()),
+            Some("live inference probe may consume a tiny amount of quota"),
+            Some("responses"),
+        ));
+        probes.push(run_http_capability_probe(
+            client,
+            api,
+            secret,
+            "responsesCompact",
+            "POST",
+            normalize_probe_url(api.url.as_str(), "/responses/compact"),
+            Some(responses_body.clone()),
+            Some("live inference probe may consume a tiny amount of quota"),
+            Some("responses_compact"),
+        ));
+    } else {
+        probes.push(diagnostic_probe_result(
+            "responses",
+            "not_tested",
+            "Responses probe is opt-in because it can consume inference quota",
+            None,
+            Some("live inference smoke may consume quota"),
+            Some("responses"),
+            0,
+        ));
+        probes.push(diagnostic_probe_result(
+            "responsesCompact",
+            "not_tested",
+            "Responses compact probe is opt-in because it can consume inference quota",
+            None,
+            Some("live inference smoke may consume quota"),
+            Some("responses_compact"),
+            0,
+        ));
+    }
+    probes.push(diagnostic_probe_result(
+        "responsesWebSocket",
+        "not_tested",
+        "WebSocket probe is not part of the default non-mutating diagnostic",
+        None,
+        Some("live WebSocket smoke may open a billable realtime session"),
+        Some("http_responses_fallback"),
+        0,
+    ));
+
+    if live_smoke {
+        let mut image_body = responses_body;
+        if let Some(obj) = image_body.as_object_mut() {
+            obj.insert("tools".to_string(), json!([{ "type": "image_generation" }]));
+        }
+        probes.push(run_http_capability_probe(
+            client,
+            api,
+            secret,
+            "hostedImageGeneration",
+            "POST",
+            normalize_probe_url(api.url.as_str(), "/responses"),
+            Some(image_body),
+            Some("hosted image generation smoke may consume image quota"),
+            Some("hosted_image_generation"),
+        ));
+    } else {
+        probes.push(diagnostic_probe_result(
+            "hostedImageGeneration",
+            "not_tested",
+            "Hosted image generation is opt-in because it can consume image quota",
+            None,
+            Some("live image smoke may consume image quota"),
+            Some("semantic_validation_only"),
+            0,
+        ));
+    }
+    probes
+}
+
+pub(crate) fn diagnose_aggregate_api_capabilities(
+    api_id: &str,
+    live_smoke: bool,
+) -> Result<AggregateApiCapabilityDiagnosticsResult, String> {
+    if api_id.trim().is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let api = storage
+        .find_aggregate_api_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let secret = storage
+        .find_aggregate_api_secret_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api secret not found".to_string())?;
+    let provider_type = normalize_provider_type_value(api.provider_type.as_str());
+    let started_at = Instant::now();
+    let client = gateway::fresh_upstream_client();
+    let probes = if provider_type == AGGREGATE_API_PROVIDER_CODEX {
+        aggregate_api_diagnostic_probes(&client, &api, &secret, live_smoke)
+    } else {
+        vec![diagnostic_probe_result(
+            "models",
+            "unknown",
+            format!("diagnostics MVP currently focuses on Codex/OpenAI-compatible aggregate APIs; provider={provider_type}"),
+            None,
+            None,
+            Some("use_test_connection"),
+            0,
+        )]
+    };
+    Ok(AggregateApiCapabilityDiagnosticsResult {
+        id: api_id.to_string(),
+        provider_type,
+        diagnosed_at: now_ts(),
+        latency_ms: started_at.elapsed().as_millis() as i64,
+        non_mutating: !live_smoke,
+        live_smoke,
+        probes,
+    })
 }
 
 /// 函数 `probe_claude_endpoint`

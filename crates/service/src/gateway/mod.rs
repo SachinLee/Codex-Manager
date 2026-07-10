@@ -124,6 +124,8 @@ mod request_helpers;
 mod request_log;
 #[path = "request/request_rewrite.rs"]
 mod request_rewrite;
+#[path = "routing/policy_action.rs"]
+mod policy_action;
 #[path = "routing/route_hint.rs"]
 mod route_hint;
 #[path = "routing/route_quality.rs"]
@@ -168,6 +170,9 @@ pub(super) use request_helpers::{
 };
 #[cfg(test)]
 use request_helpers::{should_drop_incoming_header, should_drop_incoming_header_for_failover};
+pub(crate) use policy_action::{
+    active_policy_actions_for_target, project_request_log_route_evidence, PolicyTargetKind,
+};
 pub(crate) use request_log::{RequestLogTraceContext, RequestLogUsage};
 #[cfg(test)]
 use request_rewrite::apply_request_overrides_with_service_tier_and_prompt_cache_key;

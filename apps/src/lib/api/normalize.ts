@@ -8,6 +8,9 @@ import {
   AggregateApi,
   AggregateApiBalanceRefreshResult,
   AggregateApiBalanceSnapshot,
+  AggregateApiCapabilityDiagnosticsResult,
+  AggregateApiCapabilityProbeResult,
+  AggregateApiCapabilityStatus,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
@@ -45,6 +48,8 @@ import {
   RequestLogListResult,
   RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
+  GatewayPolicyActionSummary,
+  RouteEvidenceSummary,
   StartupSnapshot,
   UsageAggregateSummary,
 } from "@/types";
@@ -1107,6 +1112,58 @@ export function normalizeAggregateApiTestResult(payload: unknown): AggregateApiT
   };
 }
 
+function normalizeAggregateApiCapabilityStatus(
+  value: unknown,
+): AggregateApiCapabilityStatus {
+  const status = asString(value);
+  if (
+    status === "supported" ||
+    status === "unsupported" ||
+    status === "unknown" ||
+    status === "not_tested"
+  ) {
+    return status;
+  }
+  return "unknown";
+}
+
+function normalizeAggregateApiCapabilityProbe(
+  payload: unknown,
+): AggregateApiCapabilityProbeResult | null {
+  const source = asObject(payload);
+  const name = asString(source.name);
+  if (!name) return null;
+  return {
+    name,
+    status: normalizeAggregateApiCapabilityStatus(source.status),
+    reason: asString(source.reason),
+    httpStatus: toNullableNumber(source.httpStatus ?? source.http_status),
+    risk: asString(source.risk) || null,
+    recommendedMode:
+      asString(source.recommendedMode ?? source.recommended_mode) || null,
+    latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
+  };
+}
+
+export function normalizeAggregateApiCapabilityDiagnosticsResult(
+  payload: unknown,
+): AggregateApiCapabilityDiagnosticsResult {
+  const source = asObject(payload);
+  return {
+    id: asString(source.id),
+    providerType: asString(source.providerType ?? source.provider_type),
+    diagnosedAt: asInteger(source.diagnosedAt ?? source.diagnosed_at, 0, 0),
+    latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
+    nonMutating: asBoolean(source.nonMutating ?? source.non_mutating, true),
+    liveSmoke: asBoolean(source.liveSmoke ?? source.live_smoke, false),
+    probes: asArray(source.probes)
+      .map((item) => normalizeAggregateApiCapabilityProbe(item))
+      .filter(
+        (item): item is AggregateApiCapabilityProbeResult => Boolean(item),
+      ),
+  };
+}
+
 export function normalizeAggregateApiBalanceSnapshot(
   payload: unknown
 ): AggregateApiBalanceSnapshot | null {
@@ -1545,6 +1602,52 @@ export function normalizeLoginStartResult(payload: unknown): LoginStartResult {
   };
 }
 
+function normalizeRouteEvidenceSummary(payload: unknown): RouteEvidenceSummary | null {
+  const source = asObject(payload);
+  const kind = asString(source.kind);
+  const reason = asString(source.reason);
+  if (!kind || !reason) return null;
+  return {
+    kind,
+    source: asString(source.source),
+    targetKind: asString(source.targetKind ?? source.target_kind),
+    targetId: asString(source.targetId ?? source.target_id) || null,
+    confidence: asString(source.confidence) || "unknown",
+    reason,
+    statusCode: toNullableNumber(source.statusCode ?? source.status_code),
+    retryAfterSecs: toNullableNumber(
+      source.retryAfterSecs ?? source.retry_after_secs,
+    ),
+    observedAt: asInteger(source.observedAt ?? source.observed_at, 0, 0),
+  };
+}
+
+function normalizeGatewayPolicyActionSummary(
+  payload: unknown,
+): GatewayPolicyActionSummary | null {
+  const source = asObject(payload);
+  const id = asString(source.id);
+  const targetId = asString(source.targetId ?? source.target_id);
+  if (!id || !targetId) return null;
+  return {
+    id,
+    owner: asString(source.owner) || "system",
+    kind: asString(source.kind),
+    targetKind: asString(source.targetKind ?? source.target_kind),
+    targetId,
+    reason: asString(source.reason),
+    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
+    expiresAt: asInteger(source.expiresAt ?? source.expires_at, 0, 0),
+    remainingSecs: Math.max(
+      0,
+      asInteger(source.remainingSecs ?? source.remaining_secs, 0, 0),
+    ),
+    sourceEvidence: asArray(source.sourceEvidence ?? source.source_evidence)
+      .map((entry) => normalizeRouteEvidenceSummary(entry))
+      .filter((entry): entry is RouteEvidenceSummary => Boolean(entry)),
+  };
+}
+
 /**
  * 函数 `normalizeRequestLog`
  *
@@ -1616,6 +1719,12 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     gatewayMode: asString(source.gatewayMode ?? source.gateway_mode),
     routeStrategy: asString(source.routeStrategy ?? source.route_strategy),
     routeSource: asString(source.routeSource ?? source.route_source),
+    routeEvidence: asArray(source.routeEvidence ?? source.route_evidence)
+      .map((entry) => normalizeRouteEvidenceSummary(entry))
+      .filter((entry): entry is RouteEvidenceSummary => Boolean(entry)),
+    policyActions: asArray(source.policyActions ?? source.policy_actions)
+      .map((entry) => normalizeGatewayPolicyActionSummary(entry))
+      .filter((entry): entry is GatewayPolicyActionSummary => Boolean(entry)),
     path: requestPath,
     clientModel: asString(source.clientModel ?? source.client_model),
     model: asString(source.model),

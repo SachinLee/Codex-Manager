@@ -6,8 +6,9 @@ use codexmanager_core::rpc::types::{
 
 use crate::{
     create_aggregate_api, delete_aggregate_api, delete_aggregate_api_supplier_model,
-    import_aggregate_api_supplier_models, list_aggregate_api_supplier_models, list_aggregate_apis,
-    read_aggregate_api_secret, refresh_aggregate_api_balance, save_aggregate_api_supplier_model,
+    diagnose_aggregate_api_capabilities, import_aggregate_api_supplier_models,
+    list_aggregate_api_supplier_models, list_aggregate_apis, read_aggregate_api_secret,
+    refresh_aggregate_api_balance, save_aggregate_api_supplier_model,
     test_aggregate_api_connection, update_aggregate_api,
 };
 
@@ -169,6 +170,11 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "aggregateApi/testConnection" => {
             let api_id = api_id_param(req).unwrap_or("");
             super::value_or_error(test_aggregate_api_connection(api_id))
+        }
+        "aggregateApi/diagnoseCapabilities" => {
+            let api_id = api_id_param(req).unwrap_or("");
+            let live_smoke = super::bool_param(req, "liveSmoke").unwrap_or(false);
+            super::value_or_error(diagnose_aggregate_api_capabilities(api_id, live_smoke))
         }
         "aggregateApi/refreshBalance" => {
             let api_id = api_id_param(req).unwrap_or("");

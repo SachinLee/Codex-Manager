@@ -7,6 +7,9 @@ use super::{
     PassthroughSseCollector, Read, SseKeepAliveFrame, UpstreamSseFramePump,
     UpstreamSseFramePumpItem,
 };
+use super::super::images::{
+    IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS, IMAGE_GENERATION_MISSING_RESULT_MESSAGE,
+};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -120,6 +123,26 @@ impl ImagesFromResponsesSseReader {
         }
 
         let results = collect_image_generation_results(response);
+        if results.is_empty() {
+            if let Ok(mut collector) = self.usage_collector.lock() {
+                collector.terminal_error.get_or_insert_with(|| {
+                    IMAGE_GENERATION_MISSING_RESULT_MESSAGE.to_string()
+                });
+            }
+            return Self::sse_event(
+                "image_generation.failed",
+                serde_json::json!({
+                    "type": "image_generation.failed",
+                    "error": {
+                        "message": IMAGE_GENERATION_MISSING_RESULT_MESSAGE,
+                        "type": "gateway_semantic_error",
+                        "code": IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS,
+                        "error_class": IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS,
+                        "retryable": true
+                    }
+                }),
+            );
+        }
         let event_name = "image_generation.completed";
         let mut out = Vec::new();
         for result in results {

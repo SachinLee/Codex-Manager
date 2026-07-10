@@ -85,10 +85,15 @@ Questions to answer:
 - When `reasoningGuardEnabled` is true, streaming and non-streaming intercepts must not both be false.
 - A reasoning guard match is account-neutral: it must not mark an account unavailable, set provider failure state, or record normal failover unless a separate non-guard upstream error occurs.
 - Internal retry actions must return through `RetrySameCandidate`, reacquire the same account inflight guard, and retry the same account/candidate rather than moving to the next candidate.
+- `ContinuationRecovery` is a safe semantic retry, not stream splicing. The matched/truncated stream round is untrusted; do not forward its SSE chunks, tool calls, output messages, lifecycle events, or encrypted reasoning items to the client.
+- Continuation recovery requests must be rebuilt from the original/base request body for that candidate, not from the previously generated continuation body. This prevents accumulated commentary markers across repeated `516 -> 1034 -> clean` recovery chains.
+- Continuation recovery requests must remove `previous_response_id`, force `stream=true`, remove `reasoning.encrypted_content` from `include`, replay only sanitized original `input`, and append exactly one `phase="commentary"` marker.
+- Sanitized continuation replay must drop original input items with `type="reasoning"` and recursively remove every `encrypted_content` field before sending the retry upstream. Do not auto-add `reasoning.encrypted_content` just because continuation recovery is enabled.
 - Upstream capacity retry uses the same `RetrySameCandidate` transport path with a distinct reason. It must not reuse the reasoning guard retry budget or metrics.
 - Capacity matching is intentionally narrow: match only `Selected model is at capacity. Please try a different model.` plus project-generated `key=value` prefixes or debug suffixes; do not use generic substring matching for `capacity`.
 - Gateway tests that mutate `reasoningGuard*` env or runtime settings must initialize the full guard config under `test_env_guard`, including enabled state, targets, both intercept switches, retry attempts, and consecutive-bypass threshold. Runtime setters mirror values back into env vars, so partial per-test setup can leak state into later server startups.
 - Persist reasoning guard request-log events through `record_gateway_reasoning_guard_event`; do not call `storage.insert_gateway_reasoning_guard_event` directly from gateway request execution or HTTP bridge code.
+- Request-log and billing rollups must treat `internal_retry` and `continuation_recovery` as retry-class guard actions. A new guard retry action must update the shared storage retry-action predicate before it can affect request-log badges, guard retry token totals, cost totals, or billable usage.
 - Production event persistence must keep synchronous SQLite work out of the request hot path. Use a bounded async queue for normal writes and fall back to synchronous insertion only when the queue is full or disconnected, so events are not silently lost under pressure.
 - Tests should keep reasoning guard event insertion synchronous. This avoids background threads opening storage after a test-specific DB path or env guard has been reset.
 
@@ -97,6 +102,8 @@ Questions to answer:
 - Missing persisted setting -> use runtime default.
 - Match + intercept disabled -> observe only, count match, deliver upstream response.
 - Match + retry budget remains -> count match and internal retry, retry same candidate, do not block.
+- Match + continuation recovery selected on a Responses stream -> discard the matched round body, build a sanitized continuation request from the base request, and only deliver the final clean upstream stream.
+- Repeated continuation matches -> each retry body contains the sanitized base input plus exactly one commentary marker; no prior marker, matched-round reasoning item, or matched-round output is replayed.
 - Match + retry budget exhausted -> count match and block, synthesize 502 with `codexmanager_reasoning_guard`.
 - Non-matching reasoning tokens -> reset consecutive guard state and pass through normally.
 - Test only sets one guard env key after a previous test disabled the guard -> later startup may inherit stale runtime/env state; set the full guard env matrix for every reasoning guard gateway test.
@@ -108,21 +115,38 @@ Questions to answer:
 
 ### 5. Good/Base/Bad Cases
 - Good: first upstream response has `reasoning_tokens=1034`, retry budget is `1`, second same-account response is clean; client receives the second response, metrics increment match and internal retry only.
+- Good: a `516 -> 1034 -> 128` Responses stream recovery sends two continuation requests, each rebuilt from the sanitized base input with one commentary marker, and the client only receives the final clean stream lifecycle and output.
 - Good: bridge and proxy pipeline call `record_gateway_reasoning_guard_event`, keeping production request handling non-blocking while preserving event durability on queue backpressure.
 - Base: retry attempts are `0`; a matching response returns 502 and does not call the next candidate.
 - Bad: a guard match enters generic gateway error follow-up before the internal retry decision; this can mark the account unavailable or trigger ordinary failover.
+- Bad: continuation recovery folds the matched stream chunks into the final response or replays matched-round encrypted reasoning items; this mixes response identities and leaks untrusted tentative output.
 - Bad: bridge code opens storage and inserts the reasoning guard event directly before returning; this can add SQLite latency to every matching request and makes tests race background storage state.
 
 ### 6. Tests Required
 - Runtime/app settings tests must cover default fields, persisted snapshot round-trip, normalized targets, and rejecting enabled guard with both intercept modes disabled.
 - Gateway tests must cover non-stream block, stream strict buffering without leaked delta, observe-only/disabled behavior, consecutive bypass, configurable non-516 targets, and same-candidate internal retry.
+- Continuation recovery gateway tests must assert that matched stream deltas are not delivered, `previous_response_id` is absent from the continuation request, `reasoning.encrypted_content` is not requested automatically, original reasoning items are not replayed, nested `encrypted_content` fields are stripped, and repeated recovery attempts do not accumulate multiple commentary markers.
 - Gateway reasoning guard tests should use a shared helper for complete guard env initialization so default parallel execution does not depend on test order.
 - Metrics tests should assert match, block, and internal retry counters via `/metrics` or the narrowest available metrics API.
 - Capacity retry tests should assert same-account retry and `codexmanager_gateway_upstream_capacity_internal_retries_total` without depending on unrelated async usage refresh side effects.
 - Event persistence tests should assert through request-log/gateway-log surfaces after the request completes; do not depend on production background worker timing.
+- Continuation recovery tests should assert both clean replay behavior and request-log/billing projections, including guard retry count plus retry token/cost rollups.
 - Unit tests that directly exercise event recording should run against the test-only synchronous path.
 
 ### 7. Wrong vs Correct
+#### Wrong
+```rust
+let folded = fold_continuation_chunks(matched_round_chunks, final_round_body);
+return deliver_to_client(folded);
+```
+
+#### Correct
+```rust
+let continuation_body =
+    build_continuation_recovery_body(base_attempt_body, marker_text);
+return retry_same_candidate_with_body(continuation_body);
+```
+
 #### Wrong
 ```rust
 let follow_up = context.apply_gateway_error_follow_up(account_id, error, has_more_candidates);

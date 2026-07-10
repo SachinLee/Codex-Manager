@@ -315,7 +315,6 @@ pub(super) fn finalize_upstream_response(
             {
                 build_continuation_recovery_body(
                     attempt_body.as_ref(),
-                    bridge.continuation_reasoning_items.as_slice(),
                     &crate::gateway::current_reasoning_guard_continuation_marker_text(),
                 )
                 .map(Bytes::from)

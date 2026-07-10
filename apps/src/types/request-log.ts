@@ -1,3 +1,28 @@
+export interface RouteEvidenceSummary {
+  kind: string;
+  source: string;
+  targetKind: string;
+  targetId: string | null;
+  confidence: string;
+  reason: string;
+  statusCode: number | null;
+  retryAfterSecs: number | null;
+  observedAt: number;
+}
+
+export interface GatewayPolicyActionSummary {
+  id: string;
+  owner: string;
+  kind: string;
+  targetKind: string;
+  targetId: string;
+  reason: string;
+  createdAt: number;
+  expiresAt: number;
+  remainingSecs: number;
+  sourceEvidence: RouteEvidenceSummary[];
+}
+
 export interface RequestLog {
   id: string;
   traceId: string;
@@ -17,6 +42,8 @@ export interface RequestLog {
   gatewayMode: string;
   routeStrategy: string;
   routeSource: string;
+  routeEvidence: RouteEvidenceSummary[];
+  policyActions: GatewayPolicyActionSummary[];
   path: string;
   clientModel: string;
   model: string;

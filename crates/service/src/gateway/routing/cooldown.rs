@@ -3,6 +3,10 @@ use std::sync::{Mutex, OnceLock};
 
 use codexmanager_core::storage::now_ts;
 
+use super::policy_action::{
+    record_system_cooldown_action, EvidenceKind, PolicyTargetKind, RouteEvidenceInput,
+};
+
 const DEFAULT_ACCOUNT_COOLDOWN_SECS: i64 = 20;
 const DEFAULT_ACCOUNT_COOLDOWN_NETWORK_SECS: i64 = DEFAULT_ACCOUNT_COOLDOWN_SECS;
 const DEFAULT_ACCOUNT_COOLDOWN_429_SECS: i64 = 45;
@@ -46,6 +50,29 @@ pub(super) enum CooldownReason {
     Upstream4xx,
     Challenge,
     AnthropicChallenge,
+}
+
+fn cooldown_reason_label(reason: CooldownReason) -> &'static str {
+    match reason {
+        CooldownReason::Default => "default",
+        CooldownReason::Network => "network",
+        CooldownReason::RateLimited => "rate_limited",
+        CooldownReason::Upstream5xx => "upstream_5xx",
+        CooldownReason::Upstream4xx => "upstream_4xx",
+        CooldownReason::Challenge => "challenge",
+        CooldownReason::AnthropicChallenge => "anthropic_challenge",
+    }
+}
+
+fn evidence_kind_for_cooldown_reason(reason: CooldownReason) -> EvidenceKind {
+    match reason {
+        CooldownReason::RateLimited => EvidenceKind::RateLimit,
+        CooldownReason::Network | CooldownReason::Upstream5xx => EvidenceKind::Transport,
+        CooldownReason::Upstream4xx | CooldownReason::Challenge | CooldownReason::AnthropicChallenge => {
+            EvidenceKind::UpstreamStatus
+        }
+        CooldownReason::Default => EvidenceKind::Cooldown,
+    }
 }
 
 /// 函数 `cooldown_secs_for_reason`
@@ -298,6 +325,25 @@ pub(super) fn mark_account_cooldown(account_id: &str, reason: CooldownReason) {
     };
     if entry_updated {
         state.last_reason.insert(account_id.to_string(), reason);
+        let evidence = RouteEvidenceInput {
+            kind: evidence_kind_for_cooldown_reason(reason),
+            source: "account_cooldown",
+            target_kind: PolicyTargetKind::Account,
+            target_id: Some(account_id.to_string()),
+            confidence: "high",
+            reason: cooldown_reason_label(reason).to_string(),
+            status_code: None,
+            retry_after_secs: None,
+            observed_at: now,
+        }
+        .summary();
+        record_system_cooldown_action(
+            PolicyTargetKind::Account,
+            account_id,
+            cooldown_reason_label(reason),
+            cooldown_until,
+            vec![evidence],
+        );
     }
     // Task 6: 网络失败时始终累积计数，无论冷却 entry 是否更新
     if reason == CooldownReason::Network {
@@ -422,6 +468,7 @@ pub(super) fn clear_runtime_state() {
     state.last_reason.clear();
     state.network_consecutive_failures.clear();
     state.network_last_failure_at.clear();
+    super::policy_action::clear_runtime_state();
 }
 
 /// 函数 `clear_account_cooldown_for_tests`

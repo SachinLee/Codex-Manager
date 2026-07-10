@@ -960,6 +960,168 @@ fn gateway_reasoning_guard_stream_returns_502_without_leaking_buffered_delta() {
 }
 
 #[test]
+fn gateway_reasoning_guard_continuation_recovery_replays_clean_input_only() {
+    let _lock = test_env_guard();
+    let _guard_env = reasoning_guard_test_env(true, 1, 0);
+    let _stream_action_guard = EnvGuard::set(
+        "CODEXMANAGER_REASONING_GUARD_STREAM_ACTION",
+        "continuationRecovery",
+    );
+    let dir = new_test_dir("codexmanager-gateway-continuation-recovery-clean-replay");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![
+                (
+                    200,
+                    stream_response_with_reasoning_tokens(516, "must-not-leak"),
+                    "text/event-stream".to_string(),
+                ),
+                (
+                    200,
+                    stream_response_with_reasoning_tokens(128, "clean-delta"),
+                    "text/event-stream".to_string(),
+                ),
+            ],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
+    let now = now_ts();
+    insert_reasoning_guard_test_account(&storage, "acc_guard_continuation", 0, now);
+    let platform_key = "pk_reasoning_guard_continuation";
+    insert_reasoning_guard_test_key(
+        &storage,
+        "gk_reasoning_guard_continuation",
+        platform_key,
+        now,
+    );
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let request_body = serde_json::json!({
+        "model": "gpt-5.3-codex",
+        "previous_response_id": "resp_previous",
+        "include": ["usage", "reasoning.encrypted_content"],
+        "stream": true,
+        "input": [
+            "hello",
+            { "type": "reasoning", "encrypted_content": "client-reasoning-secret" },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "world",
+                        "encrypted_content": "client-nested-secret"
+                    }
+                ]
+            }
+        ]
+    });
+    let request_body = serde_json::to_string(&request_body).expect("serialize request");
+    let (status, gateway_body) = post_http_raw(
+        &server.addr,
+        "/v1/responses",
+        &request_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+        ],
+    );
+    server.join();
+
+    assert_eq!(status, 200, "gateway response: {gateway_body}");
+    assert!(
+        gateway_body.contains("clean-delta") && gateway_body.contains("[DONE]"),
+        "continuation recovery should return the clean final stream: {gateway_body}"
+    );
+    assert!(
+        !gateway_body.contains("must-not-leak"),
+        "continuation recovery must discard the matched round output: {gateway_body}"
+    );
+
+    upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive initial upstream request");
+    let continuation_request = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive continuation upstream request");
+    upstream_join.join().expect("join mock upstream");
+
+    let continuation_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&continuation_request))
+            .expect("parse continuation body");
+    assert_eq!(
+        continuation_body
+            .get("stream")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(continuation_body.get("previous_response_id").is_none());
+    assert!(!serde_json::to_string(&continuation_body)
+        .expect("continuation body json")
+        .contains("encrypted_content"));
+    assert!(!serde_json::to_string(&continuation_body)
+        .expect("continuation body json")
+        .contains("client-reasoning-secret"));
+    assert!(!serde_json::to_string(&continuation_body)
+        .expect("continuation body json")
+        .contains("client-nested-secret"));
+    let input = continuation_body
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+        .expect("continuation input");
+    assert!(
+        input
+            .iter()
+            .all(|item| item.get("type").and_then(serde_json::Value::as_str) != Some("reasoning")),
+        "continuation input must not replay reasoning items: {continuation_body}"
+    );
+    assert_eq!(
+        input
+            .iter()
+            .filter(
+                |item| item.get("phase").and_then(serde_json::Value::as_str) == Some("commentary")
+            )
+            .count(),
+        1,
+        "continuation input should append exactly one commentary marker: {continuation_body}"
+    );
+
+    let mut request_log = None;
+    for _ in 0..40 {
+        let logs = storage
+            .list_request_logs(Some("key:=gk_reasoning_guard_continuation"), 20)
+            .expect("list request logs");
+        request_log = logs
+            .into_iter()
+            .find(|item| item.request_path == "/v1/responses" && item.status_code == Some(200));
+        if request_log.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let request_log = request_log.expect("successful continuation recovery log should be recorded");
+    let trace_id = request_log.trace_id.expect("request log trace id");
+    let guard_summaries = storage
+        .summarize_reasoning_guard_by_trace_ids(&[trace_id])
+        .expect("summarize reasoning guard trace");
+    let guard_summary = guard_summaries
+        .first()
+        .expect("reasoning guard trace summary");
+    assert_eq!(guard_summary.internal_retry_count, 1);
+    assert_eq!(guard_summary.recovered_count, 1);
+    assert_eq!(guard_summary.retry_total_tokens, 4);
+}
+
+#[test]
 fn gateway_reasoning_guard_stream_allows_non_516_reasoning_tokens() {
     let _lock = test_env_guard();
     let _guard_env = reasoning_guard_test_env(true, 0, 0);

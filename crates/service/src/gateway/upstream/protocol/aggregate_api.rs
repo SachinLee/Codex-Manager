@@ -1491,9 +1491,12 @@ pub(in super::super) fn proxy_aggregate_request(
                         retry_body_override = if action
                             == super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
                         {
+                            let continuation_base_body = rewrite_body_model_override(
+                                body,
+                                candidate.model_override.as_deref(),
+                            );
                             build_continuation_recovery_body(
-                                upstream_body.as_ref(),
-                                bridge.continuation_reasoning_items.as_slice(),
+                                continuation_base_body.as_ref(),
                                 &crate::gateway::current_reasoning_guard_continuation_marker_text(),
                             )
                             .map(Bytes::from)

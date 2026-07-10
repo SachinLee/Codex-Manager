@@ -5,6 +5,9 @@ use super::{
     GatewayReasoningGuardTraceSummary, Storage,
 };
 
+pub(super) const GUARD_RETRY_ACTION_SQL: &str =
+    "action IN ('internal_retry', 'continuation_recovery')";
+
 impl Storage {
     pub fn ensure_gateway_reasoning_guard_events_table(&self) -> Result<()> {
         self.conn.execute_batch(
@@ -94,7 +97,7 @@ impl Storage {
         end_ts: i64,
     ) -> Result<Vec<GatewayReasoningGuardAggregateApiStat>> {
         self.ensure_gateway_reasoning_guard_events_table()?;
-        let mut stmt = self.conn.prepare(
+        let sql = format!(
             "WITH request_counts AS (
                 SELECT actual_source_id AS aggregate_api_id, COUNT(1) AS total_request_count
                 FROM request_logs
@@ -110,8 +113,8 @@ impl Storage {
                     MAX(supplier_name) AS supplier_name,
                     COUNT(1) AS event_count,
                     COUNT(DISTINCT COALESCE(trace_id, CAST(id AS TEXT))) AS affected_request_count,
-                    SUM(CASE WHEN action = 'internal_retry' THEN 1 ELSE 0 END) AS internal_retry_count,
-                    COUNT(DISTINCT CASE WHEN action = 'internal_retry' THEN COALESCE(trace_id, CAST(id AS TEXT)) END) AS internal_retry_request_count,
+                    SUM(CASE WHEN {retry_action_sql} THEN 1 ELSE 0 END) AS internal_retry_count,
+                    COUNT(DISTINCT CASE WHEN {retry_action_sql} THEN COALESCE(trace_id, CAST(id AS TEXT)) END) AS internal_retry_request_count,
                     SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END) AS block_count,
                     COUNT(DISTINCT CASE WHEN action = 'block' THEN COALESCE(trace_id, CAST(id AS TEXT)) END) AS blocked_request_count,
                     SUM(CASE WHEN action = 'observe_only' THEN 1 ELSE 0 END) AS observe_only_count,
@@ -180,11 +183,13 @@ impl Storage {
                 e.last_event_at
              FROM aggregate_api_keys k
              LEFT JOIN request_counts r ON r.aggregate_api_id = k.aggregate_api_id
-             LEFT JOIN event_rollup e ON e.aggregate_api_id = k.aggregate_api_id
-             LEFT JOIN latest_event l ON l.aggregate_api_id = k.aggregate_api_id
-             LEFT JOIN aggregate_apis a ON a.id = k.aggregate_api_id
-             ORDER BY (e.last_event_at IS NULL) ASC, e.last_event_at DESC, total_request_count DESC, aggregate_api_id ASC",
-        )?;
+              LEFT JOIN event_rollup e ON e.aggregate_api_id = k.aggregate_api_id
+              LEFT JOIN latest_event l ON l.aggregate_api_id = k.aggregate_api_id
+              LEFT JOIN aggregate_apis a ON a.id = k.aggregate_api_id
+              ORDER BY (e.last_event_at IS NULL) ASC, e.last_event_at DESC, total_request_count DESC, aggregate_api_id ASC",
+            retry_action_sql = GUARD_RETRY_ACTION_SQL
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![start_ts, end_ts], map_reasoning_guard_stat_row)?;
         let mut out = Vec::new();
         for row in rows {
@@ -209,11 +214,11 @@ impl Storage {
                 SELECT
                     trace_id,
                     COUNT(1) AS event_count,
-                    SUM(CASE WHEN action = 'internal_retry' THEN 1 ELSE 0 END) AS internal_retry_count,
+                    SUM(CASE WHEN {retry_action_sql} THEN 1 ELSE 0 END) AS internal_retry_count,
                     SUM(CASE WHEN action = 'block' THEN 1 ELSE 0 END) AS block_count,
                     SUM(CASE WHEN action = 'recovered' THEN 1 ELSE 0 END) AS recovered_count,
-                    SUM(CASE WHEN action = 'internal_retry' THEN COALESCE(total_tokens, 0) ELSE 0 END) AS retry_total_tokens,
-                    SUM(CASE WHEN action = 'internal_retry' THEN COALESCE(estimated_cost_usd, 0.0) ELSE 0.0 END) AS retry_estimated_cost_usd
+                    SUM(CASE WHEN {retry_action_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END) AS retry_total_tokens,
+                    SUM(CASE WHEN {retry_action_sql} THEN COALESCE(estimated_cost_usd, 0.0) ELSE 0.0 END) AS retry_estimated_cost_usd
                 FROM gateway_reasoning_guard_events
                 WHERE trace_id IN ({placeholders})
                 GROUP BY trace_id
@@ -241,7 +246,8 @@ impl Storage {
                 l.action,
                 l.target_token
             FROM event_rollup r
-            LEFT JOIN latest_event l ON l.trace_id = r.trace_id"
+            LEFT JOIN latest_event l ON l.trace_id = r.trace_id",
+            retry_action_sql = GUARD_RETRY_ACTION_SQL
         );
         let mut values = Vec::with_capacity(trace_ids.len() * 2);
         values.extend(trace_ids.iter().map(String::as_str));

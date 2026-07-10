@@ -46,6 +46,7 @@ use super::{
     ReasoningGuardBridgeAction, ResponsesFromAnthropicSseReader, SseKeepAliveFrame,
     UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
+use super::{hosted_image_generation_semantic_error, image_generation_semantic_error_body};
 
 const REASONING_GUARD_STREAM_BUFFER_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -129,7 +130,6 @@ fn reasoning_guard_bridge_result(
     pending_failover_request: Option<Request>,
     action: ReasoningGuardBridgeAction,
     target_token: Option<i64>,
-    continuation_reasoning_items: Vec<Value>,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> UpstreamResponseBridgeResult {
     with_bridge_debug_meta(
@@ -141,7 +141,6 @@ fn reasoning_guard_bridge_result(
             pending_failover_request,
             reasoning_guard_action: Some(action),
             reasoning_guard_target_token: target_token,
-            continuation_reasoning_items,
             ..UpstreamResponseBridgeResult::default()
         },
         meta.request_id,
@@ -194,7 +193,6 @@ fn respond_reasoning_guard(
         None,
         ReasoningGuardBridgeAction::Block,
         Some(target_token),
-        Vec::new(),
         meta,
     );
     result.delivery_error = delivery_error;
@@ -261,7 +259,6 @@ fn handle_reasoning_guard_outcome(
     headers: Vec<Header>,
     usage: UpstreamResponseUsage,
     outcome: ReasoningGuardOutcome,
-    continuation_reasoning_items: Vec<Value>,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> Result<UpstreamResponseBridgeResult, (Request, Vec<Header>)> {
     match outcome.action {
@@ -275,7 +272,6 @@ fn handle_reasoning_guard_outcome(
             Some(request),
             outcome.action,
             Some(outcome.target_token),
-            continuation_reasoning_items,
             meta,
         )),
         ReasoningGuardBridgeAction::Block => {
@@ -304,7 +300,7 @@ fn maybe_handle_reasoning_guard(
     if let Some(outcome) =
         reasoning_guard_outcome(&usage, guard_scope, mode, retry_budget_remaining)
     {
-        handle_reasoning_guard_outcome(request, headers, usage, outcome, Vec::new(), meta)
+        handle_reasoning_guard_outcome(request, headers, usage, outcome, meta)
     } else {
         Err((request, headers))
     }
@@ -386,7 +382,6 @@ fn respond_passthrough_collector_stream_strict_guard(
             if outcome.action == ReasoningGuardBridgeAction::InternalRetry
                 && crate::gateway::reasoning_guard_uses_continuation_recovery()
                 && is_responses_request_path(request_path)
-                && !collector.continuation_reasoning_items.is_empty()
                 && reasoning_guard_retry_budget_remaining > 0
             {
                 outcome.action = ReasoningGuardBridgeAction::ContinuationRecovery;
@@ -396,7 +391,6 @@ fn respond_passthrough_collector_stream_strict_guard(
                 headers,
                 collector.usage.clone(),
                 outcome,
-                collector.continuation_reasoning_items.clone(),
                 meta,
             ) {
                 Ok(result) => return result,
@@ -434,7 +428,6 @@ fn respond_passthrough_collector_stream_strict_guard(
             pending_failover_request: None,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
-            continuation_reasoning_items: Vec::new(),
         },
         meta.request_id,
         meta.cf_ray,
@@ -477,7 +470,6 @@ fn respond_passthrough_collector_stream(
             pending_failover_request: None,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
-            continuation_reasoning_items: Vec::new(),
         },
         meta.request_id,
         meta.cf_ray,
@@ -575,7 +567,32 @@ pub(crate) fn respond_with_upstream(
                     }
                 }
             }
-            let response_body = if status.0 >= 400 {
+            let semantic_image_error = if status.0 < 400
+                && matches!(
+                    response_adapter,
+                    ResponseAdapter::ImagesB64JsonFromResponses
+                        | ResponseAdapter::ImagesUrlFromResponses
+                ) {
+                match serde_json::from_slice::<Value>(&body) {
+                    Ok(value) => {
+                        let response = value.get("response").unwrap_or(&value);
+                        hosted_image_generation_semantic_error(response).map(str::to_string)
+                    }
+                    Err(_) => {
+                        Some("hosted image generation response was not valid JSON".to_string())
+                    }
+                }
+            } else {
+                None
+            };
+            let response_status = if semantic_image_error.is_some() {
+                StatusCode(502)
+            } else {
+                status
+            };
+            let response_body = if let Some(message) = semantic_image_error.as_deref() {
+                image_generation_semantic_error_body(message)
+            } else if status.0 >= 400 {
                 let message = with_upstream_debug_suffix(
                     extract_error_hint_from_body_or_headers(
                         status.0,
@@ -617,17 +634,22 @@ pub(crate) fn respond_with_upstream(
                 )
                 .unwrap_or_else(|| body.clone())
             };
-            let delivery_error = respond_json_bytes(request, status, headers, response_body);
-            return Ok(terminal_bridge_result_with_debug_meta(
+            let delivery_error =
+                respond_json_bytes(request, response_status, headers, response_body);
+            let mut result = terminal_bridge_result_with_debug_meta(
                 usage,
                 delivery_error,
-                None,
+                semantic_image_error.clone(),
                 &upstream_request_id,
                 &upstream_cf_ray,
                 &upstream_auth_error,
                 &upstream_identity_error_code,
                 &upstream_content_type,
-            ));
+            );
+            if semantic_image_error.is_some() {
+                result.delivered_status_code = Some(response_status.0);
+            }
+            return Ok(result);
         }
 
         if status.0 >= 400 && !is_sse {
@@ -1327,7 +1349,6 @@ pub(crate) fn respond_with_upstream(
                         pending_failover_request: None,
                         reasoning_guard_action: None,
                         reasoning_guard_target_token: None,
-                        continuation_reasoning_items: Vec::new(),
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -1777,26 +1798,52 @@ pub(crate) fn respond_with_stream_upstream(
                         }
                     }
                 }
-                let response_body = images_response_body_to_sse(&body, response_format);
+                let semantic_image_error = if status.0 < 400 {
+                    match serde_json::from_slice::<Value>(&body) {
+                        Ok(value) => {
+                            let response = value.get("response").unwrap_or(&value);
+                            hosted_image_generation_semantic_error(response).map(str::to_string)
+                        }
+                        Err(_) => {
+                            Some("hosted image generation response was not valid JSON".to_string())
+                        }
+                    }
+                } else {
+                    None
+                };
+                let response_status = if semantic_image_error.is_some() {
+                    StatusCode(502)
+                } else {
+                    status
+                };
+                let response_body = if let Some(message) = semantic_image_error.as_deref() {
+                    image_generation_semantic_error_body(message)
+                } else {
+                    images_response_body_to_sse(&body, response_format)
+                };
                 let len = Some(response_body.len());
                 let response = Response::new(
-                    status,
+                    response_status,
                     headers,
                     std::io::Cursor::new(response_body),
                     len,
                     None,
                 );
                 let delivery_error = request.respond(response).err().map(|err| err.to_string());
-                return Ok(terminal_bridge_result_with_debug_meta(
+                let mut result = terminal_bridge_result_with_debug_meta(
                     usage,
                     delivery_error,
-                    None,
+                    semantic_image_error.clone(),
                     &upstream_request_id,
                     &upstream_cf_ray,
                     &upstream_auth_error,
                     &upstream_identity_error_code,
                     &upstream_content_type,
-                ));
+                );
+                if semantic_image_error.is_some() {
+                    result.delivered_status_code = Some(response_status.0);
+                }
+                return Ok(result);
             }
             ResponseAdapter::GeminiJson | ResponseAdapter::GeminiCliJson => unreachable!(),
             ResponseAdapter::GeminiSse | ResponseAdapter::GeminiCliSse => {
@@ -2274,7 +2321,6 @@ pub(crate) fn respond_with_stream_upstream(
                         pending_failover_request: None,
                         reasoning_guard_action: None,
                         reasoning_guard_target_token: None,
-                        continuation_reasoning_items: Vec::new(),
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,

@@ -9,6 +9,7 @@ export function createAggregateApiWebCommands(): Record<string, WebCommandDescri
     service_aggregate_api_delete: { rpcMethod: "aggregateApi/delete" },
     service_aggregate_api_read_secret: { rpcMethod: "aggregateApi/readSecret" },
     service_aggregate_api_test_connection: { rpcMethod: "aggregateApi/testConnection" },
+    service_aggregate_api_diagnose_capabilities: { rpcMethod: "aggregateApi/diagnoseCapabilities" },
     service_aggregate_api_refresh_balance: { rpcMethod: "aggregateApi/refreshBalance" },
     service_aggregate_api_supplier_models_list: { rpcMethod: "aggregateApi/supplierModels/list" },
     service_aggregate_api_supplier_model_save: { rpcMethod: "aggregateApi/supplierModels/save", mapParams: (params) => asRecord(asRecord(params)?.payload) ?? {} },

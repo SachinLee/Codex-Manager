@@ -42,7 +42,6 @@ fn respond_synthesized_compact_error_body(
         pending_failover_request: None,
         reasoning_guard_action: None,
         reasoning_guard_target_token: None,
-        continuation_reasoning_items: Vec::new(),
     }
 }
 
@@ -133,7 +132,6 @@ pub(super) fn respond_compact_success_body(
             pending_failover_request: None,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
-            continuation_reasoning_items: Vec::new(),
         },
         &request_id.map(str::to_string),
         &cf_ray.map(str::to_string),

@@ -3,6 +3,10 @@ use std::sync::{Mutex, OnceLock};
 
 use codexmanager_core::storage::now_ts;
 
+use super::policy_action::{
+    record_system_cooldown_action, EvidenceKind, PolicyTargetKind, RouteEvidenceInput,
+};
+
 const AGGREGATE_API_FAILURE_THRESHOLD: u32 = 5;
 const AGGREGATE_API_COOLDOWN_SECS: i64 = 5 * 60;
 const AGGREGATE_API_FAILURE_FORGET_AFTER_SECS: i64 = 30 * 60;
@@ -90,6 +94,25 @@ pub(super) fn record_aggregate_api_failure(api_id: &str) -> bool {
         let entered_cooldown = cooldown_until > entry.cooldown_until;
         entry.cooldown_until = cooldown_until;
         if entered_cooldown {
+            let evidence = RouteEvidenceInput {
+                kind: EvidenceKind::Transport,
+                source: "aggregate_api_cooldown",
+                target_kind: PolicyTargetKind::AggregateApi,
+                target_id: Some(api_id.to_string()),
+                confidence: "high",
+                reason: "consecutive aggregate api failures".to_string(),
+                status_code: None,
+                retry_after_secs: None,
+                observed_at: now,
+            }
+            .summary();
+            record_system_cooldown_action(
+                PolicyTargetKind::AggregateApi,
+                api_id,
+                "consecutive aggregate api failures",
+                cooldown_until,
+                vec![evidence],
+            );
             log::info!(
                 "event=aggregate_api_cooldown_mark api_id={} failures={} cooldown_secs={}",
                 api_id,
@@ -118,6 +141,7 @@ pub(super) fn clear_runtime_state() {
     let mut state = crate::lock_utils::lock_recover(lock, "aggregate_api_cooldown_until");
     state.entries.clear();
     state.last_cleanup_at = 0;
+    super::policy_action::clear_runtime_state();
 }
 
 #[cfg(test)]

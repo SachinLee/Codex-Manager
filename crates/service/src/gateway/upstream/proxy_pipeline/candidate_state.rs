@@ -2,9 +2,7 @@ use bytes::Bytes;
 use codexmanager_core::storage::Account;
 use std::collections::HashMap;
 
-use super::super::support::payload_rewrite::{
-    add_reasoning_encrypted_include_to_stream_body, strip_encrypted_content_from_body,
-};
+use super::super::support::payload_rewrite::strip_encrypted_content_from_body;
 use super::request_setup::UpstreamRequestSetup;
 
 #[derive(Default)]
@@ -175,22 +173,6 @@ impl CandidateExecutionState {
             .clone()
     }
 
-    fn should_add_reasoning_encrypted_include(path: &str) -> bool {
-        matches!(path, "/responses" | "/v1/responses")
-            && super::super::super::reasoning_guard_enabled()
-            && super::super::super::reasoning_guard_intercept_streaming()
-            && super::super::super::reasoning_guard_uses_continuation_recovery()
-    }
-
-    fn maybe_add_reasoning_encrypted_include(path: &str, body: Bytes) -> Bytes {
-        if !Self::should_add_reasoning_encrypted_include(path) {
-            return body;
-        }
-        add_reasoning_encrypted_include_to_stream_body(body.as_ref())
-            .map(Bytes::from)
-            .unwrap_or(body)
-    }
-
     /// 函数 `body_for_attempt`
     ///
     /// 作者: gaohongshun
@@ -237,7 +219,7 @@ impl CandidateExecutionState {
         } else {
             rewritten
         };
-        Self::maybe_add_reasoning_encrypted_include(path, body)
+        body
     }
 
     /// 函数 `retry_body`

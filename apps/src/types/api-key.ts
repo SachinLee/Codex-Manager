@@ -79,6 +79,32 @@ export interface AggregateApiTestResult {
   latencyMs: number;
 }
 
+export type AggregateApiCapabilityStatus =
+  | "supported"
+  | "unsupported"
+  | "unknown"
+  | "not_tested";
+
+export interface AggregateApiCapabilityProbeResult {
+  name: string;
+  status: AggregateApiCapabilityStatus;
+  reason: string;
+  httpStatus: number | null;
+  risk: string | null;
+  recommendedMode: string | null;
+  latencyMs: number;
+}
+
+export interface AggregateApiCapabilityDiagnosticsResult {
+  id: string;
+  providerType: string;
+  diagnosedAt: number;
+  latencyMs: number;
+  nonMutating: boolean;
+  liveSmoke: boolean;
+  probes: AggregateApiCapabilityProbeResult[];
+}
+
 export interface AggregateApiBalanceSnapshot {
   isValid: boolean;
   invalidMessage: string | null;

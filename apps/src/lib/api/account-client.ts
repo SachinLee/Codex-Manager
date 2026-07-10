@@ -3,6 +3,7 @@ import {
   normalizeAccountList,
   normalizeAccountDailyUsageStats,
   normalizeAggregateApiBalanceRefreshResult,
+  normalizeAggregateApiCapabilityDiagnosticsResult,
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiDailyUsageStats,
   normalizeAggregateApiReasoningGuardStats,
@@ -51,6 +52,7 @@ import {
   AccountUsage,
   AggregateApi,
   AggregateApiBalanceRefreshResult,
+  AggregateApiCapabilityDiagnosticsResult,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
@@ -768,6 +770,16 @@ export const accountClient = {
       withAddr({ id: apiId })
     );
     return normalizeAggregateApiTestResult(result);
+  },
+  async diagnoseAggregateApiCapabilities(
+    apiId: string,
+    options?: { liveSmoke?: boolean },
+  ): Promise<AggregateApiCapabilityDiagnosticsResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_diagnose_capabilities",
+      withAddr({ id: apiId, liveSmoke: options?.liveSmoke ?? false }),
+    );
+    return normalizeAggregateApiCapabilityDiagnosticsResult(result);
   },
   async listAggregateApiDailyUsageStats(params?: {
     dayStartTs?: number;

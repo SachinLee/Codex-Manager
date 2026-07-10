@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Activity,
   ArrowUp,
   Copy,
   Database,
@@ -76,6 +77,7 @@ import { useI18n } from "@/lib/i18n/provider";
 import {
   AggregateApi,
   AggregateApiBalanceSnapshot,
+  AggregateApiCapabilityDiagnosticsResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiSecretResult,
@@ -236,6 +238,9 @@ export default function AggregateApiPage() {
   const [testingAll, setTestingAll] = useState(false);
   const [refreshingBalanceId, setRefreshingBalanceId] = useState<string | null>(null);
   const [refreshingBalances, setRefreshingBalances] = useState(false);
+  const [diagnosingApiId, setDiagnosingApiId] = useState<string | null>(null);
+  const [diagnosticsResult, setDiagnosticsResult] =
+    useState<AggregateApiCapabilityDiagnosticsResult | null>(null);
   const [togglingApiId, setTogglingApiId] = useState<string | null>(null);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, boolean>>(
     {},
@@ -599,6 +604,24 @@ export default function AggregateApiPage() {
     },
     onError: (error: unknown) => {
       toast.error(`${t("批量测试失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+
+  const diagnosticsMutation = useMutation({
+    mutationFn: (apiId: string) =>
+      accountClient.diagnoseAggregateApiCapabilities(apiId, { liveSmoke: false }),
+    onMutate: async (apiId) => {
+      setDiagnosingApiId(apiId);
+      setDiagnosticsResult(null);
+    },
+    onSuccess: (result) => {
+      setDiagnosticsResult(result);
+    },
+    onSettled: (_result, _error, apiId) => {
+      setDiagnosingApiId((current) => (current === apiId ? null : current));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("能力诊断失败")}: ${error instanceof Error ? error.message : String(error)}`);
     },
   });
 
@@ -1657,6 +1680,22 @@ export default function AggregateApiPage() {
                                 <DropdownMenuItem
                                   className="gap-2"
                                   disabled={
+                                    !isServiceReady || diagnosingApiId === api.id
+                                  }
+                                  onClick={() => diagnosticsMutation.mutate(api.id)}
+                                >
+                                  <Activity
+                                    className={
+                                      diagnosingApiId === api.id
+                                        ? "h-4 w-4 animate-pulse"
+                                        : "h-4 w-4"
+                                    }
+                                  />
+                                  {t("能力诊断")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  disabled={
                                     !isServiceReady || prioritizeMutation.isPending
                                   }
                                   onClick={() => prioritizeMutation.mutate(api)}
@@ -1691,6 +1730,96 @@ export default function AggregateApiPage() {
         aggregateApi={editingApi}
         defaultSort={defaultCreateSort}
       />
+
+      <Dialog
+        open={Boolean(diagnosticsResult)}
+        onOpenChange={(open) => {
+          if (!open) setDiagnosticsResult(null);
+        }}
+      >
+        {diagnosticsResult ? (
+          <DialogContent className="max-h-[82vh] max-w-3xl overflow-hidden p-0">
+            <DialogHeader className="border-b px-6 py-5">
+              <DialogTitle>{t("能力诊断")}</DialogTitle>
+              <DialogDescription>
+                {diagnosticsResult.providerType} ·{" "}
+                {formatTsFromSeconds(
+                  diagnosticsResult.diagnosedAt,
+                  t("未知时间"),
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[calc(82vh-92px)] overflow-y-auto px-6 py-5">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-xs text-muted-foreground">{t("模式")}</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {diagnosticsResult.nonMutating
+                      ? t("非变更诊断")
+                      : t("Live Smoke")}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-xs text-muted-foreground">{t("耗时")}</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {diagnosticsResult.latencyMs}ms
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-xs text-muted-foreground">{t("探针")}</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {diagnosticsResult.probes.length}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 space-y-2">
+                {diagnosticsResult.probes.map((probe) => (
+                  <div
+                    key={probe.name}
+                    className="rounded-lg border bg-card/60 p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-mono text-sm font-medium">
+                          {probe.name}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {probe.reason}
+                        </p>
+                      </div>
+                      <Badge
+                        variant={
+                          probe.status === "supported"
+                            ? "default"
+                            : probe.status === "unsupported"
+                              ? "destructive"
+                              : "secondary"
+                        }
+                      >
+                        {probe.status}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      {probe.httpStatus != null ? (
+                        <span>HTTP {probe.httpStatus}</span>
+                      ) : null}
+                      {probe.recommendedMode ? (
+                        <span>{probe.recommendedMode}</span>
+                      ) : null}
+                      <span>{probe.latencyMs}ms</span>
+                    </div>
+                    {probe.risk ? (
+                      <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                        {probe.risk}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </DialogContent>
+        ) : null}
+      </Dialog>
 
       <Dialog
         open={Boolean(modelPoolApiId)}

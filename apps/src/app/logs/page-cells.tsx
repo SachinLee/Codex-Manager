@@ -476,13 +476,13 @@ export function ErrorInfoCell({ log }: { log: RequestLog }) {
   const isReasoningGuard = isReasoningGuardConverted502(log);
   const error = log.error;
   const text = String(error || "").trim();
-  if (!text && !isReasoningGuard) {
-    return <span className="text-muted-foreground">-</span>;
-  }
   const guardTarget = formatReasoningGuardTarget(log);
-  const displayText = isReasoningGuard ? text || guardTarget : text;
   const hasGuardRetry = log.guardInternalRetryCount > 0;
   const hasGuardEvent = log.guardEventCount > 0;
+  if (!text && !isReasoningGuard && !hasGuardEvent) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+  const displayText = isReasoningGuard ? text || guardTarget : text || guardTarget;
 
   return (
     <Tooltip>

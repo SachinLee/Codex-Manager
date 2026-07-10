@@ -3,8 +3,8 @@ use serde_json::{json, Map, Value};
 use super::super::{GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap};
 use super::{
     append_output_text, build_images_api_response, collect_image_generation_chat_images,
-    collect_response_reasoning_summary_text, merge_usage, parse_usage_from_json,
-    ImagesResponseFormat, UpstreamResponseUsage,
+    collect_response_reasoning_summary_text, hosted_image_generation_semantic_error, merge_usage,
+    parse_usage_from_json, ImagesResponseFormat, UpstreamResponseUsage,
 };
 
 fn anthropic_usage_from_responses(value: &Value) -> Value {
@@ -724,6 +724,9 @@ pub(super) fn convert_responses_body_to_images(
 ) -> Option<Vec<u8>> {
     let value = serde_json::from_slice::<Value>(body).ok()?;
     let response = value.get("response").unwrap_or(&value);
+    if hosted_image_generation_semantic_error(response).is_some() {
+        return None;
+    }
     serde_json::to_vec(&build_images_api_response(response, response_format)).ok()
 }
 
@@ -875,6 +878,30 @@ pub(super) fn compatibility_stream_content_type(
             }
         }
         ResponseAdapter::Passthrough => "text/event-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{convert_responses_body_to_images, ImagesResponseFormat};
+
+    #[test]
+    fn image_conversion_rejects_invalid_json() {
+        assert_eq!(
+            convert_responses_body_to_images(b"{not-json", ImagesResponseFormat::B64Json),
+            None
+        );
+    }
+
+    #[test]
+    fn image_conversion_rejects_missing_result() {
+        assert_eq!(
+            convert_responses_body_to_images(
+                br#"{"output":[{"type":"image_generation_call"}]}"#,
+                ImagesResponseFormat::B64Json,
+            ),
+            None
+        );
     }
 }
 

@@ -1,5 +1,10 @@
 use serde_json::{json, Value};
 
+pub(crate) const IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS: &str =
+    "image_generation_missing_result";
+pub(crate) const IMAGE_GENERATION_MISSING_RESULT_MESSAGE: &str =
+    "hosted image generation response did not include image_generation_call.result";
+
 pub(super) fn mime_type_from_codex_output_format(output_format: Option<&str>) -> &'static str {
     match output_format
         .map(str::trim)
@@ -232,4 +237,70 @@ pub(super) fn build_images_api_response(
         out["usage"] = usage;
     }
     out
+}
+
+pub(super) fn hosted_image_generation_semantic_error(response: &Value) -> Option<&'static str> {
+    if collect_image_generation_results(response).is_empty() {
+        Some(IMAGE_GENERATION_MISSING_RESULT_MESSAGE)
+    } else {
+        None
+    }
+}
+
+pub(super) fn image_generation_semantic_error_body(message: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "error": {
+            "message": message,
+            "type": "gateway_semantic_error",
+            "code": IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS,
+            "error_class": IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS,
+            "retryable": true
+        }
+    }))
+    .unwrap_or_else(|_| message.as_bytes().to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        hosted_image_generation_semantic_error, IMAGE_GENERATION_MISSING_RESULT_MESSAGE,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn hosted_image_generation_semantics_accepts_result() {
+        let response = json!({
+            "output": [{
+                "type": "image_generation_call",
+                "result": "aGVsbG8="
+            }]
+        });
+
+        assert_eq!(hosted_image_generation_semantic_error(&response), None);
+    }
+
+    #[test]
+    fn hosted_image_generation_semantics_rejects_missing_output() {
+        let response = json!({ "id": "resp_empty", "output": [] });
+
+        assert_eq!(
+            hosted_image_generation_semantic_error(&response),
+            Some(IMAGE_GENERATION_MISSING_RESULT_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn hosted_image_generation_semantics_rejects_empty_result() {
+        let response = json!({
+            "output": [{
+                "type": "image_generation_call",
+                "result": " "
+            }]
+        });
+
+        assert_eq!(
+            hosted_image_generation_semantic_error(&response),
+            Some(IMAGE_GENERATION_MISSING_RESULT_MESSAGE)
+        );
+    }
 }

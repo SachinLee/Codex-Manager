@@ -39,7 +39,6 @@ pub(crate) struct UpstreamResponseBridgeResult {
     pub pending_failover_request: Option<Request>,
     pub reasoning_guard_action: Option<ReasoningGuardBridgeAction>,
     pub reasoning_guard_target_token: Option<i64>,
-    pub continuation_reasoning_items: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

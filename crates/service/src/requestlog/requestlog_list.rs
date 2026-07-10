@@ -580,6 +580,27 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         &attempted_aggregate_api_ids,
     );
     let size_reject_stage = derive_size_reject_stage(item.status_code, item.error.as_deref());
+    let route_evidence = crate::gateway::project_request_log_route_evidence(
+        item.status_code,
+        item.error.as_deref(),
+        item.actual_source_kind.as_deref(),
+        item.actual_source_id.as_deref(),
+        item.initial_aggregate_api_id.as_deref(),
+        item.created_at,
+    );
+    let policy_actions = if let Some(aggregate_api_id) = item.initial_aggregate_api_id.as_deref() {
+        crate::gateway::active_policy_actions_for_target(
+            crate::gateway::PolicyTargetKind::AggregateApi,
+            Some(aggregate_api_id),
+        )
+    } else if item.actual_source_kind.as_deref() == Some("account") {
+        crate::gateway::active_policy_actions_for_target(
+            crate::gateway::PolicyTargetKind::Account,
+            item.actual_source_id.as_deref(),
+        )
+    } else {
+        Vec::new()
+    };
     RequestLogSummary {
         trace_id: item.trace_id,
         session_id: item.session_id,
@@ -598,6 +619,8 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         gateway_mode: item.gateway_mode,
         route_strategy: item.route_strategy,
         route_source: item.route_source,
+        route_evidence,
+        policy_actions,
         transparent_mode: item.transparent_mode,
         enhanced_mode: item.enhanced_mode,
         client_model: item.client_model,

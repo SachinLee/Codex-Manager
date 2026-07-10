@@ -779,6 +779,36 @@ pub struct AggregateApiTestResult {
     pub latency_ms: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteEvidenceSummary {
+    pub kind: String,
+    pub source: String,
+    pub target_kind: String,
+    pub target_id: Option<String>,
+    pub confidence: String,
+    pub reason: String,
+    pub status_code: Option<i64>,
+    pub retry_after_secs: Option<i64>,
+    pub observed_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayPolicyActionSummary {
+    pub id: String,
+    pub owner: String,
+    pub kind: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub reason: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub remaining_secs: i64,
+    #[serde(default)]
+    pub source_evidence: Vec<RouteEvidenceSummary>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateApiBalanceSnapshot {
@@ -1262,6 +1292,10 @@ pub struct RequestLogSummary {
     pub gateway_mode: Option<String>,
     pub route_strategy: Option<String>,
     pub route_source: Option<String>,
+    #[serde(default)]
+    pub route_evidence: Vec<RouteEvidenceSummary>,
+    #[serde(default)]
+    pub policy_actions: Vec<GatewayPolicyActionSummary>,
     pub transparent_mode: Option<bool>,
     pub enhanced_mode: Option<bool>,
     pub client_model: Option<String>,
