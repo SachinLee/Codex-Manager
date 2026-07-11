@@ -247,3 +247,38 @@ fn models_etag_header_uses_extra_etag_value() {
     assert!(header.field.equiv("etag"));
     assert_eq!(header.value.as_str(), "\"remote-etag\"");
 }
+
+#[test]
+fn auto_compact_policy_hides_threshold_when_disabled_without_mutating_source() {
+    let source = ModelsResponse {
+        models: vec![ModelInfo {
+            slug: "gpt-5.6".to_string(),
+            display_name: "GPT-5.6".to_string(),
+            auto_compact_token_limit: Some(240_000),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let projected = apply_auto_compact_policy(&source, false);
+
+    assert_eq!(source.models[0].auto_compact_token_limit, Some(240_000));
+    assert_eq!(projected.models[0].auto_compact_token_limit, None);
+}
+
+#[test]
+fn auto_compact_policy_restores_catalog_threshold_when_enabled() {
+    let source = ModelsResponse {
+        models: vec![ModelInfo {
+            slug: "gpt-5.6".to_string(),
+            display_name: "GPT-5.6".to_string(),
+            auto_compact_token_limit: Some(240_000),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let projected = apply_auto_compact_policy(&source, true);
+
+    assert_eq!(projected.models[0].auto_compact_token_limit, Some(240_000));
+}

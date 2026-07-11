@@ -43,6 +43,10 @@ fn filter_summary_mapping_clamps_negative_aggregate_values() {
             estimated_cost_usd: -0.25,
             guard_retry_total_tokens: -6,
             guard_retry_estimated_cost_usd: -0.50,
+            long_context_count: -7,
+            long_context_cost_usd: -0.75,
+            long_context_uplift_usd: -1.0,
+            legacy_candidate_count: -8,
         },
     );
 

@@ -214,9 +214,9 @@ impl Storage {
             .execute(
                 "INSERT INTO request_token_stats (
                     request_log_id, key_id, account_id, aggregate_api_id, aggregate_api_supplier_name, aggregate_api_url, model,
-                    input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
+                    input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                     estimated_cost_usd, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 (
                     request_log_id,
                     &stat.key_id,
@@ -227,6 +227,7 @@ impl Storage {
                     &stat.model,
                     stat.input_tokens,
                     stat.cached_input_tokens,
+                    stat.cache_write_input_tokens,
                     stat.output_tokens,
                     stat.total_tokens,
                     stat.reasoning_output_tokens,
@@ -308,7 +309,7 @@ impl Storage {
                 r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.request_type, r.gateway_mode, r.route_strategy, r.route_source, r.transparent_mode, r.enhanced_mode, r.client_model, r.model, r.model_source, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.client_reasoning_effort, r.reasoning_effort, r.reasoning_source, r.service_tier, r.effective_service_tier, r.service_tier_source, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
-                t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
+                t.input_tokens, t.cached_input_tokens, t.cache_write_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                 r.error, r.created_at
              FROM request_logs r
              {account_join}
@@ -362,7 +363,7 @@ impl Storage {
                 r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.request_type, r.gateway_mode, r.route_strategy, r.route_source, r.transparent_mode, r.enhanced_mode, r.client_model, r.model, r.model_source, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.client_reasoning_effort, r.reasoning_effort, r.reasoning_source, r.service_tier, r.effective_service_tier, r.service_tier_source, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
-                t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
+                t.input_tokens, t.cached_input_tokens, t.cache_write_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                 r.error, r.created_at
              FROM request_logs r
              {account_join}
@@ -516,10 +517,19 @@ impl Storage {
                             END
                     END
                     AS total_tokens,
-                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd
+                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd,
+                    p.context_band AS pricing_context_band,
+                    IFNULL(p.total_cost_usd, 0.0) AS pricing_total_cost_usd,
+                    IFNULL(p.long_context_uplift_usd, 0.0) AS long_context_uplift_usd,
+                    CASE WHEN p.request_log_id IS NULL
+                        AND LOWER(COALESCE(t.model, r.model, '')) LIKE 'gpt-5.6%'
+                        AND IFNULL(t.input_tokens, 0) > 272000
+                        AND LOWER(COALESCE(r.effective_service_tier, r.service_tier, '')) NOT LIKE '%priority%'
+                        THEN 1 ELSE 0 END AS legacy_candidate
                  FROM request_logs r
                  {account_join}
                  LEFT JOIN request_token_stats t ON t.request_log_id = r.id
+                 LEFT JOIN request_pricing_snapshots p ON p.request_log_id = r.id
                  {where_clause}
              ),
              guard_retry AS (
@@ -540,7 +550,11 @@ impl Storage {
                 IFNULL(SUM(f.total_tokens + IFNULL(g.retry_total_tokens, 0)), 0),
                 IFNULL(SUM(f.estimated_cost_usd + IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0),
                 IFNULL(SUM(IFNULL(g.retry_total_tokens, 0)), 0),
-                IFNULL(SUM(IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0)
+                 IFNULL(SUM(IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0),
+                 IFNULL(SUM(CASE WHEN f.pricing_context_band = 'long' THEN 1 ELSE 0 END), 0),
+                 IFNULL(SUM(CASE WHEN f.pricing_context_band = 'long' THEN f.pricing_total_cost_usd ELSE 0.0 END), 0.0),
+                 IFNULL(SUM(CASE WHEN f.pricing_context_band = 'long' THEN f.long_context_uplift_usd ELSE 0.0 END), 0.0),
+                 IFNULL(SUM(f.legacy_candidate), 0)
              FROM filtered f
              LEFT JOIN guard_retry g ON g.trace_id = f.trace_id",
             account_join = account_join_clause(include_account_lookup),
@@ -557,6 +571,10 @@ impl Storage {
                     estimated_cost_usd: row.get(4)?,
                     guard_retry_total_tokens: row.get(5)?,
                     guard_retry_estimated_cost_usd: row.get(6)?,
+                    long_context_count: row.get(7)?,
+                    long_context_cost_usd: row.get(8)?,
+                    long_context_uplift_usd: row.get(9)?,
+                    legacy_candidate_count: row.get(10)?,
                 })
             })
     }
@@ -601,10 +619,19 @@ impl Storage {
                             END
                     END
                     AS total_tokens,
-                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd
+                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd,
+                    p.context_band AS pricing_context_band,
+                    IFNULL(p.total_cost_usd, 0.0) AS pricing_total_cost_usd,
+                    IFNULL(p.long_context_uplift_usd, 0.0) AS long_context_uplift_usd,
+                    CASE WHEN p.request_log_id IS NULL
+                        AND LOWER(COALESCE(t.model, r.model, '')) LIKE 'gpt-5.6%'
+                        AND IFNULL(t.input_tokens, 0) > 272000
+                        AND LOWER(COALESCE(r.effective_service_tier, r.service_tier, '')) NOT LIKE '%priority%'
+                        THEN 1 ELSE 0 END AS legacy_candidate
                  FROM request_logs r
                  {account_join}
                  LEFT JOIN request_token_stats t ON t.request_log_id = r.id
+                 LEFT JOIN request_pricing_snapshots p ON p.request_log_id = r.id
                  {where_clause}
              ),
              guard_retry AS (
@@ -625,7 +652,11 @@ impl Storage {
                 IFNULL(SUM(f.total_tokens + IFNULL(g.retry_total_tokens, 0)), 0),
                 IFNULL(SUM(f.estimated_cost_usd + IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0),
                 IFNULL(SUM(IFNULL(g.retry_total_tokens, 0)), 0),
-                IFNULL(SUM(IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0)
+                 IFNULL(SUM(IFNULL(g.retry_estimated_cost_usd, 0.0)), 0.0),
+                 IFNULL(SUM(CASE WHEN f.pricing_context_band = 'long' THEN 1 ELSE 0 END), 0),
+                 IFNULL(SUM(CASE WHEN f.pricing_context_band = 'long' THEN f.pricing_total_cost_usd ELSE 0.0 END), 0.0),
+                 IFNULL(SUM(CASE WHEN f.pricing_context_band = 'long' THEN f.long_context_uplift_usd ELSE 0.0 END), 0.0),
+                 IFNULL(SUM(f.legacy_candidate), 0)
              FROM filtered f
              LEFT JOIN guard_retry g ON g.trace_id = f.trace_id",
             account_join = account_join_clause(include_account_lookup),
@@ -642,6 +673,10 @@ impl Storage {
                     estimated_cost_usd: row.get(4)?,
                     guard_retry_total_tokens: row.get(5)?,
                     guard_retry_estimated_cost_usd: row.get(6)?,
+                    long_context_count: row.get(7)?,
+                    long_context_cost_usd: row.get(8)?,
+                    long_context_uplift_usd: row.get(9)?,
+                    legacy_candidate_count: row.get(10)?,
                 })
             })
     }
@@ -717,6 +752,7 @@ impl Storage {
             "SELECT
                 IFNULL(SUM(s.input_tokens), 0),
                 IFNULL(SUM(s.cached_input_tokens), 0),
+                IFNULL(SUM(s.cache_write_input_tokens), 0),
                 IFNULL(SUM(s.output_tokens), 0),
                 IFNULL(SUM(s.reasoning_output_tokens), 0),
                 IFNULL(SUM(s.estimated_cost_usd), 0.0)
@@ -735,9 +771,10 @@ impl Storage {
                 Ok(RequestLogTodaySummary {
                     input_tokens: row.get(0)?,
                     cached_input_tokens: row.get(1)?,
-                    output_tokens: row.get(2)?,
-                    reasoning_output_tokens: row.get(3)?,
-                    estimated_cost_usd: row.get(4)?,
+                    cache_write_input_tokens: row.get(2)?,
+                    output_tokens: row.get(3)?,
+                    reasoning_output_tokens: row.get(4)?,
+                    estimated_cost_usd: row.get(5)?,
                 })
             })
     }
@@ -1168,12 +1205,13 @@ fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
         first_response_ms: row.get(37)?,
         input_tokens: row.get(38)?,
         cached_input_tokens: row.get(39)?,
-        output_tokens: row.get(40)?,
-        total_tokens: row.get(41)?,
-        reasoning_output_tokens: row.get(42)?,
-        estimated_cost_usd: row.get(43)?,
-        error: row.get(44)?,
-        created_at: row.get(45)?,
+        cache_write_input_tokens: row.get(40)?,
+        output_tokens: row.get(41)?,
+        total_tokens: row.get(42)?,
+        reasoning_output_tokens: row.get(43)?,
+        estimated_cost_usd: row.get(44)?,
+        error: row.get(45)?,
+        created_at: row.get(46)?,
     })
 }
 
@@ -1262,6 +1300,7 @@ fn empty_request_log_today_summary() -> RequestLogTodaySummary {
     RequestLogTodaySummary {
         input_tokens: 0,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 0,
         reasoning_output_tokens: 0,
         estimated_cost_usd: 0.0,
@@ -1277,6 +1316,10 @@ fn empty_request_log_query_summary() -> RequestLogQuerySummary {
         estimated_cost_usd: 0.0,
         guard_retry_total_tokens: 0,
         guard_retry_estimated_cost_usd: 0.0,
+        long_context_count: 0,
+        long_context_cost_usd: 0.0,
+        long_context_uplift_usd: 0.0,
+        legacy_candidate_count: 0,
     }
 }
 

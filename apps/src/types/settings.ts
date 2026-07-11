@@ -66,6 +66,7 @@ export interface AppSettings {
   modelCatalogAutoRemoteFetch: boolean;
   modelForwardRules: string;
   compactModelForwardRules: string;
+  autoCompactEnabled: boolean;
   accountMaxInflight: number;
   reasoningGuardEnabled: boolean;
   reasoningGuardMatchMode: string;

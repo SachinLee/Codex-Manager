@@ -123,3 +123,26 @@ if hosted_image_generation_semantic_error(&value).is_some() {
     return respond_json_bytes(request, StatusCode(502), headers, image_generation_semantic_error_body(message));
 }
 ```
+
+## Scenario: Automatic Context Compaction Advertisement
+
+### Scope / Trigger
+
+- Applies when changing `auto_compact_token_limit`, `/v1/models`, `/v1/responses/compact`, or the `autoCompactEnabled` app setting.
+
+### Contract
+
+- `autoCompactEnabled` defaults to `false` and is persisted as `gateway.auto_compact_enabled`.
+- `CODEXMANAGER_AUTO_COMPACT_ENABLED` is the runtime environment override.
+- Disabling automatic compact removes `auto_compact_token_limit` only from the local `/v1/models` response projection. It must not delete or overwrite the stored model-catalog value.
+- Enabling the setting restores the stored threshold in subsequent model-list responses.
+- The switch controls Codex client auto-triggering only. Explicit `/v1/responses/compact` requests remain available, and normal `/v1/responses` requests must not depend on compact success.
+- Do not add gateway-side replacement-history rewriting without a separate protocol design, response validation, timeout, and fail-open rollback path.
+
+### Tests Required
+
+- Runtime default and setter round-trip.
+- App-settings persisted round-trip.
+- Disabled model-list projection hides the threshold without mutating its source.
+- Enabled model-list projection preserves the threshold.
+- Frontend type-check and production build after changing the settings payload.

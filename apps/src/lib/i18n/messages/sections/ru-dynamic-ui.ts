@@ -2,6 +2,9 @@ import type { MessageCatalog } from "../types";
 
 export const RU_DYNAMIC_UI_MESSAGES: MessageCatalog = {
   "· 长周期": " · длинное окно",
+  自动上下文压缩: "Автоматическое сжатие контекста",
+  "默认关闭。开启后，Codex 客户端会根据模型目录的 auto_compact_token_limit 自动调用 compact；关闭不影响手动 compact 和普通请求。":
+    "По умолчанию отключено. После включения Codex автоматически вызывает compact по auto_compact_token_limit из каталога моделей. Отключение не влияет на ручной compact и обычные запросы.",
   按平台价格规则: "По правилам цен платформы",
   薄荷绿: "Мятный зелёный",
   保存来源模型: "Сохранить модель источника",

@@ -26,6 +26,7 @@ export interface QuotaOverviewResult {
   todayUsage: {
     inputTokens: number;
     cachedInputTokens: number;
+    cacheWriteInputTokens: number;
     outputTokens: number;
     reasoningOutputTokens: number;
     totalTokens: number;
@@ -69,6 +70,7 @@ export interface QuotaModelUsageItem {
   provider: string | null;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
@@ -88,6 +90,7 @@ export interface QuotaApiKeyModelUsageItem {
   model: string;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;

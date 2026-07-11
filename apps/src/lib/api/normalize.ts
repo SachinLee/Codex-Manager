@@ -394,16 +394,18 @@ export function normalizeTodaySummary(payload: unknown): RequestLogTodaySummary 
   const source = asObject(payload);
   const inputTokens = asInteger(source.inputTokens, 0, 0);
   const cachedInputTokens = asInteger(source.cachedInputTokens, 0, 0);
+  const cacheWriteInputTokens = asInteger(source.cacheWriteInputTokens, 0, 0);
   const outputTokens = asInteger(source.outputTokens, 0, 0);
   const reasoningOutputTokens = asInteger(source.reasoningOutputTokens, 0, 0);
   return {
     inputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
     outputTokens,
     reasoningOutputTokens,
     todayTokens: asInteger(
       source.todayTokens,
-      Math.max(0, inputTokens - cachedInputTokens) + outputTokens,
+      Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens) + outputTokens,
       0
     ),
     estimatedCost: Math.max(0, toNullableNumber(source.estimatedCost) ?? 0),
@@ -417,15 +419,21 @@ function normalizeDailyUsageBase(source: Record<string, unknown>) {
     0,
     0,
   );
+  const cacheWriteInputTokens = asInteger(
+    source.cacheWriteInputTokens ?? source.cache_write_input_tokens,
+    0,
+    0,
+  );
   const billableInputTokens = asInteger(
     source.billableInputTokens ?? source.billable_input_tokens,
-    Math.max(0, inputTokens - cachedInputTokens),
+    Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens),
     0,
   );
   return {
     requestCount: asInteger(source.requestCount ?? source.request_count, 0, 0),
     inputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
     billableInputTokens,
     outputTokens: asInteger(source.outputTokens ?? source.output_tokens, 0, 0),
     totalTokens: asInteger(source.totalTokens ?? source.total_tokens, 0, 0),
@@ -1763,6 +1771,9 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     cachedInputTokens: toNullableNumber(
       source.cachedInputTokens ?? source.cached_input_tokens
     ),
+    cacheWriteInputTokens: toNullableNumber(
+      source.cacheWriteInputTokens ?? source.cache_write_input_tokens
+    ),
     outputTokens: toNullableNumber(source.outputTokens ?? source.output_tokens),
     totalTokens: toNullableNumber(source.totalTokens ?? source.total_tokens),
     reasoningOutputTokens: toNullableNumber(
@@ -1770,6 +1781,37 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     ),
     estimatedCostUsd: toNullableNumber(
       source.estimatedCostUsd ?? source.estimated_cost_usd
+    ),
+    pricingContextBand:
+      asString(source.pricingContextBand ?? source.pricing_context_band) || "unknown",
+    pricingBillingMode:
+      asString(source.pricingBillingMode ?? source.pricing_billing_mode) || null,
+    longContextThresholdTokens: toNullableNumber(
+      source.longContextThresholdTokens ?? source.long_context_threshold_tokens,
+    ),
+    pricingMatchedRuleId:
+      asString(source.pricingMatchedRuleId ?? source.pricing_matched_rule_id) || null,
+    pricingMatchedPattern:
+      asString(source.pricingMatchedPattern ?? source.pricing_matched_pattern) || null,
+    pricingSource: asString(source.pricingSource ?? source.pricing_source) || null,
+    pricingMatchQuality:
+      asString(source.pricingMatchQuality ?? source.pricing_match_quality) || null,
+    pricingStatus: asString(source.pricingStatus ?? source.pricing_status) || null,
+    plainInputCostUsd: toNullableNumber(
+      source.plainInputCostUsd ?? source.plain_input_cost_usd,
+    ),
+    cachedInputCostUsd: toNullableNumber(
+      source.cachedInputCostUsd ?? source.cached_input_cost_usd,
+    ),
+    cacheWriteCostUsd: toNullableNumber(
+      source.cacheWriteCostUsd ?? source.cache_write_cost_usd,
+    ),
+    outputCostUsd: toNullableNumber(source.outputCostUsd ?? source.output_cost_usd),
+    shortBaselineCostUsd: toNullableNumber(
+      source.shortBaselineCostUsd ?? source.short_baseline_cost_usd,
+    ),
+    longContextUpliftUsd: toNullableNumber(
+      source.longContextUpliftUsd ?? source.long_context_uplift_usd,
     ),
     guardEventCount: Math.max(
       0,
@@ -1919,6 +1961,10 @@ export function normalizeRequestLogFilterSummary(
           source.guard_retry_estimated_cost_usd,
       ) ?? 0,
     ),
+    longContextCount: asInteger(source.longContextCount, 0, 0),
+    longContextCostUsd: Math.max(0, toNullableNumber(source.longContextCostUsd) ?? 0),
+    longContextUpliftUsd: Math.max(0, toNullableNumber(source.longContextUpliftUsd) ?? 0),
+    legacyCandidateCount: asInteger(source.legacyCandidateCount, 0, 0),
   };
 }
 
@@ -2323,6 +2369,10 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     modelForwardRules: asString(source.modelForwardRules ?? source.model_forward_rules),
     compactModelForwardRules: asString(
       source.compactModelForwardRules ?? source.compact_model_forward_rules
+    ),
+    autoCompactEnabled: asBoolean(
+      source.autoCompactEnabled ?? source.auto_compact_enabled,
+      false
     ),
     accountMaxInflight: asInteger(source.accountMaxInflight, 1, 0),
     reasoningGuardEnabled: asBoolean(source.reasoningGuardEnabled, true),

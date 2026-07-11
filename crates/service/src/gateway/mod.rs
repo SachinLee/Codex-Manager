@@ -529,6 +529,10 @@ pub(crate) fn current_compact_api_path() -> String {
     runtime_config::current_compact_api_path()
 }
 
+pub(crate) fn auto_compact_enabled() -> bool {
+    runtime_config::auto_compact_enabled()
+}
+
 pub(crate) fn compact_api_path_uses_chat_completions() -> bool {
     runtime_config::compact_api_path_uses_chat_completions()
 }
@@ -834,6 +838,10 @@ pub(crate) fn set_model_forward_rules(raw: &str) -> Result<String, String> {
 
 pub(crate) fn set_compact_model_forward_rules(raw: &str) -> Result<String, String> {
     runtime_config::set_compact_model_forward_rules(raw)
+}
+
+pub(crate) fn set_auto_compact_enabled(enabled: bool) -> bool {
+    runtime_config::set_auto_compact_enabled(enabled)
 }
 
 /// 函数 `resolve_forwarded_model`

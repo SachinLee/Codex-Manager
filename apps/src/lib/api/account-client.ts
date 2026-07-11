@@ -181,7 +181,13 @@ export interface ModelPriceRuleEntry {
   billingMode: string;
   inputPricePer1m: number | null;
   cachedInputPricePer1m: number | null;
+  cacheWritePricePer1m: number | null;
   outputPricePer1m: number | null;
+  longContextThresholdTokens: number | null;
+  longContextInputPricePer1m: number | null;
+  longContextCachedInputPricePer1m: number | null;
+  longContextCacheWritePricePer1m: number | null;
+  longContextOutputPricePer1m: number | null;
   enabled: boolean;
   priority: number;
   source: string;
@@ -197,7 +203,13 @@ export interface ModelPriceRuleUpsertPayload {
   billingMode?: string | null;
   inputPricePer1m?: number | null;
   cachedInputPricePer1m?: number | null;
+  cacheWritePricePer1m?: number | null;
   outputPricePer1m?: number | null;
+  longContextThresholdTokens?: number | null;
+  longContextInputPricePer1m?: number | null;
+  longContextCachedInputPricePer1m?: number | null;
+  longContextCacheWritePricePer1m?: number | null;
+  longContextOutputPricePer1m?: number | null;
   enabled?: boolean | null;
   priority?: number | null;
 }

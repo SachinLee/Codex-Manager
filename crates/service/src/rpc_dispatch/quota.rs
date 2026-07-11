@@ -109,10 +109,36 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                     .as_ref()
                     .and_then(|p| p.get("cachedInputPricePer1m"))
                     .and_then(|v| v.as_f64()),
+                cache_write_price_per_1m: req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("cacheWritePricePer1m"))
+                    .and_then(|v| v.as_f64()),
                 output_price_per_1m: req
                     .params
                     .as_ref()
                     .and_then(|p| p.get("outputPricePer1m"))
+                    .and_then(|v| v.as_f64()),
+                long_context_threshold_tokens: super::i64_param(req, "longContextThresholdTokens"),
+                long_context_input_price_per_1m: req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("longContextInputPricePer1m"))
+                    .and_then(|v| v.as_f64()),
+                long_context_cached_input_price_per_1m: req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("longContextCachedInputPricePer1m"))
+                    .and_then(|v| v.as_f64()),
+                long_context_cache_write_price_per_1m: req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("longContextCacheWritePricePer1m"))
+                    .and_then(|v| v.as_f64()),
+                long_context_output_price_per_1m: req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("longContextOutputPricePer1m"))
                     .and_then(|v| v.as_f64()),
                 enabled: super::bool_param(req, "enabled"),
                 priority: super::i64_param(req, "priority"),

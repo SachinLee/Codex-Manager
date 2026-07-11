@@ -2,7 +2,7 @@ use codexmanager_core::rpc::types::{
     RequestLogFilterSummaryResult, RequestLogListParams, RequestLogListResult,
     RequestLogListWithSummaryResult, RequestLogSummary,
 };
-use codexmanager_core::storage::{RequestLog, Storage};
+use codexmanager_core::storage::{RequestLog, RequestPricingSnapshot, Storage};
 use std::collections::HashMap;
 
 use crate::storage_helpers::open_storage;
@@ -152,6 +152,7 @@ pub(crate) fn read_request_logs_with_storage(
         .map(|item| to_request_log_summary(item, true))
         .collect();
     enrich_request_log_guard_summaries(storage, &mut items)?;
+    enrich_request_log_pricing_snapshots(storage, &mut items)?;
     Ok(items)
 }
 
@@ -176,6 +177,7 @@ pub(crate) fn read_request_logs_for_key_ids_with_storage(
         .map(|item| to_request_log_summary(item, false))
         .collect();
     enrich_request_log_guard_summaries(storage, &mut items)?;
+    enrich_request_log_pricing_snapshots(storage, &mut items)?;
     Ok(items)
 }
 
@@ -254,6 +256,7 @@ fn read_request_log_page_with_normalized_total(
         .map(|item| to_request_log_summary(item, true))
         .collect();
     enrich_request_log_guard_summaries(storage, &mut items)?;
+    enrich_request_log_pricing_snapshots(storage, &mut items)?;
     Ok(RequestLogListResult {
         items,
         total,
@@ -366,6 +369,7 @@ fn read_request_log_page_for_key_ids_with_normalized_total(
         .map(|item| to_request_log_summary(item, false))
         .collect();
     enrich_request_log_guard_summaries(storage, &mut items)?;
+    enrich_request_log_pricing_snapshots(storage, &mut items)?;
     Ok(RequestLogListResult {
         items,
         total,
@@ -528,6 +532,76 @@ fn add_positive_optional_f64(current: Option<f64>, extra: f64) -> Option<f64> {
     (total > 0.0).then_some(total)
 }
 
+fn enrich_request_log_pricing_snapshots(
+    storage: &Storage,
+    items: &mut [RequestLogSummary],
+) -> Result<(), String> {
+    let trace_ids = items
+        .iter()
+        .filter_map(|item| item.trace_id.as_deref())
+        .map(str::trim)
+        .filter(|trace_id| !trace_id.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let snapshots = storage
+        .list_request_pricing_snapshots_for_trace_ids(&trace_ids)
+        .map_err(|err| format!("list request pricing snapshots failed: {err}"))?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+    for item in items {
+        if let Some(snapshot) = item
+            .trace_id
+            .as_ref()
+            .and_then(|trace_id| snapshots.get(trace_id))
+        {
+            apply_pricing_snapshot(item, snapshot);
+        } else {
+            item.pricing_context_band = legacy_pricing_context_band(item).to_string();
+        }
+    }
+    Ok(())
+}
+
+fn apply_pricing_snapshot(item: &mut RequestLogSummary, snapshot: &RequestPricingSnapshot) {
+    item.pricing_context_band = snapshot.context_band.clone();
+    item.pricing_billing_mode = Some(snapshot.billing_mode.clone());
+    item.long_context_threshold_tokens = snapshot.long_context_threshold_tokens;
+    item.pricing_matched_rule_id = snapshot.matched_rule_id.clone();
+    item.pricing_matched_pattern = snapshot.matched_pattern.clone();
+    item.pricing_source = snapshot.price_source.clone();
+    item.pricing_match_quality = snapshot.match_quality.clone();
+    item.pricing_status = Some(snapshot.price_status.clone());
+    item.plain_input_cost_usd = snapshot.plain_input_cost_usd;
+    item.cached_input_cost_usd = snapshot.cached_input_cost_usd;
+    item.cache_write_cost_usd = snapshot.cache_write_cost_usd;
+    item.output_cost_usd = snapshot.output_cost_usd;
+    item.short_baseline_cost_usd = snapshot.short_baseline_cost_usd;
+    item.long_context_uplift_usd = snapshot.long_context_uplift_usd;
+}
+
+fn legacy_pricing_context_band(item: &RequestLogSummary) -> &'static str {
+    let model = item
+        .model
+        .as_deref()
+        .or(item.upstream_model.as_deref())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let input_tokens = item.input_tokens.unwrap_or_default();
+    let tier = item
+        .effective_service_tier
+        .as_deref()
+        .or(item.service_tier.as_deref())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if model.starts_with("gpt-5.6") && input_tokens > 272_000 && !tier.contains("priority") {
+        "legacy_candidate"
+    } else {
+        "unknown"
+    }
+}
+
 /// 函数 `clamp_page`
 ///
 /// 作者: gaohongshun
@@ -652,10 +726,25 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         first_response_ms: item.first_response_ms,
         input_tokens: item.input_tokens,
         cached_input_tokens: item.cached_input_tokens,
+        cache_write_input_tokens: item.cache_write_input_tokens,
         output_tokens: item.output_tokens,
         total_tokens: item.total_tokens,
         reasoning_output_tokens: item.reasoning_output_tokens,
         estimated_cost_usd: item.estimated_cost_usd,
+        pricing_context_band: "unknown".to_string(),
+        pricing_billing_mode: None,
+        long_context_threshold_tokens: None,
+        pricing_matched_rule_id: None,
+        pricing_matched_pattern: None,
+        pricing_source: None,
+        pricing_match_quality: None,
+        pricing_status: None,
+        plain_input_cost_usd: None,
+        cached_input_cost_usd: None,
+        cache_write_cost_usd: None,
+        output_cost_usd: None,
+        short_baseline_cost_usd: None,
+        long_context_uplift_usd: None,
         guard_event_count: 0,
         guard_internal_retry_count: 0,
         guard_block_count: 0,

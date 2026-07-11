@@ -423,6 +423,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             platform_model_for_log,
             usage.input_tokens,
             usage.cached_input_tokens,
+            usage.cache_write_input_tokens,
             usage.output_tokens,
         );
         let event = GatewayReasoningGuardEvent {

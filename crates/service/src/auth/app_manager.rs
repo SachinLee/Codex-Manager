@@ -910,19 +910,63 @@ fn estimate_billing_model_cost_usd(
             &["usage", "cache_read_input_tokens"],
         ],
     );
+    let cache_write_input_tokens = extract_usage_token(
+        &usage,
+        &[
+            "cacheWriteInputTokens",
+            "cache_write_input_tokens",
+            "cache_write_tokens",
+        ],
+        &[
+            &[
+                "input_tokens_details",
+                "cache_write_tokens",
+            ],
+            &[
+                "prompt_tokens_details",
+                "cache_write_tokens",
+            ],
+            &[
+                "usage",
+                "input_tokens_details",
+                "cache_write_tokens",
+            ],
+            &[
+                "usage",
+                "prompt_tokens_details",
+                "cache_write_tokens",
+            ],
+            &["usage", "cache_write_input_tokens"],
+        ],
+    );
     let output_tokens = extract_usage_token(
         &usage,
         &["outputTokens", "output_tokens", "completion_tokens"],
         &[&["usage", "output_tokens"], &["usage", "completion_tokens"]],
     );
-    if input_tokens.is_none() && cached_input_tokens.is_none() && output_tokens.is_none() {
+    if input_tokens.is_none()
+        && cached_input_tokens.is_none()
+        && cache_write_input_tokens.is_none()
+        && output_tokens.is_none()
+    {
         return None;
     }
-    let cost = crate::quota::model_pricing::estimate_cost_usd_for_log(
+    let service_tier = [
+        "effectiveServiceTier",
+        "effective_service_tier",
+        "serviceTier",
+        "service_tier",
+    ]
+    .iter()
+    .find_map(|key| usage.get(*key).and_then(Value::as_str))
+    .or_else(|| value_at_path(&usage, &["usage", "service_tier"]).and_then(Value::as_str));
+    let cost = crate::quota::model_pricing::estimate_cost_usd_for_log_with_tier(
         storage,
         Some(billing_model),
+        service_tier,
         input_tokens,
         cached_input_tokens,
+        cache_write_input_tokens,
         output_tokens,
     );
     if cost > 0.0 {

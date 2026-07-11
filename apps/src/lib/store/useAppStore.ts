@@ -89,6 +89,7 @@ export const useAppStore = create<AppState>((set) => ({
     modelCatalogAutoRemoteFetch: true,
     modelForwardRules: "",
     compactModelForwardRules: "",
+    autoCompactEnabled: false,
     accountMaxInflight: 1,
     reasoningGuardEnabled: true,
     reasoningGuardMatchMode: "targets",

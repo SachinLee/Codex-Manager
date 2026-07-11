@@ -2,6 +2,9 @@ import type { MessageCatalog } from "../types";
 
 export const KO_DYNAMIC_UI_MESSAGES: MessageCatalog = {
   "· 长周期": " · 장기 기간",
+  自动上下文压缩: "자동 컨텍스트 압축",
+  "默认关闭。开启后，Codex 客户端会根据模型目录的 auto_compact_token_limit 自动调用 compact；关闭不影响手动 compact 和普通请求。":
+    "기본값은 꺼짐입니다. 켜면 Codex가 모델 카탈로그의 auto_compact_token_limit에 따라 compact를 자동 호출합니다. 꺼도 수동 compact와 일반 요청에는 영향을 주지 않습니다.",
   按平台价格规则: "플랫폼 가격 규칙 기준",
   薄荷绿: "민트 그린",
   保存来源模型: "소스 모델 저장",

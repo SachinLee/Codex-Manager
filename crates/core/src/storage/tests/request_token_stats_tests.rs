@@ -26,6 +26,7 @@ fn insert_rollup_row(
     model: &str,
     input_tokens: i64,
     cached_input_tokens: i64,
+    cache_write_input_tokens: i64,
     output_tokens: i64,
     total_tokens: i64,
     reasoning_output_tokens: i64,
@@ -42,19 +43,21 @@ fn insert_rollup_row(
                 model,
                 input_tokens,
                 cached_input_tokens,
+                cache_write_input_tokens,
                 output_tokens,
                 total_tokens,
                 reasoning_output_tokens,
                 estimated_cost_usd,
                 source_rows,
                 updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 key_id,
                 account_id,
                 model,
                 input_tokens,
                 cached_input_tokens,
+                cache_write_input_tokens,
                 output_tokens,
                 total_tokens,
                 reasoning_output_tokens,
@@ -110,6 +113,7 @@ fn summaries_for_selected_keys_include_rollups_and_respect_time_ranges() {
             model: Some("gpt-5".to_string()),
             input_tokens: Some(10),
             cached_input_tokens: Some(1),
+            cache_write_input_tokens: Some(2),
             output_tokens: Some(2),
             total_tokens: Some(12),
             reasoning_output_tokens: Some(3),
@@ -137,7 +141,7 @@ fn summaries_for_selected_keys_include_rollups_and_respect_time_ranges() {
 
     // Rollup 只写入 key-a，用来验证无时间范围时会把 rollup 一并纳入。
     insert_rollup_row(
-        &storage, "key-a", "acc-a", "gpt-5", 5, 0, 0, 5, 0, 0.05, 1, 999,
+        &storage, "key-a", "acc-a", "gpt-5", 5, 0, 3, 0, 5, 0, 0.05, 1, 999,
     );
 
     let selected = vec!["key-a".to_string()];
@@ -155,6 +159,7 @@ fn summaries_for_selected_keys_include_rollups_and_respect_time_ranges() {
     assert_eq!(by_model.len(), 1);
     assert_eq!(by_model[0].model, "gpt-5");
     assert_eq!(by_model[0].total_tokens, 17);
+    assert_eq!(by_model[0].cache_write_input_tokens, 5);
 
     let by_key_and_model = storage
         .summarize_request_token_stats_by_key_and_model_for_keys(Some(90), Some(110), &selected)
@@ -163,6 +168,7 @@ fn summaries_for_selected_keys_include_rollups_and_respect_time_ranges() {
     assert_eq!(by_key_and_model[0].key_id, "key-a");
     assert_eq!(by_key_and_model[0].model, "gpt-5");
     assert_eq!(by_key_and_model[0].total_tokens, 12);
+    assert_eq!(by_key_and_model[0].cache_write_input_tokens, 2);
     assert_float_close(by_key_and_model[0].estimated_cost_usd, 0.10);
 }
 

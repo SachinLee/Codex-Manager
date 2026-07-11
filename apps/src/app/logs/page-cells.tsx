@@ -660,6 +660,17 @@ export function buildSummaryPlaceholder(
       ),
     0,
   );
+  const longContextLogs = logs.filter(
+    (item) => item.pricingContextBand === "long",
+  );
+  const longContextCostUsd = longContextLogs.reduce(
+    (sum, item) => sum + Math.max(0, item.estimatedCostUsd || 0),
+    0,
+  );
+  const longContextUpliftUsd = longContextLogs.reduce(
+    (sum, item) => sum + Math.max(0, item.longContextUpliftUsd || 0),
+    0,
+  );
 
   return {
     totalCount: logs.length,
@@ -670,5 +681,11 @@ export function buildSummaryPlaceholder(
     totalCostUsd,
     guardRetryTotalTokens,
     guardRetryEstimatedCostUsd,
+    longContextCount: longContextLogs.length,
+    longContextCostUsd,
+    longContextUpliftUsd,
+    legacyCandidateCount: logs.filter(
+      (item) => item.pricingContextBand === "legacy_candidate",
+    ).length,
   };
 }

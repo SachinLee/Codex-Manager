@@ -63,6 +63,22 @@ impl Drop for EnvGuard {
     }
 }
 
+#[test]
+fn auto_compact_switch_defaults_to_safe_disabled_and_can_be_toggled() {
+    let _guard = crate::test_env_guard();
+    let _env_guard = EnvGuard::clear(ENV_AUTO_COMPACT_ENABLED);
+
+    reload_from_env();
+    assert!(!auto_compact_enabled());
+
+    assert!(set_auto_compact_enabled(true));
+    assert!(auto_compact_enabled());
+    assert_eq!(std::env::var(ENV_AUTO_COMPACT_ENABLED).as_deref(), Ok("1"));
+
+    assert!(!set_auto_compact_enabled(false));
+    assert!(!auto_compact_enabled());
+}
+
 /// 函数 `reload_from_env_updates_timeout_and_proxy`
 ///
 /// 作者: gaohongshun

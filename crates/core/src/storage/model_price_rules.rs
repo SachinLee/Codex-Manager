@@ -1,4 +1,4 @@
-use rusqlite::{params, params_from_iter, types::Value, Result, Row};
+use rusqlite::{params, params_from_iter, types::Value, Connection, Result, Row};
 
 use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
 use super::{ModelPriceRule, Storage};
@@ -6,11 +6,12 @@ use super::{ModelPriceRule, Storage};
 fn model_price_rule_select_columns() -> &'static str {
     "id, provider, model_pattern, match_type, billing_mode,
         currency, unit, input_price_per_1m, cached_input_price_per_1m,
-        output_price_per_1m, reasoning_output_price_per_1m,
+        cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
         cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
         cache_hit_price_per_1m, long_context_threshold_tokens,
         long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m,
+        long_context_cache_write_price_per_1m,
         long_context_output_price_per_1m, source, source_url,
         seed_version, enabled, priority, created_at, updated_at"
 }
@@ -33,27 +34,68 @@ fn enabled_model_price_rules_sql() -> String {
 
 impl Storage {
     pub fn upsert_model_price_rule(&self, rule: &ModelPriceRule) -> Result<()> {
-        self.conn.execute(
+        upsert_model_price_rule_on_connection(&self.conn, rule)
+    }
+
+    pub fn replace_official_model_price_rules(
+        &self,
+        rules: &[ModelPriceRule],
+        seed_version: &str,
+    ) -> Result<()> {
+        self.conn.execute_batch("SAVEPOINT replace_official_model_price_rules")?;
+        let result = (|| {
+            for rule in rules {
+                self.upsert_model_price_rule(rule)?;
+            }
+            self.conn.execute(
+                "UPDATE model_price_rules
+                 SET enabled = 0
+                 WHERE source = 'official_seed'
+                   AND (seed_version IS NULL OR seed_version <> ?1)",
+                [seed_version],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => self
+                .conn
+                .execute_batch("RELEASE SAVEPOINT replace_official_model_price_rules"),
+            Err(error) => {
+                let _ = self.conn.execute_batch(
+                    "ROLLBACK TO SAVEPOINT replace_official_model_price_rules;
+                     RELEASE SAVEPOINT replace_official_model_price_rules",
+                );
+                Err(error)
+            }
+        }
+    }
+
+}
+
+fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRule) -> Result<()> {
+    conn.execute(
             "INSERT INTO model_price_rules (
                 id, provider, model_pattern, match_type, billing_mode,
                 currency, unit, input_price_per_1m, cached_input_price_per_1m,
-                output_price_per_1m, reasoning_output_price_per_1m,
+                cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
                 cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
                 cache_hit_price_per_1m, long_context_threshold_tokens,
                 long_context_input_price_per_1m,
                 long_context_cached_input_price_per_1m,
+                long_context_cache_write_price_per_1m,
                 long_context_output_price_per_1m, source, source_url,
                 seed_version, enabled, priority, created_at, updated_at
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
-                ?6, ?7, ?8, ?9,
-                ?10, ?11,
-                ?12, ?13,
-                ?14, ?15,
-                ?16,
+                ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12,
+                ?13, ?14,
+                ?15, ?16,
                 ?17,
-                ?18, ?19, ?20,
-                ?21, ?22, ?23, ?24, ?25
+                ?18,
+                ?19, ?20, ?21, ?22,
+                ?23, ?24, ?25, ?26, ?27
              )
              ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
@@ -64,6 +106,7 @@ impl Storage {
                 unit = excluded.unit,
                 input_price_per_1m = excluded.input_price_per_1m,
                 cached_input_price_per_1m = excluded.cached_input_price_per_1m,
+                cache_write_price_per_1m = excluded.cache_write_price_per_1m,
                 output_price_per_1m = excluded.output_price_per_1m,
                 reasoning_output_price_per_1m = excluded.reasoning_output_price_per_1m,
                 cache_write_5m_price_per_1m = excluded.cache_write_5m_price_per_1m,
@@ -72,6 +115,7 @@ impl Storage {
                 long_context_threshold_tokens = excluded.long_context_threshold_tokens,
                 long_context_input_price_per_1m = excluded.long_context_input_price_per_1m,
                 long_context_cached_input_price_per_1m = excluded.long_context_cached_input_price_per_1m,
+                long_context_cache_write_price_per_1m = excluded.long_context_cache_write_price_per_1m,
                 long_context_output_price_per_1m = excluded.long_context_output_price_per_1m,
                 source = excluded.source,
                 source_url = excluded.source_url,
@@ -89,6 +133,7 @@ impl Storage {
                 &rule.unit,
                 rule.input_price_per_1m,
                 rule.cached_input_price_per_1m,
+                rule.cache_write_price_per_1m,
                 rule.output_price_per_1m,
                 rule.reasoning_output_price_per_1m,
                 rule.cache_write_5m_price_per_1m,
@@ -97,6 +142,7 @@ impl Storage {
                 rule.long_context_threshold_tokens,
                 rule.long_context_input_price_per_1m,
                 rule.long_context_cached_input_price_per_1m,
+                rule.long_context_cache_write_price_per_1m,
                 rule.long_context_output_price_per_1m,
                 &rule.source,
                 &rule.source_url,
@@ -107,8 +153,10 @@ impl Storage {
                 rule.updated_at,
             ],
         )?;
-        Ok(())
-    }
+    Ok(())
+}
+
+impl Storage {
 
     pub fn count_model_price_rules_for_seed(&self, seed_version: &str) -> Result<i64> {
         self.conn.query_row(
@@ -185,6 +233,7 @@ impl Storage {
                 unit TEXT NOT NULL,
                 input_price_per_1m REAL,
                 cached_input_price_per_1m REAL,
+                cache_write_price_per_1m REAL,
                 output_price_per_1m REAL,
                 reasoning_output_price_per_1m REAL,
                 cache_write_5m_price_per_1m REAL,
@@ -193,6 +242,7 @@ impl Storage {
                 long_context_threshold_tokens INTEGER,
                 long_context_input_price_per_1m REAL,
                 long_context_cached_input_price_per_1m REAL,
+                long_context_cache_write_price_per_1m REAL,
                 long_context_output_price_per_1m REAL,
                 source TEXT NOT NULL,
                 source_url TEXT,
@@ -221,6 +271,12 @@ impl Storage {
         )?;
         self.ensure_model_price_rules_custom_exact_lookup_index()?;
         self.ensure_model_price_rules_enabled_pattern_lookup_index()?;
+        self.ensure_column("model_price_rules", "cache_write_price_per_1m", "REAL")?;
+        self.ensure_column(
+            "model_price_rules",
+            "long_context_cache_write_price_per_1m",
+            "REAL",
+        )?;
         Ok(())
     }
 
@@ -261,22 +317,24 @@ fn map_model_price_rule_row(row: &Row<'_>) -> Result<ModelPriceRule> {
         unit: row.get(6)?,
         input_price_per_1m: row.get(7)?,
         cached_input_price_per_1m: row.get(8)?,
-        output_price_per_1m: row.get(9)?,
-        reasoning_output_price_per_1m: row.get(10)?,
-        cache_write_5m_price_per_1m: row.get(11)?,
-        cache_write_1h_price_per_1m: row.get(12)?,
-        cache_hit_price_per_1m: row.get(13)?,
-        long_context_threshold_tokens: row.get(14)?,
-        long_context_input_price_per_1m: row.get(15)?,
-        long_context_cached_input_price_per_1m: row.get(16)?,
-        long_context_output_price_per_1m: row.get(17)?,
-        source: row.get(18)?,
-        source_url: row.get(19)?,
-        seed_version: row.get(20)?,
-        enabled: row.get(21)?,
-        priority: row.get(22)?,
-        created_at: row.get(23)?,
-        updated_at: row.get(24)?,
+        cache_write_price_per_1m: row.get(9)?,
+        output_price_per_1m: row.get(10)?,
+        reasoning_output_price_per_1m: row.get(11)?,
+        cache_write_5m_price_per_1m: row.get(12)?,
+        cache_write_1h_price_per_1m: row.get(13)?,
+        cache_hit_price_per_1m: row.get(14)?,
+        long_context_threshold_tokens: row.get(15)?,
+        long_context_input_price_per_1m: row.get(16)?,
+        long_context_cached_input_price_per_1m: row.get(17)?,
+        long_context_cache_write_price_per_1m: row.get(18)?,
+        long_context_output_price_per_1m: row.get(19)?,
+        source: row.get(20)?,
+        source_url: row.get(21)?,
+        seed_version: row.get(22)?,
+        enabled: row.get(23)?,
+        priority: row.get(24)?,
+        created_at: row.get(25)?,
+        updated_at: row.get(26)?,
     })
 }
 
@@ -309,11 +367,12 @@ fn enabled_custom_exact_model_price_rule_sql() -> &'static str {
     "SELECT
         id, provider, model_pattern, match_type, billing_mode,
         currency, unit, input_price_per_1m, cached_input_price_per_1m,
-        output_price_per_1m, reasoning_output_price_per_1m,
+        cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
         cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
         cache_hit_price_per_1m, long_context_threshold_tokens,
         long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m,
+        long_context_cache_write_price_per_1m,
         long_context_output_price_per_1m, source, source_url,
         seed_version, enabled, priority, created_at, updated_at
      FROM model_price_rules

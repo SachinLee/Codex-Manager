@@ -5,8 +5,8 @@ use super::{
     apply_env_overrides_to_process, list_app_settings_map, normalize_optional_text,
     persisted_env_overrides_missing_process_env, reload_runtime_after_env_override_apply,
     set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
-    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY,
+    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
@@ -111,6 +111,11 @@ pub fn sync_runtime_settings_from_storage() {
             if let Err(err) = gateway::set_compact_model_forward_rules(raw) {
                 log::warn!("sync persisted compact model forward rules failed: {err}");
             }
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_AUTO_COMPACT_ENABLED") {
+        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY) {
+            gateway::set_auto_compact_enabled(super::parse_bool_with_default(raw, false));
         }
     }
     if !process_env_has_value("CODEXMANAGER_ACCOUNT_MAX_INFLIGHT") {

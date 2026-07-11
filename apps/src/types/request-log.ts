@@ -66,10 +66,25 @@ export interface RequestLog {
   statusCode: number | null;
   inputTokens: number | null;
   cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
   reasoningOutputTokens: number | null;
   estimatedCostUsd: number | null;
+  pricingContextBand: string;
+  pricingBillingMode: string | null;
+  longContextThresholdTokens: number | null;
+  pricingMatchedRuleId: string | null;
+  pricingMatchedPattern: string | null;
+  pricingSource: string | null;
+  pricingMatchQuality: string | null;
+  pricingStatus: string | null;
+  plainInputCostUsd: number | null;
+  cachedInputCostUsd: number | null;
+  cacheWriteCostUsd: number | null;
+  outputCostUsd: number | null;
+  shortBaselineCostUsd: number | null;
+  longContextUpliftUsd: number | null;
   guardEventCount: number;
   guardInternalRetryCount: number;
   guardBlockCount: number;
@@ -102,6 +117,10 @@ export interface RequestLogFilterSummary {
   totalCostUsd: number;
   guardRetryTotalTokens: number;
   guardRetryEstimatedCostUsd: number;
+  longContextCount: number;
+  longContextCostUsd: number;
+  longContextUpliftUsd: number;
+  legacyCandidateCount: number;
 }
 
 export interface RequestLogListWithSummaryResult extends RequestLogListResult {
@@ -111,6 +130,7 @@ export interface RequestLogListWithSummaryResult extends RequestLogListResult {
 export interface RequestLogTodaySummary {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   todayTokens: number;

@@ -96,6 +96,66 @@ SELECT ..., NULL, reasoning_effort, ...
 When reviewing, count both lists after formatting changes. The exact position of
 each placeholder matters as much as the total count.
 
+## Scenario: Normalized cache-write token accounting
+
+### 1. Scope / Trigger
+
+- Trigger: A provider exposes cache-write tokens separately from cache reads, or a price rule gains a new token-category price.
+- Applies to `model_price_rules`, `request_token_stats`, request-token rollups, RPC read models, and wallet raw-usage payloads.
+
+### 2. Signatures
+
+- `model_price_rules.cache_write_price_per_1m REAL NULL`
+- `model_price_rules.long_context_cache_write_price_per_1m REAL NULL`
+- `request_token_stats.cache_write_input_tokens INTEGER NULL`
+- Rollup columns: `request_token_stat_rollups.cache_write_input_tokens` and `request_token_daily_rollups.cache_write_input_tokens`.
+
+### 3. Contracts
+
+- `input_tokens` is normalized total input. Cache reads and cache writes are mutually exclusive subsets of it.
+- Normalize every calculation as `read = clamp(cached, 0, total)`, `write = clamp(cache_write, 0, total - read)`, and `plain = total - read - write`.
+- A missing generic cache-write price falls back to the ordinary input price for a compatible estimate, but callers must retain the `partial` price status.
+- If `total_tokens` is absent, derive it as `input_tokens + output_tokens`; do not subtract cache reads or writes because both already belong to total input.
+- New migration columns are additive and default old records to `NULL`/`0`; never recalculate historical costs without recoverable token detail.
+
+### 4. Validation & Error Matrix
+
+- Negative read/write tokens -> clamp to `0`.
+- Read plus write greater than total input -> read wins first; clamp write to the remaining input.
+- Long-context threshold reached exactly -> keep short price; use the long tier only when `input_tokens > threshold`.
+- Legacy RPC payload omits cache-write fields -> deserialize successfully and report `0` tokens.
+- Price field is negative or non-finite -> reject the price-rule update at the service boundary.
+
+### 5. Good/Base/Bad Cases
+
+- Good: total input `1000`, read `200`, write `100` records plain `700` and bills each category once.
+- Base: a historical row with no write column still displays and rolls up as zero write tokens.
+- Bad: deriving fallback total as `input - cached + output`; this undercounts normalized OpenAI input.
+- Bad: summing raw cache-write tokens independently after already charging total input; this double-counts cache writes.
+
+### 6. Tests Required
+
+- Storage round-trip and daily/model/key rollup tests assert the cache-write aggregate.
+- Price tests cover short/long prices, exact threshold, and read/write overflow clamping.
+- Request-log and wallet re-rating tests pass cache-write tokens and the effective service tier.
+- RPC serialization tests assert the `cacheWriteInputTokens` camelCase field and compatibility defaults.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+-- `input_tokens` already includes cached input, so this undercounts total usage.
+SELECT input_tokens - cached_input_tokens + output_tokens AS total_tokens;
+```
+
+#### Correct
+
+```sql
+-- Read and write are classifications of total input, not additional input.
+SELECT input_tokens + output_tokens AS total_tokens;
+```
+
 ---
 
 ## Naming Conventions

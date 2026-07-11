@@ -132,6 +132,7 @@ export interface AggregateApiDailyUsageStat {
   requestCount: number;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   billableInputTokens: number;
   outputTokens: number;
   totalTokens: number;

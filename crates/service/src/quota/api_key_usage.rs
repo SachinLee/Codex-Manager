@@ -63,6 +63,7 @@ pub(crate) fn read_quota_api_key_usage_with_storage(
             Some(item.model.as_str()),
             item.input_tokens,
             item.cached_input_tokens,
+            item.cache_write_input_tokens,
             item.output_tokens,
         );
         models_by_key
@@ -72,6 +73,7 @@ pub(crate) fn read_quota_api_key_usage_with_storage(
                 model: item.model,
                 input_tokens: item.input_tokens,
                 cached_input_tokens: item.cached_input_tokens,
+                cache_write_input_tokens: item.cache_write_input_tokens,
                 output_tokens: item.output_tokens,
                 reasoning_output_tokens: item.reasoning_output_tokens,
                 total_tokens: item.total_tokens,

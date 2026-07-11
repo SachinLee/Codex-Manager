@@ -13,6 +13,7 @@ const CODEX_IMAGE_AUTO_INJECT_TOOL_ENV: &str =
 
 const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
     CODEX_IMAGE_AUTO_INJECT_TOOL_ENV,
+    "CODEXMANAGER_AUTO_COMPACT_ENABLED",
     "CODEXMANAGER_SERVICE_ADDR",
     "CODEXMANAGER_WEB_ADDR",
     "CODEXMANAGER_ROUTE_STRATEGY",
@@ -93,6 +94,7 @@ fn reset_runtime_defaults() {
         "routeStrategy": "balanced",
         "freeAccountMaxModel": "gpt-5.2",
         "modelForwardRules": "",
+        "autoCompactEnabled": false,
         "reasoningGuardEnabled": true,
         "reasoningGuardTargets": [516, 1034, 1552],
         "reasoningGuardMatchMode": "targets",
@@ -1128,6 +1130,41 @@ fn app_settings_set_preserves_model_forward_rules_case() {
                 .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY)
                 .expect("read model forward rules"),
             Some("Spark*=GPT-5.4-mini\nClaude-Sonnet-4*=Gemini-2.5-Pro".to_string())
+        );
+    });
+}
+
+#[test]
+fn app_settings_auto_compact_switch_roundtrips_and_defaults_to_disabled() {
+    with_temp_db(|_| {
+        let initial = codexmanager_service::app_settings_get().expect("read initial settings");
+        assert_eq!(
+            initial
+                .get("autoCompactEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+
+        let enabled = codexmanager_service::app_settings_set(Some(&json!({
+            "autoCompactEnabled": true
+        })))
+        .expect("enable auto compact");
+        assert_eq!(
+            enabled
+                .get("autoCompactEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let disabled = codexmanager_service::app_settings_set(Some(&json!({
+            "autoCompactEnabled": false
+        })))
+        .expect("disable auto compact");
+        assert_eq!(
+            disabled
+                .get("autoCompactEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
     });
 }

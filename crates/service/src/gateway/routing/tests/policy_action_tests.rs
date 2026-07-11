@@ -27,8 +27,7 @@ fn system_cooldown_action_expires_from_read_model() {
         .summary()],
     );
 
-    let active =
-        active_policy_actions_for_target(PolicyTargetKind::Account, Some("acc-policy"));
+    let active = active_policy_actions_for_target(PolicyTargetKind::Account, Some("acc-policy"));
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].owner, "system");
     assert_eq!(active[0].kind, "cooldown");
@@ -43,8 +42,7 @@ fn system_cooldown_action_expires_from_read_model() {
         Vec::new(),
     );
     assert!(
-        active_policy_actions_for_target(PolicyTargetKind::Account, Some("acc-expired"))
-            .is_empty()
+        active_policy_actions_for_target(PolicyTargetKind::Account, Some("acc-expired")).is_empty()
     );
     clear_runtime_state();
 }

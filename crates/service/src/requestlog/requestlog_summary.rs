@@ -110,6 +110,10 @@ fn map_filter_summary(
         total_cost_usd: filtered.estimated_cost_usd.max(0.0),
         guard_retry_total_tokens: filtered.guard_retry_total_tokens.max(0),
         guard_retry_estimated_cost_usd: filtered.guard_retry_estimated_cost_usd.max(0.0),
+        long_context_count: filtered.long_context_count.max(0),
+        long_context_cost_usd: filtered.long_context_cost_usd.max(0.0),
+        long_context_uplift_usd: filtered.long_context_uplift_usd.max(0.0),
+        legacy_candidate_count: filtered.legacy_candidate_count.max(0),
     }
 }
 

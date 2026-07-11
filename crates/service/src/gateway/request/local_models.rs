@@ -45,6 +45,17 @@ fn serialize_models_response(models: &ModelsResponse) -> String {
     serialize_models_response_body(models)
 }
 
+fn apply_auto_compact_policy(models: &ModelsResponse, enabled: bool) -> ModelsResponse {
+    if enabled {
+        return models.clone();
+    }
+    let mut projected = models.clone();
+    for model in &mut projected.models {
+        model.auto_compact_token_limit = None;
+    }
+    projected
+}
+
 fn filter_models_for_key(
     storage: &codexmanager_core::storage::Storage,
     key_id: &str,
@@ -191,6 +202,7 @@ pub(super) fn maybe_respond_local_models(
     };
 
     let (output_models, include_implicit_models) = filter_models_for_key(storage, key_id, models)?;
+    let output_models = apply_auto_compact_policy(&output_models, super::auto_compact_enabled());
     let output = if include_implicit_models {
         serialize_models_response(&output_models)
     } else {

@@ -10,10 +10,10 @@ use super::{
     current_gateway_reasoning_guard_intercept_non_streaming,
     current_gateway_reasoning_guard_intercept_streaming, save_persisted_app_setting,
     set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed, set_env_overrides,
-    set_gateway_account_max_inflight, set_gateway_background_tasks,
-    set_gateway_compact_model_forward_rules, set_gateway_free_account_max_model,
-    set_gateway_model_catalog_auto_remote_fetch, set_gateway_model_forward_rules,
-    set_gateway_originator, set_gateway_quota_guard,
+    set_gateway_account_max_inflight, set_gateway_auto_compact_enabled,
+    set_gateway_background_tasks, set_gateway_compact_model_forward_rules,
+    set_gateway_free_account_max_model, set_gateway_model_catalog_auto_remote_fetch,
+    set_gateway_model_forward_rules, set_gateway_originator, set_gateway_quota_guard,
     set_gateway_reasoning_guard_bypass_after_consecutive,
     set_gateway_reasoning_guard_continuation_marker_text, set_gateway_reasoning_guard_enabled,
     set_gateway_reasoning_guard_intercept_non_streaming,
@@ -48,6 +48,7 @@ pub(super) struct AppSettingsPatch {
     model_catalog_auto_remote_fetch: Option<bool>,
     model_forward_rules: Option<String>,
     compact_model_forward_rules: Option<String>,
+    auto_compact_enabled: Option<bool>,
     account_max_inflight: Option<usize>,
     reasoning_guard_enabled: Option<bool>,
     reasoning_guard_targets: Option<Vec<i64>>,
@@ -171,6 +172,9 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(raw) = patch.compact_model_forward_rules {
         let _ = set_gateway_compact_model_forward_rules(&raw)?;
+    }
+    if let Some(enabled) = patch.auto_compact_enabled {
+        let _ = set_gateway_auto_compact_enabled(enabled)?;
     }
     if let Some(limit) = patch.account_max_inflight {
         let _ = set_gateway_account_max_inflight(limit)?;

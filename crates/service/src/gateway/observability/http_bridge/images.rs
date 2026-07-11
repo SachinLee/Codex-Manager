@@ -262,9 +262,7 @@ pub(super) fn image_generation_semantic_error_body(message: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        hosted_image_generation_semantic_error, IMAGE_GENERATION_MISSING_RESULT_MESSAGE,
-    };
+    use super::{hosted_image_generation_semantic_error, IMAGE_GENERATION_MISSING_RESULT_MESSAGE};
     use serde_json::json;
 
     #[test]

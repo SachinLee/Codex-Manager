@@ -221,6 +221,7 @@ fn dashboard_usage(usage: &TokenUsageRollup) -> DashboardTokenUsageResult {
     DashboardTokenUsageResult {
         input_tokens: usage.input_tokens.max(0),
         cached_input_tokens: usage.cached_input_tokens.max(0),
+        cache_write_input_tokens: usage.cache_write_input_tokens.max(0),
         output_tokens: usage.output_tokens.max(0),
         reasoning_output_tokens: usage.reasoning_output_tokens.max(0),
         total_tokens: usage.total_tokens.max(0),
@@ -475,6 +476,7 @@ pub(crate) fn read_member_dashboard_summary(
     let usage_today = MemberDashboardUsageToday {
         input_tokens: today_usage_rollup.input_tokens,
         cached_input_tokens: today_usage_rollup.cached_input_tokens,
+        cache_write_input_tokens: today_usage_rollup.cache_write_input_tokens,
         output_tokens: today_usage_rollup.output_tokens,
         reasoning_output_tokens: today_usage_rollup.reasoning_output_tokens,
         total_tokens: today_usage_rollup.total_tokens,
@@ -497,6 +499,7 @@ pub(crate) fn read_member_dashboard_summary(
             page_size: MEMBER_RECENT_LOG_LIMIT,
             query: None,
             status_filter: Some("all".to_string()),
+            pricing_band_filter: None,
             start_ts: None,
             end_ts: None,
         },
@@ -607,6 +610,7 @@ fn read_available_models_with_price_summary() -> Result<Vec<ModelInfo>, String> 
                         "provider": price.provider,
                         "inputUsdPer1M": price.input_price_per_1m,
                         "cachedInputUsdPer1M": price.cached_input_price_per_1m,
+                        "cacheWriteUsdPer1M": price.cache_write_price_per_1m,
                         "outputUsdPer1M": price.output_price_per_1m,
                     }),
                 );

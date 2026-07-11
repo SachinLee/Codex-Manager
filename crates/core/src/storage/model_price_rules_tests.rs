@@ -30,6 +30,7 @@ fn price_rule(id: &str, model_pattern: &str, source: &str, priority: i64) -> Mod
         unit: "per_1m_tokens".to_string(),
         input_price_per_1m: Some(1.0),
         cached_input_price_per_1m: None,
+        cache_write_price_per_1m: None,
         output_price_per_1m: Some(2.0),
         reasoning_output_price_per_1m: None,
         cache_write_5m_price_per_1m: None,
@@ -38,6 +39,7 @@ fn price_rule(id: &str, model_pattern: &str, source: &str, priority: i64) -> Mod
         long_context_threshold_tokens: None,
         long_context_input_price_per_1m: None,
         long_context_cached_input_price_per_1m: None,
+        long_context_cache_write_price_per_1m: None,
         long_context_output_price_per_1m: None,
         source: source.to_string(),
         source_url: None,
@@ -204,4 +206,34 @@ fn list_enabled_model_price_rule_patterns_filters_in_sql() {
         .list_enabled_model_price_rule_patterns_for_patterns(&["gpt-5".to_string()])
         .expect("list disabled patterns");
     assert!(patterns.is_empty());
+}
+
+#[test]
+fn replacing_official_price_rules_disables_stale_seeds_without_touching_custom_rules() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let mut old_seed = price_rule("old-seed", "gpt-5", "official_seed", 10_000);
+    old_seed.seed_version = Some("2026-05-11".to_string());
+    storage
+        .upsert_model_price_rule(&old_seed)
+        .expect("insert old seed");
+
+    let custom = price_rule("custom-rule", "gpt-5", "custom", 20_000);
+    storage
+        .upsert_model_price_rule(&custom)
+        .expect("insert custom rule");
+
+    let mut current_seed = price_rule("current-seed", "gpt-5.6", "official_seed", 10_000);
+    current_seed.seed_version = Some("2026-07-10".to_string());
+    storage
+        .replace_official_model_price_rules(&[current_seed.clone()], "2026-07-10")
+        .expect("replace official seeds");
+
+    let enabled = storage
+        .list_enabled_model_price_rules()
+        .expect("list enabled rules");
+    assert!(enabled.iter().any(|rule| rule.id == current_seed.id));
+    assert!(enabled.iter().any(|rule| rule.id == custom.id));
+    assert!(!enabled.iter().any(|rule| rule.id == old_seed.id));
 }

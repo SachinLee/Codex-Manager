@@ -206,30 +206,68 @@ pub(crate) fn project_request_log_route_evidence(
     };
 
     match status_code {
-        Some(429) => push(EvidenceKind::RateLimit, "upstream returned HTTP 429", "high"),
-        Some(402) => push(EvidenceKind::QuotaBalance, "upstream returned HTTP 402", "high"),
-        Some(400 | 404 | 405 | 501) if lower_error.contains("unsupported") => {
-            push(EvidenceKind::CapabilityUnsupported, "capability unsupported", "high")
-        }
-        Some(500..=599) => push(EvidenceKind::Transport, "upstream returned HTTP 5xx", "medium"),
-        Some(code) if code >= 400 => push(EvidenceKind::UpstreamStatus, "upstream error status", "medium"),
+        Some(429) => push(
+            EvidenceKind::RateLimit,
+            "upstream returned HTTP 429",
+            "high",
+        ),
+        Some(402) => push(
+            EvidenceKind::QuotaBalance,
+            "upstream returned HTTP 402",
+            "high",
+        ),
+        Some(400 | 404 | 405 | 501) if lower_error.contains("unsupported") => push(
+            EvidenceKind::CapabilityUnsupported,
+            "capability unsupported",
+            "high",
+        ),
+        Some(500..=599) => push(
+            EvidenceKind::Transport,
+            "upstream returned HTTP 5xx",
+            "medium",
+        ),
+        Some(code) if code >= 400 => push(
+            EvidenceKind::UpstreamStatus,
+            "upstream error status",
+            "medium",
+        ),
         _ => {}
     }
 
     if lower_error.contains("quota") || lower_error.contains("insufficient") {
-        push(EvidenceKind::QuotaBalance, "error indicates quota or balance exhaustion", "medium");
+        push(
+            EvidenceKind::QuotaBalance,
+            "error indicates quota or balance exhaustion",
+            "medium",
+        );
     }
     if lower_error.contains("rate limit") || lower_error.contains("too many requests") {
-        push(EvidenceKind::RateLimit, "error indicates upstream rate limiting", "medium");
+        push(
+            EvidenceKind::RateLimit,
+            "error indicates upstream rate limiting",
+            "medium",
+        );
     }
     if lower_error.contains("capacity") {
-        push(EvidenceKind::Capacity, "error indicates upstream capacity saturation", "medium");
+        push(
+            EvidenceKind::Capacity,
+            "error indicates upstream capacity saturation",
+            "medium",
+        );
     }
     if lower_error.contains("unsupported") || lower_error.contains("not supported") {
-        push(EvidenceKind::CapabilityUnsupported, "error indicates unsupported capability", "medium");
+        push(
+            EvidenceKind::CapabilityUnsupported,
+            "error indicates unsupported capability",
+            "medium",
+        );
     }
     if lower_error.contains("cooldown") {
-        push(EvidenceKind::Cooldown, "gateway cooldown mentioned in error", "medium");
+        push(
+            EvidenceKind::Cooldown,
+            "gateway cooldown mentioned in error",
+            "medium",
+        );
     }
 
     out

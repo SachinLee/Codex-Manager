@@ -58,7 +58,13 @@ interface ModelCatalogDraft {
   advancedJson: string;
   inputPricePer1m: string;
   cachedInputPricePer1m: string;
+  cacheWritePricePer1m: string;
   outputPricePer1m: string;
+  longContextThresholdTokens: string;
+  longContextInputPricePer1m: string;
+  longContextCachedInputPricePer1m: string;
+  longContextCacheWritePricePer1m: string;
+  longContextOutputPricePer1m: string;
 }
 
 const EDITABLE_ADVANCED_KEYS = [
@@ -232,7 +238,13 @@ function buildDraft(
     advancedJson: buildAdvancedJson(model),
     inputPricePer1m: priceRule?.inputPricePer1m != null ? String(priceRule.inputPricePer1m) : "",
     cachedInputPricePer1m: priceRule?.cachedInputPricePer1m != null ? String(priceRule.cachedInputPricePer1m) : "",
+    cacheWritePricePer1m: priceRule?.cacheWritePricePer1m != null ? String(priceRule.cacheWritePricePer1m) : "",
     outputPricePer1m: priceRule?.outputPricePer1m != null ? String(priceRule.outputPricePer1m) : "",
+    longContextThresholdTokens: priceRule?.longContextThresholdTokens != null ? String(priceRule.longContextThresholdTokens) : "",
+    longContextInputPricePer1m: priceRule?.longContextInputPricePer1m != null ? String(priceRule.longContextInputPricePer1m) : "",
+    longContextCachedInputPricePer1m: priceRule?.longContextCachedInputPricePer1m != null ? String(priceRule.longContextCachedInputPricePer1m) : "",
+    longContextCacheWritePricePer1m: priceRule?.longContextCacheWritePricePer1m != null ? String(priceRule.longContextCacheWritePricePer1m) : "",
+    longContextOutputPricePer1m: priceRule?.longContextOutputPricePer1m != null ? String(priceRule.longContextOutputPricePer1m) : "",
   };
 }
 
@@ -326,9 +338,33 @@ export function ModelCatalogModal({
         priceRule?.cachedInputPricePer1m != null
           ? String(priceRule.cachedInputPricePer1m)
           : "",
+      cacheWritePricePer1m:
+        priceRule?.cacheWritePricePer1m != null
+          ? String(priceRule.cacheWritePricePer1m)
+          : "",
       outputPricePer1m:
         priceRule?.outputPricePer1m != null
           ? String(priceRule.outputPricePer1m)
+          : "",
+      longContextThresholdTokens:
+        priceRule?.longContextThresholdTokens != null
+          ? String(priceRule.longContextThresholdTokens)
+          : "",
+      longContextInputPricePer1m:
+        priceRule?.longContextInputPricePer1m != null
+          ? String(priceRule.longContextInputPricePer1m)
+          : "",
+      longContextCachedInputPricePer1m:
+        priceRule?.longContextCachedInputPricePer1m != null
+          ? String(priceRule.longContextCachedInputPricePer1m)
+          : "",
+      longContextCacheWritePricePer1m:
+        priceRule?.longContextCacheWritePricePer1m != null
+          ? String(priceRule.longContextCacheWritePricePer1m)
+          : "",
+      longContextOutputPricePer1m:
+        priceRule?.longContextOutputPricePer1m != null
+          ? String(priceRule.longContextOutputPricePer1m)
           : "",
     }));
   }, [priceRule, open]);
@@ -371,19 +407,36 @@ export function ModelCatalogModal({
 
     const ip = draft.inputPricePer1m.trim();
     const cp = draft.cachedInputPricePer1m.trim();
+    const wp = draft.cacheWritePricePer1m.trim();
     const op = draft.outputPricePer1m.trim();
-    const hasAnyPriceText = ip !== "" || cp !== "" || op !== "";
+    const longThreshold = draft.longContextThresholdTokens.trim();
+    const longIp = draft.longContextInputPricePer1m.trim();
+    const longCp = draft.longContextCachedInputPricePer1m.trim();
+    const longWp = draft.longContextCacheWritePricePer1m.trim();
+    const longOp = draft.longContextOutputPricePer1m.trim();
+    const hasAnyPriceText = [ip, cp, wp, op, longThreshold, longIp, longCp, longWp, longOp].some(
+      (value) => value !== "",
+    );
     const isClearingExistingOverride = !hasAnyPriceText && !!priceRule?.id;
     const hasUserInput = hasAnyPriceText || isClearingExistingOverride;
 
     if (hasUserInput) {
       const inputNum = ip !== "" ? Number(ip) : null;
       const cachedNum = cp !== "" ? Number(cp) : null;
+      const writeNum = wp !== "" ? Number(wp) : null;
       const outputNum = op !== "" ? Number(op) : null;
+      const longThresholdNum = longThreshold !== "" ? Number(longThreshold) : null;
+      const longNumbers = [longIp, longCp, longWp, longOp]
+        .filter((value) => value !== "")
+        .map(Number);
       if (
         (inputNum !== null && (!Number.isFinite(inputNum) || inputNum < 0)) ||
         (cachedNum !== null && (!Number.isFinite(cachedNum) || cachedNum < 0)) ||
-        (outputNum !== null && (!Number.isFinite(outputNum) || outputNum < 0))
+        (writeNum !== null && (!Number.isFinite(writeNum) || writeNum < 0)) ||
+        (outputNum !== null && (!Number.isFinite(outputNum) || outputNum < 0)) ||
+        longNumbers.some((value) => !Number.isFinite(value) || value < 0) ||
+        (longThresholdNum !== null &&
+          (!Number.isInteger(longThresholdNum) || longThresholdNum < 0))
       ) {
         setPriceError(t("价格必须为非负有效数字"));
         return;
@@ -414,7 +467,25 @@ export function ModelCatalogModal({
             cachedInputPricePer1m: isClearingExistingOverride
               ? null
               : (cp !== "" ? Number(cp) : null),
+            cacheWritePricePer1m: isClearingExistingOverride
+              ? null
+              : (wp !== "" ? Number(wp) : null),
             outputPricePer1m: isClearingExistingOverride ? 0 : Number(op),
+            longContextThresholdTokens: isClearingExistingOverride
+              ? null
+              : (longThreshold !== "" ? Number(longThreshold) : null),
+            longContextInputPricePer1m: isClearingExistingOverride
+              ? null
+              : (longIp !== "" ? Number(longIp) : null),
+            longContextCachedInputPricePer1m: isClearingExistingOverride
+              ? null
+              : (longCp !== "" ? Number(longCp) : null),
+            longContextCacheWritePricePer1m: isClearingExistingOverride
+              ? null
+              : (longWp !== "" ? Number(longWp) : null),
+            longContextOutputPricePer1m: isClearingExistingOverride
+              ? null
+              : (longOp !== "" ? Number(longOp) : null),
             enabled: isClearingExistingOverride ? false : true,
           });
         } catch (error) {
@@ -638,7 +709,7 @@ export function ModelCatalogModal({
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-4">
               <div className="space-y-2">
                 <Label htmlFor="price-input">{t("输入价格")}</Label>
                 <Input
@@ -680,6 +751,59 @@ export function ModelCatalogModal({
                   }
                   placeholder="0"
                 />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="price-cache-write">{t("缓存写入价格")}</Label>
+                <Input
+                  id="price-cache-write"
+                  type="number"
+                  step="0.0001"
+                  min="0"
+                  value={draft.cacheWritePricePer1m}
+                  onChange={(event) =>
+                    updateDraft("cacheWritePricePer1m", event.target.value)
+                  }
+                  placeholder={t("留空时按输入价格")}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2 rounded-md border border-border/60 p-4">
+              <Label>{t("长上下文价格（可选）")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("输入 token 严格大于阈值时整次请求使用这组价格；Priority 未公布长上下文价格时请留空。")}
+              </p>
+              <div className="mt-3 grid gap-4 md:grid-cols-5">
+                <div className="space-y-2">
+                  <Label htmlFor="price-long-threshold">{t("阈值")}</Label>
+                  <Input
+                    id="price-long-threshold"
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={draft.longContextThresholdTokens}
+                    onChange={(event) =>
+                      updateDraft("longContextThresholdTokens", event.target.value)
+                    }
+                    placeholder="272000"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="price-long-input">{t("长输入")}</Label>
+                  <Input id="price-long-input" type="number" step="0.0001" min="0" value={draft.longContextInputPricePer1m} onChange={(event) => updateDraft("longContextInputPricePer1m", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="price-long-cached">{t("长缓存读取")}</Label>
+                  <Input id="price-long-cached" type="number" step="0.0001" min="0" value={draft.longContextCachedInputPricePer1m} onChange={(event) => updateDraft("longContextCachedInputPricePer1m", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="price-long-write">{t("长缓存写入")}</Label>
+                  <Input id="price-long-write" type="number" step="0.0001" min="0" value={draft.longContextCacheWritePricePer1m} onChange={(event) => updateDraft("longContextCacheWritePricePer1m", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="price-long-output">{t("长输出")}</Label>
+                  <Input id="price-long-output" type="number" step="0.0001" min="0" value={draft.longContextOutputPricePer1m} onChange={(event) => updateDraft("longContextOutputPricePer1m", event.target.value)} />
+                </div>
               </div>
             </div>
 

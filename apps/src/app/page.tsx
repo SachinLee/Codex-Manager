@@ -498,6 +498,8 @@ function sumDashboardTokenUsages(usages: DashboardTokenUsage[]): DashboardTokenU
     (total, usage) => ({
       inputTokens: total.inputTokens + usage.inputTokens,
       cachedInputTokens: total.cachedInputTokens + usage.cachedInputTokens,
+      cacheWriteInputTokens:
+        total.cacheWriteInputTokens + usage.cacheWriteInputTokens,
       outputTokens: total.outputTokens + usage.outputTokens,
       reasoningOutputTokens:
         total.reasoningOutputTokens + usage.reasoningOutputTokens,
@@ -510,6 +512,7 @@ function sumDashboardTokenUsages(usages: DashboardTokenUsage[]): DashboardTokenU
     {
       inputTokens: 0,
       cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
       outputTokens: 0,
       reasoningOutputTokens: 0,
       totalTokens: 0,

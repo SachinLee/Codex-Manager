@@ -1551,7 +1551,7 @@ export default function AggregateApiPage() {
                               <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
                                 {[
                                   `${t("请求")} ${dailyUsage.requestCount}`,
-                                  `${t("输入")} ${formatMillionTokenAmount(dailyUsage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(dailyUsage.cachedInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(dailyUsage.billableInputTokens)}`,
+                                  `${t("输入")} ${formatMillionTokenAmount(dailyUsage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(dailyUsage.cachedInputTokens)} / ${t("缓存写入")} ${formatMillionTokenAmount(dailyUsage.cacheWriteInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(dailyUsage.billableInputTokens)}`,
                                   `${t("输出")} ${formatMillionTokenAmount(dailyUsage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(dailyUsage.reasoningOutputTokens)}`,
                                   `${t("费用")} ${formatUsdAmount(dailyUsage.estimatedCostUsd)}${dailyUsage.guardRetryEstimatedCostUsd > 0 ? ` / Guard +${formatUsdAmount(dailyUsage.guardRetryEstimatedCostUsd)} / ${t("计费")} ${formatUsdAmount(dailyUsage.billableEstimatedCostUsd)}` : ""}`,
                                   dailyUsage.guardRetryTotalTokens > 0

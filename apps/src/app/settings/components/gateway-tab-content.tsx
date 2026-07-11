@@ -174,6 +174,22 @@ export function GatewayTabContent({
             }
           />
         </div>
+        <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <Label>{t("自动上下文压缩")}</Label>
+            <p className="text-[10px] text-muted-foreground">
+              {t(
+                "默认关闭。开启后，Codex 客户端会根据模型目录的 auto_compact_token_limit 自动调用 compact；关闭不影响手动 compact 和普通请求。",
+              )}
+            </p>
+          </div>
+          <Switch
+            checked={snapshot.autoCompactEnabled}
+            onCheckedChange={(checked) =>
+              updateSettings.mutate({ autoCompactEnabled: checked })
+            }
+          />
+        </div>
         <div className="grid gap-4 border-t pt-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">

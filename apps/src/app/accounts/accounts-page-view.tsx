@@ -943,7 +943,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
-                                {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatMillionTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(usage.cachedInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatMillionTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(usage.reasoningOutputTokens)}`}
+                                {`${t("请求")} ${usage.requestCount}\n${t("输入")} ${formatMillionTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(usage.cachedInputTokens)} / ${t("缓存写入")} ${formatMillionTokenAmount(usage.cacheWriteInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(usage.billableInputTokens)}\n${t("输出")} ${formatMillionTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(usage.reasoningOutputTokens)}`}
                               </TooltipContent>
                             </Tooltip>
                           );

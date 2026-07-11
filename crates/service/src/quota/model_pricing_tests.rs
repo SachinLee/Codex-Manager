@@ -21,6 +21,7 @@ fn test_rule(
         unit: "per_1m_tokens".to_string(),
         input_price_per_1m: Some(input),
         cached_input_price_per_1m: cached,
+        cache_write_price_per_1m: None,
         output_price_per_1m: Some(output),
         reasoning_output_price_per_1m: None,
         cache_write_5m_price_per_1m: None,
@@ -29,6 +30,7 @@ fn test_rule(
         long_context_threshold_tokens: None,
         long_context_input_price_per_1m: None,
         long_context_cached_input_price_per_1m: None,
+        long_context_cache_write_price_per_1m: None,
         long_context_output_price_per_1m: None,
         source: "test".to_string(),
         source_url: None,
@@ -149,7 +151,7 @@ fn prefers_more_specific_prefix_for_latest_claude_opus() {
 #[test]
 fn returns_missing_for_unknown_models() {
     assert!(resolve_model_price("unknown-provider-model", 0).is_none());
-    let cost = estimate_cost(Some("unknown-provider-model"), 100, 0, 100);
+    let cost = estimate_cost(Some("unknown-provider-model"), 100, 0, 0, 100);
     assert_eq!(cost.price_status, "missing");
     assert!(cost.cost_usd.is_none());
     assert!(cost.provider.is_none());
@@ -163,7 +165,7 @@ fn zero_usd_balance_is_known_zero_tokens() {
 
 #[test]
 fn estimates_cost_with_cached_input_discount() {
-    let cost = estimate_cost(Some("gpt-5.4"), 1_000, 400, 100);
+    let cost = estimate_cost(Some("gpt-5.4"), 1_000, 400, 0, 100);
     assert_eq!(cost.price_status, "ok");
     assert_eq!(cost.provider.as_deref(), Some("openai"));
     assert_close(cost.cost_usd.expect("cost"), 0.0031);
@@ -171,7 +173,7 @@ fn estimates_cost_with_cached_input_discount() {
 
 #[test]
 fn falls_back_cached_input_to_input_price_when_no_discount_exists() {
-    let cost = estimate_cost(Some("gpt-5.5-pro"), 1_000, 200, 100);
+    let cost = estimate_cost(Some("gpt-5.5-pro"), 1_000, 200, 0, 100);
     assert_eq!(cost.price_status, "ok");
     assert_close(cost.cost_usd.expect("cost"), 0.048);
 }
@@ -182,10 +184,114 @@ fn applies_openai_long_context_pricing_at_threshold() {
     assert_close(standard.input_price_per_1m, 2.5);
     assert_close(standard.output_price_per_1m, 15.0);
 
-    let long_context = resolve_model_price("gpt-5.4", 272_000).expect("long context price");
+    let boundary = resolve_model_price("gpt-5.4", 272_000).expect("boundary price");
+    assert_close(boundary.input_price_per_1m, 2.5);
+
+    let long_context = resolve_model_price("gpt-5.4", 272_001).expect("long context price");
     assert_close(long_context.input_price_per_1m, 5.0);
     assert_close(long_context.cached_input_price_per_1m, 0.5);
     assert_close(long_context.output_price_per_1m, 22.5);
+}
+
+#[test]
+fn gpt_56_standard_prices_cover_alias_variants_and_context_boundary() {
+    let alias = resolve_model_price("gpt-5.6", 272_000).expect("gpt-5.6 alias price");
+    assert_close(alias.input_price_per_1m, 5.0);
+    assert_close(alias.cached_input_price_per_1m, 0.5);
+    assert_close(alias.cache_write_price_per_1m, 6.25);
+    assert_close(alias.output_price_per_1m, 30.0);
+
+    let sol = resolve_model_price("gpt-5.6-sol-2026-07-01", 272_001).expect("sol price");
+    assert_close(sol.input_price_per_1m, 10.0);
+    assert_close(sol.cached_input_price_per_1m, 1.0);
+    assert_close(sol.cache_write_price_per_1m, 12.5);
+    assert_close(sol.output_price_per_1m, 45.0);
+
+    let terra = resolve_model_price("gpt-5.6-terra", 0).expect("terra price");
+    assert_close(terra.input_price_per_1m, 2.5);
+    assert_close(terra.cached_input_price_per_1m, 0.25);
+    assert_close(terra.cache_write_price_per_1m, 3.125);
+    assert_close(terra.output_price_per_1m, 15.0);
+
+    let luna = resolve_model_price("gpt-5.6-luna", 272_001).expect("luna price");
+    assert_close(luna.input_price_per_1m, 2.0);
+    assert_close(luna.cached_input_price_per_1m, 0.2);
+    assert_close(luna.cache_write_price_per_1m, 2.5);
+    assert_close(luna.output_price_per_1m, 9.0);
+}
+
+#[test]
+fn gpt_56_priority_prices_do_not_invent_long_context_override() {
+    let sol = resolve_model_price_for_billing_mode("gpt-5.6-sol", Some("priority"), 272_001)
+        .expect("priority sol price");
+    assert_close(sol.input_price_per_1m, 10.0);
+    assert_close(sol.cached_input_price_per_1m, 1.0);
+    assert_close(sol.cache_write_price_per_1m, 12.5);
+    assert_close(sol.output_price_per_1m, 60.0);
+
+    let terra = resolve_model_price_for_billing_mode("gpt-5.6-terra", Some("fast"), 272_001)
+        .expect("priority terra price");
+    assert_close(terra.input_price_per_1m, 5.0);
+    assert_close(terra.cached_input_price_per_1m, 0.5);
+    assert_close(terra.cache_write_price_per_1m, 6.25);
+    assert_close(terra.output_price_per_1m, 30.0);
+
+    let luna = resolve_model_price_for_billing_mode("gpt-5.6-luna", Some("priority"), 272_001)
+        .expect("priority luna price");
+    assert_close(luna.input_price_per_1m, 2.0);
+    assert_close(luna.cached_input_price_per_1m, 0.2);
+    assert_close(luna.cache_write_price_per_1m, 2.5);
+    assert_close(luna.output_price_per_1m, 12.0);
+}
+
+#[test]
+fn cache_write_cost_partitions_total_input_without_double_counting() {
+    let cost = estimate_cost(Some("gpt-5.6"), 1_000_000, 250_000, 125_000, 100_000);
+    assert_eq!(cost.price_status, "ok");
+    // 1M input enters the published long-context tier.
+    assert_close(cost.cost_usd.expect("cost"), 12.5625);
+
+    let clamped = estimate_cost(Some("gpt-5.6"), 1_000, 900, 500, 0);
+    assert_eq!(clamped.price_status, "ok");
+    assert_close(clamped.cost_usd.expect("clamped cost"), 0.001075);
+}
+
+#[test]
+fn long_context_estimate_exposes_breakdown_and_short_price_uplift() {
+    let estimate = estimate_cost(Some("gpt-5.6-sol"), 300_000, 200_000, 10_000, 1_000);
+
+    assert_eq!(estimate.context_band, "long");
+    assert_eq!(estimate.billing_mode, Some("standard"));
+    assert_eq!(estimate.long_context_threshold_tokens, Some(272_000));
+    assert_eq!(estimate.matched_pattern.as_deref(), Some("gpt-5.6-sol"));
+    assert_close(estimate.plain_input_cost_usd.expect("plain"), 0.9);
+    assert_close(estimate.cached_input_cost_usd.expect("cached"), 0.2);
+    assert_close(estimate.cache_write_cost_usd.expect("write"), 0.125);
+    assert_close(estimate.output_cost_usd.expect("output"), 0.045);
+    assert_close(estimate.cost_usd.expect("total"), 1.27);
+    assert_close(estimate.short_baseline_cost_usd.expect("short baseline"), 0.6425);
+    assert_close(estimate.long_context_uplift_usd.expect("uplift"), 0.6275);
+
+    let priority = estimate_cost_with_rules_for_billing_mode(
+        &[],
+        Some("gpt-5.6-sol"),
+        Some("priority"),
+        300_000,
+        0,
+        0,
+        1_000,
+    );
+    assert_eq!(priority.context_band, "single_tier");
+    assert!(priority.long_context_uplift_usd.is_none());
+}
+
+#[test]
+fn gpt_56_does_not_match_the_older_gpt_5_official_family() {
+    let price = resolve_model_price("gpt-5.6-future", 0).expect("new minor family should resolve");
+    assert_close(price.input_price_per_1m, 5.0);
+
+    let unknown_minor = resolve_model_price("gpt-5.7", 0);
+    assert!(unknown_minor.is_none());
 }
 
 #[test]
@@ -215,8 +321,14 @@ fn estimate_cost_usd_for_log_reuses_cached_enabled_price_rules_until_invalidated
         .upsert_model_price_rule(&rule)
         .expect("insert first price rule");
 
-    let first =
-        estimate_cost_usd_for_log(&storage, Some("cache-model"), Some(1_000_000), None, None);
+    let first = estimate_cost_usd_for_log(
+        &storage,
+        Some("cache-model"),
+        Some(1_000_000),
+        None,
+        None,
+        None,
+    );
     assert_close(first, 1.0);
 
     rule.input_price_per_1m = Some(2.0);
@@ -226,13 +338,25 @@ fn estimate_cost_usd_for_log_reuses_cached_enabled_price_rules_until_invalidated
         .upsert_model_price_rule(&rule)
         .expect("update price rule");
 
-    let cached =
-        estimate_cost_usd_for_log(&storage, Some("cache-model"), Some(1_000_000), None, None);
+    let cached = estimate_cost_usd_for_log(
+        &storage,
+        Some("cache-model"),
+        Some(1_000_000),
+        None,
+        None,
+        None,
+    );
     assert_close(cached, 1.0);
 
     invalidate_price_rule_cache();
-    let refreshed =
-        estimate_cost_usd_for_log(&storage, Some("cache-model"), Some(1_000_000), None, None);
+    let refreshed = estimate_cost_usd_for_log(
+        &storage,
+        Some("cache-model"),
+        Some(1_000_000),
+        None,
+        None,
+        None,
+    );
     assert_close(refreshed, 2.0);
 }
 

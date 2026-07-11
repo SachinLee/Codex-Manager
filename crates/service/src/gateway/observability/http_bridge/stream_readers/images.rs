@@ -1,3 +1,6 @@
+use super::super::images::{
+    IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS, IMAGE_GENERATION_MISSING_RESULT_MESSAGE,
+};
 use super::{
     build_images_api_response, classify_upstream_stream_read_error,
     collect_image_generation_results, image_generation_result_payload, images_usage_value,
@@ -6,9 +9,6 @@ use super::{
     upstream_hint_or_stream_incomplete_message, Arc, Cursor, ImagesResponseFormat, Mutex,
     PassthroughSseCollector, Read, SseKeepAliveFrame, UpstreamSseFramePump,
     UpstreamSseFramePumpItem,
-};
-use super::super::images::{
-    IMAGE_GENERATION_MISSING_RESULT_ERROR_CLASS, IMAGE_GENERATION_MISSING_RESULT_MESSAGE,
 };
 use serde_json::Value;
 use std::time::Instant;
@@ -125,9 +125,9 @@ impl ImagesFromResponsesSseReader {
         let results = collect_image_generation_results(response);
         if results.is_empty() {
             if let Ok(mut collector) = self.usage_collector.lock() {
-                collector.terminal_error.get_or_insert_with(|| {
-                    IMAGE_GENERATION_MISSING_RESULT_MESSAGE.to_string()
-                });
+                collector
+                    .terminal_error
+                    .get_or_insert_with(|| IMAGE_GENERATION_MISSING_RESULT_MESSAGE.to_string());
             }
             return Self::sse_event(
                 "image_generation.failed",

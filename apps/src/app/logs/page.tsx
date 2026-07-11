@@ -256,6 +256,10 @@ function LogsPageContent() {
     totalCostUsd: 0,
     guardRetryTotalTokens: 0,
     guardRetryEstimatedCostUsd: 0,
+    longContextCount: 0,
+    longContextCostUsd: 0,
+    longContextUpliftUsd: 0,
+    legacyCandidateCount: 0,
   };
   const totalPages = Math.max(
     1,

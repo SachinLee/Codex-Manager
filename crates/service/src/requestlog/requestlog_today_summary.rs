@@ -68,12 +68,16 @@ fn map_today_summary(
 ) -> RequestLogTodaySummaryResult {
     let input_tokens = summary.input_tokens.max(0);
     let cached_input_tokens = summary.cached_input_tokens.max(0);
+    let cache_write_input_tokens = summary.cache_write_input_tokens.max(0);
     let output_tokens = summary.output_tokens.max(0);
     let reasoning_output_tokens = summary.reasoning_output_tokens.max(0);
-    let non_cached_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
+    let non_cached_input_tokens = input_tokens
+        .saturating_sub(cached_input_tokens)
+        .saturating_sub(cache_write_input_tokens);
     RequestLogTodaySummaryResult {
         input_tokens,
         cached_input_tokens,
+        cache_write_input_tokens,
         output_tokens,
         reasoning_output_tokens,
         today_tokens: non_cached_input_tokens.saturating_add(output_tokens),

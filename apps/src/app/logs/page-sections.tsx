@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Database, DollarSign, RefreshCw, Trash2, Zap } from "lucide-react";
+import { AlertTriangle, Database, DollarSign, RefreshCw, Trash2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -274,36 +274,55 @@ export function RequestLogsTabContent({
         </CardContent>
       </Card>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <SummaryCard
-          title={t("当前结果")}
-          value={`${summary.filteredCount}`}
-          description={`${t("总日志")} ${summary.totalCount} ${t("条")}${isDirectAccountMode ? ` · ${t("仅网关流量")}` : ""}`}
-          icon={Zap}
-          toneClass="bg-primary/12 text-primary"
-        />
-        <SummaryCard
-          title={t("2XX 成功")}
-          value={`${summary.successCount}`}
-          description={
-            isDirectAccountMode
-              ? `${t("状态码 200-299")} · ${t("仅网关流量")}`
-              : t("状态码 200-299")
-          }
-          icon={CheckCircle2}
-          toneClass="bg-green-500/12 text-green-500"
-        />
-        <SummaryCard
-          title={t("异常请求")}
-          value={`${summary.errorCount}`}
-          description={
-            isDirectAccountMode
-              ? `${t("4xx / 5xx 或显式错误")} · ${t("仅网关流量")}`
-              : t("4xx / 5xx 或显式错误")
-          }
-          icon={AlertTriangle}
-          toneClass="bg-red-500/12 text-red-500"
-        />
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(240px,0.75fr)] xl:grid-cols-[minmax(360px,1.1fr)_minmax(240px,0.7fr)_minmax(420px,1.25fr)]">
+        <Card className="glass-card relative overflow-hidden rounded-2xl border-border/55 py-0 shadow-sm">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -left-10 -top-14 size-32 rounded-full bg-primary/8 blur-3xl"
+          />
+          <CardContent className="relative flex min-h-[142px] flex-col p-0">
+            <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <div>
+                <div className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+                  {t("当前结果")}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">
+                  {t("总日志")} {summary.totalCount} {t("条")}
+                  {isDirectAccountMode ? ` · ${t("仅网关流量")}` : ""}
+                </div>
+              </div>
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary ring-1 ring-inset ring-primary/10">
+                <Zap className="size-4" />
+              </span>
+            </div>
+
+            <div className="grid flex-1 grid-cols-[minmax(0,1.15fr)_minmax(86px,0.75fr)_minmax(86px,0.75fr)] border-t border-border/40">
+              <div className="flex min-w-0 flex-col justify-center px-4 py-3">
+                <div className="truncate text-[2rem] leading-none font-semibold tracking-[-0.04em] text-foreground">
+                  {summary.filteredCount}
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">{t("当前结果")}</div>
+              </div>
+              <div className="flex min-w-0 flex-col justify-center border-l border-border/40 bg-green-500/[0.035] px-3 py-3">
+                <div className="truncate text-xl leading-none font-semibold tracking-tight text-green-600 dark:text-green-400">
+                  {summary.successCount}
+                </div>
+                <div className="mt-1 truncate text-[10px] font-medium text-muted-foreground">
+                  {t("2XX 成功")}
+                </div>
+              </div>
+              <div className="flex min-w-0 flex-col justify-center border-l border-border/40 bg-red-500/[0.035] px-3 py-3">
+                <div className="truncate text-xl leading-none font-semibold tracking-tight text-red-500">
+                  {summary.errorCount}
+                </div>
+                <div className="mt-1 truncate text-[10px] font-medium text-muted-foreground">
+                  {t("异常请求")}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <SummaryCard
           title={t("累计Token")}
           value={formatCompactTokenAmount(summary.totalTokens)}
@@ -320,18 +339,61 @@ export function RequestLogsTabContent({
           icon={Database}
           toneClass="bg-amber-500/12 text-amber-500"
         />
-        <SummaryCard
-          title={t("筛选费用")}
-          value={formatUsdAmount(summary.totalCostUsd)}
-          detail={
-            summary.guardRetryEstimatedCostUsd > 0
-              ? `Guard +${formatUsdAmount(summary.guardRetryEstimatedCostUsd)}`
-              : null
-          }
-          description={t("当前筛选结果估算费用")}
-          icon={DollarSign}
-          toneClass="bg-emerald-500/12 text-emerald-500"
-        />
+
+        <Card className="glass-card relative overflow-hidden rounded-2xl border-border/55 py-0 shadow-sm lg:col-span-2 xl:col-span-1">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-14 -top-16 size-40 rounded-full bg-violet-500/10 blur-3xl"
+          />
+          <CardContent className="relative grid h-full min-h-[142px] grid-cols-1 divide-y divide-border/45 p-0 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+            <div className="flex min-w-0 flex-col p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+                  {t("筛选费用")}
+                </span>
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/12 text-emerald-500 ring-1 ring-inset ring-emerald-500/10">
+                  <DollarSign className="size-4" />
+                </span>
+              </div>
+              <div className="mt-4 truncate text-[2rem] leading-none font-semibold tracking-[-0.04em] text-foreground">
+                {formatUsdAmount(summary.totalCostUsd)}
+              </div>
+              {summary.guardRetryEstimatedCostUsd > 0 ? (
+                <div className="mt-1 truncate text-[11px] font-semibold text-amber-500">
+                  Guard +{formatUsdAmount(summary.guardRetryEstimatedCostUsd)}
+                </div>
+              ) : null}
+              <p className="mt-auto pt-3 text-[11px] leading-4 text-muted-foreground">
+                {t("当前筛选结果估算费用")}
+              </p>
+            </div>
+
+            <div className="flex min-w-0 flex-col bg-violet-500/[0.035] p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+                  {t("长上下文费用")}
+                </span>
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-violet-500/12 text-violet-500 ring-1 ring-inset ring-violet-500/10">
+                  <DollarSign className="size-4" />
+                </span>
+              </div>
+              <div className="mt-4 flex min-w-0 items-end gap-2">
+                <div className="truncate text-[2rem] leading-none font-semibold tracking-[-0.04em] text-foreground">
+                  {formatUsdAmount(summary.longContextCostUsd)}
+                </div>
+                {summary.longContextUpliftUsd > 0 ? (
+                  <div className="mb-0.5 truncate text-[11px] font-semibold text-violet-500">
+                    +{formatUsdAmount(summary.longContextUpliftUsd)}
+                  </div>
+                ) : null}
+              </div>
+              <p className="mt-auto pt-3 text-[11px] leading-4 text-muted-foreground">
+                {summary.longContextCount} {t("条已按长上下文计价")} ·{" "}
+                {summary.legacyCandidateCount} {t("条历史候选")}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="glass-card overflow-hidden gap-0 py-0 shadow-sm">
@@ -348,7 +410,7 @@ export function RequestLogsTabContent({
           </div>
         </CardHeader>
         <CardContent className="px-0">
-          <Table className="min-w-[1870px] table-fixed">
+          <Table className="min-w-[1934px] table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead className="h-12 w-[200px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
@@ -375,7 +437,7 @@ export function RequestLogsTabContent({
                 <TableHead className="w-[96px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("缓存率")}
                 </TableHead>
-                <TableHead className="w-[112px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                <TableHead className="w-[176px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                   {t("费用")}
                 </TableHead>
                 <TableHead className="w-[240px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
@@ -489,14 +551,39 @@ export function RequestLogsTabContent({
                         <span className="opacity-60">
                           {t("缓存")} {formatTableTokenAmount(log.cachedInputTokens)}
                         </span>
+                        <span className="opacity-60">
+                          {t("缓存写入")} {formatTableTokenAmount(log.cacheWriteInputTokens)}
+                        </span>
                       </div>
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top font-mono text-xs text-muted-foreground">
                       {formatCacheRate(log.inputTokens, log.cachedInputTokens)}
                     </TableCell>
-                    <TableCell className="px-4 py-3 align-top font-mono text-xs text-foreground">
-                      <div className="flex flex-col gap-0.5">
+                    <TableCell className="w-[176px] max-w-[176px] overflow-hidden px-4 py-3 align-top font-mono text-xs whitespace-normal text-foreground">
+                      <div className="flex min-w-0 flex-col gap-1">
                         <span>{formatUsdAmount(log.estimatedCostUsd)}</span>
+                        {log.pricingContextBand === "long" ? (
+                          <span
+                            className="w-fit max-w-full truncate rounded border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-600 dark:text-violet-300"
+                            title={`${t("阈值")} ${formatTableTokenAmount(log.longContextThresholdTokens)} · ${t("规则")} ${log.pricingMatchedPattern || "-"}`}
+                          >
+                            {t("长上下文")}{log.longContextUpliftUsd != null ? ` +${formatUsdAmount(log.longContextUpliftUsd)}` : ""}
+                          </span>
+                        ) : log.pricingContextBand === "single_tier" ? (
+                          <span className="text-[10px] text-muted-foreground">{t("单档价格")}</span>
+                        ) : log.pricingContextBand === "legacy_candidate" ? (
+                          <span title={t("输入超过当前长上下文阈值，但历史日志未保存实际计价规则。")} className="text-[10px] text-amber-500">
+                            {t("历史长上下文候选")}
+                          </span>
+                        ) : null}
+                        {log.pricingContextBand === "long" ? (
+                          <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] leading-4 text-muted-foreground">
+                            <span className="truncate">{t("普通")} {formatUsdAmount(log.plainInputCostUsd)}</span>
+                            <span className="truncate">{t("缓存")} {formatUsdAmount(log.cachedInputCostUsd)}</span>
+                            <span className="truncate">{t("写入")} {formatUsdAmount(log.cacheWriteCostUsd)}</span>
+                            <span className="truncate">{t("输出")} {formatUsdAmount(log.outputCostUsd)}</span>
+                          </div>
+                        ) : null}
                         {log.guardRetryEstimatedCostUsd > 0 ? (
                           <span className="text-[10px] text-amber-500">
                             Guard +{formatUsdAmount(log.guardRetryEstimatedCostUsd)}

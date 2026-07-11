@@ -1,21 +1,6 @@
-use super::{
-    estimate_cost_usd, estimate_cost_usd_with_multiplier, write_request_log,
-    RequestLogTraceContext, RequestLogUsage,
-};
+use super::{write_request_log, RequestLogTraceContext, RequestLogUsage};
 use codexmanager_core::storage::Storage;
 
-/// 函数 `assert_close`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - actual: 参数 actual
-/// - expected: 参数 expected
-///
-/// # 返回
-/// 无
 fn assert_close(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() < 1e-12,
@@ -23,80 +8,16 @@ fn assert_close(actual: f64, expected: f64) {
     );
 }
 
-/// 函数 `estimate_cost_matches_openai_gpt5_family_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_openai_gpt5_family_prices() {
-    // 基准样本：输入 1000，缓存 200，输出 500
-    // gpt-5 系列：输入 1.25/M，缓存 0.125/M，输出 10/M
-    // => 非缓存输入 800*0.00125/1000 + 缓存 200*0.000125/1000 + 输出 500*0.01/1000
-    // => 0.006025
-    let expected = 0.006025_f64;
-    let models = [
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-max",
-    ];
-    for model in models {
-        let actual = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(actual, expected);
+fn sample_usage(cache_write_input_tokens: Option<i64>) -> RequestLogUsage {
+    RequestLogUsage {
+        input_tokens: Some(1_000),
+        cached_input_tokens: Some(200),
+        cache_write_input_tokens,
+        output_tokens: Some(500),
+        total_tokens: Some(1_500),
+        reasoning_output_tokens: None,
+        first_response_ms: Some(120),
     }
-}
-
-/// 函数 `estimate_cost_matches_openai_gpt54_and_mini_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_openai_gpt54_and_mini_prices() {
-    // gpt-5.4-mini：输入 0.75/M，缓存 0.075/M，输出 4.5/M
-    // 样本：输入 1000，缓存 200，输出 500 => 0.002865
-    let actual = estimate_cost_usd(Some("gpt-5.4-mini"), Some(1000), Some(200), Some(500));
-    assert_close(actual, 0.002865);
-
-    // gpt-5.4-nano：输入 0.2/M，缓存 0.02/M，输出 1.25/M
-    // 样本同上 => 0.000789
-    let actual = estimate_cost_usd(Some("gpt-5.4-nano"), Some(1000), Some(200), Some(500));
-    assert_close(actual, 0.000789);
-
-    // gpt-5.4：输入 2.5/M，缓存 0.25/M，输出 15/M
-    // 样本：输入 1000，缓存 200，输出 500
-    // => 非缓存输入 800*0.0025/1000 + 缓存 200*0.00025/1000 + 输出 500*0.015/1000
-    // => 0.00955
-    let actual = estimate_cost_usd(Some("gpt-5.4"), Some(1000), Some(200), Some(500));
-    assert_close(actual, 0.00955);
-}
-
-#[test]
-fn estimate_cost_applies_aggregate_api_multiplier() {
-    let base = estimate_cost_usd(Some("gpt-5.4-mini"), Some(1000), Some(200), Some(500));
-    let actual = estimate_cost_usd_with_multiplier(
-        Some("gpt-5.4-mini"),
-        Some(1000),
-        Some(200),
-        Some(500),
-        Some(2.5),
-    );
-
-    assert_close(actual, base * 2.5);
 }
 
 #[test]
@@ -104,14 +25,6 @@ fn write_request_log_persists_cost_with_aggregate_api_multiplier() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let attempted_aggregate_api_ids = vec!["ag_cost_multiplier".to_string()];
-    let usage = RequestLogUsage {
-        input_tokens: Some(1000),
-        cached_input_tokens: Some(200),
-        output_tokens: Some(500),
-        total_tokens: Some(1500),
-        reasoning_output_tokens: None,
-        first_response_ms: Some(120),
-    };
 
     write_request_log(
         &storage,
@@ -130,7 +43,7 @@ fn write_request_log_persists_cost_with_aggregate_api_multiplier() {
         None,
         Some("https://upstream.example/v1/chat/completions"),
         Some(200),
-        usage,
+        sample_usage(None),
         None,
         Some(250),
     );
@@ -153,14 +66,6 @@ fn write_request_log_persists_cost_with_aggregate_api_multiplier() {
 fn write_request_log_uses_priority_price_for_fast_service_tier() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
-    let usage = RequestLogUsage {
-        input_tokens: Some(1000),
-        cached_input_tokens: Some(200),
-        output_tokens: Some(500),
-        total_tokens: Some(1500),
-        reasoning_output_tokens: None,
-        first_response_ms: Some(120),
-    };
 
     write_request_log(
         &storage,
@@ -176,7 +81,7 @@ fn write_request_log_uses_priority_price_for_fast_service_tier() {
         None,
         Some("https://api.openai.com/v1/chat/completions"),
         Some(200),
-        usage,
+        sample_usage(None),
         None,
         Some(250),
     );
@@ -192,14 +97,6 @@ fn write_request_log_uses_priority_price_for_fast_service_tier() {
 fn write_request_log_uses_effective_priority_price_with_multiplier() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
-    let usage = RequestLogUsage {
-        input_tokens: Some(1000),
-        cached_input_tokens: Some(200),
-        output_tokens: Some(500),
-        total_tokens: Some(1500),
-        reasoning_output_tokens: None,
-        first_response_ms: Some(120),
-    };
 
     write_request_log(
         &storage,
@@ -217,7 +114,7 @@ fn write_request_log_uses_effective_priority_price_with_multiplier() {
         None,
         Some("https://api.openai.com/v1/chat/completions"),
         Some(200),
-        usage,
+        sample_usage(None),
         None,
         Some(250),
     );
@@ -233,267 +130,83 @@ fn write_request_log_uses_effective_priority_price_with_multiplier() {
 }
 
 #[test]
-fn estimate_cost_matches_openai_gpt55_prices() {
-    // gpt-5.5：输入 5/M，缓存 0.5/M，输出 30/M
-    // 样本：输入 1000，缓存 200，输出 500
-    // => 非缓存输入 800*0.005/1000 + 缓存 200*0.0005/1000 + 输出 500*0.03/1000
-    // => 0.0191
-    let actual = estimate_cost_usd(Some("gpt-5.5"), Some(1000), Some(200), Some(500));
-    assert_close(actual, 0.0191);
+fn write_request_log_prices_cache_write_tokens_with_the_effective_priority_tier() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
 
-    // gpt-5.5-pro：输入 30/M，输出 180/M；无缓存折扣时按输入同价处理。
-    let actual = estimate_cost_usd(Some("gpt-5.5-pro"), Some(1000), Some(200), Some(500));
-    assert_close(actual, 0.12);
-}
-
-/// 函数 `estimate_cost_matches_openai_gpt54_large_context_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_openai_gpt54_large_context_prices() {
-    // gpt-5.4：输入达到 270K 时，输入 5/M，缓存 0.5/M，输出 22.5/M
-    // 样本：输入 300000，缓存 50000，输出 100000
-    // => 非缓存输入 250000*0.005/1000 + 缓存 50000*0.0005/1000 + 输出 100000*0.0225/1000
-    // => 3.525
-    let actual = estimate_cost_usd(Some("gpt-5.4"), Some(300_000), Some(50_000), Some(100_000));
-    assert_close(actual, 3.525);
-}
-
-#[test]
-fn estimate_cost_matches_openai_gpt55_large_context_prices() {
-    // gpt-5.5：输入达到 270K 时，输入 10/M，缓存 1/M，输出 45/M。
-    let actual = estimate_cost_usd(Some("gpt-5.5"), Some(300_000), Some(50_000), Some(100_000));
-    assert_close(actual, 7.05);
-
-    // gpt-5.5-pro：输入达到 270K 时，输入 60/M，输出 270/M。
-    let actual = estimate_cost_usd(
-        Some("gpt-5.5-pro"),
-        Some(300_000),
-        Some(50_000),
-        Some(100_000),
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            effective_service_tier: Some("priority"),
+            ..Default::default()
+        },
+        Some("gk_priority_cache_write"),
+        None,
+        "/v1/responses",
+        "POST",
+        Some("gpt-5.6-sol"),
+        None,
+        Some("https://api.openai.com/v1/responses"),
+        Some(200),
+        sample_usage(Some(100)),
+        None,
+        Some(250),
     );
-    assert_close(actual, 45.0);
+
+    let logs = storage
+        .list_request_logs_paginated(None, None, None, None, 0, 10)
+        .expect("list request logs");
+    assert_eq!(logs.len(), 1);
+    // plain=700*10/M, cache-read=200*1/M, cache-write=100*12.5/M, output=500*60/M.
+    assert_close(logs[0].estimated_cost_usd.expect("estimated cost"), 0.03845);
+
+    let usage = storage
+        .summarize_request_token_stats_total()
+        .expect("summarize request token stats");
+    assert_eq!(usage.cache_write_input_tokens, 100);
 }
 
-/// 函数 `estimate_cost_matches_openai_gpt54_pro_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
 #[test]
-fn estimate_cost_matches_openai_gpt54_pro_prices() {
-    // gpt-5.4-pro：输入 30/M，输出 180/M；无缓存折扣时按输入同价处理。
-    let actual = estimate_cost_usd(Some("gpt-5.4-pro"), Some(1000), Some(200), Some(500));
-    assert_close(actual, 0.12);
-}
+fn write_request_log_persists_long_context_pricing_snapshot() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
 
-/// 函数 `estimate_cost_matches_openai_gpt54_pro_large_context_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_openai_gpt54_pro_large_context_prices() {
-    // gpt-5.4-pro：输入达到 270K 时，输入 60/M，输出 270/M。
-    let actual = estimate_cost_usd(
-        Some("gpt-5.4-pro"),
-        Some(300_000),
-        Some(50_000),
-        Some(100_000),
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            trace_id: Some("trc_long_context_snapshot"),
+            ..Default::default()
+        },
+        Some("gk_long_context"),
+        None,
+        "/v1/responses",
+        "POST",
+        Some("gpt-5.6-sol"),
+        None,
+        Some("https://api.openai.com/v1/responses"),
+        Some(200),
+        RequestLogUsage {
+            input_tokens: Some(300_000),
+            cached_input_tokens: Some(200_000),
+            cache_write_input_tokens: Some(10_000),
+            output_tokens: Some(1_000),
+            total_tokens: Some(301_000),
+            reasoning_output_tokens: None,
+            first_response_ms: None,
+        },
+        None,
+        Some(250),
     );
-    assert_close(actual, 45.0);
-}
 
-/// 函数 `estimate_cost_matches_openai_gpt5_mini_and_52_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_openai_gpt5_mini_and_52_prices() {
-    // mini：输入 0.25/M，缓存 0.025/M，输出 2/M
-    // 样本同上 => 0.001205
-    let mini_models = ["gpt-5.1-codex-mini", "gpt-5-codex-mini", "gpt-5-mini"];
-    for model in mini_models {
-        let mini_cost = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(mini_cost, 0.001205);
-    }
-
-    // 5.2：输入 1.75/M，缓存 0.175/M，输出 14/M
-    // 样本同上 => 0.008435
-    let v52_models = ["gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest"];
-    for model in v52_models {
-        let actual = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(actual, 0.008435);
-    }
-}
-
-/// 函数 `estimate_cost_uses_cached_input_rate_for_gpt_5_1_codex`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_uses_cached_input_rate_for_gpt_5_1_codex() {
-    // 非缓存输入 800k * 1.25 + 缓存输入 200k * 0.125 + 输出 500k * 10
-    // 期望：1 + 0.025 + 5 = 6.025 USD
-    let actual = estimate_cost_usd(
-        Some("gpt-5.1-codex"),
-        Some(1_000_000),
-        Some(200_000),
-        Some(500_000),
-    );
-    assert_close(actual, 6.025);
-}
-
-/// 函数 `estimate_cost_matches_current_codex_price_for_gpt_5_3_codex`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_current_codex_price_for_gpt_5_3_codex() {
-    // gpt-5.3-codex 当前按 Codex 价格带：输入 1.75/M，缓存 0.175/M，输出 14/M。
-    let actual = estimate_cost_usd(
-        Some("gpt-5.3-codex"),
-        Some(1_000_000),
-        Some(0),
-        Some(1_000_000),
-    );
-    assert_close(actual, 15.75);
-}
-
-#[test]
-fn estimate_cost_matches_openai_image_generation_prices() {
-    // 图片模型官方按 Text / Image modality 分价；当前请求日志没有 modality 分桶，
-    // 因此按 Image token 单价估算，避免低估图片生成费用。
-    let cases = [
-        ("gpt-image-2", 0.0218_f64),
-        ("gpt-image-1.5", 0.0228_f64),
-        ("gpt-image-1-mini", 0.00605_f64),
-    ];
-    for (model, expected) in cases {
-        let actual = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(actual, expected);
-    }
-}
-
-/// 函数 `estimate_cost_matches_openai_gpt4o_and_o3_prices`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 无
-#[test]
-fn estimate_cost_matches_openai_gpt4o_and_o3_prices() {
-    let gpt41_models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"];
-    let gpt41_expected = [0.0057_f64, 0.00114_f64, 0.000285_f64];
-    for (model, expected) in gpt41_models.into_iter().zip(gpt41_expected) {
-        let actual = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(actual, expected);
-    }
-
-    let gpt4o_models = ["gpt-4o", "gpt-4o-mini", "gpt-4o-2024-05-13"];
-    let gpt4o_expected = [0.00725_f64, 0.000435_f64, 0.0125_f64];
-    for (model, expected) in gpt4o_models.into_iter().zip(gpt4o_expected) {
-        let actual = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(actual, expected);
-    }
-
-    let reasoning_models = [
-        "o1",
-        "o1-mini",
-        "o1-pro",
-        "o3",
-        "o3-mini",
-        "o3-deep-research",
-        "o3-pro",
-        "o4-mini",
-        "o4-mini-deep-research",
-    ];
-    let reasoning_expected = [
-        0.0435_f64,
-        0.00319_f64,
-        0.45_f64,
-        0.0057_f64,
-        0.00319_f64,
-        0.0285_f64,
-        0.06_f64,
-        0.003135_f64,
-        0.0057_f64,
-    ];
-    for (model, expected) in reasoning_models.into_iter().zip(reasoning_expected) {
-        let actual = estimate_cost_usd(Some(model), Some(1000), Some(200), Some(500));
-        assert_close(actual, expected);
-    }
-}
-
-#[test]
-fn estimate_cost_switches_to_long_context_rates_at_270k_boundary() {
-    let gpt55_actual =
-        estimate_cost_usd(Some("gpt-5.5"), Some(270_000), Some(20_000), Some(10_000));
-    assert_close(gpt55_actual, 2.97);
-
-    let gpt55_pro_actual = estimate_cost_usd(
-        Some("gpt-5.5-pro"),
-        Some(270_000),
-        Some(20_000),
-        Some(10_000),
-    );
-    assert_close(gpt55_pro_actual, 18.9);
-
-    let gpt54_actual =
-        estimate_cost_usd(Some("gpt-5.4"), Some(270_000), Some(20_000), Some(10_000));
-    assert_close(gpt54_actual, 1.485);
-
-    let gpt54_pro_actual = estimate_cost_usd(
-        Some("gpt-5.4-pro"),
-        Some(270_000),
-        Some(20_000),
-        Some(10_000),
-    );
-    assert_close(gpt54_pro_actual, 18.9);
+    let snapshots = storage
+        .list_request_pricing_snapshots_for_trace_ids(&["trc_long_context_snapshot".to_string()])
+        .expect("list snapshots");
+    assert_eq!(snapshots.len(), 1);
+    let (_, snapshot) = &snapshots[0];
+    assert_eq!(snapshot.context_band, "long");
+    assert_eq!(snapshot.billing_mode, "standard");
+    assert_eq!(snapshot.long_context_threshold_tokens, Some(272_000));
+    assert_eq!(snapshot.matched_pattern.as_deref(), Some("gpt-5.6-sol"));
+    assert_close(snapshot.total_cost_usd.expect("total"), 1.27);
+    assert_close(snapshot.long_context_uplift_usd.expect("uplift"), 0.6275);
 }

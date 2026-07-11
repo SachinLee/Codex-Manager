@@ -27,8 +27,8 @@ struct CodexNpmLatestResponse {
 use super::{
     get_persisted_app_setting, normalize_optional_text, parse_bool_with_default,
     save_persisted_app_setting, save_persisted_bool_setting,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
-    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY,
+    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
     APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
     APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
@@ -231,6 +231,16 @@ pub fn set_gateway_compact_model_forward_rules(raw: &str) -> Result<String, Stri
 
 pub fn current_gateway_compact_model_forward_rules() -> String {
     gateway::current_compact_model_forward_rules()
+}
+
+pub(crate) fn set_gateway_auto_compact_enabled(enabled: bool) -> Result<bool, String> {
+    let applied = gateway::set_auto_compact_enabled(enabled);
+    save_persisted_bool_setting(APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY, applied)?;
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_auto_compact_enabled() -> bool {
+    gateway::auto_compact_enabled()
 }
 
 pub fn set_gateway_model_catalog_auto_remote_fetch(enabled: bool) -> Result<bool, String> {

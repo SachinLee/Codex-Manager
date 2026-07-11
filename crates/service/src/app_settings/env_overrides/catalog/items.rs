@@ -63,6 +63,13 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         "0",
     ),
     EnvOverrideCatalogItem::new(
+        "CODEXMANAGER_AUTO_COMPACT_ENABLED",
+        "自动上下文压缩",
+        ENV_OVERRIDE_SCOPE_SERVICE,
+        ENV_OVERRIDE_APPLY_MODE_RUNTIME,
+        "0",
+    ),
+    EnvOverrideCatalogItem::new(
         "CODEXMANAGER_CANDIDATE_CACHE_TTL_MS",
         "候选缓存 TTL（毫秒）",
         ENV_OVERRIDE_SCOPE_SERVICE,

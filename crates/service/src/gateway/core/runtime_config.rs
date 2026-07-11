@@ -27,6 +27,7 @@ static UPSTREAM_CONNECT_TIMEOUT_SECS: AtomicU64 =
 static UPSTREAM_TOTAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS);
 static UPSTREAM_STREAM_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS);
 static ACCOUNT_MAX_INFLIGHT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_INFLIGHT);
+static AUTO_COMPACT_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_AUTO_COMPACT_ENABLED);
 static REASONING_GUARD_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_REASONING_GUARD_ENABLED);
 static REASONING_GUARD_INTERCEPT_STREAMING: AtomicBool =
     AtomicBool::new(DEFAULT_REASONING_GUARD_INTERCEPT_STREAMING);
@@ -68,6 +69,7 @@ const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS: u64 = 0;
 const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 0;
+const DEFAULT_AUTO_COMPACT_ENABLED: bool = false;
 const DEFAULT_REASONING_GUARD_ENABLED: bool = true;
 pub(crate) const DEFAULT_REASONING_GUARD_TARGETS: &[i64] = &[516, 1034, 1552];
 const DEFAULT_REASONING_GUARD_MATCH_MODE: ReasoningGuardMatchMode =
@@ -104,6 +106,7 @@ const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_T
 const ENV_UPSTREAM_TOTAL_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS";
 const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS";
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
+const ENV_AUTO_COMPACT_ENABLED: &str = "CODEXMANAGER_AUTO_COMPACT_ENABLED";
 const ENV_REASONING_GUARD_ENABLED: &str = "CODEXMANAGER_REASONING_GUARD_ENABLED";
 const ENV_REASONING_GUARD_TARGETS: &str = "CODEXMANAGER_REASONING_GUARD_TARGETS";
 const ENV_REASONING_GUARD_MATCH_MODE: &str = "CODEXMANAGER_REASONING_GUARD_MATCH_MODE";
@@ -612,6 +615,18 @@ pub(crate) fn set_account_max_inflight_limit(limit: usize) -> usize {
     ACCOUNT_MAX_INFLIGHT.store(limit, Ordering::Relaxed);
     std::env::set_var(ENV_ACCOUNT_MAX_INFLIGHT, limit.to_string());
     limit
+}
+
+pub(crate) fn auto_compact_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    AUTO_COMPACT_ENABLED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_auto_compact_enabled(enabled: bool) -> bool {
+    ensure_runtime_config_loaded();
+    AUTO_COMPACT_ENABLED.store(enabled, Ordering::Relaxed);
+    std::env::set_var(ENV_AUTO_COMPACT_ENABLED, if enabled { "1" } else { "0" });
+    enabled
 }
 
 pub(crate) fn reasoning_guard_enabled() -> bool {
@@ -1411,6 +1426,10 @@ pub(super) fn reload_from_env() {
     );
     ACCOUNT_MAX_INFLIGHT.store(
         env_usize_or(ENV_ACCOUNT_MAX_INFLIGHT, DEFAULT_ACCOUNT_MAX_INFLIGHT),
+        Ordering::Relaxed,
+    );
+    AUTO_COMPACT_ENABLED.store(
+        env_bool_or(ENV_AUTO_COMPACT_ENABLED, DEFAULT_AUTO_COMPACT_ENABLED),
         Ordering::Relaxed,
     );
     REASONING_GUARD_ENABLED.store(

@@ -379,6 +379,7 @@ pub struct QuotaOpenAiAccountOverviewResult {
 pub struct QuotaTodayUsageResult {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -426,6 +427,7 @@ pub struct QuotaModelUsageItem {
     pub provider: Option<String>,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -453,6 +455,7 @@ pub struct QuotaApiKeyModelUsageItem {
     pub model: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -1321,10 +1324,26 @@ pub struct RequestLogSummary {
     pub first_response_ms: Option<i64>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
+    pub cache_write_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
     pub estimated_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub pricing_context_band: String,
+    pub pricing_billing_mode: Option<String>,
+    pub long_context_threshold_tokens: Option<i64>,
+    pub pricing_matched_rule_id: Option<String>,
+    pub pricing_matched_pattern: Option<String>,
+    pub pricing_source: Option<String>,
+    pub pricing_match_quality: Option<String>,
+    pub pricing_status: Option<String>,
+    pub plain_input_cost_usd: Option<f64>,
+    pub cached_input_cost_usd: Option<f64>,
+    pub cache_write_cost_usd: Option<f64>,
+    pub output_cost_usd: Option<f64>,
+    pub short_baseline_cost_usd: Option<f64>,
+    pub long_context_uplift_usd: Option<f64>,
     pub guard_event_count: i64,
     pub guard_internal_retry_count: i64,
     pub guard_block_count: i64,
@@ -1346,6 +1365,7 @@ pub struct RequestLogListParams {
     pub page_size: i64,
     pub query: Option<String>,
     pub status_filter: Option<String>,
+    pub pricing_band_filter: Option<String>,
     pub start_ts: Option<i64>,
     pub end_ts: Option<i64>,
 }
@@ -1368,6 +1388,7 @@ impl Default for RequestLogListParams {
             page_size: 20,
             query: None,
             status_filter: None,
+            pricing_band_filter: None,
             start_ts: None,
             end_ts: None,
         }
@@ -1396,6 +1417,7 @@ impl RequestLogListParams {
             },
             query: self.query,
             status_filter: self.status_filter,
+            pricing_band_filter: self.pricing_band_filter,
             start_ts: self.start_ts.filter(|value| *value > 0),
             end_ts: self.end_ts.filter(|value| *value > 0),
         }
@@ -1432,6 +1454,10 @@ pub struct RequestLogFilterSummaryResult {
     pub total_cost_usd: f64,
     pub guard_retry_total_tokens: i64,
     pub guard_retry_estimated_cost_usd: f64,
+    pub long_context_count: i64,
+    pub long_context_cost_usd: f64,
+    pub long_context_uplift_usd: f64,
+    pub legacy_candidate_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1439,6 +1465,7 @@ pub struct RequestLogFilterSummaryResult {
 pub struct RequestLogTodaySummaryResult {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub today_tokens: i64,
@@ -1468,6 +1495,7 @@ pub struct AccountDailyUsageStatSummary {
     pub request_count: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub billable_input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
@@ -1490,6 +1518,7 @@ pub struct AggregateApiDailyUsageStatSummary {
     pub request_count: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub billable_input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
@@ -1563,6 +1592,7 @@ pub struct StartupSnapshotResult {
 pub struct DashboardTokenUsageResult {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -1659,6 +1689,7 @@ pub struct MemberDashboardApiKeySummary {
 pub struct MemberDashboardUsageToday {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -1747,7 +1778,19 @@ pub struct ModelPriceRuleEntry {
     #[serde(default)]
     pub cached_input_price_per_1m: Option<f64>,
     #[serde(default)]
+    pub cache_write_price_per_1m: Option<f64>,
+    #[serde(default)]
     pub output_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_threshold_tokens: Option<i64>,
+    #[serde(default)]
+    pub long_context_input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_cached_input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_cache_write_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_output_price_per_1m: Option<f64>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -1784,7 +1827,19 @@ pub struct ModelPriceRuleUpsertInput {
     #[serde(default)]
     pub cached_input_price_per_1m: Option<f64>,
     #[serde(default)]
+    pub cache_write_price_per_1m: Option<f64>,
+    #[serde(default)]
     pub output_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_threshold_tokens: Option<i64>,
+    #[serde(default)]
+    pub long_context_input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_cached_input_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_cache_write_price_per_1m: Option<f64>,
+    #[serde(default)]
+    pub long_context_output_price_per_1m: Option<f64>,
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]

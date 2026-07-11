@@ -27,6 +27,7 @@ mod reasoning_guard_events;
 mod request_log_filters;
 mod request_log_query;
 mod request_logs;
+mod request_pricing_snapshots;
 mod request_token_stats;
 mod settings;
 mod tokens;
@@ -487,6 +488,7 @@ pub struct RequestLog {
     pub first_response_ms: Option<i64>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
+    pub cache_write_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
@@ -508,6 +510,7 @@ pub struct RequestTokenStat {
     pub actual_source_id: Option<String>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
+    pub cache_write_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
@@ -515,10 +518,32 @@ pub struct RequestTokenStat {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RequestPricingSnapshot {
+    pub request_log_id: i64,
+    pub billing_mode: String,
+    pub context_band: String,
+    pub long_context_threshold_tokens: Option<i64>,
+    pub matched_rule_id: Option<String>,
+    pub matched_pattern: Option<String>,
+    pub price_source: Option<String>,
+    pub match_quality: Option<String>,
+    pub price_status: String,
+    pub plain_input_cost_usd: Option<f64>,
+    pub cached_input_cost_usd: Option<f64>,
+    pub cache_write_cost_usd: Option<f64>,
+    pub output_cost_usd: Option<f64>,
+    pub total_cost_usd: Option<f64>,
+    pub short_baseline_cost_usd: Option<f64>,
+    pub long_context_uplift_usd: Option<f64>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct RequestLogTodaySummary {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub estimated_cost_usd: f64,
@@ -533,6 +558,10 @@ pub struct RequestLogQuerySummary {
     pub estimated_cost_usd: f64,
     pub guard_retry_total_tokens: i64,
     pub guard_retry_estimated_cost_usd: f64,
+    pub long_context_count: i64,
+    pub long_context_cost_usd: f64,
+    pub long_context_uplift_usd: f64,
+    pub legacy_candidate_count: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -608,6 +637,7 @@ pub struct TokenUsageSummary {
     pub model: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -620,6 +650,7 @@ pub struct ApiKeyModelTokenUsageSummary {
     pub model: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -637,6 +668,7 @@ pub struct MemberDashboardUsageBreakdownSnapshot {
 pub struct TokenUsageRollup {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
@@ -862,6 +894,7 @@ pub struct ModelPriceRule {
     pub unit: String,
     pub input_price_per_1m: Option<f64>,
     pub cached_input_price_per_1m: Option<f64>,
+    pub cache_write_price_per_1m: Option<f64>,
     pub output_price_per_1m: Option<f64>,
     pub reasoning_output_price_per_1m: Option<f64>,
     pub cache_write_5m_price_per_1m: Option<f64>,
@@ -870,6 +903,7 @@ pub struct ModelPriceRule {
     pub long_context_threshold_tokens: Option<i64>,
     pub long_context_input_price_per_1m: Option<f64>,
     pub long_context_cached_input_price_per_1m: Option<f64>,
+    pub long_context_cache_write_price_per_1m: Option<f64>,
     pub long_context_output_price_per_1m: Option<f64>,
     pub source: String,
     pub source_url: Option<String>,
@@ -886,6 +920,7 @@ pub struct AccountDailyUsageSummary {
     pub request_count: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub billable_input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
@@ -902,6 +937,7 @@ pub struct AggregateApiDailyUsageSummary {
     pub request_count: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
     pub billable_input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
@@ -1456,6 +1492,11 @@ impl Storage {
             |s| s.ensure_api_key_model_column(),
         )?;
         self.apply_sql_or_compat_migration(
+            "114_request_pricing_snapshots",
+            include_str!("../../migrations/114_request_pricing_snapshots.sql"),
+            |s| s.ensure_request_pricing_snapshots_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
             "005_request_logs",
             include_str!("../../migrations/005_request_logs.sql"),
             |s| s.ensure_request_logs_table(),
@@ -1983,6 +2024,14 @@ impl Storage {
             "112_gateway_reasoning_guard_events",
             include_str!("../../migrations/112_gateway_reasoning_guard_events.sql"),
             |s| s.ensure_gateway_reasoning_guard_events_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "113_model_price_rules_cache_write_tokens",
+            include_str!("../../migrations/113_model_price_rules_cache_write_tokens.sql"),
+            |s| {
+                s.ensure_model_price_rules_table()?;
+                s.ensure_request_token_stats_table()
+            },
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;

@@ -43,8 +43,8 @@ fn token_total_sql_expr() -> &'static str {
             CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
         ELSE
             CASE
-                WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
-                    THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
+                WHEN IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0) > 0
+                    THEN IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0)
                 ELSE 0
             END
      END"
@@ -57,8 +57,8 @@ fn token_total_sql_expr_for(prefix: &str) -> String {
             CASE WHEN {prefix}total_tokens > 0 THEN {prefix}total_tokens ELSE 0 END
         ELSE
             CASE
-                WHEN IFNULL({prefix}input_tokens, 0) - IFNULL({prefix}cached_input_tokens, 0) + IFNULL({prefix}output_tokens, 0) > 0
-                    THEN IFNULL({prefix}input_tokens, 0) - IFNULL({prefix}cached_input_tokens, 0) + IFNULL({prefix}output_tokens, 0)
+                WHEN IFNULL({prefix}input_tokens, 0) + IFNULL({prefix}output_tokens, 0) > 0
+                    THEN IFNULL({prefix}input_tokens, 0) + IFNULL({prefix}output_tokens, 0)
                 ELSE 0
             END
      END"
@@ -74,6 +74,7 @@ fn local_day_start_sql_expr(created_at_expr: &str) -> String {
 const TOKEN_ROLLUP_COLUMNS: &str = "
     IFNULL(SUM(IFNULL(t.input_tokens, 0)), 0) AS input_tokens,
     IFNULL(SUM(IFNULL(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+    IFNULL(SUM(IFNULL(t.cache_write_input_tokens, 0)), 0) AS cache_write_input_tokens,
     IFNULL(SUM(IFNULL(t.output_tokens, 0)), 0) AS output_tokens,
     IFNULL(SUM(IFNULL(t.reasoning_output_tokens, 0)), 0) AS reasoning_output_tokens,
     IFNULL(
@@ -83,8 +84,8 @@ const TOKEN_ROLLUP_COLUMNS: &str = "
                     CASE WHEN t.total_tokens > 0 THEN t.total_tokens ELSE 0 END
                 ELSE
                     CASE
-                        WHEN IFNULL(t.input_tokens, 0) - IFNULL(t.cached_input_tokens, 0) + IFNULL(t.output_tokens, 0) > 0
-                            THEN IFNULL(t.input_tokens, 0) - IFNULL(t.cached_input_tokens, 0) + IFNULL(t.output_tokens, 0)
+                        WHEN IFNULL(t.input_tokens, 0) + IFNULL(t.output_tokens, 0) > 0
+                            THEN IFNULL(t.input_tokens, 0) + IFNULL(t.output_tokens, 0)
                         ELSE 0
                     END
             END
@@ -92,7 +93,7 @@ const TOKEN_ROLLUP_COLUMNS: &str = "
         0
     ) AS total_tokens,
     IFNULL(SUM(IFNULL(t.estimated_cost_usd, 0.0)), 0.0) AS estimated_cost_usd,
-    COUNT(DISTINCT r.id) AS request_count,
+    COUNT(DISTINCT COALESCE(r.id, t.request_log_id)) AS request_count,
     COUNT(DISTINCT CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN r.id END) AS success_count,
     COUNT(DISTINCT CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN r.id END) AS error_count";
 
@@ -119,13 +120,14 @@ fn token_usage_rollup_from_row(row: &Row<'_>, offset: usize) -> Result<TokenUsag
     Ok(TokenUsageRollup {
         input_tokens: row.get::<_, i64>(offset)?.max(0),
         cached_input_tokens: row.get::<_, i64>(offset + 1)?.max(0),
-        output_tokens: row.get::<_, i64>(offset + 2)?.max(0),
-        reasoning_output_tokens: row.get::<_, i64>(offset + 3)?.max(0),
-        total_tokens: row.get::<_, i64>(offset + 4)?.max(0),
-        estimated_cost_usd: row.get::<_, f64>(offset + 5)?.max(0.0),
-        request_count: row.get::<_, i64>(offset + 6)?.max(0),
-        success_count: row.get::<_, i64>(offset + 7)?.max(0),
-        error_count: row.get::<_, i64>(offset + 8)?.max(0),
+        cache_write_input_tokens: row.get::<_, i64>(offset + 2)?.max(0),
+        output_tokens: row.get::<_, i64>(offset + 3)?.max(0),
+        reasoning_output_tokens: row.get::<_, i64>(offset + 4)?.max(0),
+        total_tokens: row.get::<_, i64>(offset + 5)?.max(0),
+        estimated_cost_usd: row.get::<_, f64>(offset + 6)?.max(0.0),
+        request_count: row.get::<_, i64>(offset + 7)?.max(0),
+        success_count: row.get::<_, i64>(offset + 8)?.max(0),
+        error_count: row.get::<_, i64>(offset + 9)?.max(0),
     })
 }
 
@@ -170,10 +172,11 @@ fn map_token_usage_summary(row: &Row<'_>) -> Result<TokenUsageSummary> {
         model: row.get(0)?,
         input_tokens: row.get::<_, i64>(1)?.max(0),
         cached_input_tokens: row.get::<_, i64>(2)?.max(0),
-        output_tokens: row.get::<_, i64>(3)?.max(0),
-        reasoning_output_tokens: row.get::<_, i64>(4)?.max(0),
-        total_tokens: row.get::<_, i64>(5)?.max(0),
-        estimated_cost_usd: row.get::<_, f64>(6)?.max(0.0),
+        cache_write_input_tokens: row.get::<_, i64>(3)?.max(0),
+        output_tokens: row.get::<_, i64>(4)?.max(0),
+        reasoning_output_tokens: row.get::<_, i64>(5)?.max(0),
+        total_tokens: row.get::<_, i64>(6)?.max(0),
+        estimated_cost_usd: row.get::<_, f64>(7)?.max(0.0),
     })
 }
 
@@ -183,10 +186,11 @@ fn map_api_key_model_token_usage_summary(row: &Row<'_>) -> Result<ApiKeyModelTok
         model: row.get(1)?,
         input_tokens: row.get::<_, i64>(2)?.max(0),
         cached_input_tokens: row.get::<_, i64>(3)?.max(0),
-        output_tokens: row.get::<_, i64>(4)?.max(0),
-        reasoning_output_tokens: row.get::<_, i64>(5)?.max(0),
-        total_tokens: row.get::<_, i64>(6)?.max(0),
-        estimated_cost_usd: row.get::<_, f64>(7)?.max(0.0),
+        cache_write_input_tokens: row.get::<_, i64>(4)?.max(0),
+        output_tokens: row.get::<_, i64>(5)?.max(0),
+        reasoning_output_tokens: row.get::<_, i64>(6)?.max(0),
+        total_tokens: row.get::<_, i64>(7)?.max(0),
+        estimated_cost_usd: row.get::<_, f64>(8)?.max(0.0),
     })
 }
 
@@ -207,9 +211,9 @@ impl Storage {
         self.conn.execute(
             "INSERT INTO request_token_stats (
                 request_log_id, key_id, account_id, aggregate_api_id, aggregate_api_supplier_name, aggregate_api_url, model,
-                input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
+                input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                 estimated_cost_usd, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             (
                 stat.request_log_id,
                 &stat.key_id,
@@ -220,6 +224,7 @@ impl Storage {
                 &stat.model,
                 stat.input_tokens,
                 stat.cached_input_tokens,
+                stat.cache_write_input_tokens,
                 stat.output_tokens,
                 stat.total_tokens,
                 stat.reasoning_output_tokens,
@@ -275,7 +280,7 @@ impl Storage {
             &format!(
                 "INSERT INTO request_token_daily_rollups (
                     day_start_ts, source_kind, source_id,
-                    input_tokens, cached_input_tokens, output_tokens, total_tokens,
+                    input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens,
                     reasoning_output_tokens, estimated_cost_usd, request_count, success_count,
                     error_count, max_duration_ms, updated_at
                  )
@@ -285,6 +290,7 @@ impl Storage {
                     '',
                     IFNULL(SUM(CASE WHEN t.input_tokens > 0 THEN t.input_tokens ELSE 0 END), 0),
                     IFNULL(SUM(CASE WHEN t.cached_input_tokens > 0 THEN t.cached_input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.cache_write_input_tokens > 0 THEN t.cache_write_input_tokens ELSE 0 END), 0),
                     IFNULL(SUM(CASE WHEN t.output_tokens > 0 THEN t.output_tokens ELSE 0 END), 0),
                     IFNULL(SUM({token_total}), 0),
                     IFNULL(SUM(CASE WHEN t.reasoning_output_tokens > 0 THEN t.reasoning_output_tokens ELSE 0 END), 0),
@@ -301,6 +307,7 @@ impl Storage {
                  ON CONFLICT(day_start_ts, source_kind, source_id) DO UPDATE SET
                     input_tokens = request_token_daily_rollups.input_tokens + excluded.input_tokens,
                     cached_input_tokens = request_token_daily_rollups.cached_input_tokens + excluded.cached_input_tokens,
+                    cache_write_input_tokens = request_token_daily_rollups.cache_write_input_tokens + excluded.cache_write_input_tokens,
                     output_tokens = request_token_daily_rollups.output_tokens + excluded.output_tokens,
                     total_tokens = request_token_daily_rollups.total_tokens + excluded.total_tokens,
                     reasoning_output_tokens = request_token_daily_rollups.reasoning_output_tokens + excluded.reasoning_output_tokens,
@@ -322,7 +329,7 @@ impl Storage {
             &format!(
                 "INSERT INTO request_token_stat_rollups (
                     key_id, account_id, model,
-                    input_tokens, cached_input_tokens, output_tokens, total_tokens,
+                    input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens,
                     reasoning_output_tokens, estimated_cost_usd, source_rows, success_count,
                     error_count, updated_at
                  )
@@ -332,6 +339,7 @@ impl Storage {
                     COALESCE(NULLIF(TRIM(t.model), ''), ''),
                     IFNULL(SUM(CASE WHEN t.input_tokens > 0 THEN t.input_tokens ELSE 0 END), 0),
                     IFNULL(SUM(CASE WHEN t.cached_input_tokens > 0 THEN t.cached_input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.cache_write_input_tokens > 0 THEN t.cache_write_input_tokens ELSE 0 END), 0),
                     IFNULL(SUM(CASE WHEN t.output_tokens > 0 THEN t.output_tokens ELSE 0 END), 0),
                     IFNULL(SUM({token_total}), 0),
                     IFNULL(SUM(CASE WHEN t.reasoning_output_tokens > 0 THEN t.reasoning_output_tokens ELSE 0 END), 0),
@@ -350,6 +358,7 @@ impl Storage {
                  ON CONFLICT(key_id, account_id, model) DO UPDATE SET
                     input_tokens = request_token_stat_rollups.input_tokens + excluded.input_tokens,
                     cached_input_tokens = request_token_stat_rollups.cached_input_tokens + excluded.cached_input_tokens,
+                    cache_write_input_tokens = request_token_stat_rollups.cache_write_input_tokens + excluded.cache_write_input_tokens,
                     output_tokens = request_token_stat_rollups.output_tokens + excluded.output_tokens,
                     total_tokens = request_token_stat_rollups.total_tokens + excluded.total_tokens,
                     reasoning_output_tokens = request_token_stat_rollups.reasoning_output_tokens + excluded.reasoning_output_tokens,
@@ -381,6 +390,7 @@ impl Storage {
                 MIN(day_start_ts + ?3, ?2) AS day_end_ts,
                 input_tokens,
                 cached_input_tokens,
+                cache_write_input_tokens,
                 output_tokens,
                 reasoning_output_tokens,
                 total_tokens,
@@ -404,13 +414,14 @@ impl Storage {
                 usage: TokenUsageRollup {
                     input_tokens: row.get::<_, i64>(2)?.max(0),
                     cached_input_tokens: row.get::<_, i64>(3)?.max(0),
-                    output_tokens: row.get::<_, i64>(4)?.max(0),
-                    reasoning_output_tokens: row.get::<_, i64>(5)?.max(0),
-                    total_tokens: row.get::<_, i64>(6)?.max(0),
-                    estimated_cost_usd: row.get::<_, f64>(7)?.max(0.0),
-                    request_count: row.get::<_, i64>(8)?.max(0),
-                    success_count: row.get::<_, i64>(9)?.max(0),
-                    error_count: row.get::<_, i64>(10)?.max(0),
+                    cache_write_input_tokens: row.get::<_, i64>(4)?.max(0),
+                    output_tokens: row.get::<_, i64>(5)?.max(0),
+                    reasoning_output_tokens: row.get::<_, i64>(6)?.max(0),
+                    total_tokens: row.get::<_, i64>(7)?.max(0),
+                    estimated_cost_usd: row.get::<_, f64>(8)?.max(0.0),
+                    request_count: row.get::<_, i64>(9)?.max(0),
+                    success_count: row.get::<_, i64>(10)?.max(0),
+                    error_count: row.get::<_, i64>(11)?.max(0),
                 },
             });
         }
@@ -445,6 +456,10 @@ impl Storage {
                         .usage
                         .cached_input_tokens
                         .saturating_add(item.usage.cached_input_tokens);
+                    existing.usage.cache_write_input_tokens = existing
+                        .usage
+                        .cache_write_input_tokens
+                        .saturating_add(item.usage.cache_write_input_tokens);
                     existing.usage.output_tokens = existing
                         .usage
                         .output_tokens
@@ -486,6 +501,7 @@ impl Storage {
             "SELECT
                 IFNULL(SUM(input_tokens), 0),
                 IFNULL(SUM(cached_input_tokens), 0),
+                IFNULL(SUM(cache_write_input_tokens), 0),
                 IFNULL(SUM(output_tokens), 0),
                 IFNULL(SUM(reasoning_output_tokens), 0),
                 IFNULL(SUM(estimated_cost_usd), 0.0)
@@ -497,14 +513,16 @@ impl Storage {
             return Ok(RequestLogTodaySummary {
                 input_tokens: row.get(0)?,
                 cached_input_tokens: row.get(1)?,
-                output_tokens: row.get(2)?,
-                reasoning_output_tokens: row.get(3)?,
-                estimated_cost_usd: row.get(4)?,
+                cache_write_input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                reasoning_output_tokens: row.get(4)?,
+                estimated_cost_usd: row.get(5)?,
             });
         }
         Ok(RequestLogTodaySummary {
             input_tokens: 0,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             estimated_cost_usd: 0.0,
@@ -517,6 +535,7 @@ impl Storage {
                 SELECT
                     t.input_tokens,
                     t.cached_input_tokens,
+                    t.cache_write_input_tokens,
                     t.output_tokens,
                     t.reasoning_output_tokens,
                     t.total_tokens,
@@ -536,6 +555,7 @@ impl Storage {
                 SELECT
                     input_tokens,
                     cached_input_tokens,
+                    cache_write_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
                     total_tokens,
@@ -548,6 +568,7 @@ impl Storage {
              SELECT
                 IFNULL(SUM(IFNULL(input_tokens, 0)), 0) AS input_tokens,
                 IFNULL(SUM(IFNULL(cached_input_tokens, 0)), 0) AS cached_input_tokens,
+                IFNULL(SUM(IFNULL(cache_write_input_tokens, 0)), 0) AS cache_write_input_tokens,
                 IFNULL(SUM(IFNULL(output_tokens, 0)), 0) AS output_tokens,
                 IFNULL(SUM(IFNULL(reasoning_output_tokens, 0)), 0) AS reasoning_output_tokens,
                 IFNULL(SUM({token_total}), 0) AS total_tokens,
@@ -646,6 +667,22 @@ impl Storage {
                     WHEN IFNULL(input_tokens, 0) > 0 AND IFNULL(cached_input_tokens, 0) > input_tokens THEN input_tokens
                     ELSE IFNULL(cached_input_tokens, 0)
                 END), 0) AS cached_input_tokens,
+                IFNULL(SUM(CASE
+                    WHEN IFNULL(input_tokens, 0) <= 0
+                        OR IFNULL(cache_write_input_tokens, 0) <= 0 THEN 0
+                    WHEN IFNULL(cache_write_input_tokens, 0) > MAX(IFNULL(input_tokens, 0), 0) - CASE
+                        WHEN IFNULL(cached_input_tokens, 0) < 0 THEN 0
+                        WHEN IFNULL(cached_input_tokens, 0) > IFNULL(input_tokens, 0)
+                            THEN MAX(IFNULL(input_tokens, 0), 0)
+                        ELSE IFNULL(cached_input_tokens, 0)
+                    END THEN MAX(IFNULL(input_tokens, 0), 0) - CASE
+                        WHEN IFNULL(cached_input_tokens, 0) < 0 THEN 0
+                        WHEN IFNULL(cached_input_tokens, 0) > IFNULL(input_tokens, 0)
+                            THEN MAX(IFNULL(input_tokens, 0), 0)
+                        ELSE IFNULL(cached_input_tokens, 0)
+                    END
+                    ELSE IFNULL(cache_write_input_tokens, 0)
+                END), 0) AS cache_write_input_tokens,
                 IFNULL(SUM(CASE WHEN IFNULL(output_tokens, 0) > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
                 IFNULL(SUM(
                     CASE
@@ -653,8 +690,8 @@ impl Storage {
                             CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
                         ELSE
                             CASE
-                                WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
-                                    THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
+                                WHEN IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0) > 0
+                                    THEN IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0)
                                 ELSE 0
                             END
                     END
@@ -674,17 +711,21 @@ impl Storage {
         while let Some(row) = rows.next()? {
             let input_tokens = row.get::<_, i64>(2)?;
             let cached_input_tokens = row.get::<_, i64>(3)?;
-            let billable_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
+            let cache_write_input_tokens = row.get::<_, i64>(4)?;
+            let billable_input_tokens = input_tokens
+                .saturating_sub(cached_input_tokens)
+                .saturating_sub(cache_write_input_tokens);
             items.push(AccountDailyUsageSummary {
                 account_id: row.get(0)?,
                 request_count: row.get(1)?,
                 input_tokens,
                 cached_input_tokens,
+                cache_write_input_tokens,
                 billable_input_tokens,
-                output_tokens: row.get(4)?,
-                total_tokens: row.get(5)?,
-                reasoning_output_tokens: row.get(6)?,
-                estimated_cost_usd: row.get(7)?,
+                output_tokens: row.get(5)?,
+                total_tokens: row.get(6)?,
+                reasoning_output_tokens: row.get(7)?,
+                estimated_cost_usd: row.get(8)?,
                 cache_hit_rate: cache_hit_rate(input_tokens, cached_input_tokens),
             });
         }
@@ -718,6 +759,22 @@ impl Storage {
                         WHEN IFNULL(input_tokens, 0) > 0 AND IFNULL(cached_input_tokens, 0) > input_tokens THEN input_tokens
                         ELSE IFNULL(cached_input_tokens, 0)
                     END), 0) AS cached_input_tokens,
+                    IFNULL(SUM(CASE
+                        WHEN IFNULL(input_tokens, 0) <= 0
+                            OR IFNULL(cache_write_input_tokens, 0) <= 0 THEN 0
+                        WHEN IFNULL(cache_write_input_tokens, 0) > MAX(IFNULL(input_tokens, 0), 0) - CASE
+                            WHEN IFNULL(cached_input_tokens, 0) < 0 THEN 0
+                            WHEN IFNULL(cached_input_tokens, 0) > IFNULL(input_tokens, 0)
+                                THEN MAX(IFNULL(input_tokens, 0), 0)
+                            ELSE IFNULL(cached_input_tokens, 0)
+                        END THEN MAX(IFNULL(input_tokens, 0), 0) - CASE
+                            WHEN IFNULL(cached_input_tokens, 0) < 0 THEN 0
+                            WHEN IFNULL(cached_input_tokens, 0) > IFNULL(input_tokens, 0)
+                                THEN MAX(IFNULL(input_tokens, 0), 0)
+                            ELSE IFNULL(cached_input_tokens, 0)
+                        END
+                        ELSE IFNULL(cache_write_input_tokens, 0)
+                    END), 0) AS cache_write_input_tokens,
                     IFNULL(SUM(CASE WHEN IFNULL(output_tokens, 0) > 0 THEN output_tokens ELSE 0 END), 0) AS output_tokens,
                     IFNULL(SUM(
                         CASE
@@ -725,8 +782,8 @@ impl Storage {
                                 CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
                             ELSE
                                 CASE
-                                    WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
-                                        THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
+                                    WHEN IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0) > 0
+                                        THEN IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0)
                                     ELSE 0
                                 END
                         END
@@ -761,6 +818,7 @@ impl Storage {
                 b.request_count,
                 b.input_tokens,
                 b.cached_input_tokens,
+                b.cache_write_input_tokens,
                 b.output_tokens,
                 b.total_tokens,
                 b.reasoning_output_tokens,
@@ -781,11 +839,14 @@ impl Storage {
         while let Some(row) = rows.next()? {
             let input_tokens = row.get::<_, i64>(4)?;
             let cached_input_tokens = row.get::<_, i64>(5)?;
-            let billable_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
-            let total_tokens = row.get::<_, i64>(7)?;
-            let estimated_cost_usd = row.get::<_, f64>(9)?;
-            let guard_retry_total_tokens = row.get::<_, i64>(10)?;
-            let guard_retry_estimated_cost_usd = row.get::<_, f64>(11)?;
+            let cache_write_input_tokens = row.get::<_, i64>(6)?;
+            let billable_input_tokens = input_tokens
+                .saturating_sub(cached_input_tokens)
+                .saturating_sub(cache_write_input_tokens);
+            let total_tokens = row.get::<_, i64>(8)?;
+            let estimated_cost_usd = row.get::<_, f64>(10)?;
+            let guard_retry_total_tokens = row.get::<_, i64>(11)?;
+            let guard_retry_estimated_cost_usd = row.get::<_, f64>(12)?;
             items.push(AggregateApiDailyUsageSummary {
                 aggregate_api_id: row.get(0)?,
                 aggregate_api_supplier_name: row.get(1)?,
@@ -793,10 +854,11 @@ impl Storage {
                 request_count: row.get(3)?,
                 input_tokens,
                 cached_input_tokens,
+                cache_write_input_tokens,
                 billable_input_tokens,
-                output_tokens: row.get(6)?,
+                output_tokens: row.get(7)?,
                 total_tokens,
-                reasoning_output_tokens: row.get(8)?,
+                reasoning_output_tokens: row.get(9)?,
                 estimated_cost_usd,
                 guard_retry_total_tokens,
                 guard_retry_estimated_cost_usd,
@@ -850,6 +912,7 @@ impl Storage {
                         model,
                         input_tokens,
                         cached_input_tokens,
+                        cache_write_input_tokens,
                         output_tokens,
                         reasoning_output_tokens,
                         total_tokens,
@@ -861,6 +924,7 @@ impl Storage {
                         NULLIF(model, '') AS model,
                         input_tokens,
                         cached_input_tokens,
+                        cache_write_input_tokens,
                         output_tokens,
                         reasoning_output_tokens,
                         total_tokens,
@@ -871,6 +935,7 @@ impl Storage {
                     COALESCE(NULLIF(TRIM(s.model), ''), 'unknown') AS normalized_model,
                     IFNULL(SUM(s.input_tokens), 0) AS input_tokens,
                     IFNULL(SUM(s.cached_input_tokens), 0) AS cached_input_tokens,
+                    IFNULL(SUM(s.cache_write_input_tokens), 0) AS cache_write_input_tokens,
                     IFNULL(SUM(s.output_tokens), 0) AS output_tokens,
                     IFNULL(SUM(s.reasoning_output_tokens), 0) AS reasoning_output_tokens,
                     IFNULL(SUM({token_total}), 0) AS total_tokens,
@@ -887,6 +952,7 @@ impl Storage {
                     COALESCE(NULLIF(TRIM(s.model), ''), 'unknown') AS normalized_model,
                     IFNULL(SUM(s.input_tokens), 0) AS input_tokens,
                     IFNULL(SUM(s.cached_input_tokens), 0) AS cached_input_tokens,
+                    IFNULL(SUM(s.cache_write_input_tokens), 0) AS cache_write_input_tokens,
                     IFNULL(SUM(s.output_tokens), 0) AS output_tokens,
                     IFNULL(SUM(s.reasoning_output_tokens), 0) AS reasoning_output_tokens,
                     IFNULL(SUM({token_total}), 0) AS total_tokens,
@@ -970,6 +1036,7 @@ impl Storage {
                         model,
                         input_tokens,
                         cached_input_tokens,
+                        cache_write_input_tokens,
                         output_tokens,
                         reasoning_output_tokens,
                         total_tokens,
@@ -981,6 +1048,7 @@ impl Storage {
                         NULLIF(model, '') AS model,
                         input_tokens,
                         cached_input_tokens,
+                        cache_write_input_tokens,
                         output_tokens,
                         reasoning_output_tokens,
                         total_tokens,
@@ -992,6 +1060,7 @@ impl Storage {
                     COALESCE(NULLIF(TRIM(s.model), ''), 'unknown') AS normalized_model,
                     IFNULL(SUM(s.input_tokens), 0) AS input_tokens,
                     IFNULL(SUM(s.cached_input_tokens), 0) AS cached_input_tokens,
+                    IFNULL(SUM(s.cache_write_input_tokens), 0) AS cache_write_input_tokens,
                     IFNULL(SUM(s.output_tokens), 0) AS output_tokens,
                     IFNULL(SUM(s.reasoning_output_tokens), 0) AS reasoning_output_tokens,
                     IFNULL(SUM({token_total}), 0) AS total_tokens,
@@ -1009,6 +1078,7 @@ impl Storage {
                     COALESCE(NULLIF(TRIM(s.model), ''), 'unknown') AS normalized_model,
                     IFNULL(SUM(s.input_tokens), 0) AS input_tokens,
                     IFNULL(SUM(s.cached_input_tokens), 0) AS cached_input_tokens,
+                    IFNULL(SUM(s.cache_write_input_tokens), 0) AS cache_write_input_tokens,
                     IFNULL(SUM(s.output_tokens), 0) AS output_tokens,
                     IFNULL(SUM(s.reasoning_output_tokens), 0) AS reasoning_output_tokens,
                     IFNULL(SUM({token_total}), 0) AS total_tokens,
@@ -1233,6 +1303,7 @@ impl Storage {
                 model TEXT,
                 input_tokens INTEGER,
                 cached_input_tokens INTEGER,
+                cache_write_input_tokens INTEGER,
                 output_tokens INTEGER,
                 total_tokens INTEGER,
                 reasoning_output_tokens INTEGER,
@@ -1268,6 +1339,7 @@ impl Storage {
                 model TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1301,6 +1373,12 @@ impl Storage {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         self.ensure_column("request_token_stats", "total_tokens", "INTEGER")?;
+        self.ensure_column("request_token_stats", "cache_write_input_tokens", "INTEGER")?;
+        self.ensure_column(
+            "request_token_stat_rollups",
+            "cache_write_input_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         self.ensure_column("request_token_stats", "aggregate_api_id", "TEXT")?;
         self.ensure_column("request_token_stats", "aggregate_api_supplier_name", "TEXT")?;
         self.ensure_column("request_token_stats", "aggregate_api_url", "TEXT")?;
@@ -1365,6 +1443,7 @@ impl Storage {
                 source_id TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1377,6 +1456,11 @@ impl Storage {
                 PRIMARY KEY (day_start_ts, source_kind, source_id)
             )",
             [],
+        )?;
+        self.ensure_column(
+            "request_token_daily_rollups",
+            "cache_write_input_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_token_daily_rollups_source_day

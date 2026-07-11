@@ -11,9 +11,10 @@ use super::author_links::{
 };
 use super::{
     current_background_tasks_snapshot_value, current_env_overrides,
-    current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
-    current_gateway_free_account_max_model, current_gateway_model_catalog_auto_remote_fetch,
-    current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
+    current_gateway_account_max_inflight, current_gateway_auto_compact_enabled,
+    current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
+    current_gateway_model_catalog_auto_remote_fetch, current_gateway_model_forward_rules,
+    current_gateway_originator, current_gateway_quota_guard,
     current_gateway_reasoning_guard_bypass_after_consecutive,
     current_gateway_reasoning_guard_continuation_marker_text,
     current_gateway_reasoning_guard_enabled,
@@ -206,6 +207,7 @@ fn current_app_settings_value_inner(
     let model_catalog_auto_remote_fetch = current_gateway_model_catalog_auto_remote_fetch();
     let model_forward_rules = current_gateway_model_forward_rules();
     let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
+    let auto_compact_enabled = current_gateway_auto_compact_enabled();
     let account_max_inflight = current_gateway_account_max_inflight();
     let reasoning_guard_enabled = current_gateway_reasoning_guard_enabled();
     let reasoning_guard_targets = current_gateway_reasoning_guard_targets();
@@ -397,6 +399,10 @@ fn current_app_settings_value_inner(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "autoCompactEnabled".to_string(),
+            auto_compact_enabled.into(),
+        );
         object.insert(
             "modelCatalogAutoRemoteFetch".to_string(),
             model_catalog_auto_remote_fetch.into(),

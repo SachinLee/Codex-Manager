@@ -20,6 +20,7 @@ pub(crate) fn read_account_daily_usage_stats(
             request_count: item.request_count.max(0),
             input_tokens: item.input_tokens.max(0),
             cached_input_tokens: item.cached_input_tokens.max(0),
+            cache_write_input_tokens: item.cache_write_input_tokens.max(0),
             billable_input_tokens: item.billable_input_tokens.max(0),
             output_tokens: item.output_tokens.max(0),
             total_tokens: item.total_tokens.max(0),

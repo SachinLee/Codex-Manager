@@ -7,6 +7,7 @@ import { formatCompactNumber } from "@/lib/utils/usage";
 import type { AggregateApi, ApiKey, RequestLog } from "@/types";
 
 export type StatusFilter = "all" | "2xx" | "4xx" | "5xx";
+export type PricingBandFilter = "all" | "long" | "short" | "single_tier" | "legacy_candidate" | "unknown";
 export type LogsTab = "requests";
 export type TimeRangePreset = "all" | "30m" | "2h" | "24h" | "today" | "custom";
 export type TranslateFn = (
@@ -125,31 +126,38 @@ export function SummaryCard({
   toneClass: string;
 }) {
   return (
-    <div className="group/metric relative min-h-[96px] overflow-hidden rounded-xl border border-border/50 bg-background/55 p-3 transition-colors hover:bg-background/70">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-            {title}
-          </div>
-          <div className="mt-2 truncate text-[2rem] leading-none font-semibold tracking-tight">
-            {value}
-          </div>
-          {detail ? (
-            <div className="mt-1 truncate text-[11px] font-medium text-amber-500">
-              {detail}
-            </div>
-          ) : null}
+    <div className="group/metric relative flex min-h-[142px] flex-col overflow-hidden rounded-2xl border border-border/55 bg-background/72 p-4 shadow-[0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-border/80 hover:bg-background/86 hover:shadow-md">
+      <div
+        aria-hidden="true"
+        className={cn(
+          "pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full opacity-45 blur-2xl transition-opacity group-hover/metric:opacity-70",
+          toneClass,
+        )}
+      />
+      <div className="relative flex items-center justify-between gap-3">
+        <div className="truncate text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+          {title}
         </div>
         <div
           className={cn(
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
+            "flex size-8 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ring-white/10",
             toneClass,
           )}
         >
-          <Icon className="h-4 w-4" />
+          <Icon className="size-4" />
         </div>
       </div>
-      <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+      <div className="relative mt-4 min-w-0">
+        <div className="truncate text-[2rem] leading-none font-semibold tracking-[-0.04em] text-foreground">
+          {value}
+        </div>
+        {detail ? (
+          <div className="mt-1 truncate text-[11px] font-semibold text-amber-500">
+            {detail}
+          </div>
+        ) : null}
+      </div>
+      <p className="relative mt-auto line-clamp-2 border-t border-border/35 pt-3 text-[11px] leading-4 text-muted-foreground">
         {description}
       </p>
     </div>

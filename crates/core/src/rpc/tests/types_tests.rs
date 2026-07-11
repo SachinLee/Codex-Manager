@@ -306,6 +306,10 @@ fn request_log_filter_summary_serialization_uses_camel_case() {
         total_cost_usd: 12.34,
         guard_retry_total_tokens: 456,
         guard_retry_estimated_cost_usd: 0.45,
+        long_context_count: 12,
+        long_context_cost_usd: 1.23,
+        long_context_uplift_usd: 0.34,
+        legacy_candidate_count: 5,
     };
 
     let value = serde_json::to_value(result).expect("serialize request log filter summary");
@@ -321,6 +325,10 @@ fn request_log_filter_summary_serialization_uses_camel_case() {
         "totalCostUsd",
         "guardRetryTotalTokens",
         "guardRetryEstimatedCostUsd",
+        "longContextCount",
+        "longContextCostUsd",
+        "longContextUpliftUsd",
+        "legacyCandidateCount",
     ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }
@@ -367,6 +375,7 @@ fn dashboard_admin_usage_summary_serialization_uses_camel_case() {
     let usage = DashboardTokenUsageResult {
         input_tokens: 100,
         cached_input_tokens: 20,
+        cache_write_input_tokens: 10,
         output_tokens: 50,
         reasoning_output_tokens: 5,
         total_tokens: 130,
@@ -433,6 +442,7 @@ fn dashboard_admin_usage_summary_serialization_uses_camel_case() {
         assert!(obj.contains_key(key), "missing key: {key}");
     }
     assert!(obj["todayUsage"].get("inputTokens").is_some());
+    assert_eq!(obj["todayUsage"]["cacheWriteInputTokens"], 10);
     assert!(obj["users"][0].get("walletAvailableCreditMicros").is_some());
     assert!(obj["openaiAccounts"][0].get("sourceKind").is_some());
 }

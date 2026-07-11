@@ -68,9 +68,9 @@ fn evidence_kind_for_cooldown_reason(reason: CooldownReason) -> EvidenceKind {
     match reason {
         CooldownReason::RateLimited => EvidenceKind::RateLimit,
         CooldownReason::Network | CooldownReason::Upstream5xx => EvidenceKind::Transport,
-        CooldownReason::Upstream4xx | CooldownReason::Challenge | CooldownReason::AnthropicChallenge => {
-            EvidenceKind::UpstreamStatus
-        }
+        CooldownReason::Upstream4xx
+        | CooldownReason::Challenge
+        | CooldownReason::AnthropicChallenge => EvidenceKind::UpstreamStatus,
         CooldownReason::Default => EvidenceKind::Cooldown,
     }
 }

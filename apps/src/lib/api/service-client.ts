@@ -147,6 +147,7 @@ export const serviceClient = {
   async listRequestLogs(params?: {
     query?: string;
     statusFilter?: string;
+    pricingBandFilter?: string;
     page?: number;
     pageSize?: number;
     startTs?: number | null;
@@ -157,6 +158,7 @@ export const serviceClient = {
       withAddr({
         query: params?.query || "",
         statusFilter: params?.statusFilter || "all",
+        pricingBandFilter: params?.pricingBandFilter || "all",
         page: params?.page ?? 1,
         pageSize: params?.pageSize ?? 20,
         startTs: params?.startTs ?? null,
@@ -169,6 +171,7 @@ export const serviceClient = {
   async listRequestLogsWithSummary(params?: {
     query?: string;
     statusFilter?: string;
+    pricingBandFilter?: string;
     page?: number;
     pageSize?: number;
     startTs?: number | null;
@@ -179,6 +182,7 @@ export const serviceClient = {
       withAddr({
         query: params?.query || "",
         statusFilter: params?.statusFilter || "all",
+        pricingBandFilter: params?.pricingBandFilter || "all",
         page: params?.page ?? 1,
         pageSize: params?.pageSize ?? 20,
         startTs: params?.startTs ?? null,
@@ -191,6 +195,7 @@ export const serviceClient = {
   async getRequestLogSummary(params?: {
     query?: string;
     statusFilter?: string;
+    pricingBandFilter?: string;
     startTs?: number | null;
     endTs?: number | null;
   }): Promise<RequestLogFilterSummary> {
@@ -199,6 +204,7 @@ export const serviceClient = {
       withAddr({
         query: params?.query || "",
         statusFilter: params?.statusFilter || "all",
+        pricingBandFilter: params?.pricingBandFilter || "all",
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
       })

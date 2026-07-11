@@ -58,6 +58,10 @@ function normalizeModelUsageItem(payload: unknown): QuotaModelUsageItem {
       0,
       toNullableNumber(source.cachedInputTokens ?? source.cached_input_tokens) ?? 0,
     ),
+    cacheWriteInputTokens: Math.max(
+      0,
+      toNullableNumber(source.cacheWriteInputTokens ?? source.cache_write_input_tokens) ?? 0,
+    ),
     outputTokens: Math.max(0, toNullableNumber(source.outputTokens ?? source.output_tokens) ?? 0),
     reasoningOutputTokens: Math.max(
       0,
@@ -106,6 +110,10 @@ function normalizeApiKeyModelUsageItem(payload: unknown): QuotaApiKeyModelUsageI
     cachedInputTokens: Math.max(
       0,
       toNullableNumber(source.cachedInputTokens ?? source.cached_input_tokens) ?? 0,
+    ),
+    cacheWriteInputTokens: Math.max(
+      0,
+      toNullableNumber(source.cacheWriteInputTokens ?? source.cache_write_input_tokens) ?? 0,
     ),
     outputTokens: Math.max(0, toNullableNumber(source.outputTokens ?? source.output_tokens) ?? 0),
     reasoningOutputTokens: Math.max(
@@ -395,6 +403,12 @@ function normalizeOverview(payload: unknown): QuotaOverviewResult {
       cachedInputTokens: Math.max(
         0,
         toNullableNumber(todayUsage.cachedInputTokens ?? todayUsage.cached_input_tokens) ?? 0,
+      ),
+      cacheWriteInputTokens: Math.max(
+        0,
+        toNullableNumber(
+          todayUsage.cacheWriteInputTokens ?? todayUsage.cache_write_input_tokens,
+        ) ?? 0,
       ),
       outputTokens: Math.max(
         0,

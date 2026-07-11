@@ -261,6 +261,7 @@ fn read_quota_overview_with_storage(
         .map_err(|err| format!("summarize today token usage failed: {err}"))?;
     let today_input = today.input_tokens.max(0);
     let today_cached = today.cached_input_tokens.max(0);
+    let today_cache_write = today.cache_write_input_tokens.max(0);
     let today_output = today.output_tokens.max(0);
 
     Ok(QuotaOverviewResult {
@@ -297,6 +298,7 @@ fn read_quota_overview_with_storage(
         today_usage: QuotaTodayUsageResult {
             input_tokens: today_input,
             cached_input_tokens: today_cached,
+            cache_write_input_tokens: today_cache_write,
             output_tokens: today_output,
             reasoning_output_tokens: today.reasoning_output_tokens.max(0),
             total_tokens: token_total(today_input, today_cached, today_output),
@@ -436,6 +438,7 @@ fn read_quota_model_usage_with_storage(
                     Some(item.model.as_str()),
                     item.input_tokens,
                     item.cached_input_tokens,
+                    item.cache_write_input_tokens,
                     item.output_tokens,
                 );
                 let aggregate_estimated_remaining_tokens =
@@ -451,6 +454,7 @@ fn read_quota_model_usage_with_storage(
                     provider: cost.provider,
                     input_tokens: item.input_tokens,
                     cached_input_tokens: item.cached_input_tokens,
+                    cache_write_input_tokens: item.cache_write_input_tokens,
                     output_tokens: item.output_tokens,
                     reasoning_output_tokens: item.reasoning_output_tokens,
                     total_tokens: item.total_tokens,
@@ -1612,15 +1616,17 @@ pub(crate) fn upsert_model_price_rule(
         unit: "per_1m_tokens".to_string(),
         input_price_per_1m: input.input_price_per_1m,
         cached_input_price_per_1m: input.cached_input_price_per_1m,
+        cache_write_price_per_1m: input.cache_write_price_per_1m,
         output_price_per_1m: input.output_price_per_1m,
         reasoning_output_price_per_1m: None,
         cache_write_5m_price_per_1m: None,
         cache_write_1h_price_per_1m: None,
         cache_hit_price_per_1m: None,
-        long_context_threshold_tokens: None,
-        long_context_input_price_per_1m: None,
-        long_context_cached_input_price_per_1m: None,
-        long_context_output_price_per_1m: None,
+        long_context_threshold_tokens: input.long_context_threshold_tokens,
+        long_context_input_price_per_1m: input.long_context_input_price_per_1m,
+        long_context_cached_input_price_per_1m: input.long_context_cached_input_price_per_1m,
+        long_context_cache_write_price_per_1m: input.long_context_cache_write_price_per_1m,
+        long_context_output_price_per_1m: input.long_context_output_price_per_1m,
         source: "custom".to_string(),
         source_url: None,
         seed_version: None,
@@ -1639,10 +1645,34 @@ pub(crate) fn upsert_model_price_rule(
             return Err("cached_input_price_per_1m 必须为非负有效数字".to_string());
         }
     }
+    if let Some(v) = rule.cache_write_price_per_1m {
+        if !v.is_finite() || v < 0.0 {
+            return Err("cache_write_price_per_1m 必须为非负有效数字".to_string());
+        }
+    }
     if let Some(v) = rule.output_price_per_1m {
         if !v.is_finite() || v < 0.0 {
             return Err("output_price_per_1m 必须为非负有效数字".to_string());
         }
+    }
+    for (field, value) in [
+        ("long_context_input_price_per_1m", rule.long_context_input_price_per_1m),
+        (
+            "long_context_cached_input_price_per_1m",
+            rule.long_context_cached_input_price_per_1m,
+        ),
+        (
+            "long_context_cache_write_price_per_1m",
+            rule.long_context_cache_write_price_per_1m,
+        ),
+        ("long_context_output_price_per_1m", rule.long_context_output_price_per_1m),
+    ] {
+        if value.is_some_and(|v| !v.is_finite() || v < 0.0) {
+            return Err(format!("{field} 必须为非负有效数字"));
+        }
+    }
+    if rule.long_context_threshold_tokens.is_some_and(|v| v < 0) {
+        return Err("long_context_threshold_tokens 必须为非负整数".to_string());
     }
     storage
         .upsert_model_price_rule(&rule)
@@ -1660,7 +1690,13 @@ fn price_rule_entry(rule: ModelPriceRule) -> ModelPriceRuleEntry {
         billing_mode: rule.billing_mode,
         input_price_per_1m: rule.input_price_per_1m,
         cached_input_price_per_1m: rule.cached_input_price_per_1m,
+        cache_write_price_per_1m: rule.cache_write_price_per_1m,
         output_price_per_1m: rule.output_price_per_1m,
+        long_context_threshold_tokens: rule.long_context_threshold_tokens,
+        long_context_input_price_per_1m: rule.long_context_input_price_per_1m,
+        long_context_cached_input_price_per_1m: rule.long_context_cached_input_price_per_1m,
+        long_context_cache_write_price_per_1m: rule.long_context_cache_write_price_per_1m,
+        long_context_output_price_per_1m: rule.long_context_output_price_per_1m,
         enabled: rule.enabled,
         priority: rule.priority,
         source: rule.source,

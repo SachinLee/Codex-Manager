@@ -54,6 +54,9 @@ function readTokenUsage(value: unknown): DashboardTokenUsage {
     cachedInputTokens: asNumber(
       source.cachedInputTokens ?? source.cached_input_tokens,
     ),
+    cacheWriteInputTokens: asNumber(
+      source.cacheWriteInputTokens ?? source.cache_write_input_tokens,
+    ),
     outputTokens: asNumber(source.outputTokens ?? source.output_tokens),
     reasoningOutputTokens: asNumber(
       source.reasoningOutputTokens ?? source.reasoning_output_tokens,
@@ -181,6 +184,9 @@ function readUsageToday(value: unknown): MemberDashboardUsageToday {
     inputTokens: asNumber(source.inputTokens ?? source.input_tokens),
     cachedInputTokens: asNumber(
       source.cachedInputTokens ?? source.cached_input_tokens,
+    ),
+    cacheWriteInputTokens: asNumber(
+      source.cacheWriteInputTokens ?? source.cache_write_input_tokens,
     ),
     outputTokens: asNumber(source.outputTokens ?? source.output_tokens),
     reasoningOutputTokens: asNumber(

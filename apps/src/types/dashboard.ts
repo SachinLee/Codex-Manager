@@ -4,6 +4,7 @@ import type { RequestLog } from "@/types/request-log";
 export interface DashboardTokenUsage {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
@@ -79,6 +80,7 @@ export interface MemberDashboardApiKeySummary {
 export interface MemberDashboardUsageToday {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;

@@ -190,7 +190,7 @@ fn parse_usage_from_json_reads_cached_and_reasoning_details() {
     let payload = json!({
         "usage": {
             "input_tokens": 321,
-            "input_tokens_details": { "cached_tokens": 280 },
+            "input_tokens_details": { "cached_tokens": 280, "cache_write_tokens": 12 },
             "output_tokens": 55,
             "total_tokens": 376,
             "output_tokens_details": { "reasoning_tokens": 21 }
@@ -199,6 +199,7 @@ fn parse_usage_from_json_reads_cached_and_reasoning_details() {
     let usage = parse_usage_from_json(&payload);
     assert_eq!(usage.input_tokens, Some(321));
     assert_eq!(usage.cached_input_tokens, Some(280));
+    assert_eq!(usage.cache_write_input_tokens, Some(12));
     assert_eq!(usage.output_tokens, Some(55));
     assert_eq!(usage.total_tokens, Some(376));
     assert_eq!(usage.reasoning_output_tokens, Some(21));
@@ -222,7 +223,7 @@ fn parse_usage_from_json_reads_response_usage_compat_fields() {
         "response": {
             "usage": {
                 "prompt_tokens": 100,
-                "prompt_tokens_details": { "cached_tokens": 75 },
+                "prompt_tokens_details": { "cached_tokens": 75, "cache_write_tokens": 11 },
                 "completion_tokens": 20,
                 "total_tokens": 120,
                 "completion_tokens_details": { "reasoning_tokens": 9 }
@@ -232,6 +233,7 @@ fn parse_usage_from_json_reads_response_usage_compat_fields() {
     let usage = parse_usage_from_json(&payload);
     assert_eq!(usage.input_tokens, Some(100));
     assert_eq!(usage.cached_input_tokens, Some(75));
+    assert_eq!(usage.cache_write_input_tokens, Some(11));
     assert_eq!(usage.output_tokens, Some(20));
     assert_eq!(usage.total_tokens, Some(120));
     assert_eq!(usage.reasoning_output_tokens, Some(9));
@@ -289,7 +291,7 @@ fn parse_usage_from_json_merges_response_usage_over_top_level_usage() {
         "response": {
             "usage": {
                 "prompt_tokens": 13,
-                "prompt_tokens_details": { "cached_tokens": 5 },
+                "prompt_tokens_details": { "cached_tokens": 5, "cache_write_tokens": 4 },
                 "completion_tokens": 9,
                 "total_tokens": 22
             }
@@ -298,6 +300,7 @@ fn parse_usage_from_json_merges_response_usage_over_top_level_usage() {
     let usage = parse_usage_from_json(&payload);
     assert_eq!(usage.input_tokens, Some(13));
     assert_eq!(usage.cached_input_tokens, Some(5));
+    assert_eq!(usage.cache_write_input_tokens, Some(4));
     assert_eq!(usage.output_tokens, Some(9));
     assert_eq!(usage.total_tokens, Some(22));
     assert_eq!(usage.reasoning_output_tokens, None);
