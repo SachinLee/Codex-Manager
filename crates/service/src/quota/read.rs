@@ -1623,6 +1623,7 @@ pub(crate) fn upsert_model_price_rule(
         cache_write_1h_price_per_1m: None,
         cache_hit_price_per_1m: None,
         long_context_threshold_tokens: input.long_context_threshold_tokens,
+        long_context_threshold_inclusive: input.long_context_threshold_inclusive.unwrap_or(false),
         long_context_input_price_per_1m: input.long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m: input.long_context_cached_input_price_per_1m,
         long_context_cache_write_price_per_1m: input.long_context_cache_write_price_per_1m,
@@ -1656,7 +1657,10 @@ pub(crate) fn upsert_model_price_rule(
         }
     }
     for (field, value) in [
-        ("long_context_input_price_per_1m", rule.long_context_input_price_per_1m),
+        (
+            "long_context_input_price_per_1m",
+            rule.long_context_input_price_per_1m,
+        ),
         (
             "long_context_cached_input_price_per_1m",
             rule.long_context_cached_input_price_per_1m,
@@ -1665,7 +1669,10 @@ pub(crate) fn upsert_model_price_rule(
             "long_context_cache_write_price_per_1m",
             rule.long_context_cache_write_price_per_1m,
         ),
-        ("long_context_output_price_per_1m", rule.long_context_output_price_per_1m),
+        (
+            "long_context_output_price_per_1m",
+            rule.long_context_output_price_per_1m,
+        ),
     ] {
         if value.is_some_and(|v| !v.is_finite() || v < 0.0) {
             return Err(format!("{field} 必须为非负有效数字"));
@@ -1693,6 +1700,7 @@ fn price_rule_entry(rule: ModelPriceRule) -> ModelPriceRuleEntry {
         cache_write_price_per_1m: rule.cache_write_price_per_1m,
         output_price_per_1m: rule.output_price_per_1m,
         long_context_threshold_tokens: rule.long_context_threshold_tokens,
+        long_context_threshold_inclusive: rule.long_context_threshold_inclusive,
         long_context_input_price_per_1m: rule.long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m: rule.long_context_cached_input_price_per_1m,
         long_context_cache_write_price_per_1m: rule.long_context_cache_write_price_per_1m,

@@ -1,0 +1,6 @@
+{"file":".trellis/spec/codexmanager-core/backend/database-guidelines.md","reason":"Verify migration compatibility and normalized token/cost persistence."}
+{"file":".trellis/spec/codexmanager-core/backend/quality-guidelines.md","reason":"Core storage review checklist."}
+{"file":".trellis/spec/codexmanager-service/backend/logging-guidelines.md","reason":"Verify logging, observability, and sensitive-data handling."}
+{"file":".trellis/spec/codexmanager-service/backend/quality-guidelines.md","reason":"Service quality and test review checklist."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify complete round-trip across all affected layers."}
+{"file":".trellis/tasks/07-15-grok-4-5-billing/research/xai-grok-4-5-pricing-2026-07-15.md","reason":"Cross-check implementation prices and provider cost semantics against official evidence."}

@@ -310,6 +310,8 @@ fn request_log_filter_summary_serialization_uses_camel_case() {
         long_context_cost_usd: 1.23,
         long_context_uplift_usd: 0.34,
         legacy_candidate_count: 5,
+        model_stats: vec![],
+        model_stats_truncated: false,
     };
 
     let value = serde_json::to_value(result).expect("serialize request log filter summary");
@@ -329,6 +331,8 @@ fn request_log_filter_summary_serialization_uses_camel_case() {
         "longContextCostUsd",
         "longContextUpliftUsd",
         "legacyCandidateCount",
+        "modelStats",
+        "modelStatsTruncated",
     ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }

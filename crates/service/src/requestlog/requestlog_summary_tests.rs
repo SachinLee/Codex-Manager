@@ -3,7 +3,9 @@ use super::{
     read_request_log_filter_summary_for_key_ids_with_storage,
 };
 use codexmanager_core::rpc::types::RequestLogListParams;
-use codexmanager_core::storage::{RequestLogQuerySummary, Storage};
+use codexmanager_core::storage::{
+    RequestLogModelUsageQueryResult, RequestLogQuerySummary, Storage,
+};
 
 #[test]
 fn member_filter_summary_short_circuits_empty_key_ids() {
@@ -29,6 +31,8 @@ fn member_filter_summary_short_circuits_empty_key_ids() {
     assert_eq!(summary.error_count, 0);
     assert_eq!(summary.total_tokens, 0);
     assert_eq!(summary.total_cost_usd, 0.0);
+    assert!(summary.model_stats.is_empty());
+    assert!(!summary.model_stats_truncated);
 }
 
 #[test]
@@ -48,6 +52,7 @@ fn filter_summary_mapping_clamps_negative_aggregate_values() {
             long_context_uplift_usd: -1.0,
             legacy_candidate_count: -8,
         },
+        RequestLogModelUsageQueryResult::default(),
     );
 
     assert_eq!(summary.total_count, 0);

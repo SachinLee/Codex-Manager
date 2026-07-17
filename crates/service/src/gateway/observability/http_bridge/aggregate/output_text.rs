@@ -19,6 +19,8 @@ pub(crate) struct UpstreamResponseUsage {
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
+    pub provider_cost_usd_ticks: Option<i64>,
+    pub provider_cost_nano_usd: Option<i64>,
     pub first_response_ms: Option<i64>,
     pub output_text: Option<String>,
 }
@@ -152,6 +154,12 @@ pub(in super::super) fn merge_usage(
     if source.reasoning_output_tokens.is_some() {
         target.reasoning_output_tokens = source.reasoning_output_tokens;
     }
+    if source.provider_cost_usd_ticks.is_some() {
+        target.provider_cost_usd_ticks = source.provider_cost_usd_ticks;
+    }
+    if source.provider_cost_nano_usd.is_some() {
+        target.provider_cost_nano_usd = source.provider_cost_nano_usd;
+    }
     if target.first_response_ms.is_none() {
         target.first_response_ms = source.first_response_ms;
     }
@@ -179,6 +187,8 @@ pub(in super::super) fn usage_has_signal(usage: &UpstreamResponseUsage) -> bool 
         || usage.output_tokens.is_some()
         || usage.total_tokens.is_some()
         || usage.reasoning_output_tokens.is_some()
+        || usage.provider_cost_usd_ticks.is_some()
+        || usage.provider_cost_nano_usd.is_some()
         || usage.first_response_ms.is_some()
         || usage
             .output_text
@@ -198,6 +208,12 @@ pub(in super::super) fn usage_has_signal(usage: &UpstreamResponseUsage) -> bool 
 /// # 返回
 /// 返回函数执行结果
 fn parse_usage_from_object(usage: Option<&Map<String, Value>>) -> UpstreamResponseUsage {
+    let non_negative_i64 = |field: &str| {
+        usage
+            .and_then(|map| map.get(field))
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0)
+    };
     let input_tokens = usage
         .and_then(|map| map.get("input_tokens").and_then(Value::as_i64))
         .or_else(|| usage.and_then(|map| map.get("prompt_tokens").and_then(Value::as_i64)));
@@ -252,6 +268,8 @@ fn parse_usage_from_object(usage: Option<&Map<String, Value>>) -> UpstreamRespon
                 .and_then(|details| details.get("reasoning_tokens"))
                 .and_then(Value::as_i64)
         });
+    let provider_cost_usd_ticks = non_negative_i64("cost_in_usd_ticks");
+    let provider_cost_nano_usd = non_negative_i64("cost_in_nano_usd");
     UpstreamResponseUsage {
         input_tokens,
         cached_input_tokens,
@@ -259,6 +277,8 @@ fn parse_usage_from_object(usage: Option<&Map<String, Value>>) -> UpstreamRespon
         output_tokens,
         total_tokens,
         reasoning_output_tokens,
+        provider_cost_usd_ticks,
+        provider_cost_nano_usd,
         first_response_ms: None,
         output_text: None,
     }

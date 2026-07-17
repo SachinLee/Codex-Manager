@@ -7,6 +7,7 @@ import { formatCompactNumber } from "@/lib/utils/usage";
 import type { AggregateApi, ApiKey, RequestLog } from "@/types";
 
 export type StatusFilter = "all" | "2xx" | "4xx" | "5xx";
+export type SearchField = "all" | "model" | "session_title";
 export type PricingBandFilter = "all" | "long" | "short" | "single_tier" | "legacy_candidate" | "unknown";
 export type LogsTab = "requests";
 export type TimeRangePreset = "all" | "30m" | "2h" | "24h" | "today" | "custom";
@@ -14,6 +15,71 @@ export type TranslateFn = (
   message: string,
   values?: Record<string, string | number>,
 ) => string;
+
+
+const MAX_SESSION_TITLE_MATCHES = 200;
+
+export function buildRequestLogSearchQuery(
+  field: SearchField,
+  raw: string,
+  sessions: Array<{ sessionId?: string | null; title?: string | null }>,
+): string {
+  const value = String(raw || "").trim();
+  if (!value) {
+    return "";
+  }
+
+  if (field === "all") {
+    return value;
+  }
+
+  if (field === "model") {
+    if (/^(model|client_model|upstream_model|source_model)\s*:/i.test(value)) {
+      return value;
+    }
+    return `model:${value}`;
+  }
+
+  // session_title: resolve local Codex session titles -> session_id list
+  if (/^(session|session_id|session_in|sessions)\s*:/i.test(value)) {
+    return value;
+  }
+
+  const needle = value.toLowerCase();
+  const ids = sessions
+    .map((session) => ({
+      id: String(session.sessionId || "").trim(),
+      title: String(session.title || "").trim(),
+    }))
+    .filter(
+      (session) =>
+        session.id &&
+        (session.title.toLowerCase().includes(needle) ||
+          session.id.toLowerCase().includes(needle)),
+    )
+    .map((session) => session.id);
+
+  if (ids.length === 0) {
+    return "session_in:__no_match__";
+  }
+
+  const uniqueIds = Array.from(new Set(ids)).slice(0, MAX_SESSION_TITLE_MATCHES);
+  return `session_in:${uniqueIds.join(",")}`;
+}
+
+export function searchFieldPlaceholder(
+  field: SearchField,
+  t: TranslateFn,
+): string {
+  if (field === "model") {
+    return t("搜索模型名称，例如 gpt-5.6...");
+  }
+  if (field === "session_title") {
+    return t("搜索会话标题或会话 ID...");
+  }
+  return t("搜索路径、账号、密钥、模型或会话...");
+}
+
 
 function padDateTimeSegment(value: number): string {
   return String(value).padStart(2, "0");

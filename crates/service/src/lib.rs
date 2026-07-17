@@ -3,6 +3,7 @@ use codexmanager_core::rpc::types::{JsonRpcMessage, JsonRpcRequest};
 mod account;
 mod account_identity;
 mod aggregate_api;
+mod aggregate_api_capabilities;
 mod apikey;
 pub(crate) mod app_settings;
 mod auth;
@@ -40,10 +41,15 @@ pub(crate) use account::warmup as account_warmup;
 pub(crate) use aggregate_api::{
     create_aggregate_api, delete_aggregate_api, delete_aggregate_api_supplier_model,
     diagnose_aggregate_api_capabilities, discover_aggregate_api_models,
-    import_aggregate_api_supplier_models,
+    import_aggregate_api_supplier_models, list_aggregate_api_runtime_statuses,
     list_aggregate_api_supplier_models, list_aggregate_apis, read_aggregate_api_secret,
-    refresh_aggregate_api_balance, save_aggregate_api_supplier_model,
-    test_aggregate_api_connection, update_aggregate_api,
+    refresh_aggregate_api_balance, reset_aggregate_api_runtime_status,
+    save_aggregate_api_supplier_model, test_aggregate_api_connection, update_aggregate_api,
+};
+pub(crate) use aggregate_api_capabilities::{
+    clear_aggregate_api_capability_observation, get_aggregate_api_capabilities,
+    list_recent_aggregate_api_capability_attempts, reset_aggregate_api_capability_override,
+    set_aggregate_api_capability_override, set_aggregate_api_capability_routing_mode,
 };
 pub(crate) use apikey::create as apikey_create;
 pub(crate) use apikey::delete as apikey_delete;

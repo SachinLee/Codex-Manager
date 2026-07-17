@@ -9,6 +9,18 @@
 # Keep AGENTS.md as the primary project instruction file.
 project_doc_fallback_filenames = ["AGENTS.md"]
 
+[agents.trellis-research]
+description = "Trellis researcher for specs, code patterns, and affected files."
+config_file = "agents/trellis-research.toml"
+
+[agents.trellis-implement]
+description = "Trellis implementer for reviewed task artifacts and routine code execution."
+config_file = "agents/trellis-implement.toml"
+
+[agents.trellis-check]
+description = "Trellis reviewer for spec compliance, tests, and final verification."
+config_file = "agents/trellis-check.toml"
+
 # Codex hooks (`hooks.json` in this directory) only fire when the user
 # has enabled them in their USER-level config: `[features].hooks = true`
 # in ~/.codex/config.toml (Codex 0.129+; legacy name: `codex_hooks = true`,

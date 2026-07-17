@@ -28,6 +28,7 @@ fn test_rule(
         cache_write_1h_price_per_1m: None,
         cache_hit_price_per_1m: None,
         long_context_threshold_tokens: None,
+        long_context_threshold_inclusive: false,
         long_context_input_price_per_1m: None,
         long_context_cached_input_price_per_1m: None,
         long_context_cache_write_price_per_1m: None,
@@ -269,7 +270,10 @@ fn long_context_estimate_exposes_breakdown_and_short_price_uplift() {
     assert_close(estimate.cache_write_cost_usd.expect("write"), 0.125);
     assert_close(estimate.output_cost_usd.expect("output"), 0.045);
     assert_close(estimate.cost_usd.expect("total"), 1.27);
-    assert_close(estimate.short_baseline_cost_usd.expect("short baseline"), 0.6425);
+    assert_close(
+        estimate.short_baseline_cost_usd.expect("short baseline"),
+        0.6425,
+    );
     assert_close(estimate.long_context_uplift_usd.expect("uplift"), 0.6275);
 
     let priority = estimate_cost_with_rules_for_billing_mode(
@@ -470,4 +474,109 @@ fn official_priority_prices_are_mode_specific() {
     assert_close(codex.input_price_per_1m, 3.5);
     assert_close(codex.cached_input_price_per_1m, 0.35);
     assert_close(codex.output_price_per_1m, 28.0);
+}
+
+#[test]
+fn grok_4_5_uses_xai_prices_at_the_inclusive_200k_boundary() {
+    for alias in ["grok-4.5", "grok-4.5-latest", "grok-build-latest"] {
+        let short = resolve_model_price(alias, 199_999).expect("short xai price");
+        assert_eq!(short.provider, "xai");
+        assert_eq!(short.context_band, "short");
+        assert!(short.long_context_threshold_inclusive);
+        assert_close(short.input_price_per_1m, 2.0);
+        assert_close(short.cached_input_price_per_1m, 0.5);
+        assert_close(short.output_price_per_1m, 6.0);
+
+        let long = resolve_model_price(alias, 200_000).expect("long xai price");
+        assert_eq!(long.context_band, "long");
+        assert_close(long.input_price_per_1m, 4.0);
+        assert_close(long.cached_input_price_per_1m, 1.0);
+        assert_close(long.output_price_per_1m, 12.0);
+    }
+}
+
+#[test]
+fn grok_4_5_priority_prices_are_double_the_standard_price() {
+    let priority = resolve_model_price_for_billing_mode("grok-4.5", Some("priority"), 200_000)
+        .expect("priority xai price");
+    assert_eq!(priority.provider, "xai");
+    assert_eq!(priority.context_band, "long");
+    assert_close(priority.input_price_per_1m, 8.0);
+    assert_close(priority.cached_input_price_per_1m, 2.0);
+    assert_close(priority.output_price_per_1m, 24.0);
+}
+
+#[test]
+fn non_xai_long_context_thresholds_remain_strictly_exclusive() {
+    let at_threshold = resolve_model_price("gpt-5.6", 272_000).expect("gpt price");
+    assert_eq!(at_threshold.context_band, "short");
+    assert!(!at_threshold.long_context_threshold_inclusive);
+
+    let over_threshold = resolve_model_price("gpt-5.6", 272_001).expect("gpt price");
+    assert_eq!(over_threshold.context_band, "long");
+}
+
+#[test]
+fn official_grok_seed_outranks_a_zero_cost_aggregate_placeholder() {
+    let mut zero_placeholder = test_rule(
+        "aggregate-placeholder",
+        "grok-4.5",
+        "exact",
+        "standard",
+        -10,
+        0.0,
+        Some(0.0),
+        0.0,
+    );
+    zero_placeholder.source = "aggregate_api_sync".to_string();
+    let official_seed = PRICE_SEEDS
+        .iter()
+        .enumerate()
+        .find(|(_, seed)| seed.model_pattern == "grok-4.5")
+        .map(|(index, seed)| official_price_seed(seed, "standard", index, 1))
+        .expect("official grok seed");
+
+    let price = resolve_model_price_from_rules(&[zero_placeholder, official_seed], "grok-4.5", 0)
+        .expect("resolved grok price");
+    assert_eq!(price.provider, "xai");
+    assert_eq!(price.price_source, "official_seed");
+    assert_close(price.input_price_per_1m, 2.0);
+}
+
+#[test]
+fn grok_local_fallback_bills_reasoning_once() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+
+    let without_total = estimate_cost_for_log_with_usage_and_tier(
+        &storage,
+        Some("grok-4.5"),
+        None,
+        Some(1_000),
+        Some(0),
+        Some(0),
+        Some(100),
+        None,
+        Some(50),
+    );
+    assert_close(
+        without_total.output_cost_usd.expect("output with reasoning"),
+        0.0009,
+    );
+
+    let with_total = estimate_cost_for_log_with_usage_and_tier(
+        &storage,
+        Some("grok-4.5"),
+        None,
+        Some(1_000),
+        Some(0),
+        Some(0),
+        Some(100),
+        Some(1_200),
+        Some(50),
+    );
+    assert_close(
+        with_total.output_cost_usd.expect("output from total"),
+        0.0012,
+    );
 }

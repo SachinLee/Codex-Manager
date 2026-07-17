@@ -9,6 +9,7 @@ fn model_price_rule_select_columns() -> &'static str {
         cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
         cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
         cache_hit_price_per_1m, long_context_threshold_tokens,
+        long_context_threshold_inclusive,
         long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m,
         long_context_cache_write_price_per_1m,
@@ -81,6 +82,7 @@ fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRul
                 cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
                 cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
                 cache_hit_price_per_1m, long_context_threshold_tokens,
+                long_context_threshold_inclusive,
                 long_context_input_price_per_1m,
                 long_context_cached_input_price_per_1m,
                 long_context_cache_write_price_per_1m,
@@ -91,11 +93,11 @@ fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRul
                 ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12,
                 ?13, ?14,
-                ?15, ?16,
-                ?17,
+                ?15, ?16, ?17,
                 ?18,
-                ?19, ?20, ?21, ?22,
-                ?23, ?24, ?25, ?26, ?27
+                ?19,
+                ?20, ?21, ?22, ?23,
+                ?24, ?25, ?26, ?27, ?28
              )
              ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
@@ -113,6 +115,7 @@ fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRul
                 cache_write_1h_price_per_1m = excluded.cache_write_1h_price_per_1m,
                 cache_hit_price_per_1m = excluded.cache_hit_price_per_1m,
                 long_context_threshold_tokens = excluded.long_context_threshold_tokens,
+                long_context_threshold_inclusive = excluded.long_context_threshold_inclusive,
                 long_context_input_price_per_1m = excluded.long_context_input_price_per_1m,
                 long_context_cached_input_price_per_1m = excluded.long_context_cached_input_price_per_1m,
                 long_context_cache_write_price_per_1m = excluded.long_context_cache_write_price_per_1m,
@@ -140,6 +143,7 @@ fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRul
                 rule.cache_write_1h_price_per_1m,
                 rule.cache_hit_price_per_1m,
                 rule.long_context_threshold_tokens,
+                if rule.long_context_threshold_inclusive { 1_i64 } else { 0_i64 },
                 rule.long_context_input_price_per_1m,
                 rule.long_context_cached_input_price_per_1m,
                 rule.long_context_cache_write_price_per_1m,
@@ -240,6 +244,7 @@ impl Storage {
                 cache_write_1h_price_per_1m REAL,
                 cache_hit_price_per_1m REAL,
                 long_context_threshold_tokens INTEGER,
+                long_context_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
                 long_context_input_price_per_1m REAL,
                 long_context_cached_input_price_per_1m REAL,
                 long_context_cache_write_price_per_1m REAL,
@@ -272,6 +277,11 @@ impl Storage {
         self.ensure_model_price_rules_custom_exact_lookup_index()?;
         self.ensure_model_price_rules_enabled_pattern_lookup_index()?;
         self.ensure_column("model_price_rules", "cache_write_price_per_1m", "REAL")?;
+        self.ensure_column(
+            "model_price_rules",
+            "long_context_threshold_inclusive",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         self.ensure_column(
             "model_price_rules",
             "long_context_cache_write_price_per_1m",
@@ -324,17 +334,18 @@ fn map_model_price_rule_row(row: &Row<'_>) -> Result<ModelPriceRule> {
         cache_write_1h_price_per_1m: row.get(13)?,
         cache_hit_price_per_1m: row.get(14)?,
         long_context_threshold_tokens: row.get(15)?,
-        long_context_input_price_per_1m: row.get(16)?,
-        long_context_cached_input_price_per_1m: row.get(17)?,
-        long_context_cache_write_price_per_1m: row.get(18)?,
-        long_context_output_price_per_1m: row.get(19)?,
-        source: row.get(20)?,
-        source_url: row.get(21)?,
-        seed_version: row.get(22)?,
-        enabled: row.get(23)?,
-        priority: row.get(24)?,
-        created_at: row.get(25)?,
-        updated_at: row.get(26)?,
+        long_context_threshold_inclusive: row.get::<_, i64>(16)? != 0,
+        long_context_input_price_per_1m: row.get(17)?,
+        long_context_cached_input_price_per_1m: row.get(18)?,
+        long_context_cache_write_price_per_1m: row.get(19)?,
+        long_context_output_price_per_1m: row.get(20)?,
+        source: row.get(21)?,
+        source_url: row.get(22)?,
+        seed_version: row.get(23)?,
+        enabled: row.get(24)?,
+        priority: row.get(25)?,
+        created_at: row.get(26)?,
+        updated_at: row.get(27)?,
     })
 }
 

@@ -261,6 +261,10 @@ impl Storage {
             touched = touched.saturating_add(self.rollup_request_token_stats_before(cutoff)?);
         }
         touched = touched.saturating_add(self.prune_request_logs_by_retention(now)?);
+        touched = touched.saturating_add(self.prune_expired_gateway_capability_observations(now)?);
+        touched = touched.saturating_add(
+            self.prune_gateway_upstream_attempt_events_by_retention(now)?,
+        );
         if touched > 0 {
             let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
         }

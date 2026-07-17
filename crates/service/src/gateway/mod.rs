@@ -85,7 +85,10 @@ pub(crate) fn is_selected_model_capacity_error(message: &str) -> bool {
 #[path = "routing/aggregate_api_cooldown.rs"]
 mod aggregate_api_cooldown;
 mod anchor_fingerprint;
+mod capability;
 mod concurrency;
+#[path = "observability/capability_attempt_events.rs"]
+mod capability_attempt_events;
 #[path = "routing/conversation_binding.rs"]
 mod conversation_binding;
 #[path = "routing/cooldown.rs"]
@@ -111,6 +114,8 @@ mod model_picker;
 mod official_responses_http;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
+#[path = "routing/policy_action.rs"]
+mod policy_action;
 mod protocol_adapter;
 #[path = "observability/reasoning_guard_events.rs"]
 mod reasoning_guard_events;
@@ -124,8 +129,6 @@ mod request_helpers;
 mod request_log;
 #[path = "request/request_rewrite.rs"]
 mod request_rewrite;
-#[path = "routing/policy_action.rs"]
-mod policy_action;
 #[path = "routing/route_hint.rs"]
 mod route_hint;
 #[path = "routing/route_quality.rs"]
@@ -145,6 +148,11 @@ mod trace_log;
 mod upstream;
 
 pub(crate) use concurrency::current_gateway_concurrency_recommendation;
+pub(crate) use capability_attempt_events::record_gateway_capability_attempt_event;
+pub(crate) use capability::{
+    current_capability_routing_mode, resolve_capability, set_capability_routing_mode,
+    IMAGE_GENERATION_CAPABILITY,
+};
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
@@ -157,6 +165,9 @@ pub(crate) use metrics::{
     record_usage_refresh_outcome, GatewayCandidateSkipReason,
 };
 pub(super) use official_responses_http::normalize_official_responses_http_body;
+pub(crate) use policy_action::{
+    active_policy_actions_for_target, project_request_log_route_evidence, PolicyTargetKind,
+};
 use protocol_adapter::build_gemini_error_body;
 use protocol_adapter::{
     adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
@@ -170,9 +181,6 @@ pub(super) use request_helpers::{
 };
 #[cfg(test)]
 use request_helpers::{should_drop_incoming_header, should_drop_incoming_header_for_failover};
-pub(crate) use policy_action::{
-    active_policy_actions_for_target, project_request_log_route_evidence, PolicyTargetKind,
-};
 pub(crate) use request_log::{RequestLogTraceContext, RequestLogUsage};
 #[cfg(test)]
 use request_rewrite::apply_request_overrides_with_service_tier_and_prompt_cache_key;
@@ -1227,6 +1235,18 @@ pub(crate) fn gateway_record_aggregate_api_failure(api_id: &str) -> bool {
 /// 无
 pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str) {
     aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id);
+}
+
+pub(crate) fn gateway_list_aggregate_api_runtime_statuses(
+) -> Vec<codexmanager_core::rpc::types::AggregateApiRuntimeStatus> {
+    aggregate_api_cooldown::list_aggregate_api_cooldown_statuses()
+}
+
+pub(crate) fn gateway_reset_aggregate_api_runtime_status(
+    api_id: &str,
+) -> codexmanager_core::rpc::types::AggregateApiRuntimeStatus {
+    aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id);
+    aggregate_api_cooldown::aggregate_api_cooldown_status(api_id)
 }
 
 /// 函数 `gateway_mark_account_cooldown_for_status`

@@ -33,8 +33,10 @@ import { useAppStore } from "@/lib/store/useAppStore";
 import { RequestLogsTabContent } from "./page-sections";
 import {
   buildFixedTimePreset,
+  buildRequestLogSearchQuery,
   LogsPageSkeleton,
   type LogsTab,
+  type SearchField,
   type StatusFilter,
   type TimeRangePreset,
   fromDateTimeLocalValue,
@@ -66,6 +68,7 @@ function LogsPageContent() {
   const areLogQueriesEnabled = useDeferredDesktopActivation(serviceStatus.connected);
   const routeQuery = searchParams.get("query") || "";
   const [search, setSearch] = useState(routeQuery);
+  const [searchField, setSearchField] = useState<SearchField>("all");
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [timePreset, setTimePreset] = useState<TimeRangePreset>("all");
   const [startTimeInput, setStartTimeInput] = useState("");
@@ -145,11 +148,16 @@ function LogsPageContent() {
     retry: 1,
   });
 
+  const effectiveSearchQuery = useMemo(
+    () => buildRequestLogSearchQuery(searchField, search, codexSessions),
+    [searchField, search, codexSessions],
+  );
+
   const { data: logsResult, isLoading, isError: isLogsError } = useQuery({
-    queryKey: ["logs", "list", search, filter, startTs, endTs, page, pageSizeNumber],
+    queryKey: ["logs", "list", effectiveSearchQuery, filter, startTs, endTs, page, pageSizeNumber],
     queryFn: () =>
       serviceClient.listRequestLogs({
-        query: search,
+        query: effectiveSearchQuery,
         statusFilter: filter,
         startTs,
         endTs,
@@ -172,10 +180,10 @@ function LogsPageContent() {
   });
 
   const { data: summaryResult, isError: isSummaryError } = useQuery({
-    queryKey: ["logs", "summary", search, filter, startTs, endTs],
+    queryKey: ["logs", "summary", effectiveSearchQuery, filter, startTs, endTs],
     queryFn: () =>
       serviceClient.getRequestLogSummary({
-        query: search,
+        query: effectiveSearchQuery,
         statusFilter: filter,
         startTs,
         endTs,
@@ -235,6 +243,7 @@ function LogsPageContent() {
     );
   }, [codexSessions]);
 
+
   const logs = logsResult?.items || [];
   const isLogsLoading =
     serviceStatus.connected &&
@@ -260,6 +269,8 @@ function LogsPageContent() {
     longContextCostUsd: 0,
     longContextUpliftUsd: 0,
     legacyCandidateCount: 0,
+    modelStats: [],
+    modelStatsTruncated: false,
   };
   const totalPages = Math.max(
     1,
@@ -384,6 +395,7 @@ function LogsPageContent() {
             isAdminMode={isAdminMode}
             serviceConnected={serviceStatus.connected}
             search={search}
+            searchField={searchField}
             filter={filter}
             timePreset={timePreset}
             startTimeInput={startTimeInput}
@@ -404,6 +416,10 @@ function LogsPageContent() {
             clearMutationPending={clearMutation.isPending}
             onSearchChange={(value) => {
               setSearch(value);
+              setPage(1);
+            }}
+            onSearchFieldChange={(value) => {
+              setSearchField(value);
               setPage(1);
             }}
             onFilterChange={(value) => {

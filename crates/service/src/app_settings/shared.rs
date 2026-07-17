@@ -11,6 +11,8 @@ pub const APP_SETTING_SERVICE_ADDR_KEY: &str = "app.service_addr";
 pub const APP_SETTING_AUTHOR_SPONSORS_KEY: &str = "author.sponsors";
 pub const APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY: &str = "author.server_recommendations";
 pub const APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY: &str = "gateway.route_strategy";
+pub const APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY: &str =
+    "gateway.capability_routing_mode";
 pub const APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY: &str = "gateway.free_account_max_model";
 pub const APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY: &str = "gateway.model_forward_rules";
 pub const APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY: &str =

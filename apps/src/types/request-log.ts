@@ -74,11 +74,16 @@ export interface RequestLog {
   pricingContextBand: string;
   pricingBillingMode: string | null;
   longContextThresholdTokens: number | null;
+  longContextThresholdInclusive: boolean | null;
   pricingMatchedRuleId: string | null;
   pricingMatchedPattern: string | null;
   pricingSource: string | null;
   pricingMatchQuality: string | null;
   pricingStatus: string | null;
+  pricingCostSource: string | null;
+  providerCostUsd: number | null;
+  localEstimatedCostUsd: number | null;
+  pricingVarianceUsd: number | null;
   plainInputCostUsd: number | null;
   cachedInputCostUsd: number | null;
   cacheWriteCostUsd: number | null;
@@ -108,6 +113,19 @@ export interface RequestLogListResult {
   pageSize: number;
 }
 
+export interface RequestLogModelUsageStat {
+  model: string;
+  requestCount: number;
+  successCount: number;
+  errorCount: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
 export interface RequestLogFilterSummary {
   totalCount: number;
   filteredCount: number;
@@ -121,6 +139,8 @@ export interface RequestLogFilterSummary {
   longContextCostUsd: number;
   longContextUpliftUsd: number;
   legacyCandidateCount: number;
+  modelStats: RequestLogModelUsageStat[];
+  modelStatsTruncated: boolean;
 }
 
 export interface RequestLogListWithSummaryResult extends RequestLogListResult {

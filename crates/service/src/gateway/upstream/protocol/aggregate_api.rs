@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use codexmanager_core::storage::{now_ts, AggregateApi, GatewayReasoningGuardEvent, Storage};
+use codexmanager_core::storage::{
+    now_ts, AggregateApi, GatewayReasoningGuardEvent, GatewayUpstreamAttemptEvent, Storage,
+};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -14,6 +16,12 @@ use crate::aggregate_api::{
 use crate::gateway::protocol_adapter::adapt_openai_responses_to_anthropic_messages;
 use crate::gateway::request_log::RequestLogUsage;
 use crate::gateway::upstream::support::payload_rewrite::build_continuation_recovery_body;
+use crate::gateway::capability::{
+    apply_transform, classify_capability_error, current_capability_routing_mode,
+    parse_required_capabilities, record_runtime_capability_rejection,
+    resolve_persisted_candidate_plan, structural_contract_signature, CandidatePlan,
+    CandidatePlanPhase, CapabilityRoutingMode, TransformCode, REQUIRED_CAPABILITIES_HEADER,
+};
 use serde_json::Value;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
@@ -31,6 +39,62 @@ fn clear_aggregate_api_cooldown(api_id: &str) {
 
 fn record_aggregate_api_failure(api_id: &str) {
     crate::gateway::gateway_record_aggregate_api_failure(api_id);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_capability_attempt(
+    mode: CapabilityRoutingMode,
+    trace_id: &str,
+    attempt_index: i64,
+    phase: CandidatePlanPhase,
+    candidate_id: &str,
+    supplier_name: Option<&str>,
+    upstream_model: Option<&str>,
+    protocol: &str,
+    path: &str,
+    contract_signature: &str,
+    transform_codes_json: &str,
+    error_class: Option<&str>,
+    error_code: Option<&str>,
+    http_status: Option<u16>,
+    duration_ms: Option<i64>,
+    outcome: &str,
+) {
+    if mode == CapabilityRoutingMode::Off {
+        return;
+    }
+    crate::gateway::record_gateway_capability_attempt_event(GatewayUpstreamAttemptEvent {
+        trace_id: trace_id.to_string(),
+        attempt_index,
+        phase: phase.as_str().to_string(),
+        source_kind: "aggregate_api".to_string(),
+        source_id: candidate_id.to_string(),
+        supplier_name: supplier_name.map(str::to_string),
+        upstream_model: upstream_model.map(str::to_string),
+        protocol: protocol.to_string(),
+        request_path: path.to_string(),
+        contract_signature: contract_signature.to_string(),
+        capability_decisions_json: format!("{{\"imageGeneration\":\"{}\"}}", phase.as_str()),
+        transform_codes_json: transform_codes_json.to_string(),
+        error_class: error_class.map(str::to_string),
+        error_code: error_code.map(str::to_string),
+        http_status: http_status.map(i64::from),
+        duration_ms,
+        outcome: outcome.to_string(),
+        delivery_started: false,
+        created_at: now_ts(),
+        ..Default::default()
+    });
+}
+
+fn order_capability_planned_candidates(
+    mut candidates: Vec<(AggregateApi, CandidatePlan)>,
+    mode: CapabilityRoutingMode,
+) -> Vec<(AggregateApi, CandidatePlan)> {
+    if mode == CapabilityRoutingMode::Enforce {
+        candidates.sort_by_key(|(_, plan)| plan.phase);
+    }
+    candidates
 }
 
 fn should_record_aggregate_api_failure_after_bridge(
@@ -484,10 +548,25 @@ fn should_skip_forward_header_for_aggregate_request(
     injected: &HashSet<String>,
     is_stream: bool,
 ) -> bool {
+    if normalize_header_key(name) == REQUIRED_CAPABILITIES_HEADER {
+        return true;
+    }
     if should_skip_forward_header_with_overrides(name, injected) {
         return true;
     }
     is_stream && normalize_header_key(name) == "accept"
+}
+
+fn request_requires_image_generation(request: &Request) -> Result<bool, String> {
+    let mut required = false;
+    for header in request.headers() {
+        if normalize_header_key(header.field.as_str().into()) != REQUIRED_CAPABILITIES_HEADER {
+            continue;
+        }
+        required |= parse_required_capabilities(header.value.as_str())?
+            .contains(&crate::gateway::IMAGE_GENERATION_CAPABILITY);
+    }
+    Ok(required)
 }
 
 /// 函数 `respond_error`
@@ -1106,6 +1185,15 @@ pub(in super::super) fn proxy_aggregate_request(
         return Ok(());
     }
 
+    let image_generation_declared_required = match request_requires_image_generation(&request) {
+        Ok(value) => value,
+        Err(message) => {
+            super::super::super::record_gateway_request_outcome(path, 400, Some("aggregate_api"));
+            respond_error(request, 400, message.as_str(), Some(trace_id));
+            return Ok(());
+        }
+    };
+
     let client = super::super::super::fresh_upstream_client();
     let mut request = Some(request);
     let mut attempted_aggregate_api_ids = Vec::new();
@@ -1117,8 +1205,62 @@ pub(in super::super) fn proxy_aggregate_request(
     let mut last_failure_status = 502u16;
     let mut terminal_failure = false;
 
-    let total_candidates = aggregate_api_candidates.len();
-    for (candidate_idx, candidate) in aggregate_api_candidates.into_iter().enumerate() {
+    let capability_mode = current_capability_routing_mode();
+    let capability_contract_signature = structural_contract_signature(body);
+    let capability_protocol = if path.contains("responses") {
+        "responses"
+    } else {
+        "chat_completions"
+    };
+    let planned_candidates = aggregate_api_candidates
+        .into_iter()
+        .map(|candidate| {
+            let upstream_model = candidate
+                .model_override
+                .as_deref()
+                .or(model_for_log)
+                .unwrap_or("*");
+            let plan = if capability_mode == CapabilityRoutingMode::Off {
+                CandidatePlan {
+                    phase: CandidatePlanPhase::Native,
+                    effective_body: Bytes::copy_from_slice(body),
+                    transform_codes: Vec::new(),
+                }
+            } else {
+                resolve_persisted_candidate_plan(
+                    storage,
+                    candidate.id.as_str(),
+                    upstream_model,
+                    capability_protocol,
+                    path,
+                    body,
+                    image_generation_declared_required,
+                    capability_mode,
+                )
+                .unwrap_or_else(|err| {
+                    log::warn!(
+                        "event=aggregate_api_capability_plan_failed trace_id={} aggregate_api_id={} error={}",
+                        trace_id,
+                        candidate.id,
+                        err
+                    );
+                    CandidatePlan {
+                        phase: CandidatePlanPhase::Native,
+                        effective_body: Bytes::copy_from_slice(body),
+                        transform_codes: Vec::new(),
+                    }
+                })
+            };
+            (candidate, plan)
+        })
+        .collect::<Vec<_>>();
+    let planned_candidates =
+        order_capability_planned_candidates(planned_candidates, capability_mode);
+
+    let total_candidates = planned_candidates.len();
+    for (candidate_idx, (candidate, candidate_plan)) in
+        planned_candidates.into_iter().enumerate()
+    {
         attempted_aggregate_api_ids.push(candidate.id.clone());
         let candidate_id = candidate.id.clone();
         let candidate_upstream_model =
@@ -1128,6 +1270,34 @@ pub(in super::super) fn proxy_aggregate_request(
         let candidate_cost_multiplier = candidate.cost_multiplier;
         last_attempt_id = Some(candidate_id.clone());
         last_attempt_upstream_model = candidate_upstream_model.clone();
+        let mut capability_phase = candidate_plan.phase;
+        let mut capability_transform_codes_json = serde_json::to_string(&candidate_plan.transform_codes)
+            .unwrap_or_else(|_| "[]".to_string());
+        if capability_mode == CapabilityRoutingMode::Enforce
+            && capability_phase == CandidatePlanPhase::Incompatible
+        {
+            record_capability_attempt(
+                capability_mode,
+                trace_id,
+                i64::try_from(candidate_idx).unwrap_or(i64::MAX) * 100,
+                capability_phase,
+                candidate_id.as_str(),
+                candidate_supplier_name.as_deref(),
+                candidate_upstream_model.as_deref(),
+                capability_protocol,
+                path,
+                capability_contract_signature.as_str(),
+                capability_transform_codes_json.as_str(),
+                Some("capability"),
+                Some("capability.required_unsupported"),
+                None,
+                None,
+                "skipped",
+            );
+            last_attempt_error = Some("aggregate api capability incompatible".to_string());
+            last_failure_status = 502;
+            continue;
+        }
         let Some(secret) = storage
             .find_aggregate_api_secret_by_id(candidate.id.as_str())
             .map_err(|err| err.to_string())?
@@ -1165,10 +1335,16 @@ pub(in super::super) fn proxy_aggregate_request(
         let mut reasoning_guard_retry_budget_remaining =
             super::super::super::reasoning_guard_retry_attempts();
         let mut reasoning_guard_retry_attempt_index = 0_i64;
-        let max_attempts_per_channel =
-            AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL + reasoning_guard_retry_budget_remaining;
+        let capability_retry_budget = usize::from(capability_mode == CapabilityRoutingMode::Enforce);
+        let max_attempts_per_channel = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL
+            + reasoning_guard_retry_budget_remaining
+            + capability_retry_budget;
         let mut retry_body_override: Option<Bytes> = None;
+        let mut effective_candidate_body = candidate_plan.effective_body;
+        let mut capability_retry_used = false;
+        let mut candidate_health_neutral_failure = false;
         for attempt_idx in 0..=max_attempts_per_channel {
+            candidate_health_neutral_failure = false;
             if super::super::support::deadline::is_expired(request_deadline) {
                 let message = "aggregate api request timeout".to_string();
                 let request = request
@@ -1261,7 +1437,9 @@ pub(in super::super) fn proxy_aggregate_request(
                 _ => {}
             }
 
-            let attempt_body = retry_body_override.as_ref().unwrap_or(body);
+            let attempt_body = retry_body_override
+                .as_ref()
+                .unwrap_or(&effective_candidate_body);
             let rewritten_body =
                 rewrite_body_model_override(attempt_body, candidate.model_override.as_deref());
             let upstream_body = if bridge_responses_to_anthropic {
@@ -1319,6 +1497,24 @@ pub(in super::super) fn proxy_aggregate_request(
                         duration_ms,
                         true,
                     );
+                    record_capability_attempt(
+                        capability_mode,
+                        trace_id,
+                        i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
+                        capability_phase,
+                        candidate_id.as_str(),
+                        candidate_supplier_name.as_deref(),
+                        candidate_upstream_model.as_deref(),
+                        capability_protocol,
+                        path,
+                        capability_contract_signature.as_str(),
+                        capability_transform_codes_json.as_str(),
+                        Some("transport"),
+                        Some("transport.request_failed"),
+                        None,
+                        Some(i64::try_from(duration_ms).unwrap_or(i64::MAX)),
+                        "failed",
+                    );
                     let message = format!("aggregate api upstream error: {err}");
                     last_attempt_url = Some(url.as_str().to_string());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
@@ -1363,6 +1559,87 @@ pub(in super::super) fn proxy_aggregate_request(
                 );
                 last_attempt_url = Some(url.as_str().to_string());
                 last_attempt_supplier_name = candidate_supplier_name.clone();
+                if capability_mode != CapabilityRoutingMode::Off {
+                    if let Some(classified) =
+                        classify_capability_error(status_code, upstream_body.as_ref())
+                    {
+                        record_capability_attempt(
+                            capability_mode,
+                            trace_id,
+                            i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
+                            capability_phase,
+                            candidate_id.as_str(),
+                            candidate_supplier_name.as_deref(),
+                            candidate_upstream_model.as_deref(),
+                            capability_protocol,
+                            path,
+                            capability_contract_signature.as_str(),
+                            capability_transform_codes_json.as_str(),
+                            Some("capability"),
+                            Some(classified.code),
+                            Some(status_code),
+                            Some(i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX)),
+                            "rejected",
+                        );
+                        candidate_health_neutral_failure = true;
+                        if let Err(err) = record_runtime_capability_rejection(
+                            storage,
+                            candidate_id.as_str(),
+                            candidate_upstream_model.as_deref().unwrap_or("*"),
+                            capability_protocol,
+                            classified.capability_key,
+                            classified.code,
+                        ) {
+                            log::warn!(
+                                "event=aggregate_api_capability_observation_failed trace_id={} aggregate_api_id={} error={}",
+                                trace_id,
+                                candidate_id,
+                                err
+                            );
+                        }
+                        if capability_mode == CapabilityRoutingMode::Enforce
+                            && !capability_retry_used
+                        {
+                            if let Some(downgraded) = apply_transform(
+                                body,
+                                TransformCode::DropOptionalImageGeneration,
+                            ) {
+                                effective_candidate_body = downgraded;
+                                retry_body_override = None;
+                                capability_phase = CandidatePlanPhase::Downgrade;
+                                capability_transform_codes_json = serde_json::to_string(&[
+                                    TransformCode::DropOptionalImageGeneration.as_str(),
+                                ])
+                                .unwrap_or_else(|_| "[]".to_string());
+                                capability_retry_used = true;
+                                last_attempt_error = Some(message);
+                                last_failure_status = 502;
+                                continue;
+                            }
+                        }
+                        last_attempt_error = Some(message);
+                        last_failure_status = 502;
+                        break;
+                    }
+                }
+                record_capability_attempt(
+                    capability_mode,
+                    trace_id,
+                    i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
+                    capability_phase,
+                    candidate_id.as_str(),
+                    candidate_supplier_name.as_deref(),
+                    candidate_upstream_model.as_deref(),
+                    capability_protocol,
+                    path,
+                    capability_contract_signature.as_str(),
+                    capability_transform_codes_json.as_str(),
+                    Some("upstream"),
+                    Some("upstream.http_error"),
+                    Some(status_code),
+                    Some(i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX)),
+                    "failed",
+                );
                 if let Some(status) = aggregate_api_terminal_failure_status(status_code, &message) {
                     last_attempt_error =
                         Some(aggregate_api_terminal_failure_message(status, &message));
@@ -1377,6 +1654,25 @@ pub(in super::super) fn proxy_aggregate_request(
                 }
                 break;
             }
+
+            record_capability_attempt(
+                capability_mode,
+                trace_id,
+                i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
+                capability_phase,
+                candidate_id.as_str(),
+                candidate_supplier_name.as_deref(),
+                candidate_upstream_model.as_deref(),
+                capability_protocol,
+                path,
+                capability_contract_signature.as_str(),
+                capability_transform_codes_json.as_str(),
+                None,
+                None,
+                Some(upstream.status().as_u16()),
+                Some(i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX)),
+                "accepted",
+            );
 
             let inflight_guard = super::super::super::acquire_account_inflight(key_id);
             let passthrough_sse_protocol =
@@ -1468,6 +1764,8 @@ pub(in super::super) fn proxy_aggregate_request(
                         output_tokens: bridge.usage.output_tokens,
                         total_tokens: bridge.usage.total_tokens,
                         reasoning_output_tokens: bridge.usage.reasoning_output_tokens,
+                        provider_cost_usd_ticks: bridge.usage.provider_cost_usd_ticks,
+                        provider_cost_nano_usd: bridge.usage.provider_cost_nano_usd,
                         first_response_ms: bridge.usage.first_response_ms,
                     },
                 );
@@ -1607,6 +1905,8 @@ pub(in super::super) fn proxy_aggregate_request(
                     output_tokens: usage.output_tokens,
                     total_tokens: usage.total_tokens,
                     reasoning_output_tokens: usage.reasoning_output_tokens,
+                    provider_cost_usd_ticks: usage.provider_cost_usd_ticks,
+                    provider_cost_nano_usd: usage.provider_cost_nano_usd,
                     first_response_ms: usage.first_response_ms,
                 },
                 final_error.as_deref(),
@@ -1620,7 +1920,7 @@ pub(in super::super) fn proxy_aggregate_request(
             return Ok(());
         }
 
-        if !terminal_failure {
+        if !terminal_failure && !candidate_health_neutral_failure {
             record_aggregate_api_failure(candidate_id.as_str());
         }
 
@@ -1753,6 +2053,34 @@ mod bridge_tests {
         items.iter().map(|item| item.id.clone()).collect()
     }
 
+    fn capability_plan(phase: CandidatePlanPhase) -> CandidatePlan {
+        CandidatePlan {
+            phase,
+            effective_body: Bytes::from_static(br#"{}"#),
+            transform_codes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn capability_phases_preserve_order_within_each_phase() {
+        let ordered = order_capability_planned_candidates(
+            vec![
+                (candidate("downgrade-a", 0), capability_plan(CandidatePlanPhase::Downgrade)),
+                (candidate("native-a", 1), capability_plan(CandidatePlanPhase::Native)),
+                (candidate("downgrade-b", 2), capability_plan(CandidatePlanPhase::Downgrade)),
+                (candidate("native-b", 3), capability_plan(CandidatePlanPhase::Native)),
+            ],
+            CapabilityRoutingMode::Enforce,
+        );
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|(candidate, _)| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["native-a", "native-b", "downgrade-a", "downgrade-b"]
+        );
+    }
+
     /// 函数 `balanced_route_strategy_rotates_aggregate_candidates`
     ///
     /// 作者: gaohongshun
@@ -1880,9 +2208,11 @@ mod tests {
 
     use super::{
         aggregate_api_large_body_transport_failure_status, aggregate_api_terminal_failure_status,
-        build_anthropic_bridge_aggregate_api_request, build_upstream_url, effective_action_path,
+        build_aggregate_api_request, build_anthropic_bridge_aggregate_api_request,
+        build_upstream_url, effective_action_path,
         filter_aggregate_api_cooldown_candidates, filter_daily_spend_limited_candidates,
-        resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
+        request_requires_image_generation, resolve_aggregate_api_rotation_candidates,
+        resolve_passthrough_sse_protocol,
         responses_to_anthropic_messages_action_path, rewrite_body_model_override,
         should_record_aggregate_api_failure_after_bridge, AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
     };
@@ -2069,6 +2399,40 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("text/event-stream")
         );
+    }
+
+    #[test]
+    fn private_required_capability_header_is_consumed_and_not_forwarded() {
+        let request: tiny_http::Request = tiny_http::TestRequest::new()
+            .with_header(
+                tiny_http::Header::from_bytes(
+                    "x-codexmanager-required-capabilities",
+                    "responses.hosted_tool.image_generation",
+                )
+                .expect("required capability header"),
+            )
+            .into();
+        assert!(request_requires_image_generation(&request).expect("valid header"));
+
+        let built = build_aggregate_api_request(
+            &reqwest::blocking::Client::new(),
+            &request,
+            &reqwest::Method::POST,
+            reqwest::Url::parse("https://example.com/v1/responses").expect("url"),
+            &Bytes::from_static(br#"{"input":[]}"#),
+            "secret",
+            &crate::gateway::upstream::protocol::aggregate_api::AggregateApiAuthConfig::ApiKeyDefaultBearer,
+            &std::collections::HashSet::new(),
+            None,
+            false,
+        )
+        .expect("request builder")
+        .build()
+        .expect("request");
+        assert!(built
+            .headers()
+            .get("x-codexmanager-required-capabilities")
+            .is_none());
     }
 
     #[test]

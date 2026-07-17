@@ -29,6 +29,7 @@ use super::{
     save_persisted_app_setting, save_persisted_bool_setting,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
     APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
     APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
@@ -139,6 +140,15 @@ impl QuotaGuardInput {
 pub fn set_gateway_route_strategy(strategy: &str) -> Result<String, String> {
     let applied = gateway::set_route_strategy(strategy)?.to_string();
     save_persisted_app_setting(APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, Some(&applied))?;
+    Ok(applied)
+}
+
+pub fn set_gateway_capability_routing_mode(mode: &str) -> Result<String, String> {
+    let applied = gateway::set_capability_routing_mode(mode)?.as_str().to_string();
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
+        Some(&applied),
+    )?;
     Ok(applied)
 }
 

@@ -218,3 +218,36 @@ fn prefixed_anchor_query_is_supported() {
         } if value == "pck:v1:abc"
     ));
 }
+
+#[test]
+fn session_in_query_parses_comma_separated_ids() {
+    let query = parse_request_log_query(Some("session_in:sess-a, sess-b,sess-c"));
+    match query {
+        RequestLogQuery::SessionIdIn(ids) => {
+            assert_eq!(ids, vec!["sess-a", "sess-b", "sess-c"]);
+        }
+        other => panic!("unexpected query: {other:?}"),
+    }
+}
+
+#[test]
+fn session_in_query_empty_list_stays_empty() {
+    let query = parse_request_log_query(Some("sessions: , ,"));
+    match query {
+        RequestLogQuery::SessionIdIn(ids) => assert!(ids.is_empty()),
+        other => panic!("unexpected query: {other:?}"),
+    }
+}
+
+#[test]
+fn model_prefix_query_remains_supported() {
+    let query = parse_request_log_query(Some("model:gpt-5.6"));
+    assert!(matches!(
+        query,
+        RequestLogQuery::FieldLike {
+            column: "model",
+            pattern
+        } if pattern == "%gpt-5.6%"
+    ));
+}
+

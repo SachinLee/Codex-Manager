@@ -12,6 +12,7 @@ pub(super) enum RequestLogQuery {
         column: &'static str,
         value: String,
     },
+    SessionIdIn(Vec<String>),
     StatusExact(i64),
     StatusRange(i64, i64),
 }
@@ -108,6 +109,7 @@ fn parse_prefixed_request_log_query(raw: &str) -> Option<RequestLogQuery> {
         "key" | "key_id" => Some(parse_field_query("key_id", is_exact, needle)),
         "trace" | "trace_id" => Some(parse_field_query("trace_id", is_exact, needle)),
         "session" | "session_id" => Some(parse_field_query("session_id", is_exact, needle)),
+        "session_in" | "sessions" => Some(parse_session_id_in_query(needle)),
         "anchor" | "conversation_anchor" | "conversation" => {
             Some(parse_field_query("conversation_anchor", is_exact, needle))
         }
@@ -187,6 +189,17 @@ fn parse_account_query(is_exact: bool, value: &str) -> RequestLogQuery {
 ///
 /// # 返回
 /// 返回函数执行结果
+
+fn parse_session_id_in_query(raw: &str) -> RequestLogQuery {
+    let ids = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    RequestLogQuery::SessionIdIn(ids)
+}
+
 fn parse_status_query(raw: &str) -> Option<RequestLogQuery> {
     let normalized = raw.trim().to_ascii_lowercase();
     if normalized.len() == 3 && normalized.ends_with("xx") {

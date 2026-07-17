@@ -145,6 +145,18 @@ fn append_request_log_query_clause(
             params.push(Value::Text(value));
             false
         }
+        request_log_query::RequestLogQuery::SessionIdIn(ids) => {
+            if ids.is_empty() {
+                clauses.push("1 = 0".to_string());
+                return false;
+            }
+            let placeholders = vec!["?"; ids.len()].join(", ");
+            clauses.push(format!("IFNULL(r.session_id, '') IN ({placeholders})"));
+            for id in ids {
+                params.push(Value::Text(id));
+            }
+            false
+        }
         request_log_query::RequestLogQuery::StatusExact(status) => {
             clauses.push("r.status_code = ?".to_string());
             params.push(Value::Integer(status));

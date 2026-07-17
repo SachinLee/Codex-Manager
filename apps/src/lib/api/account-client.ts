@@ -7,6 +7,8 @@ import {
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiDailyUsageStats,
   normalizeAggregateApiReasoningGuardStats,
+  normalizeAggregateApiRuntimeStatus,
+  normalizeAggregateApiRuntimeStatusList,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
   normalizeAggregateApiSupplierModel,
@@ -47,15 +49,24 @@ import {
 import { serializeManagedModelForRpc } from "./model-catalog";
 import { unwrapUsageSnapshotPayload } from "./usage-response";
 import {
+  normalizeAggregateApiCapabilities,
+  normalizeAggregateApiCapabilityAttempts,
+} from "./aggregate-capabilities";
+import {
   AccountListResult,
   AccountDailyUsageStat,
   AccountUsage,
   AggregateApi,
   AggregateApiBalanceRefreshResult,
   AggregateApiCapabilityDiagnosticsResult,
+  AggregateApiCapabilitiesResult,
+  AggregateApiCapabilityAttempt,
+  CapabilityRoutingMode,
+  GatewayCapabilityOverrideState,
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
+  AggregateApiRuntimeStatus,
   AggregateApiSecretResult,
   AggregateApiSupplierModel,
   AggregateApiSupplierModelImportResult,
@@ -184,6 +195,7 @@ export interface ModelPriceRuleEntry {
   cacheWritePricePer1m: number | null;
   outputPricePer1m: number | null;
   longContextThresholdTokens: number | null;
+  longContextThresholdInclusive: boolean;
   longContextInputPricePer1m: number | null;
   longContextCachedInputPricePer1m: number | null;
   longContextCacheWritePricePer1m: number | null;
@@ -206,6 +218,7 @@ export interface ModelPriceRuleUpsertPayload {
   cacheWritePricePer1m?: number | null;
   outputPricePer1m?: number | null;
   longContextThresholdTokens?: number | null;
+  longContextThresholdInclusive?: boolean | null;
   longContextInputPricePer1m?: number | null;
   longContextCachedInputPricePer1m?: number | null;
   longContextCacheWritePricePer1m?: number | null;
@@ -654,6 +667,24 @@ export const accountClient = {
     const result = await invoke<unknown>("service_aggregate_api_list", withAddr());
     return normalizeAggregateApiList(result);
   },
+  async listAggregateApiRuntimeStatuses(): Promise<AggregateApiRuntimeStatus[]> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_runtime_status_list",
+      withAddr(),
+    );
+    return normalizeAggregateApiRuntimeStatusList(result);
+  },
+  async resetAggregateApiRuntimeStatus(
+    apiId: string,
+  ): Promise<AggregateApiRuntimeStatus> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_runtime_status_reset",
+      withAddr({ id: apiId }),
+    );
+    const status = normalizeAggregateApiRuntimeStatus(result);
+    if (!status) throw new Error("Aggregate API runtime status reset returned no result");
+    return status;
+  },
   async createAggregateApi(params: AggregateApiPayload): Promise<AggregateApiCreateResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_create",
@@ -792,6 +823,86 @@ export const accountClient = {
       withAddr({ id: apiId, liveSmoke: options?.liveSmoke ?? false }),
     );
     return normalizeAggregateApiCapabilityDiagnosticsResult(result);
+  },
+  async getAggregateApiCapabilities(apiId: string): Promise<AggregateApiCapabilitiesResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_capabilities_get",
+      withAddr({ id: apiId }),
+    );
+    return normalizeAggregateApiCapabilities(result);
+  },
+  async setAggregateApiCapabilityOverride(params: {
+    apiId: string;
+    upstreamModelPattern: string;
+    protocol: string;
+    capabilityKey: string;
+    state: GatewayCapabilityOverrideState;
+  }): Promise<AggregateApiCapabilitiesResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_capabilities_set_override",
+      withAddr({
+        id: params.apiId,
+        upstreamModelPattern: params.upstreamModelPattern,
+        protocol: params.protocol,
+        capabilityKey: params.capabilityKey,
+        state: params.state,
+      }),
+    );
+    return normalizeAggregateApiCapabilities(result);
+  },
+  async resetAggregateApiCapabilityOverride(params: {
+    apiId: string;
+    upstreamModelPattern: string;
+    protocol: string;
+    capabilityKey: string;
+  }): Promise<AggregateApiCapabilitiesResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_capabilities_reset_override",
+      withAddr({
+        id: params.apiId,
+        upstreamModelPattern: params.upstreamModelPattern,
+        protocol: params.protocol,
+        capabilityKey: params.capabilityKey,
+      }),
+    );
+    return normalizeAggregateApiCapabilities(result);
+  },
+  async clearAggregateApiCapabilityObservation(params: {
+    apiId: string;
+    upstreamModelPattern: string;
+    protocol: string;
+    capabilityKey: string;
+  }): Promise<AggregateApiCapabilitiesResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_capabilities_clear_observation",
+      withAddr({
+        id: params.apiId,
+        upstreamModelPattern: params.upstreamModelPattern,
+        protocol: params.protocol,
+        capabilityKey: params.capabilityKey,
+      }),
+    );
+    return normalizeAggregateApiCapabilities(result);
+  },
+  async listAggregateApiCapabilityAttempts(
+    apiId: string,
+    limit = 20,
+  ): Promise<AggregateApiCapabilityAttempt[]> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_capabilities_list_recent_attempts",
+      withAddr({ id: apiId, limit }),
+    );
+    return normalizeAggregateApiCapabilityAttempts(result);
+  },
+  async setAggregateApiCapabilityRoutingMode(
+    routingMode: CapabilityRoutingMode,
+  ): Promise<CapabilityRoutingMode> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_capabilities_set_mode",
+      withAddr({ routingMode }),
+    );
+    const value = (result as { routingMode?: unknown })?.routingMode;
+    return value === "off" || value === "observe" ? value : "enforce";
   },
   async listAggregateApiDailyUsageStats(params?: {
     dayStartTs?: number;

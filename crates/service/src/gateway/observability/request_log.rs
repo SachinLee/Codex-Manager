@@ -10,6 +10,8 @@ pub(crate) struct RequestLogUsage {
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
+    pub provider_cost_usd_ticks: Option<i64>,
+    pub provider_cost_nano_usd: Option<i64>,
     pub first_response_ms: Option<i64>,
 }
 
@@ -305,7 +307,7 @@ pub(crate) fn write_request_log_with_attempts(
         .cost_multiplier
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(1.0);
-    let pricing = crate::quota::model_pricing::estimate_cost_for_log_with_tier(
+    let mut pricing = crate::quota::model_pricing::estimate_cost_for_log_with_usage_and_tier(
         storage,
         model,
         billing_service_tier,
@@ -313,8 +315,29 @@ pub(crate) fn write_request_log_with_attempts(
         cached_input_tokens,
         cache_write_input_tokens,
         output_tokens,
-    )
-    .multiplied(cost_multiplier);
+        total_tokens,
+        reasoning_output_tokens,
+    );
+    let provider_cost = usage
+        .provider_cost_usd_ticks
+        .filter(|value| *value >= 0)
+        .map(|value| (Some(value), value as f64 / 10_000_000_000.0))
+        .or_else(|| {
+            usage
+                .provider_cost_nano_usd
+                .filter(|value| *value >= 0)
+                .map(|value| (None, value as f64 / 1_000_000_000.0))
+        });
+    if let Some((provider_cost_usd_ticks, provider_cost_usd)) = provider_cost {
+        pricing.provider_cost_usd_ticks = provider_cost_usd_ticks;
+        pricing.provider_cost_usd = Some(provider_cost_usd);
+        pricing.pricing_variance_usd = pricing
+            .local_estimated_cost_usd
+            .map(|local_cost| provider_cost_usd - local_cost);
+        pricing.cost_usd = Some(provider_cost_usd);
+        pricing.cost_source = Some("provider_reported");
+    }
+    let pricing = pricing.multiplied(cost_multiplier);
     let estimated_cost_usd = pricing.cost_usd.unwrap_or(0.0);
     let request_type = trace_context
         .request_type
@@ -511,11 +534,17 @@ pub(crate) fn write_request_log_with_attempts(
             .to_string(),
         context_band: pricing.context_band.to_string(),
         long_context_threshold_tokens: pricing.long_context_threshold_tokens,
+        long_context_threshold_inclusive: Some(pricing.long_context_threshold_inclusive),
         matched_rule_id: pricing.matched_rule_id.clone(),
         matched_pattern: pricing.matched_pattern.clone(),
         price_source: pricing.price_source.clone(),
         match_quality: pricing.match_quality.map(str::to_string),
         price_status: pricing.price_status.to_string(),
+        cost_source: pricing.cost_source.map(str::to_string),
+        provider_cost_usd_ticks: pricing.provider_cost_usd_ticks,
+        provider_cost_usd: pricing.provider_cost_usd,
+        local_estimated_cost_usd: pricing.local_estimated_cost_usd,
+        pricing_variance_usd: pricing.pricing_variance_usd,
         plain_input_cost_usd: pricing.plain_input_cost_usd,
         cached_input_cost_usd: pricing.cached_input_cost_usd,
         cache_write_cost_usd: pricing.cache_write_cost_usd,

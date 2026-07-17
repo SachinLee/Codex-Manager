@@ -16,6 +16,22 @@ pub async fn service_aggregate_api_list(addr: Option<String>) -> Result<serde_js
     rpc_call_in_background("aggregateApi/list", addr, None).await
 }
 
+#[tauri::command]
+pub async fn service_aggregate_api_runtime_status_list(
+    addr: Option<String>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("aggregateApi/runtimeStatus/list", addr, None).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_runtime_status_reset(
+    addr: Option<String>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "id": id });
+    rpc_call_in_background("aggregateApi/runtimeStatus/reset", addr, Some(params)).await
+}
+
 /// 函数 `service_aggregate_api_create`
 ///
 /// 作者: gaohongshun
@@ -235,6 +251,111 @@ pub async fn service_aggregate_api_diagnose_capabilities(
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({ "id": id, "liveSmoke": live_smoke.unwrap_or(false) });
     rpc_call_in_background("aggregateApi/diagnoseCapabilities", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_capabilities_get(
+    addr: Option<String>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/capabilities/get",
+        addr,
+        Some(serde_json::json!({ "id": id })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_capabilities_set_override(
+    addr: Option<String>,
+    id: String,
+    upstream_model_pattern: String,
+    protocol: String,
+    capability_key: String,
+    state: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/capabilities/setOverride",
+        addr,
+        Some(serde_json::json!({
+            "id": id,
+            "upstreamModelPattern": upstream_model_pattern,
+            "protocol": protocol,
+            "capabilityKey": capability_key,
+            "state": state
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_capabilities_reset_override(
+    addr: Option<String>,
+    id: String,
+    upstream_model_pattern: String,
+    protocol: String,
+    capability_key: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/capabilities/resetOverride",
+        addr,
+        Some(serde_json::json!({
+            "id": id,
+            "upstreamModelPattern": upstream_model_pattern,
+            "protocol": protocol,
+            "capabilityKey": capability_key
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_capabilities_clear_observation(
+    addr: Option<String>,
+    id: String,
+    upstream_model_pattern: String,
+    protocol: String,
+    capability_key: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/capabilities/clearObservation",
+        addr,
+        Some(serde_json::json!({
+            "id": id,
+            "upstreamModelPattern": upstream_model_pattern,
+            "protocol": protocol,
+            "capabilityKey": capability_key
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_capabilities_list_recent_attempts(
+    addr: Option<String>,
+    id: String,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/capabilities/listRecentAttempts",
+        addr,
+        Some(serde_json::json!({ "id": id, "limit": limit.unwrap_or(50) })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_capabilities_set_mode(
+    addr: Option<String>,
+    routing_mode: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/capabilities/setMode",
+        addr,
+        Some(serde_json::json!({ "routingMode": routing_mode })),
+    )
+    .await
 }
 
 #[tauri::command]

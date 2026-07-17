@@ -752,6 +752,24 @@ pub struct AggregateApiListResult {
     pub items: Vec<AggregateApiSummary>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiRuntimeStatus {
+    pub aggregate_api_id: String,
+    pub is_cooling_down: bool,
+    pub consecutive_failures: u32,
+    pub failure_threshold: u32,
+    pub cooldown_until: Option<i64>,
+    pub remaining_secs: i64,
+    pub last_failure_at: Option<i64>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AggregateApiRuntimeStatusListResult {
+    pub items: Vec<AggregateApiRuntimeStatus>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateApiCreateResult {
@@ -1333,11 +1351,16 @@ pub struct RequestLogSummary {
     pub pricing_context_band: String,
     pub pricing_billing_mode: Option<String>,
     pub long_context_threshold_tokens: Option<i64>,
+    pub long_context_threshold_inclusive: Option<bool>,
     pub pricing_matched_rule_id: Option<String>,
     pub pricing_matched_pattern: Option<String>,
     pub pricing_source: Option<String>,
     pub pricing_match_quality: Option<String>,
     pub pricing_status: Option<String>,
+    pub pricing_cost_source: Option<String>,
+    pub provider_cost_usd: Option<f64>,
+    pub local_estimated_cost_usd: Option<f64>,
+    pub pricing_variance_usd: Option<f64>,
     pub plain_input_cost_usd: Option<f64>,
     pub cached_input_cost_usd: Option<f64>,
     pub cache_write_cost_usd: Option<f64>,
@@ -1445,6 +1468,21 @@ pub struct RequestLogListWithSummaryResult {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RequestLogModelUsageStatResult {
+    pub model: String,
+    pub request_count: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub total_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestLogFilterSummaryResult {
     pub total_count: i64,
     pub filtered_count: i64,
@@ -1458,6 +1496,10 @@ pub struct RequestLogFilterSummaryResult {
     pub long_context_cost_usd: f64,
     pub long_context_uplift_usd: f64,
     pub legacy_candidate_count: i64,
+    #[serde(default)]
+    pub model_stats: Vec<RequestLogModelUsageStatResult>,
+    #[serde(default)]
+    pub model_stats_truncated: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1784,6 +1826,8 @@ pub struct ModelPriceRuleEntry {
     #[serde(default)]
     pub long_context_threshold_tokens: Option<i64>,
     #[serde(default)]
+    pub long_context_threshold_inclusive: bool,
+    #[serde(default)]
     pub long_context_input_price_per_1m: Option<f64>,
     #[serde(default)]
     pub long_context_cached_input_price_per_1m: Option<f64>,
@@ -1832,6 +1876,8 @@ pub struct ModelPriceRuleUpsertInput {
     pub output_price_per_1m: Option<f64>,
     #[serde(default)]
     pub long_context_threshold_tokens: Option<i64>,
+    #[serde(default)]
+    pub long_context_threshold_inclusive: Option<bool>,
     #[serde(default)]
     pub long_context_input_price_per_1m: Option<f64>,
     #[serde(default)]

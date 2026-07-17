@@ -1,5 +1,7 @@
 name = "trellis-implement"
 description = "Workspace-write Trellis implementer that follows specs and keeps generated templates in sync."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 
 developer_instructions = """

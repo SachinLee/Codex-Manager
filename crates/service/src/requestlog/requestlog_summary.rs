@@ -1,5 +1,9 @@
-use codexmanager_core::rpc::types::{RequestLogFilterSummaryResult, RequestLogListParams};
-use codexmanager_core::storage::{RequestLogQuerySummary, Storage};
+use codexmanager_core::rpc::types::{
+    RequestLogFilterSummaryResult, RequestLogListParams, RequestLogModelUsageStatResult,
+};
+use codexmanager_core::storage::{
+    RequestLogModelUsageQueryResult, RequestLogModelUsageSummary, RequestLogQuerySummary, Storage,
+};
 
 use crate::storage_helpers::open_storage;
 
@@ -36,6 +40,14 @@ pub(crate) fn read_request_log_filter_summary_with_storage(
             params.end_ts,
         )
         .map_err(|err| format!("summarize request logs failed: {err}"))?;
+    let model_usage = storage
+        .summarize_request_logs_by_model_filtered(
+            params.query.as_deref(),
+            params.status_filter.as_deref(),
+            params.start_ts,
+            params.end_ts,
+        )
+        .map_err(|err| format!("summarize request log model usage failed: {err}"))?;
     let total_count = match needs_unfiltered_total_count(params.status_filter.as_deref()) {
         true => storage
             .count_request_logs(
@@ -48,7 +60,7 @@ pub(crate) fn read_request_log_filter_summary_with_storage(
         false => filtered.count,
     };
 
-    Ok(map_filter_summary(total_count, filtered))
+    Ok(map_filter_summary(total_count, filtered, model_usage))
 }
 
 pub(crate) fn read_request_log_filter_summary_for_key_ids_with_storage(
@@ -69,6 +81,15 @@ pub(crate) fn read_request_log_filter_summary_for_key_ids_with_storage(
             key_ids,
         )
         .map_err(|err| format!("summarize request logs failed: {err}"))?;
+    let model_usage = storage
+        .summarize_request_logs_by_model_filtered_for_keys(
+            params.query.as_deref(),
+            params.status_filter.as_deref(),
+            params.start_ts,
+            params.end_ts,
+            key_ids,
+        )
+        .map_err(|err| format!("summarize request log model usage failed: {err}"))?;
     let total_count = match needs_unfiltered_total_count(params.status_filter.as_deref()) {
         true => storage
             .count_request_logs_for_keys(
@@ -82,7 +103,7 @@ pub(crate) fn read_request_log_filter_summary_for_key_ids_with_storage(
         false => filtered.count,
     };
 
-    Ok(map_filter_summary(total_count, filtered))
+    Ok(map_filter_summary(total_count, filtered, model_usage))
 }
 
 pub(crate) fn read_request_log_filter_summary_for_key_ids(
@@ -100,6 +121,7 @@ fn needs_unfiltered_total_count(status_filter: Option<&str>) -> bool {
 fn map_filter_summary(
     total_count: i64,
     filtered: RequestLogQuerySummary,
+    model_usage: RequestLogModelUsageQueryResult,
 ) -> RequestLogFilterSummaryResult {
     RequestLogFilterSummaryResult {
         total_count: total_count.max(0),
@@ -114,6 +136,27 @@ fn map_filter_summary(
         long_context_cost_usd: filtered.long_context_cost_usd.max(0.0),
         long_context_uplift_usd: filtered.long_context_uplift_usd.max(0.0),
         legacy_candidate_count: filtered.legacy_candidate_count.max(0),
+        model_stats: model_usage
+            .items
+            .into_iter()
+            .map(map_model_usage_stat)
+            .collect(),
+        model_stats_truncated: model_usage.truncated,
+    }
+}
+
+fn map_model_usage_stat(item: RequestLogModelUsageSummary) -> RequestLogModelUsageStatResult {
+    RequestLogModelUsageStatResult {
+        model: item.model,
+        request_count: item.request_count.max(0),
+        success_count: item.success_count.max(0),
+        error_count: item.error_count.max(0),
+        total_tokens: item.total_tokens.max(0),
+        estimated_cost_usd: item.estimated_cost_usd.max(0.0),
+        input_tokens: item.input_tokens.max(0),
+        cached_input_tokens: item.cached_input_tokens.max(0),
+        output_tokens: item.output_tokens.max(0),
+        reasoning_output_tokens: item.reasoning_output_tokens.max(0),
     }
 }
 

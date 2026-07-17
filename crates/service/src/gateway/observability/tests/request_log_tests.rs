@@ -16,6 +16,8 @@ fn sample_usage(cache_write_input_tokens: Option<i64>) -> RequestLogUsage {
         output_tokens: Some(500),
         total_tokens: Some(1_500),
         reasoning_output_tokens: None,
+        provider_cost_usd_ticks: None,
+        provider_cost_nano_usd: None,
         first_response_ms: Some(120),
     }
 }
@@ -192,6 +194,8 @@ fn write_request_log_persists_long_context_pricing_snapshot() {
             output_tokens: Some(1_000),
             total_tokens: Some(301_000),
             reasoning_output_tokens: None,
+            provider_cost_usd_ticks: None,
+            provider_cost_nano_usd: None,
             first_response_ms: None,
         },
         None,
@@ -209,4 +213,50 @@ fn write_request_log_persists_long_context_pricing_snapshot() {
     assert_eq!(snapshot.matched_pattern.as_deref(), Some("gpt-5.6-sol"));
     assert_close(snapshot.total_cost_usd.expect("total"), 1.27);
     assert_close(snapshot.long_context_uplift_usd.expect("uplift"), 0.6275);
+}
+
+#[test]
+fn write_request_log_prefers_provider_reported_xai_cost_and_keeps_local_audit() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            trace_id: Some("trc_xai_provider_cost"),
+            ..Default::default()
+        },
+        Some("gk_xai"),
+        None,
+        "/v1/responses",
+        "POST",
+        Some("grok-4.5"),
+        None,
+        Some("https://api.x.ai/v1/responses"),
+        Some(200),
+        RequestLogUsage {
+            input_tokens: Some(2_000),
+            cached_input_tokens: Some(1_000),
+            cache_write_input_tokens: None,
+            output_tokens: Some(100),
+            total_tokens: Some(2_100),
+            reasoning_output_tokens: None,
+            provider_cost_usd_ticks: Some(37_756_000),
+            provider_cost_nano_usd: None,
+            first_response_ms: None,
+        },
+        None,
+        Some(1),
+    );
+
+    let snapshots = storage
+        .list_request_pricing_snapshots_for_trace_ids(&["trc_xai_provider_cost".to_string()])
+        .expect("list snapshots");
+    let (_, snapshot) = snapshots.first().expect("xai snapshot");
+    assert_eq!(snapshot.cost_source.as_deref(), Some("provider_reported"));
+    assert_eq!(snapshot.provider_cost_usd_ticks, Some(37_756_000));
+    assert_close(snapshot.provider_cost_usd.expect("provider cost"), 0.003_775_6);
+    assert_close(snapshot.total_cost_usd.expect("effective cost"), 0.003_775_6);
+    assert!(snapshot.local_estimated_cost_usd.is_some());
+    assert!(snapshot.pricing_variance_usd.is_some());
 }

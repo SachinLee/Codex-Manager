@@ -14,6 +14,7 @@ import {
   AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
+  AggregateApiRuntimeStatus,
   AggregateApiSecretResult,
   AggregateApiSupplierModel,
   AggregateApiSupplierModelImportResult,
@@ -45,6 +46,7 @@ import {
   PluginTaskSummary,
   RequestLog,
   RequestLogFilterSummary,
+  RequestLogModelUsageStat,
   RequestLogListResult,
   RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
@@ -1063,6 +1065,44 @@ export function normalizeAggregateApiList(payload: unknown): AggregateApi[] {
     .filter((item): item is AggregateApi => Boolean(item));
 }
 
+export function normalizeAggregateApiRuntimeStatus(
+  payload: unknown,
+): AggregateApiRuntimeStatus | null {
+  const source = asObject(payload);
+  const aggregateApiId = asString(source.aggregateApiId ?? source.aggregate_api_id);
+  if (!aggregateApiId) return null;
+  return {
+    aggregateApiId,
+    isCoolingDown: asBoolean(source.isCoolingDown ?? source.is_cooling_down, false),
+    consecutiveFailures: asInteger(
+      source.consecutiveFailures ?? source.consecutive_failures,
+      0,
+      0,
+    ),
+    failureThreshold: Math.max(
+      1,
+      asInteger(source.failureThreshold ?? source.failure_threshold, 5, 1),
+    ),
+    cooldownUntil: toNullableNumber(source.cooldownUntil ?? source.cooldown_until),
+    remainingSecs: Math.max(
+      0,
+      asInteger(source.remainingSecs ?? source.remaining_secs, 0, 0),
+    ),
+    lastFailureAt: toNullableNumber(source.lastFailureAt ?? source.last_failure_at),
+    reason: asString(source.reason) || null,
+  };
+}
+
+export function normalizeAggregateApiRuntimeStatusList(
+  payload: unknown,
+): AggregateApiRuntimeStatus[] {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload);
+  return items
+    .map((item) => normalizeAggregateApiRuntimeStatus(item))
+    .filter((item): item is AggregateApiRuntimeStatus => Boolean(item));
+}
+
 /**
  * 函数 `normalizeAggregateApiCreateResult`
  *
@@ -1789,6 +1829,9 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     longContextThresholdTokens: toNullableNumber(
       source.longContextThresholdTokens ?? source.long_context_threshold_tokens,
     ),
+    longContextThresholdInclusive: toNullableBoolean(
+      source.longContextThresholdInclusive ?? source.long_context_threshold_inclusive,
+    ),
     pricingMatchedRuleId:
       asString(source.pricingMatchedRuleId ?? source.pricing_matched_rule_id) || null,
     pricingMatchedPattern:
@@ -1797,6 +1840,15 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     pricingMatchQuality:
       asString(source.pricingMatchQuality ?? source.pricing_match_quality) || null,
     pricingStatus: asString(source.pricingStatus ?? source.pricing_status) || null,
+    pricingCostSource:
+      asString(source.pricingCostSource ?? source.pricing_cost_source) || null,
+    providerCostUsd: toNullableNumber(source.providerCostUsd ?? source.provider_cost_usd),
+    localEstimatedCostUsd: toNullableNumber(
+      source.localEstimatedCostUsd ?? source.local_estimated_cost_usd,
+    ),
+    pricingVarianceUsd: toNullableNumber(
+      source.pricingVarianceUsd ?? source.pricing_variance_usd,
+    ),
     plainInputCostUsd: toNullableNumber(
       source.plainInputCostUsd ?? source.plain_input_cost_usd,
     ),
@@ -1965,6 +2017,42 @@ export function normalizeRequestLogFilterSummary(
     longContextCostUsd: Math.max(0, toNullableNumber(source.longContextCostUsd) ?? 0),
     longContextUpliftUsd: Math.max(0, toNullableNumber(source.longContextUpliftUsd) ?? 0),
     legacyCandidateCount: asInteger(source.legacyCandidateCount, 0, 0),
+    modelStats: asArray(source.modelStats ?? source.model_stats).map((item) =>
+      normalizeRequestLogModelUsageStat(item),
+    ),
+    modelStatsTruncated: asBoolean(
+      source.modelStatsTruncated ?? source.model_stats_truncated,
+      false,
+    ),
+  };
+}
+
+function normalizeRequestLogModelUsageStat(
+  payload: unknown,
+): RequestLogModelUsageStat {
+  const source = asObject(payload);
+  return {
+    model: asString(source.model, "(unknown)") || "(unknown)",
+    requestCount: asInteger(source.requestCount ?? source.request_count, 0, 0),
+    successCount: asInteger(source.successCount ?? source.success_count, 0, 0),
+    errorCount: asInteger(source.errorCount ?? source.error_count, 0, 0),
+    totalTokens: asInteger(source.totalTokens ?? source.total_tokens, 0, 0),
+    estimatedCostUsd: Math.max(
+      0,
+      toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0,
+    ),
+    inputTokens: asInteger(source.inputTokens ?? source.input_tokens, 0, 0),
+    cachedInputTokens: asInteger(
+      source.cachedInputTokens ?? source.cached_input_tokens,
+      0,
+      0,
+    ),
+    outputTokens: asInteger(source.outputTokens ?? source.output_tokens, 0, 0),
+    reasoningOutputTokens: asInteger(
+      source.reasoningOutputTokens ?? source.reasoning_output_tokens,
+      0,
+      0,
+    ),
   };
 }
 

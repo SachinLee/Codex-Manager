@@ -3,10 +3,12 @@ use super::openai::{
 };
 use super::{
     collect_non_stream_json_from_sse_bytes, inspect_sse_frame, parse_sse_frame_json,
-    parse_usage_from_json, parse_usage_from_sse_frame, AnthropicSseReader,
+    merge_usage, parse_usage_from_json, parse_usage_from_sse_frame, usage_has_signal,
+    AnthropicSseReader,
     ChatCompletionsFromResponsesSseReader, GeminiSseReader, ImagesFromResponsesSseReader,
     ImagesResponseFormat, OpenAIResponsesPassthroughSseReader, PassthroughSseCollector,
     PassthroughSseProtocol, PassthroughSseUsageReader, SseKeepAliveFrame,
+    UpstreamResponseUsage,
 };
 use crate::gateway::GeminiStreamOutputMode;
 use serde_json::json;
@@ -237,6 +239,40 @@ fn parse_usage_from_json_reads_response_usage_compat_fields() {
     assert_eq!(usage.output_tokens, Some(20));
     assert_eq!(usage.total_tokens, Some(120));
     assert_eq!(usage.reasoning_output_tokens, Some(9));
+}
+
+#[test]
+fn parse_usage_from_json_preserves_non_negative_xai_cost_ticks() {
+    let payload = json!({
+        "usage": { "cost_in_usd_ticks": 37_756_000 },
+        "response": { "usage": { "cost_in_usd_ticks": 40_000_000, "cost_in_nano_usd": 99 } }
+    });
+    let usage = parse_usage_from_json(&payload);
+    assert_eq!(usage.provider_cost_usd_ticks, Some(40_000_000));
+    assert_eq!(usage.provider_cost_nano_usd, Some(99));
+
+    let invalid = parse_usage_from_json(&json!({
+        "usage": { "cost_in_usd_ticks": -1, "cost_in_nano_usd": -2 }
+    }));
+    assert_eq!(invalid.provider_cost_usd_ticks, None);
+    assert_eq!(invalid.provider_cost_nano_usd, None);
+}
+
+#[test]
+fn merge_usage_replaces_running_provider_cost_with_the_final_snapshot() {
+    let mut usage = UpstreamResponseUsage {
+        provider_cost_usd_ticks: Some(10),
+        ..Default::default()
+    };
+    merge_usage(
+        &mut usage,
+        UpstreamResponseUsage {
+            provider_cost_usd_ticks: Some(25),
+            ..Default::default()
+        },
+    );
+    assert_eq!(usage.provider_cost_usd_ticks, Some(25));
+    assert!(usage_has_signal(&usage));
 }
 
 /// 函数 `parse_usage_from_json_reads_anthropic_compat_fields`

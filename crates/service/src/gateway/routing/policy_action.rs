@@ -142,6 +142,17 @@ pub(super) fn record_system_cooldown_action(
     state.actions.insert(key, action);
 }
 
+pub(super) fn clear_system_policy_action(target_kind: PolicyTargetKind, target_id: &str) {
+    let target_id = target_id.trim();
+    if target_id.is_empty() {
+        return;
+    }
+    let lock = POLICY_ACTIONS.get_or_init(|| Mutex::new(PolicyActionState::default()));
+    let mut state = crate::lock_utils::lock_recover(lock, "gateway_policy_actions");
+    cleanup_expired(&mut state, now_ts());
+    state.actions.remove(&action_key(target_kind, target_id));
+}
+
 pub(crate) fn active_policy_actions_for_target(
     target_kind: PolicyTargetKind,
     target_id: Option<&str>,

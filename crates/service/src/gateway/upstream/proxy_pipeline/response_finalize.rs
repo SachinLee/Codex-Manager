@@ -305,6 +305,8 @@ pub(super) fn finalize_upstream_response(
                 output_tokens: bridge.usage.output_tokens,
                 total_tokens: bridge.usage.total_tokens,
                 reasoning_output_tokens: bridge.usage.reasoning_output_tokens,
+                provider_cost_usd_ticks: bridge.usage.provider_cost_usd_ticks,
+                provider_cost_nano_usd: bridge.usage.provider_cost_nano_usd,
                 first_response_ms: bridge.usage.first_response_ms,
             },
         );
@@ -405,6 +407,8 @@ pub(super) fn finalize_upstream_response(
             output_tokens: usage.output_tokens,
             total_tokens: usage.total_tokens,
             reasoning_output_tokens: usage.reasoning_output_tokens,
+            provider_cost_usd_ticks: usage.provider_cost_usd_ticks,
+            provider_cost_nano_usd: usage.provider_cost_nano_usd,
             first_response_ms: usage.first_response_ms,
         },
         final_error.as_deref(),

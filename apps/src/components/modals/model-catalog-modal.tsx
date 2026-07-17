@@ -61,6 +61,7 @@ interface ModelCatalogDraft {
   cacheWritePricePer1m: string;
   outputPricePer1m: string;
   longContextThresholdTokens: string;
+  longContextThresholdInclusive: boolean;
   longContextInputPricePer1m: string;
   longContextCachedInputPricePer1m: string;
   longContextCacheWritePricePer1m: string;
@@ -241,6 +242,7 @@ function buildDraft(
     cacheWritePricePer1m: priceRule?.cacheWritePricePer1m != null ? String(priceRule.cacheWritePricePer1m) : "",
     outputPricePer1m: priceRule?.outputPricePer1m != null ? String(priceRule.outputPricePer1m) : "",
     longContextThresholdTokens: priceRule?.longContextThresholdTokens != null ? String(priceRule.longContextThresholdTokens) : "",
+    longContextThresholdInclusive: priceRule?.longContextThresholdInclusive ?? false,
     longContextInputPricePer1m: priceRule?.longContextInputPricePer1m != null ? String(priceRule.longContextInputPricePer1m) : "",
     longContextCachedInputPricePer1m: priceRule?.longContextCachedInputPricePer1m != null ? String(priceRule.longContextCachedInputPricePer1m) : "",
     longContextCacheWritePricePer1m: priceRule?.longContextCacheWritePricePer1m != null ? String(priceRule.longContextCacheWritePricePer1m) : "",
@@ -474,6 +476,9 @@ export function ModelCatalogModal({
             longContextThresholdTokens: isClearingExistingOverride
               ? null
               : (longThreshold !== "" ? Number(longThreshold) : null),
+            longContextThresholdInclusive: isClearingExistingOverride
+              ? false
+              : draft.longContextThresholdInclusive,
             longContextInputPricePer1m: isClearingExistingOverride
               ? null
               : (longIp !== "" ? Number(longIp) : null),
@@ -771,9 +776,11 @@ export function ModelCatalogModal({
             <div className="space-y-2 rounded-md border border-border/60 p-4">
               <Label>{t("长上下文价格（可选）")}</Label>
               <p className="text-xs text-muted-foreground">
-                {t("输入 token 严格大于阈值时整次请求使用这组价格；Priority 未公布长上下文价格时请留空。")}
+                {draft.longContextThresholdInclusive
+                  ? t("输入 token 大于或等于阈值时整次请求使用这组价格。")
+                  : t("输入 token 严格大于阈值时整次请求使用这组价格；Priority 未公布长上下文价格时请留空。")}
               </p>
-              <div className="mt-3 grid gap-4 md:grid-cols-5">
+              <div className="mt-3 grid gap-4 md:grid-cols-6">
                 <div className="space-y-2">
                   <Label htmlFor="price-long-threshold">{t("阈值")}</Label>
                   <Input
@@ -787,6 +794,18 @@ export function ModelCatalogModal({
                     }
                     placeholder="272000"
                   />
+                </div>
+                <div className="flex items-center gap-2 pt-7">
+                  <Switch
+                    id="price-long-threshold-inclusive"
+                    checked={draft.longContextThresholdInclusive}
+                    onCheckedChange={(checked) =>
+                      updateDraft("longContextThresholdInclusive", checked)
+                    }
+                  />
+                  <Label htmlFor="price-long-threshold-inclusive" className="text-xs">
+                    {t("阈值包含等于")}
+                  </Label>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="price-long-input">{t("长输入")}</Label>

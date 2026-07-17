@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 
 const RUNTIME_TESTS = [
   "tests/runtime-capabilities.test.mjs",
+  "tests/aggregate-capabilities.test.mjs",
   "tests/gateway-endpoints.test.mjs",
   "tests/transport-errors.test.mjs",
   "tests/gateway-settings.test.mjs",

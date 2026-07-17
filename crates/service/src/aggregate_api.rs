@@ -1,12 +1,13 @@
 use codexmanager_core::rpc::types::{
     AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
-    AggregateApiSecretResult, AggregateApiSummary, AggregateApiSupplierModelDeleteParams,
-    AggregateApiSupplierModelEntry, AggregateApiSupplierModelImportParams,
-    AggregateApiSupplierModelImportResult, AggregateApiSupplierModelUpsertParams,
-    AggregateApiTestResult, ManagedModelSourceModelEntry,
+    AggregateApiRuntimeStatus, AggregateApiSecretResult, AggregateApiSummary,
+    AggregateApiSupplierModelDeleteParams, AggregateApiSupplierModelEntry,
+    AggregateApiSupplierModelImportParams, AggregateApiSupplierModelImportResult,
+    AggregateApiSupplierModelUpsertParams, AggregateApiTestResult, ManagedModelSourceModelEntry,
 };
 use codexmanager_core::storage::{
-    now_ts, AggregateApi, AggregateApiSupplierModel, ModelSourceModel,
+    now_ts, AggregateApi, AggregateApiSupplierModel, GatewayCapabilityObservationRecord,
+    GatewayCapabilityScope, ModelSourceModel,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -640,6 +641,10 @@ mod tests {
             "unsupported"
         );
         assert_eq!(diagnostic_status_for_http("responses", 401).0, "unknown");
+        assert_eq!(
+            diagnostic_status_for_http("hostedImageGeneration", 400).0,
+            "unknown"
+        );
     }
 
     #[test]
@@ -2281,6 +2286,14 @@ fn probe_codex_endpoint(
 }
 
 fn diagnostic_status_for_http(probe_name: &str, status: i64) -> (&'static str, String) {
+    if probe_name == "hostedImageGeneration" && matches!(status, 400 | 422) {
+        return (
+            "unknown",
+            format!(
+                "{probe_name} returned HTTP {status}; the response body was not classified as capability evidence"
+            ),
+        );
+    }
     match status {
         200..=299 => ("supported", format!("{probe_name} returned HTTP {status}")),
         400 | 422 => (
@@ -2505,6 +2518,43 @@ fn aggregate_api_diagnostic_probes(
     probes
 }
 
+fn persist_live_capability_probe(
+    storage: &codexmanager_core::storage::Storage,
+    api: &AggregateApi,
+    probes: &[AggregateApiCapabilityProbeResult],
+) -> Result<(), String> {
+    let Some(probe) = probes.iter().find(|probe| {
+        probe.name == "hostedImageGeneration"
+            && matches!(probe.status.as_str(), "supported" | "unsupported")
+    }) else {
+        return Ok(());
+    };
+    let observed_at = now_ts();
+    storage
+        .upsert_gateway_capability_observation(&GatewayCapabilityObservationRecord {
+            scope: GatewayCapabilityScope {
+                source_kind: "aggregate_api".to_string(),
+                source_id: api.id.clone(),
+                upstream_model_pattern: api
+                    .model_override
+                    .clone()
+                    .unwrap_or_else(|| "*".to_string()),
+                protocol: "responses".to_string(),
+                capability_key: gateway::IMAGE_GENERATION_CAPABILITY.to_string(),
+            },
+            state: probe.status.clone(),
+            observation_source: "probe".to_string(),
+            confidence: "high".to_string(),
+            evidence_code: format!("probe.hosted_image_generation.{}", probe.status),
+            first_observed_at: observed_at,
+            last_observed_at: observed_at,
+            expires_at: observed_at.saturating_add(86_400),
+            occurrence_count: 1,
+            ..Default::default()
+        })
+        .map_err(|err| format!("persist capability probe failed: {err}"))
+}
+
 pub(crate) fn diagnose_aggregate_api_capabilities(
     api_id: &str,
     live_smoke: bool,
@@ -2537,6 +2587,15 @@ pub(crate) fn diagnose_aggregate_api_capabilities(
             0,
         )]
     };
+    if live_smoke {
+        if let Err(err) = persist_live_capability_probe(&storage, &api, &probes) {
+            log::warn!(
+                "event=aggregate_api_capability_probe_persist_failed aggregate_api_id={} error={}",
+                api_id,
+                err
+            );
+        }
+    }
     Ok(AggregateApiCapabilityDiagnosticsResult {
         id: api_id.to_string(),
         provider_type,
@@ -2730,6 +2789,25 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
             last_balance_json: item.last_balance_json,
         })
         .collect())
+}
+
+pub(crate) fn list_aggregate_api_runtime_statuses() -> Result<Vec<AggregateApiRuntimeStatus>, String>
+{
+    Ok(gateway::gateway_list_aggregate_api_runtime_statuses())
+}
+
+pub(crate) fn reset_aggregate_api_runtime_status(
+    api_id: &str,
+) -> Result<AggregateApiRuntimeStatus, String> {
+    if api_id.trim().is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    storage
+        .find_aggregate_api_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    Ok(gateway::gateway_reset_aggregate_api_runtime_status(api_id))
 }
 
 pub(crate) fn list_aggregate_api_supplier_models(

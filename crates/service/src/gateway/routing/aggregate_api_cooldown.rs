@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use codexmanager_core::storage::now_ts;
+use codexmanager_core::{rpc::types::AggregateApiRuntimeStatus, storage::now_ts};
 
 use super::policy_action::{
-    record_system_cooldown_action, EvidenceKind, PolicyTargetKind, RouteEvidenceInput,
+    clear_system_policy_action, record_system_cooldown_action, EvidenceKind, PolicyTargetKind,
+    RouteEvidenceInput,
 };
 
 const AGGREGATE_API_FAILURE_THRESHOLD: u32 = 5;
@@ -71,6 +72,58 @@ pub(super) fn is_aggregate_api_in_cooldown(api_id: &str) -> bool {
     }
 }
 
+fn runtime_status_from_entry(
+    api_id: &str,
+    entry: AggregateApiCooldownEntry,
+    now: i64,
+) -> AggregateApiRuntimeStatus {
+    let is_cooling_down = entry.cooldown_until > now;
+    AggregateApiRuntimeStatus {
+        aggregate_api_id: api_id.to_string(),
+        is_cooling_down,
+        consecutive_failures: entry.consecutive_failures,
+        failure_threshold: AGGREGATE_API_FAILURE_THRESHOLD,
+        cooldown_until: (entry.cooldown_until > 0).then_some(entry.cooldown_until),
+        remaining_secs: entry.cooldown_until.saturating_sub(now).max(0),
+        last_failure_at: (entry.last_failure_at > 0).then_some(entry.last_failure_at),
+        reason: is_cooling_down.then(|| "consecutive aggregate api failures".to_string()),
+    }
+}
+
+pub(super) fn list_aggregate_api_cooldown_statuses() -> Vec<AggregateApiRuntimeStatus> {
+    let lock = AGGREGATE_API_COOLDOWN_UNTIL
+        .get_or_init(|| Mutex::new(AggregateApiCooldownState::default()));
+    let mut state = crate::lock_utils::lock_recover(lock, "aggregate_api_cooldown_until");
+    let now = now_ts();
+    maybe_cleanup_expired_entries(&mut state, now);
+
+    let mut statuses = state
+        .entries
+        .iter()
+        .map(|(api_id, entry)| runtime_status_from_entry(api_id, *entry, now))
+        .collect::<Vec<_>>();
+    statuses.sort_by(|left, right| left.aggregate_api_id.cmp(&right.aggregate_api_id));
+    statuses
+}
+
+pub(super) fn aggregate_api_cooldown_status(api_id: &str) -> AggregateApiRuntimeStatus {
+    let lock = AGGREGATE_API_COOLDOWN_UNTIL
+        .get_or_init(|| Mutex::new(AggregateApiCooldownState::default()));
+    let mut state = crate::lock_utils::lock_recover(lock, "aggregate_api_cooldown_until");
+    let now = now_ts();
+    maybe_cleanup_expired_entries(&mut state, now);
+    state
+        .entries
+        .get(api_id)
+        .copied()
+        .map(|entry| runtime_status_from_entry(api_id, entry, now))
+        .unwrap_or_else(|| AggregateApiRuntimeStatus {
+            aggregate_api_id: api_id.to_string(),
+            failure_threshold: AGGREGATE_API_FAILURE_THRESHOLD,
+            ..AggregateApiRuntimeStatus::default()
+        })
+}
+
 /// 记录一次 aggregate API 失败。达到阈值后进入冷却。
 pub(super) fn record_aggregate_api_failure(api_id: &str) -> bool {
     let lock = AGGREGATE_API_COOLDOWN_UNTIL
@@ -130,8 +183,11 @@ pub(super) fn record_aggregate_api_failure(api_id: &str) -> bool {
 pub(super) fn clear_aggregate_api_cooldown(api_id: &str) {
     let lock = AGGREGATE_API_COOLDOWN_UNTIL
         .get_or_init(|| Mutex::new(AggregateApiCooldownState::default()));
-    let mut state = crate::lock_utils::lock_recover(lock, "aggregate_api_cooldown_until");
-    state.entries.remove(api_id);
+    {
+        let mut state = crate::lock_utils::lock_recover(lock, "aggregate_api_cooldown_until");
+        state.entries.remove(api_id);
+    }
+    clear_system_policy_action(PolicyTargetKind::AggregateApi, api_id);
 }
 
 /// 清空所有 aggregate API 的运行时冷却状态。

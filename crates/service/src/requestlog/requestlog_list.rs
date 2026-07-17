@@ -567,11 +567,16 @@ fn apply_pricing_snapshot(item: &mut RequestLogSummary, snapshot: &RequestPricin
     item.pricing_context_band = snapshot.context_band.clone();
     item.pricing_billing_mode = Some(snapshot.billing_mode.clone());
     item.long_context_threshold_tokens = snapshot.long_context_threshold_tokens;
+    item.long_context_threshold_inclusive = snapshot.long_context_threshold_inclusive;
     item.pricing_matched_rule_id = snapshot.matched_rule_id.clone();
     item.pricing_matched_pattern = snapshot.matched_pattern.clone();
     item.pricing_source = snapshot.price_source.clone();
     item.pricing_match_quality = snapshot.match_quality.clone();
     item.pricing_status = Some(snapshot.price_status.clone());
+    item.pricing_cost_source = snapshot.cost_source.clone();
+    item.provider_cost_usd = snapshot.provider_cost_usd;
+    item.local_estimated_cost_usd = snapshot.local_estimated_cost_usd;
+    item.pricing_variance_usd = snapshot.pricing_variance_usd;
     item.plain_input_cost_usd = snapshot.plain_input_cost_usd;
     item.cached_input_cost_usd = snapshot.cached_input_cost_usd;
     item.cache_write_cost_usd = snapshot.cache_write_cost_usd;
@@ -734,11 +739,16 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         pricing_context_band: "unknown".to_string(),
         pricing_billing_mode: None,
         long_context_threshold_tokens: None,
+        long_context_threshold_inclusive: None,
         pricing_matched_rule_id: None,
         pricing_matched_pattern: None,
         pricing_source: None,
         pricing_match_quality: None,
         pricing_status: None,
+        pricing_cost_source: None,
+        provider_cost_usd: None,
+        local_estimated_cost_usd: None,
+        pricing_variance_usd: None,
         plain_input_cost_usd: None,
         cached_input_cost_usd: None,
         cache_write_cost_usd: None,

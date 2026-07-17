@@ -57,6 +57,17 @@ export interface AggregateApi {
   modelSlugs: string[];
 }
 
+export interface AggregateApiRuntimeStatus {
+  aggregateApiId: string;
+  isCoolingDown: boolean;
+  consecutiveFailures: number;
+  failureThreshold: number;
+  cooldownUntil: number | null;
+  remainingSecs: number;
+  lastFailureAt: number | null;
+  reason: string | null;
+}
+
 export interface AggregateApiCreateResult {
   id: string;
   key: string;
@@ -103,6 +114,61 @@ export interface AggregateApiCapabilityDiagnosticsResult {
   nonMutating: boolean;
   liveSmoke: boolean;
   probes: AggregateApiCapabilityProbeResult[];
+}
+
+export type CapabilityRoutingMode = "off" | "observe" | "enforce";
+export type GatewayCapabilityState = "supported" | "unsupported" | "unknown";
+export type GatewayCapabilityOverrideState = "auto" | "supported" | "unsupported";
+
+export interface AggregateApiCapabilityObservation {
+  state: GatewayCapabilityState;
+  source: "runtime" | "probe" | string;
+  confidence: string;
+  evidenceCode: string;
+  lastObservedAt: number;
+  expiresAt: number;
+  occurrenceCount: number;
+  upstreamModelPattern: string;
+  protocol: string;
+}
+
+export interface AggregateApiEffectiveCapability {
+  capabilityKey: string;
+  effectiveState: GatewayCapabilityState;
+  resolvedSource: string;
+  confidence: string;
+  expiresAt: number | null;
+  scope: {
+    sourceKind: string;
+    sourceId: string;
+    upstreamModelPattern: string;
+    protocol: string;
+  };
+  overrideState: GatewayCapabilityOverrideState;
+  observations: AggregateApiCapabilityObservation[];
+}
+
+export interface AggregateApiCapabilitiesResult {
+  apiId: string;
+  routingMode: CapabilityRoutingMode;
+  routingModeOptions: CapabilityRoutingMode[];
+  items: AggregateApiEffectiveCapability[];
+}
+
+export interface AggregateApiCapabilityAttempt {
+  id: number | null;
+  traceId: string;
+  attemptIndex: number;
+  phase: string;
+  supplierName: string | null;
+  upstreamModel: string | null;
+  errorClass: string | null;
+  errorCode: string | null;
+  httpStatus: number | null;
+  durationMs: number | null;
+  outcome: string;
+  deliveryStarted: boolean;
+  createdAt: number;
 }
 
 export interface AggregateApiBalanceSnapshot {

@@ -16,6 +16,7 @@ mod api_key_quota_limits;
 mod api_keys;
 mod conversation_bindings;
 mod events;
+mod gateway_capabilities;
 mod key_id_filters;
 mod model_groups;
 mod model_options;
@@ -524,11 +525,17 @@ pub struct RequestPricingSnapshot {
     pub billing_mode: String,
     pub context_band: String,
     pub long_context_threshold_tokens: Option<i64>,
+    pub long_context_threshold_inclusive: Option<bool>,
     pub matched_rule_id: Option<String>,
     pub matched_pattern: Option<String>,
     pub price_source: Option<String>,
     pub match_quality: Option<String>,
     pub price_status: String,
+    pub cost_source: Option<String>,
+    pub provider_cost_usd_ticks: Option<i64>,
+    pub provider_cost_usd: Option<f64>,
+    pub local_estimated_cost_usd: Option<f64>,
+    pub pricing_variance_usd: Option<f64>,
     pub plain_input_cost_usd: Option<f64>,
     pub cached_input_cost_usd: Option<f64>,
     pub cache_write_cost_usd: Option<f64>,
@@ -565,6 +572,26 @@ pub struct RequestLogQuerySummary {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct RequestLogModelUsageSummary {
+    pub model: String,
+    pub request_count: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub total_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequestLogModelUsageQueryResult {
+    pub items: Vec<RequestLogModelUsageSummary>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct GatewayReasoningGuardEvent {
     pub trace_id: Option<String>,
     pub request_log_id: Option<i64>,
@@ -584,6 +611,62 @@ pub struct GatewayReasoningGuardEvent {
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
     pub estimated_cost_usd: Option<f64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayCapabilityScope {
+    pub source_kind: String,
+    pub source_id: String,
+    pub upstream_model_pattern: String,
+    pub protocol: String,
+    pub capability_key: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayCapabilityOverrideRecord {
+    pub scope: GatewayCapabilityScope,
+    pub state: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayCapabilityObservationRecord {
+    pub id: Option<i64>,
+    pub scope: GatewayCapabilityScope,
+    pub state: String,
+    pub observation_source: String,
+    pub confidence: String,
+    pub evidence_code: String,
+    pub first_observed_at: i64,
+    pub last_observed_at: i64,
+    pub expires_at: i64,
+    pub occurrence_count: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayUpstreamAttemptEvent {
+    pub id: Option<i64>,
+    pub trace_id: String,
+    pub request_log_id: Option<i64>,
+    pub attempt_index: i64,
+    pub phase: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub supplier_name: Option<String>,
+    pub upstream_model: Option<String>,
+    pub protocol: String,
+    pub request_path: String,
+    pub contract_signature: String,
+    pub capability_decisions_json: String,
+    pub transform_codes_json: String,
+    pub error_class: Option<String>,
+    pub error_code: Option<String>,
+    pub http_status: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub outcome: String,
+    pub delivery_started: bool,
     pub created_at: i64,
 }
 
@@ -901,6 +984,7 @@ pub struct ModelPriceRule {
     pub cache_write_1h_price_per_1m: Option<f64>,
     pub cache_hit_price_per_1m: Option<f64>,
     pub long_context_threshold_tokens: Option<i64>,
+    pub long_context_threshold_inclusive: bool,
     pub long_context_input_price_per_1m: Option<f64>,
     pub long_context_cached_input_price_per_1m: Option<f64>,
     pub long_context_cache_write_price_per_1m: Option<f64>,
@@ -2033,6 +2117,19 @@ impl Storage {
                 s.ensure_request_token_stats_table()
             },
         )?;
+        self.apply_sql_or_compat_migration(
+            "115_grok_4_5_billing",
+            include_str!("../../migrations/115_grok_4_5_billing.sql"),
+            |s| {
+                s.ensure_model_price_rules_table()?;
+                s.ensure_request_pricing_snapshots_table()
+            },
+        )?;
+        self.apply_sql_or_compat_migration(
+            "116_gateway_capability_routing",
+            include_str!("../../migrations/116_gateway_capability_routing.sql"),
+            |s| s.ensure_gateway_capability_tables(),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_supplier_model_tables()?;
@@ -2076,6 +2173,10 @@ impl Storage {
             touched = touched.saturating_add(self.rollup_request_token_stats_before(cutoff)?);
         }
         touched = touched.saturating_add(self.prune_request_logs_by_retention(now)?);
+        touched = touched.saturating_add(self.prune_expired_gateway_capability_observations(now)?);
+        touched = touched.saturating_add(
+            self.prune_gateway_upstream_attempt_events_by_retention(now)?,
+        );
         touched = touched.saturating_add(
             self.prune_usage_snapshots_all_accounts(usage::usage_snapshots_retain_per_account())?,
         );

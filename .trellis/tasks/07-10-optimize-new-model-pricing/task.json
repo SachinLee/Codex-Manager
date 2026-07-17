@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "07-15-grok-4-5-billing"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",

@@ -1163,3 +1163,122 @@ fn request_logs_for_large_key_sets_use_temp_filter() {
     assert_eq!(summary.output_tokens, 10);
     assert_eq!(summary.estimated_cost_usd, 0.04);
 }
+
+#[test]
+fn request_logs_filtered_summary_groups_by_model() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    for (index, model, status_code, total_tokens, cost, key_id, error) in [
+        (0_i64, "gpt-5.6", Some(200_i64), Some(100_i64), 0.10, "gk-a", None),
+        (1_i64, "gpt-5.6", Some(200_i64), Some(50_i64), 0.05, "gk-a", None),
+        (2_i64, "gpt-5.4", Some(502_i64), Some(20_i64), 0.02, "gk-a", Some("boom")),
+        (3_i64, "gpt-5.4", Some(200_i64), Some(30_i64), 0.03, "gk-b", None),
+        (4_i64, "", Some(200_i64), Some(10_i64), 0.01, "gk-a", None),
+    ] {
+        let created_at = 3_000 + index;
+        let request_log_id = storage
+            .insert_request_log(&RequestLog {
+                trace_id: Some(format!("trc-model-{index}")),
+                key_id: Some(key_id.to_string()),
+                account_id: Some("acc-model".to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                model: if model.is_empty() {
+                    None
+                } else {
+                    Some(model.to_string())
+                },
+                status_code,
+                error: error.map(|value| value.to_string()),
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert request log");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                key_id: Some(key_id.to_string()),
+                account_id: Some("acc-model".to_string()),
+                model: if model.is_empty() {
+                    None
+                } else {
+                    Some(model.to_string())
+                },
+                input_tokens: Some(80),
+                cached_input_tokens: Some(40),
+                output_tokens: Some(20),
+                total_tokens,
+                reasoning_output_tokens: Some(5),
+                estimated_cost_usd: Some(cost),
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert token stat");
+    }
+
+    let all = storage
+        .summarize_request_logs_by_model_filtered(None, Some("all"), None, None)
+        .expect("summarize all models");
+    assert!(!all.truncated);
+    assert_eq!(all.items.len(), 3);
+    assert_eq!(all.items[0].model, "gpt-5.6");
+    assert_eq!(all.items[0].request_count, 2);
+    assert_eq!(all.items[0].success_count, 2);
+    assert_eq!(all.items[0].error_count, 0);
+    assert_eq!(all.items[0].total_tokens, 150);
+    assert!((all.items[0].estimated_cost_usd - 0.15).abs() < 1e-9);
+    assert_eq!(all.items[0].input_tokens, 160);
+    assert_eq!(all.items[0].cached_input_tokens, 80);
+
+    assert_eq!(all.items[1].model, "gpt-5.4");
+    assert_eq!(all.items[1].request_count, 2);
+    assert_eq!(all.items[1].success_count, 1);
+    assert_eq!(all.items[1].error_count, 1);
+    assert_eq!(all.items[1].total_tokens, 50);
+
+    assert_eq!(all.items[2].model, "(unknown)");
+    assert_eq!(all.items[2].request_count, 1);
+
+    let success_only = storage
+        .summarize_request_logs_by_model_filtered(None, Some("2xx"), None, None)
+        .expect("summarize 2xx models");
+    assert_eq!(success_only.items.len(), 3);
+    let gpt54 = success_only
+        .items
+        .iter()
+        .find(|item| item.model == "gpt-5.4")
+        .expect("gpt-5.4 row");
+    assert_eq!(gpt54.request_count, 1);
+    assert_eq!(gpt54.error_count, 0);
+
+    let for_keys = storage
+        .summarize_request_logs_by_model_filtered_for_keys(
+            None,
+            Some("all"),
+            None,
+            None,
+            &["gk-a".to_string()],
+        )
+        .expect("summarize models for key");
+    assert_eq!(for_keys.items.len(), 3);
+    let gpt54_key = for_keys
+        .items
+        .iter()
+        .find(|item| item.model == "gpt-5.4")
+        .expect("gpt-5.4 for key a");
+    assert_eq!(gpt54_key.request_count, 1);
+    assert_eq!(gpt54_key.total_tokens, 20);
+
+    let empty = storage
+        .summarize_request_logs_by_model_filtered_for_keys(
+            None,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .expect("empty key filter");
+    assert!(empty.items.is_empty());
+}
+

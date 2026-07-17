@@ -7,6 +7,7 @@ use super::{
     set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
@@ -87,6 +88,13 @@ pub fn sync_runtime_settings_from_storage() {
                 if let Err(err) = gateway::set_route_strategy(&strategy) {
                     log::warn!("sync persisted route strategy failed: {err}");
                 }
+            }
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_CAPABILITY_ROUTING_MODE") {
+        if let Some(mode) = settings.get(APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY) {
+            if let Err(err) = gateway::set_capability_routing_mode(mode) {
+                log::warn!("sync persisted capability routing mode failed: {err}");
             }
         }
     }

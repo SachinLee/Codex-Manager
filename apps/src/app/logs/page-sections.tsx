@@ -25,6 +25,7 @@ import { buildStaticRouteUrl } from "@/lib/utils/static-routes";
 import { formatTsFromSeconds } from "@/lib/utils/usage";
 import { formatCacheRate, formatUsdAmount } from "@/lib/utils/billing";
 import { cn } from "@/lib/utils";
+import { ModelUsageStatsCard } from "./model-usage-stats";
 import {
   AccountKeyInfoCell,
   ErrorInfoCell,
@@ -40,6 +41,8 @@ import {
   formatTableTokenAmount,
   getStatusBadge,
   isReasoningGuardConverted502,
+  searchFieldPlaceholder,
+  type SearchField,
   type StatusFilter,
   type TimeRangePreset,
   type TranslateFn,
@@ -56,6 +59,7 @@ export function RequestLogsTabContent({
   isAdminMode,
   serviceConnected,
   search,
+  searchField,
   filter,
   timePreset,
   startTimeInput,
@@ -75,6 +79,7 @@ export function RequestLogsTabContent({
   codexSessionMap,
   clearMutationPending,
   onSearchChange,
+  onSearchFieldChange,
   onFilterChange,
   onRefresh,
   onOpenClearConfirm,
@@ -91,6 +96,7 @@ export function RequestLogsTabContent({
   isAdminMode: boolean;
   serviceConnected: boolean;
   search: string;
+  searchField: SearchField;
   filter: StatusFilter;
   timePreset: TimeRangePreset;
   startTimeInput: string;
@@ -110,6 +116,7 @@ export function RequestLogsTabContent({
   codexSessionMap: Map<string, CodexSession>;
   clearMutationPending: boolean;
   onSearchChange: (value: string) => void;
+  onSearchFieldChange: (value: SearchField) => void;
   onFilterChange: (value: StatusFilter) => void;
   onRefresh: () => void;
   onOpenClearConfirm: () => void;
@@ -148,10 +155,33 @@ export function RequestLogsTabContent({
       <Card className="glass-card shadow-sm">
         <CardContent className="space-y-3 pt-0">
           <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto] xl:items-center">
-            <div className="min-w-0">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+              <Select
+                value={searchField}
+                onValueChange={(value) => {
+                  if (
+                    value === "all" ||
+                    value === "model" ||
+                    value === "session_title"
+                  ) {
+                    onSearchFieldChange(value);
+                  }
+                }}
+              >
+                <SelectTrigger className="glass-card h-10 w-full rounded-xl sm:w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="all">{t("全部字段")}</SelectItem>
+                    <SelectItem value="model">{t("模型")}</SelectItem>
+                    <SelectItem value="session_title">{t("会话标题")}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
               <Input
-                placeholder={t("搜索路径、账号或密钥 ID...")}
-                className="glass-card h-10 rounded-xl px-3"
+                placeholder={searchFieldPlaceholder(searchField, t)}
+                className="glass-card h-10 min-w-0 flex-1 rounded-xl px-3"
                 value={search}
                 onChange={(event) => onSearchChange(event.target.value)}
               />
@@ -396,6 +426,18 @@ export function RequestLogsTabContent({
         </Card>
       </div>
 
+      <ModelUsageStatsCard
+        t={t}
+        summary={summary}
+        isLoading={isLogsLoading && summary.modelStats.length === 0}
+        onModelClick={(model) => {
+          if (model && model !== "(unknown)") {
+            onSearchFieldChange("model");
+            onSearchChange(model);
+          }
+        }}
+      />
+
       <Card className="glass-card overflow-hidden gap-0 py-0 shadow-sm">
         <CardHeader className="flex min-h-1 items-center border-b border-border/40 bg-[var(--table-section-bg)] py-3">
           <div className="flex w-full flex-col gap-1 xl:flex-row xl:items-center xl:justify-between">
@@ -562,6 +604,15 @@ export function RequestLogsTabContent({
                     <TableCell className="w-[176px] max-w-[176px] overflow-hidden px-4 py-3 align-top font-mono text-xs whitespace-normal text-foreground">
                       <div className="flex min-w-0 flex-col gap-1">
                         <span>{formatUsdAmount(log.estimatedCostUsd)}</span>
+                        {log.pricingCostSource === "provider_reported" ? (
+                          <span className="w-fit rounded border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-300">
+                            {t("官方实际费用")}
+                          </span>
+                        ) : log.pricingCostSource === "local_estimate" ? (
+                          <span className="w-fit rounded border border-sky-500/25 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-600 dark:text-sky-300">
+                            {t("本地估算")}
+                          </span>
+                        ) : null}
                         {log.pricingContextBand === "long" ? (
                           <span
                             className="w-fit max-w-full truncate rounded border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-600 dark:text-violet-300"

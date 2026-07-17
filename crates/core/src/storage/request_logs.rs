@@ -3,14 +3,14 @@ use rusqlite::{params, params_from_iter, types::Value, Result, Row};
 use super::key_id_filters::KeyIdSqlFilter;
 use super::reasoning_guard_events::GUARD_RETRY_ACTION_SQL;
 use super::{
-    request_log_query, RequestLog, RequestLogQuerySummary, RequestLogTodaySummary,
-    RequestTokenStat, Storage,
+    request_log_query, RequestLog, RequestLogModelUsageQueryResult, RequestLogModelUsageSummary,
+    RequestLogQuerySummary, RequestLogTodaySummary, RequestTokenStat, Storage,
 };
 
 const DEFAULT_REQUEST_LOG_RETENTION_DAYS: i64 = 14;
 const REQUEST_LOG_RETENTION_DAYS_ENV: &str = "CODEXMANAGER_REQUEST_LOG_RETENTION_DAYS";
 
-fn request_log_retention_days() -> i64 {
+pub(super) fn request_log_retention_days() -> i64 {
     std::env::var(REQUEST_LOG_RETENTION_DAYS_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
@@ -679,6 +679,148 @@ impl Storage {
                     legacy_candidate_count: row.get(10)?,
                 })
             })
+    }
+
+
+    const REQUEST_LOG_MODEL_USAGE_LIMIT: i64 = 50;
+
+    pub fn summarize_request_logs_by_model_filtered(
+        &self,
+        query: Option<&str>,
+        status_filter: Option<&str>,
+        start_ts: Option<i64>,
+        end_ts: Option<i64>,
+    ) -> Result<RequestLogModelUsageQueryResult> {
+        self.summarize_request_logs_by_model_filtered_inner(
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            None,
+        )
+    }
+
+    pub fn summarize_request_logs_by_model_filtered_for_keys(
+        &self,
+        query: Option<&str>,
+        status_filter: Option<&str>,
+        start_ts: Option<i64>,
+        end_ts: Option<i64>,
+        key_ids: &[String],
+    ) -> Result<RequestLogModelUsageQueryResult> {
+        let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
+            return Ok(RequestLogModelUsageQueryResult::default());
+        };
+        self.summarize_request_logs_by_model_filtered_inner(
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            Some(&key_filter),
+        )
+    }
+
+    fn summarize_request_logs_by_model_filtered_inner(
+        &self,
+        query: Option<&str>,
+        status_filter: Option<&str>,
+        start_ts: Option<i64>,
+        end_ts: Option<i64>,
+        key_filter: Option<&KeyIdSqlFilter<'_>>,
+    ) -> Result<RequestLogModelUsageQueryResult> {
+        let include_account_lookup = self.has_table("accounts")?;
+        let filters = build_request_log_filters(
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            include_account_lookup,
+            key_filter,
+            key_filter.is_none(),
+        );
+        // Model stats intentionally exclude Guard retry tokens/cost so per-model
+        // rows stay attributable to the resolved request model only.
+        let limit = Self::REQUEST_LOG_MODEL_USAGE_LIMIT;
+        let fetch_limit = limit + 1;
+        let sql = format!(
+            "WITH filtered AS (
+                SELECT
+                    COALESCE(
+                        NULLIF(TRIM(IFNULL(t.model, '')), ''),
+                        NULLIF(TRIM(IFNULL(r.model, '')), ''),
+                        '(unknown)'
+                    ) AS model,
+                    r.status_code,
+                    r.error,
+                    CASE
+                        WHEN t.total_tokens IS NOT NULL THEN
+                            CASE WHEN t.total_tokens > 0 THEN t.total_tokens ELSE 0 END
+                        ELSE
+                            CASE
+                                WHEN IFNULL(t.input_tokens, 0) - IFNULL(t.cached_input_tokens, 0) + IFNULL(t.output_tokens, 0) > 0
+                                    THEN IFNULL(t.input_tokens, 0) - IFNULL(t.cached_input_tokens, 0) + IFNULL(t.output_tokens, 0)
+                                ELSE 0
+                            END
+                    END AS total_tokens,
+                    IFNULL(t.estimated_cost_usd, 0.0) AS estimated_cost_usd,
+                    CASE WHEN IFNULL(t.input_tokens, 0) > 0 THEN t.input_tokens ELSE 0 END AS input_tokens,
+                    CASE
+                        WHEN IFNULL(t.cached_input_tokens, 0) < 0 THEN 0
+                        WHEN IFNULL(t.input_tokens, 0) > 0 AND IFNULL(t.cached_input_tokens, 0) > t.input_tokens
+                            THEN t.input_tokens
+                        ELSE IFNULL(t.cached_input_tokens, 0)
+                    END AS cached_input_tokens,
+                    CASE WHEN IFNULL(t.output_tokens, 0) > 0 THEN t.output_tokens ELSE 0 END AS output_tokens,
+                    CASE WHEN IFNULL(t.reasoning_output_tokens, 0) > 0 THEN t.reasoning_output_tokens ELSE 0 END AS reasoning_output_tokens
+                 FROM request_logs r
+                 {account_join}
+                 LEFT JOIN request_token_stats t ON t.request_log_id = r.id
+                 {where_clause}
+             )
+             SELECT
+                f.model,
+                COUNT(1) AS request_count,
+                IFNULL(SUM(CASE WHEN f.status_code >= 200 AND f.status_code <= 299 THEN 1 ELSE 0 END), 0) AS success_count,
+                IFNULL(SUM(CASE WHEN IFNULL(f.status_code, 0) >= 400 OR TRIM(IFNULL(f.error, '')) <> '' THEN 1 ELSE 0 END), 0) AS error_count,
+                IFNULL(SUM(f.total_tokens), 0) AS total_tokens,
+                IFNULL(SUM(f.estimated_cost_usd), 0.0) AS estimated_cost_usd,
+                IFNULL(SUM(f.input_tokens), 0) AS input_tokens,
+                IFNULL(SUM(f.cached_input_tokens), 0) AS cached_input_tokens,
+                IFNULL(SUM(f.output_tokens), 0) AS output_tokens,
+                IFNULL(SUM(f.reasoning_output_tokens), 0) AS reasoning_output_tokens
+             FROM filtered f
+             GROUP BY f.model
+             ORDER BY
+                estimated_cost_usd DESC,
+                total_tokens DESC,
+                f.model ASC
+             LIMIT {fetch_limit}",
+            account_join = account_join_clause(include_account_lookup),
+            where_clause = filters.where_clause,
+            fetch_limit = fetch_limit,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(filters.params.iter()))?;
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            items.push(RequestLogModelUsageSummary {
+                model: row.get(0)?,
+                request_count: row.get::<_, i64>(1)?.max(0),
+                success_count: row.get::<_, i64>(2)?.max(0),
+                error_count: row.get::<_, i64>(3)?.max(0),
+                total_tokens: row.get::<_, i64>(4)?.max(0),
+                estimated_cost_usd: row.get::<_, f64>(5)?.max(0.0),
+                input_tokens: row.get::<_, i64>(6)?.max(0),
+                cached_input_tokens: row.get::<_, i64>(7)?.max(0),
+                output_tokens: row.get::<_, i64>(8)?.max(0),
+                reasoning_output_tokens: row.get::<_, i64>(9)?.max(0),
+            });
+        }
+        let truncated = items.len() as i64 > limit;
+        if truncated {
+            items.truncate(limit as usize);
+        }
+        Ok(RequestLogModelUsageQueryResult { items, truncated })
     }
 
     /// 函数 `clear_request_logs`
@@ -1389,6 +1531,17 @@ fn append_request_log_query_clause(
             }
             clauses.push(format!("r.{column} = ?"));
             params.push(Value::Text(value));
+        }
+        request_log_query::RequestLogQuery::SessionIdIn(ids) => {
+            if ids.is_empty() {
+                clauses.push("1 = 0".to_string());
+                return;
+            }
+            let placeholders = vec!["?"; ids.len()].join(", ");
+            clauses.push(format!("IFNULL(r.session_id, '') IN ({placeholders})"));
+            for id in ids {
+                params.push(Value::Text(id));
+            }
         }
         request_log_query::RequestLogQuery::StatusExact(status) => {
             clauses.push("r.status_code = ?".to_string());

@@ -672,6 +672,62 @@ export function buildSummaryPlaceholder(
     0,
   );
 
+  const modelMap = new Map<
+    string,
+    {
+      model: string;
+      requestCount: number;
+      successCount: number;
+      errorCount: number;
+      totalTokens: number;
+      estimatedCostUsd: number;
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      reasoningOutputTokens: number;
+    }
+  >();
+  for (const item of logs) {
+    const model = String(item.model || "").trim() || "(unknown)";
+    const current = modelMap.get(model) || {
+      model,
+      requestCount: 0,
+      successCount: 0,
+      errorCount: 0,
+      totalTokens: 0,
+      estimatedCostUsd: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    };
+    const statusCode = item.statusCode ?? 0;
+    const isSuccess =
+      statusCode >= 200 && statusCode < 300 && !String(item.error || "").trim();
+    const isError =
+      Boolean(String(item.error || "").trim()) ||
+      (item.statusCode != null && item.statusCode >= 400);
+    current.requestCount += 1;
+    if (isSuccess) current.successCount += 1;
+    if (isError) current.errorCount += 1;
+    current.totalTokens += Math.max(0, item.totalTokens || 0);
+    current.estimatedCostUsd += Math.max(0, item.estimatedCostUsd || 0);
+    current.inputTokens += Math.max(0, item.inputTokens || 0);
+    current.cachedInputTokens += Math.max(0, item.cachedInputTokens || 0);
+    current.outputTokens += Math.max(0, item.outputTokens || 0);
+    current.reasoningOutputTokens += Math.max(0, item.reasoningOutputTokens || 0);
+    modelMap.set(model, current);
+  }
+  const modelStats = Array.from(modelMap.values()).sort((left, right) => {
+    if (right.estimatedCostUsd !== left.estimatedCostUsd) {
+      return right.estimatedCostUsd - left.estimatedCostUsd;
+    }
+    if (right.totalTokens !== left.totalTokens) {
+      return right.totalTokens - left.totalTokens;
+    }
+    return left.model.localeCompare(right.model);
+  });
+
   return {
     totalCount: logs.length,
     filteredCount: logs.length,
@@ -687,5 +743,7 @@ export function buildSummaryPlaceholder(
     legacyCandidateCount: logs.filter(
       (item) => item.pricingContextBand === "legacy_candidate",
     ).length,
+    modelStats,
+    modelStatsTruncated: false,
   };
 }

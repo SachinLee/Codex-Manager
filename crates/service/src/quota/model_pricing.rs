@@ -1,7 +1,7 @@
 use codexmanager_core::storage::{now_ts, ModelPriceRule, Storage};
 use std::sync::{Mutex, OnceLock};
 
-pub(crate) const PRICE_SEED_VERSION: &str = "2026-07-10";
+pub(crate) const PRICE_SEED_VERSION: &str = "2026-07-15";
 
 #[derive(Debug, Clone, Copy)]
 struct PriceSeed {
@@ -34,6 +34,7 @@ pub(crate) struct ModelPriceMatch {
     pub(crate) billing_mode: &'static str,
     pub(crate) context_band: &'static str,
     pub(crate) long_context_threshold_tokens: Option<i64>,
+    pub(crate) long_context_threshold_inclusive: bool,
     pub(crate) provider: String,
     pub(crate) short_input_price_per_1m: f64,
     pub(crate) short_cached_input_price_per_1m: f64,
@@ -54,6 +55,7 @@ pub(crate) struct CostEstimate {
     pub(crate) billing_mode: Option<&'static str>,
     pub(crate) context_band: &'static str,
     pub(crate) long_context_threshold_tokens: Option<i64>,
+    pub(crate) long_context_threshold_inclusive: bool,
     pub(crate) matched_rule_id: Option<String>,
     pub(crate) matched_pattern: Option<String>,
     pub(crate) price_source: Option<String>,
@@ -64,6 +66,11 @@ pub(crate) struct CostEstimate {
     pub(crate) output_cost_usd: Option<f64>,
     pub(crate) short_baseline_cost_usd: Option<f64>,
     pub(crate) long_context_uplift_usd: Option<f64>,
+    pub(crate) cost_source: Option<&'static str>,
+    pub(crate) provider_cost_usd_ticks: Option<i64>,
+    pub(crate) provider_cost_usd: Option<f64>,
+    pub(crate) local_estimated_cost_usd: Option<f64>,
+    pub(crate) pricing_variance_usd: Option<f64>,
 }
 
 impl CostEstimate {
@@ -75,6 +82,7 @@ impl CostEstimate {
             billing_mode: None,
             context_band: "unknown",
             long_context_threshold_tokens: None,
+            long_context_threshold_inclusive: false,
             matched_rule_id: None,
             matched_pattern: None,
             price_source: None,
@@ -85,6 +93,11 @@ impl CostEstimate {
             output_cost_usd: None,
             short_baseline_cost_usd: None,
             long_context_uplift_usd: None,
+            cost_source: None,
+            provider_cost_usd_ticks: None,
+            provider_cost_usd: None,
+            local_estimated_cost_usd: None,
+            pricing_variance_usd: None,
         }
     }
 
@@ -114,6 +127,7 @@ impl CostEstimate {
 const OPENAI_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
 const ANTHROPIC_PRICE_SOURCE: &str = "https://docs.claude.com/en/docs/about-claude/pricing";
 const GEMINI_PRICE_SOURCE: &str = "https://ai.google.dev/gemini-api/docs/pricing";
+const XAI_PRICE_SOURCE: &str = "https://docs.x.ai/developers/pricing";
 
 const PRICE_SEEDS: &[PriceSeed] = &[
     PriceSeed {
@@ -488,9 +502,81 @@ const PRICE_SEEDS: &[PriceSeed] = &[
         long_context_output_price_per_1m: None,
         source_url: GEMINI_PRICE_SOURCE,
     },
+    PriceSeed {
+        provider: "xai",
+        model_pattern: "grok-4.5",
+        input_price_per_1m: 2.0,
+        cached_input_price_per_1m: Some(0.5),
+        output_price_per_1m: 6.0,
+        long_context_threshold_tokens: Some(200_000),
+        long_context_input_price_per_1m: Some(4.0),
+        long_context_cached_input_price_per_1m: Some(1.0),
+        long_context_output_price_per_1m: Some(12.0),
+        source_url: XAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "xai",
+        model_pattern: "grok-4.5-latest",
+        input_price_per_1m: 2.0,
+        cached_input_price_per_1m: Some(0.5),
+        output_price_per_1m: 6.0,
+        long_context_threshold_tokens: Some(200_000),
+        long_context_input_price_per_1m: Some(4.0),
+        long_context_cached_input_price_per_1m: Some(1.0),
+        long_context_output_price_per_1m: Some(12.0),
+        source_url: XAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "xai",
+        model_pattern: "grok-build-latest",
+        input_price_per_1m: 2.0,
+        cached_input_price_per_1m: Some(0.5),
+        output_price_per_1m: 6.0,
+        long_context_threshold_tokens: Some(200_000),
+        long_context_input_price_per_1m: Some(4.0),
+        long_context_cached_input_price_per_1m: Some(1.0),
+        long_context_output_price_per_1m: Some(12.0),
+        source_url: XAI_PRICE_SOURCE,
+    },
 ];
 
 const PRIORITY_PRICE_SEEDS: &[PriceSeed] = &[
+    PriceSeed {
+        provider: "xai",
+        model_pattern: "grok-4.5",
+        input_price_per_1m: 4.0,
+        cached_input_price_per_1m: Some(1.0),
+        output_price_per_1m: 12.0,
+        long_context_threshold_tokens: Some(200_000),
+        long_context_input_price_per_1m: Some(8.0),
+        long_context_cached_input_price_per_1m: Some(2.0),
+        long_context_output_price_per_1m: Some(24.0),
+        source_url: XAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "xai",
+        model_pattern: "grok-4.5-latest",
+        input_price_per_1m: 4.0,
+        cached_input_price_per_1m: Some(1.0),
+        output_price_per_1m: 12.0,
+        long_context_threshold_tokens: Some(200_000),
+        long_context_input_price_per_1m: Some(8.0),
+        long_context_cached_input_price_per_1m: Some(2.0),
+        long_context_output_price_per_1m: Some(24.0),
+        source_url: XAI_PRICE_SOURCE,
+    },
+    PriceSeed {
+        provider: "xai",
+        model_pattern: "grok-build-latest",
+        input_price_per_1m: 4.0,
+        cached_input_price_per_1m: Some(1.0),
+        output_price_per_1m: 12.0,
+        long_context_threshold_tokens: Some(200_000),
+        long_context_input_price_per_1m: Some(8.0),
+        long_context_cached_input_price_per_1m: Some(2.0),
+        long_context_output_price_per_1m: Some(24.0),
+        source_url: XAI_PRICE_SOURCE,
+    },
     PriceSeed {
         provider: "openai",
         model_pattern: "gpt-5.6-sol",
@@ -672,33 +758,34 @@ fn official_price_seed(
     now: i64,
 ) -> ModelPriceRule {
     ModelPriceRule {
-            id: official_price_seed_id(seed, billing_mode),
-            provider: seed.provider.to_string(),
-            model_pattern: seed.model_pattern.to_string(),
-            match_type: "prefix".to_string(),
-            billing_mode: billing_mode.to_string(),
-            currency: "USD".to_string(),
-            unit: "per_1m_tokens".to_string(),
-            input_price_per_1m: Some(seed.input_price_per_1m),
-            cached_input_price_per_1m: seed.cached_input_price_per_1m,
-            cache_write_price_per_1m: seed_cache_write_price(seed, false),
-            output_price_per_1m: Some(seed.output_price_per_1m),
-            reasoning_output_price_per_1m: None,
-            cache_write_5m_price_per_1m: None,
-            cache_write_1h_price_per_1m: None,
-            cache_hit_price_per_1m: None,
-            long_context_threshold_tokens: seed.long_context_threshold_tokens,
-            long_context_input_price_per_1m: seed.long_context_input_price_per_1m,
-            long_context_cached_input_price_per_1m: seed.long_context_cached_input_price_per_1m,
-            long_context_cache_write_price_per_1m: seed_cache_write_price(seed, true),
-            long_context_output_price_per_1m: seed.long_context_output_price_per_1m,
-            source: "official_seed".to_string(),
-            source_url: Some(seed.source_url.to_string()),
-            seed_version: Some(PRICE_SEED_VERSION.to_string()),
-            enabled: true,
-            priority: 10_000 - index as i64,
-            created_at: now,
-            updated_at: now,
+        id: official_price_seed_id(seed, billing_mode),
+        provider: seed.provider.to_string(),
+        model_pattern: seed.model_pattern.to_string(),
+        match_type: "prefix".to_string(),
+        billing_mode: billing_mode.to_string(),
+        currency: "USD".to_string(),
+        unit: "per_1m_tokens".to_string(),
+        input_price_per_1m: Some(seed.input_price_per_1m),
+        cached_input_price_per_1m: seed.cached_input_price_per_1m,
+        cache_write_price_per_1m: seed_cache_write_price(seed, false),
+        output_price_per_1m: Some(seed.output_price_per_1m),
+        reasoning_output_price_per_1m: None,
+        cache_write_5m_price_per_1m: None,
+        cache_write_1h_price_per_1m: None,
+        cache_hit_price_per_1m: None,
+        long_context_threshold_tokens: seed.long_context_threshold_tokens,
+        long_context_threshold_inclusive: seed.provider == "xai",
+        long_context_input_price_per_1m: seed.long_context_input_price_per_1m,
+        long_context_cached_input_price_per_1m: seed.long_context_cached_input_price_per_1m,
+        long_context_cache_write_price_per_1m: seed_cache_write_price(seed, true),
+        long_context_output_price_per_1m: seed.long_context_output_price_per_1m,
+        source: "official_seed".to_string(),
+        source_url: Some(seed.source_url.to_string()),
+        seed_version: Some(PRICE_SEED_VERSION.to_string()),
+        enabled: true,
+        priority: 10_000 - index as i64,
+        created_at: now,
+        updated_at: now,
     }
 }
 
@@ -789,7 +876,9 @@ fn rule_matches(rule: &ModelPriceRule, normalized_model: &str) -> bool {
             official_family_prefix_matches(&pattern, normalized_model)
         }
         "prefix" | "" => normalized_model.starts_with(&pattern),
-        _ if rule.source == "official_seed" => official_family_prefix_matches(&pattern, normalized_model),
+        _ if rule.source == "official_seed" => {
+            official_family_prefix_matches(&pattern, normalized_model)
+        }
         _ => normalized_model.starts_with(&pattern),
     }
 }
@@ -826,9 +915,13 @@ fn price_from_rule(
     let mut cache_write = short_cache_write;
     let mut cache_write_price_is_explicit = rule.cache_write_price_per_1m.is_some();
     let mut output = short_output;
-    let is_long_context = rule
-        .long_context_threshold_tokens
-        .is_some_and(|threshold| input_tokens > threshold);
+    let is_long_context = rule.long_context_threshold_tokens.is_some_and(|threshold| {
+        if rule.long_context_threshold_inclusive {
+            input_tokens >= threshold
+        } else {
+            input_tokens > threshold
+        }
+    });
 
     if is_long_context {
         input = rule.long_context_input_price_per_1m.unwrap_or(input);
@@ -859,6 +952,7 @@ fn price_from_rule(
             "short"
         },
         long_context_threshold_tokens: rule.long_context_threshold_tokens,
+        long_context_threshold_inclusive: rule.long_context_threshold_inclusive,
         provider: rule.provider.clone(),
         short_input_price_per_1m: short_input,
         short_cached_input_price_per_1m: short_cached,
@@ -951,9 +1045,13 @@ fn resolve_model_price_from_seeds(
     let mut cached = short_cached;
     let mut output = short_output;
 
-    if matched
-        .long_context_threshold_tokens
-        .is_some_and(|threshold| input_tokens > threshold)
+    if matched.long_context_threshold_tokens.is_some_and(|threshold| {
+        if matched.provider == "xai" {
+            input_tokens >= threshold
+        } else {
+            input_tokens > threshold
+        }
+    })
     {
         long_context = true;
         input = matched
@@ -974,7 +1072,11 @@ fn resolve_model_price_from_seeds(
         rule_id: official_price_seed_id(matched, billing_mode),
         model_pattern: matched.model_pattern.to_string(),
         price_source: "official_seed".to_string(),
-        match_quality: if normalized == matched.model_pattern { "exact" } else { "family" },
+        match_quality: if normalized == matched.model_pattern {
+            "exact"
+        } else {
+            "family"
+        },
         billing_mode,
         context_band: if long_context {
             "long"
@@ -984,6 +1086,7 @@ fn resolve_model_price_from_seeds(
             "short"
         },
         long_context_threshold_tokens: matched.long_context_threshold_tokens,
+        long_context_threshold_inclusive: matched.provider == "xai",
         provider: matched.provider.to_string(),
         short_input_price_per_1m: short_input,
         short_cached_input_price_per_1m: short_cached,
@@ -1003,8 +1106,13 @@ pub(crate) fn resolve_model_price_for_billing_mode(
     input_tokens: i64,
 ) -> Option<ModelPriceMatch> {
     if normalize_billing_mode_for_service_tier(service_tier) == "priority" {
-        return resolve_model_price_from_seeds(PRIORITY_PRICE_SEEDS, model, input_tokens, "priority")
-            .or_else(|| resolve_model_price(model, input_tokens));
+        return resolve_model_price_from_seeds(
+            PRIORITY_PRICE_SEEDS,
+            model,
+            input_tokens,
+            "priority",
+        )
+        .or_else(|| resolve_model_price(model, input_tokens));
     }
     resolve_model_price(model, input_tokens)
 }
@@ -1015,12 +1123,25 @@ fn estimate_cost_from_price(
     cached_input_tokens: i64,
     cache_write_input_tokens: i64,
     output_tokens: i64,
+    total_tokens: Option<i64>,
+    reasoning_output_tokens: Option<i64>,
 ) -> CostEstimate {
     let input_total = input_tokens.max(0) as f64;
     let cached_input = (cached_input_tokens.max(0) as f64).min(input_total);
-    let cache_write_input = (cache_write_input_tokens.max(0) as f64).min(input_total - cached_input);
+    let cache_write_input =
+        (cache_write_input_tokens.max(0) as f64).min(input_total - cached_input);
     let billable_input = (input_total - cached_input - cache_write_input).max(0.0);
-    let output = output_tokens.max(0) as f64;
+    let raw_output_tokens = output_tokens.max(0);
+    let normalized_output_tokens = if price.provider == "xai" {
+        let input_tokens = input_tokens.max(0);
+        match total_tokens.filter(|total| *total >= input_tokens) {
+            Some(total) => raw_output_tokens.max(total.saturating_sub(input_tokens)),
+            None => raw_output_tokens.saturating_add(reasoning_output_tokens.unwrap_or(0).max(0)),
+        }
+    } else {
+        raw_output_tokens
+    };
+    let output = normalized_output_tokens as f64;
     let plain_input_cost = (billable_input / 1_000_000.0) * price.input_price_per_1m;
     let cached_input_cost = (cached_input / 1_000_000.0) * price.cached_input_price_per_1m;
     let cache_write_cost = (cache_write_input / 1_000_000.0) * price.cache_write_price_per_1m;
@@ -1048,6 +1169,7 @@ fn estimate_cost_from_price(
         billing_mode: Some(price.billing_mode),
         context_band: price.context_band,
         long_context_threshold_tokens: price.long_context_threshold_tokens,
+        long_context_threshold_inclusive: price.long_context_threshold_inclusive,
         matched_rule_id: Some(price.rule_id),
         matched_pattern: Some(price.model_pattern),
         price_source: Some(price.price_source),
@@ -1062,6 +1184,11 @@ fn estimate_cost_from_price(
             None
         },
         long_context_uplift_usd: long_context_uplift,
+        cost_source: Some("local_estimate"),
+        provider_cost_usd_ticks: None,
+        provider_cost_usd: None,
+        local_estimated_cost_usd: Some(cost.max(0.0)),
+        pricing_variance_usd: None,
     }
 }
 
@@ -1085,6 +1212,8 @@ pub(crate) fn estimate_cost(
         cached_input_tokens,
         cache_write_input_tokens,
         output_tokens,
+        None,
+        None,
     )
 }
 
@@ -1136,6 +1265,8 @@ pub(crate) fn estimate_cost_with_rules_for_billing_mode(
         cached_input_tokens,
         cache_write_input_tokens,
         output_tokens,
+        None,
+        None,
     )
 }
 
@@ -1209,6 +1340,30 @@ pub(crate) fn estimate_cost_for_log_with_tier(
     cache_write_input_tokens: Option<i64>,
     output_tokens: Option<i64>,
 ) -> CostEstimate {
+    estimate_cost_for_log_with_usage_and_tier(
+        storage,
+        model,
+        service_tier,
+        input_tokens,
+        cached_input_tokens,
+        cache_write_input_tokens,
+        output_tokens,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn estimate_cost_for_log_with_usage_and_tier(
+    storage: &Storage,
+    model: Option<&str>,
+    service_tier: Option<&str>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    cache_write_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    reasoning_output_tokens: Option<i64>,
+) -> CostEstimate {
     let input = input_tokens.unwrap_or(0);
     let cached = cached_input_tokens.unwrap_or(0);
     let cache_write = cache_write_input_tokens.unwrap_or(0);
@@ -1217,14 +1372,26 @@ pub(crate) fn estimate_cost_for_log_with_tier(
         .ok()
         .filter(|rules| !rules.is_empty())
         .map(|rules| {
-            estimate_cost_with_rules_for_billing_mode(
+            let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+                return CostEstimate::missing();
+            };
+            let Some(price) = resolve_model_price_from_rules_for_billing_mode(
                 &rules,
                 model,
                 service_tier,
+                input.max(0),
+            )
+            .or_else(|| resolve_model_price_for_billing_mode(model, service_tier, input.max(0))) else {
+                return CostEstimate::missing();
+            };
+            estimate_cost_from_price(
+                price,
                 input,
                 cached,
                 cache_write,
                 output,
+                total_tokens,
+                reasoning_output_tokens,
             )
         })
         .unwrap_or_else(|| {
@@ -1236,7 +1403,15 @@ pub(crate) fn estimate_cost_for_log_with_tier(
             else {
                 return CostEstimate::missing();
             };
-            estimate_cost_from_price(price, input, cached, cache_write, output)
+            estimate_cost_from_price(
+                price,
+                input,
+                cached,
+                cache_write,
+                output,
+                total_tokens,
+                reasoning_output_tokens,
+            )
         })
 }
 

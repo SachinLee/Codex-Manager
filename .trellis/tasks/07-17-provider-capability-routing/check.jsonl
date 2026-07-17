@@ -1,0 +1,7 @@
+{"file":".trellis/spec/codexmanager-service/backend/index.md","reason":"Service package quality check entry point."}
+{"file":".trellis/spec/codexmanager-service/backend/database-guidelines.md","reason":"Verify event persistence, final request-log semantics and billing isolation."}
+{"file":".trellis/spec/codexmanager-service/backend/logging-guidelines.md","reason":"Verify retry safety, logging privacy and metrics behavior."}
+{"file":".trellis/spec/codexmanager-service/backend/quality-guidelines.md","reason":"Full service quality review."}
+{"file":".trellis/spec/codexmanager-core/backend/index.md","reason":"Core package quality check entry point."}
+{"file":".trellis/spec/codexmanager-core/backend/database-guidelines.md","reason":"Verify additive SQLite migration and legacy compatibility."}
+{"file":".trellis/tasks/07-17-provider-capability-routing/research/current-gateway-evidence.md","reason":"Check the implementation against the reproduced failure and discovered boundaries."}

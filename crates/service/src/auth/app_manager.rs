@@ -918,24 +918,10 @@ fn estimate_billing_model_cost_usd(
             "cache_write_tokens",
         ],
         &[
-            &[
-                "input_tokens_details",
-                "cache_write_tokens",
-            ],
-            &[
-                "prompt_tokens_details",
-                "cache_write_tokens",
-            ],
-            &[
-                "usage",
-                "input_tokens_details",
-                "cache_write_tokens",
-            ],
-            &[
-                "usage",
-                "prompt_tokens_details",
-                "cache_write_tokens",
-            ],
+            &["input_tokens_details", "cache_write_tokens"],
+            &["prompt_tokens_details", "cache_write_tokens"],
+            &["usage", "input_tokens_details", "cache_write_tokens"],
+            &["usage", "prompt_tokens_details", "cache_write_tokens"],
             &["usage", "cache_write_input_tokens"],
         ],
     );

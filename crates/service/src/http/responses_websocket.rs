@@ -1943,6 +1943,14 @@ fn parse_ws_usage(value: &Value) -> crate::gateway::RequestLogUsage {
                     .and_then(|map| map.get("reasoning_output_tokens"))
                     .and_then(Value::as_i64)
             }),
+        provider_cost_usd_ticks: usage
+            .and_then(|map| map.get("cost_in_usd_ticks"))
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0),
+        provider_cost_nano_usd: usage
+            .and_then(|map| map.get("cost_in_nano_usd"))
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0),
         first_response_ms: None,
     }
 }

@@ -1,14 +1,20 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiListResult, AggregateApiSupplierModelDeleteParams,
-    AggregateApiSupplierModelImportParams, AggregateApiSupplierModelListResult,
-    AggregateApiSupplierModelUpsertParams, JsonRpcRequest, JsonRpcResponse,
+    AggregateApiListResult, AggregateApiRuntimeStatusListResult,
+    AggregateApiSupplierModelDeleteParams, AggregateApiSupplierModelImportParams,
+    AggregateApiSupplierModelListResult, AggregateApiSupplierModelUpsertParams, JsonRpcRequest,
+    JsonRpcResponse,
 };
 
 use crate::{
+    clear_aggregate_api_capability_observation,
     create_aggregate_api, delete_aggregate_api, delete_aggregate_api_supplier_model,
-    diagnose_aggregate_api_capabilities, import_aggregate_api_supplier_models,
-    list_aggregate_api_supplier_models, list_aggregate_apis, read_aggregate_api_secret,
-    refresh_aggregate_api_balance, save_aggregate_api_supplier_model,
+    diagnose_aggregate_api_capabilities, get_aggregate_api_capabilities,
+    import_aggregate_api_supplier_models,
+    list_recent_aggregate_api_capability_attempts,
+    list_aggregate_api_runtime_statuses, list_aggregate_api_supplier_models, list_aggregate_apis,
+    read_aggregate_api_secret, refresh_aggregate_api_balance, reset_aggregate_api_runtime_status,
+    reset_aggregate_api_capability_override, save_aggregate_api_supplier_model,
+    set_aggregate_api_capability_override, set_aggregate_api_capability_routing_mode,
     test_aggregate_api_connection, update_aggregate_api,
 };
 
@@ -51,6 +57,14 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "aggregateApi/list" => super::value_or_error(
             list_aggregate_apis().map(|items| AggregateApiListResult { items }),
         ),
+        "aggregateApi/runtimeStatus/list" => super::value_or_error(
+            list_aggregate_api_runtime_statuses()
+                .map(|items| AggregateApiRuntimeStatusListResult { items }),
+        ),
+        "aggregateApi/runtimeStatus/reset" => {
+            let api_id = api_id_param(req).unwrap_or("");
+            super::value_or_error(reset_aggregate_api_runtime_status(api_id))
+        }
         "aggregateApi/create" => {
             let provider_type = super::string_param(req, "providerType");
             let supplier_name = super::string_param(req, "supplierName");
@@ -176,6 +190,45 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let live_smoke = super::bool_param(req, "liveSmoke").unwrap_or(false);
             super::value_or_error(diagnose_aggregate_api_capabilities(api_id, live_smoke))
         }
+        "aggregateApi/capabilities/get" => {
+            super::value_or_error(get_aggregate_api_capabilities(api_id_param(req).unwrap_or("")))
+        }
+        "aggregateApi/capabilities/setOverride" => super::value_or_error(
+            set_aggregate_api_capability_override(
+                api_id_param(req).unwrap_or(""),
+                super::str_param(req, "upstreamModelPattern"),
+                super::str_param(req, "protocol"),
+                super::str_param(req, "capabilityKey"),
+                super::str_param(req, "state").unwrap_or(""),
+            ),
+        ),
+        "aggregateApi/capabilities/resetOverride" => super::value_or_error(
+            reset_aggregate_api_capability_override(
+                api_id_param(req).unwrap_or(""),
+                super::str_param(req, "upstreamModelPattern"),
+                super::str_param(req, "protocol"),
+                super::str_param(req, "capabilityKey"),
+            ),
+        ),
+        "aggregateApi/capabilities/clearObservation" => super::value_or_error(
+            clear_aggregate_api_capability_observation(
+                api_id_param(req).unwrap_or(""),
+                super::str_param(req, "upstreamModelPattern"),
+                super::str_param(req, "protocol"),
+                super::str_param(req, "capabilityKey"),
+            ),
+        ),
+        "aggregateApi/capabilities/listRecentAttempts" => super::value_or_error(
+            list_recent_aggregate_api_capability_attempts(
+                api_id_param(req).unwrap_or(""),
+                super::i64_param(req, "limit").unwrap_or(50),
+            ),
+        ),
+        "aggregateApi/capabilities/setMode" => super::value_or_error(
+            set_aggregate_api_capability_routing_mode(
+                super::str_param(req, "routingMode").unwrap_or(""),
+            ),
+        ),
         "aggregateApi/refreshBalance" => {
             let api_id = api_id_param(req).unwrap_or("");
             super::value_or_error(refresh_aggregate_api_balance(api_id))
@@ -491,5 +544,104 @@ mod tests {
         ))
         .expect("response");
         assert_ne!(error_message(&with_api_id), "aggregate api id required");
+    }
+
+    #[test]
+    fn aggregate_api_runtime_status_list_and_reset_use_current_runtime_state() {
+        let _guard = crate::test_env_guard();
+        let db_path = setup_storage("runtime-status");
+        let create_response = try_handle(&rpc_request(
+            "aggregateApi/create",
+            serde_json::json!({
+                "providerType": "codex",
+                "supplierName": "runtime status supplier",
+                "url": "https://runtime-status.example.com/v1",
+                "key": "secret"
+            }),
+        ))
+        .expect("create response");
+        assert_eq!(error_message(&create_response), "");
+        let api_id = create_response.result["id"].as_str().expect("created id");
+
+        for _ in 0..5 {
+            crate::gateway::gateway_record_aggregate_api_failure(api_id);
+        }
+
+        let list_response = try_handle(&rpc_request(
+            "aggregateApi/runtimeStatus/list",
+            serde_json::json!({}),
+        ))
+        .expect("runtime status list response");
+        assert_eq!(error_message(&list_response), "");
+        assert_eq!(list_response.result["items"][0]["aggregateApiId"], api_id);
+        assert_eq!(list_response.result["items"][0]["isCoolingDown"], true);
+        assert_eq!(list_response.result["items"][0]["consecutiveFailures"], 5);
+
+        let reset_response = try_handle(&rpc_request(
+            "aggregateApi/runtimeStatus/reset",
+            serde_json::json!({ "id": api_id }),
+        ))
+        .expect("runtime status reset response");
+        assert_eq!(error_message(&reset_response), "");
+        assert_eq!(reset_response.result["aggregateApiId"], api_id);
+        assert_eq!(reset_response.result["isCoolingDown"], false);
+
+        let missing_response = try_handle(&rpc_request(
+            "aggregateApi/runtimeStatus/reset",
+            serde_json::json!({ "id": "missing-aggregate-api" }),
+        ))
+        .expect("missing runtime status reset response");
+        assert_eq!(error_message(&missing_response), "aggregate api not found");
+
+        crate::gateway::gateway_clear_aggregate_api_cooldown(api_id);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn aggregate_api_capability_override_round_trips_through_rpc() {
+        let _guard = crate::test_env_guard();
+        let db_path = setup_storage("capability-override");
+        let create_response = try_handle(&rpc_request(
+            "aggregateApi/create",
+            serde_json::json!({
+                "providerType": "codex",
+                "supplierName": "capability supplier",
+                "url": "https://capability.example.com/v1",
+                "key": "secret",
+                "modelOverride": "grok-4.5"
+            }),
+        ))
+        .expect("create response");
+        let api_id = create_response.result["id"].as_str().expect("created id");
+
+        let set_response = try_handle(&rpc_request(
+            "aggregateApi/capabilities/setOverride",
+            serde_json::json!({
+                "id": api_id,
+                "upstreamModelPattern": "grok-4.5",
+                "protocol": "responses",
+                "capabilityKey": "responses.hosted_tool.image_generation",
+                "state": "unsupported"
+            }),
+        ))
+        .expect("set override response");
+        assert_eq!(error_message(&set_response), "");
+        assert_eq!(set_response.result["items"][0]["effectiveState"], "unsupported");
+        assert_eq!(set_response.result["items"][0]["resolvedSource"], "operator");
+
+        let reset_response = try_handle(&rpc_request(
+            "aggregateApi/capabilities/resetOverride",
+            serde_json::json!({
+                "id": api_id,
+                "upstreamModelPattern": "grok-4.5",
+                "protocol": "responses",
+                "capabilityKey": "responses.hosted_tool.image_generation"
+            }),
+        ))
+        .expect("reset override response");
+        assert_eq!(error_message(&reset_response), "");
+        assert_eq!(reset_response.result["items"][0]["effectiveState"], "unknown");
+
+        let _ = std::fs::remove_file(db_path);
     }
 }

@@ -169,6 +169,175 @@ fn aggregate_api_body_too_large_does_not_retry_or_failover() {
 }
 
 #[test]
+fn aggregate_api_optional_image_capability_retries_once_without_the_tool() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-aggregate-image-capability-retry");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _mode_guard = EnvGuard::set("CODEXMANAGER_CAPABILITY_ROUTING_MODE", "enforce");
+
+    let capability_error = serde_json::json!({
+        "error": {
+            "message": "Image generation is not enabled for this group",
+            "type": "permission_error"
+        }
+    });
+    let success = serde_json::json!({
+        "id": "resp_capability_retry",
+        "object": "response",
+        "status": "completed",
+        "model": "grok-4.5",
+        "output": [],
+        "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 }
+    });
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence_lenient(
+        vec![
+            (502, capability_error.to_string()),
+            (200, success.to_string()),
+        ],
+        Duration::from_secs(3),
+    );
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["grok-4.5"]);
+    let now = now_ts();
+    let aggregate_id = "agg_image_capability_retry";
+    storage
+        .insert_aggregate_api(&aggregate_api_for_test(
+            aggregate_id,
+            0,
+            format!("http://{upstream_addr}"),
+            now,
+        ))
+        .expect("insert aggregate api");
+    storage
+        .upsert_aggregate_api_secret(aggregate_id, "upstream-secret")
+        .expect("insert aggregate secret");
+    storage
+        .upsert_model_source_model(&ModelSourceModel {
+            source_kind: "aggregate_api".to_string(),
+            source_id: aggregate_id.to_string(),
+            upstream_model: "grok-4.5".to_string(),
+            display_name: Some("Grok 4.5".to_string()),
+            status: "available".to_string(),
+            discovery_kind: "manual".to_string(),
+            last_synced_at: Some(now),
+            extra_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert aggregate source model");
+    storage
+        .upsert_model_source_mapping(&ModelSourceMapping {
+            id: "mapping_image_capability_retry".to_string(),
+            platform_model_slug: "grok-4.5".to_string(),
+            source_kind: "aggregate_api".to_string(),
+            source_id: aggregate_id.to_string(),
+            upstream_model: "grok-4.5".to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+            billing_model_slug: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert aggregate source mapping");
+
+    let platform_key = "pk_image_capability_retry";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk_image_capability_retry".to_string(),
+            name: Some("image-capability-retry".to_string()),
+            model_slug: Some("grok-4.5".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            rotation_strategy: "aggregate_api_rotation".to_string(),
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "codex".to_string(),
+            protocol_type: "openai_compat".to_string(),
+            auth_scheme: "authorization_bearer".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let request_body = serde_json::json!({
+        "model": "grok-4.5",
+        "input": [{ "role": "user", "content": "hello" }],
+        "tools": [{ "type": "image_generation" }],
+        "tool_choice": "auto",
+        "stream": false
+    })
+    .to_string();
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/responses",
+        &request_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+        ],
+    );
+    server.join();
+    assert_eq!(status, 200, "gateway response: {response_body}");
+
+    let first = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive native request");
+    let second = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive downgraded retry");
+    upstream_join.join().expect("join mock upstream");
+    let first_body: serde_json::Value = serde_json::from_slice(&decode_upstream_request_body(&first))
+        .expect("native body json");
+    let second_body: serde_json::Value = serde_json::from_slice(&decode_upstream_request_body(&second))
+        .expect("retry body json");
+    assert_eq!(first_body["tools"][0]["type"], "image_generation");
+    assert_eq!(second_body["tools"].as_array().map(Vec::len), Some(0));
+
+    let observations = storage
+        .list_gateway_capability_observations("aggregate_api", aggregate_id, now)
+        .expect("list observations");
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].state, "unsupported");
+    assert_eq!(observations[0].observation_source, "runtime");
+    let mut attempts = Vec::new();
+    for _ in 0..40 {
+        attempts = storage
+            .list_gateway_upstream_attempt_events("aggregate_api", aggregate_id, 10)
+            .expect("list capability attempts");
+        if attempts.len() >= 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    attempts.sort_by_key(|item| item.attempt_index);
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].phase, "native");
+    assert_eq!(attempts[0].outcome, "rejected");
+    assert_eq!(attempts[1].phase, "downgrade");
+    assert!(attempts[1]
+        .transform_codes_json
+        .contains("drop_optional_image_generation"));
+    let request_logs = storage
+        .list_request_logs(Some("key:=gk_image_capability_retry"), 20)
+        .expect("list request logs");
+    assert_eq!(
+        request_logs.len(),
+        1,
+        "same-candidate capability retry must not create a second final request log"
+    );
+}
+
+#[test]
 fn gateway_images_generation_wraps_codex_sse_as_openai_images_json() {
     let _lock = test_env_guard();
     let dir = new_test_dir("codexmanager-gateway-images-generation");

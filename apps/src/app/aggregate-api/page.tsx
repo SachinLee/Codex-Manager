@@ -13,6 +13,7 @@ import {
   MoreVertical,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Settings2,
   ShieldCheck,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AggregateApiModal } from "@/components/modals/aggregate-api-modal";
+import { CapabilityRoutingPanel } from "@/components/aggregate-api/capability-routing-panel";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,6 +67,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { accountClient } from "@/lib/api/account-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
 import { quotaClient } from "@/lib/api/quota-client";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
 import { formatCompactNumber, formatTsFromSeconds } from "@/lib/utils/usage";
@@ -73,6 +76,7 @@ import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
+import { useAggregateApiRuntimeStatuses } from "@/hooks/useAggregateApiRuntimeStatuses";
 import { useI18n } from "@/lib/i18n/provider";
 import {
   AggregateApi,
@@ -171,6 +175,13 @@ function formatCostMultiplier(value: number | null | undefined) {
   })}`;
 }
 
+function formatCooldownRemaining(cooldownUntil: number | null, nowSeconds: number) {
+  const remaining = Math.max(0, Number(cooldownUntil || 0) - nowSeconds);
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function aggregateApiSupplierKey(api: AggregateApi | null) {
   if (!api) return "";
   return String(api.supplierName || "").trim() || String(api.url || "").trim();
@@ -229,6 +240,7 @@ export default function AggregateApiPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [resetCooldownApi, setResetCooldownApi] = useState<AggregateApi | null>(null);
   const [providerFilter, setProviderFilter] = useState("all");
   const [revealedSecrets, setRevealedSecrets] = useState<
     Record<string, AggregateApiSecretResult>
@@ -286,6 +298,10 @@ export default function AggregateApiPage() {
     retry: 1,
     staleTime: 10_000,
   });
+  const {
+    byApiId: aggregateApiRuntimeStatusById,
+    nowSeconds: runtimeStatusNowSeconds,
+  } = useAggregateApiRuntimeStatuses(isQueryEnabled);
 
   const { data: aggregateApiReasoningGuard = [] } = useQuery({
     queryKey: [
@@ -318,6 +334,7 @@ export default function AggregateApiPage() {
     setModalOpen(false);
     setEditingId(null);
     setDeleteId(null);
+    setResetCooldownApi(null);
     setModelPoolApiId(null);
   }, [isPageActive]);
 
@@ -697,6 +714,17 @@ export default function AggregateApiPage() {
     },
     onError: (error: unknown) => {
       toast.error(`${t("删除")} ${t("失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+
+  const resetCooldownMutation = useMutation({
+    mutationFn: (apiId: string) => accountClient.resetAggregateApiRuntimeStatus(apiId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["aggregate-api-runtime-status"] });
+      toast.success(t("已解除冷却，API 已重新加入路由候选"));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("解除冷却失败")}: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -1171,7 +1199,7 @@ export default function AggregateApiPage() {
             <Table className="w-full table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="max-w-[220px]">{t("供应商 / URL")}</TableHead>
+                  <TableHead className="w-[300px]">{t("供应商 / URL")}</TableHead>
                   <TableHead className="w-[84px] text-center">{t("类型")}</TableHead>
                   <TableHead className="w-[148px]">{t("密钥")}</TableHead>
                   <TableHead className="w-[64px] text-center">{t("顺序")}</TableHead>
@@ -1179,7 +1207,8 @@ export default function AggregateApiPage() {
                   <TableHead className="w-[150px]">{t("余额")}</TableHead>
                   <TableHead className="w-[150px]">{t("今日使用")}</TableHead>
                   <TableHead className="w-[138px]">{t("Guard")}</TableHead>
-                  <TableHead className="w-[112px] text-right pr-4">{t("状态")}</TableHead>
+                  <TableHead className="w-[176px]">{t("路由状态")}</TableHead>
+                  <TableHead className="w-[112px] text-right pr-4">{t("启用")}</TableHead>
                   <TableHead className="table-sticky-action-head w-[144px] text-center">
                     {t("操作")}
                   </TableHead>
@@ -1213,6 +1242,12 @@ export default function AggregateApiPage() {
                       <TableCell>
                         <Skeleton className="h-6 w-16 rounded-full" />
                       </TableCell>
+                      <TableCell>
+                        <Skeleton className="h-8 w-28 rounded" />
+                      </TableCell>
+                      <TableCell>
+                        <Skeleton className="ml-auto h-6 w-16 rounded-full" />
+                      </TableCell>
                       <TableCell className="table-sticky-action-cell text-center">
                         <Skeleton className="mx-auto h-8 w-8" />
                       </TableCell>
@@ -1220,7 +1255,7 @@ export default function AggregateApiPage() {
                   ))
                 ) : filteredAggregateApis.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-48 text-center">
+                    <TableCell colSpan={12} className="h-48 text-center">
                       <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                         <ShieldCheck className="h-8 w-8 opacity-20" />
                         <p>
@@ -1256,6 +1291,11 @@ export default function AggregateApiPage() {
                         : [];
                     const dailyUsage = aggregateApiDailyUsageById.get(api.id);
                     const guardStats = aggregateApiReasoningGuardById.get(api.id);
+                    const runtimeStatus = aggregateApiRuntimeStatusById.get(api.id);
+                    const isCoolingDown = Boolean(
+                      runtimeStatus?.isCoolingDown &&
+                        Number(runtimeStatus.cooldownUntil || 0) > runtimeStatusNowSeconds,
+                    );
                     const dailyDisplayTokens =
                       dailyUsage?.billableTotalTokens ?? dailyUsage?.totalTokens ?? 0;
                     const dailyDisplayCost =
@@ -1616,6 +1656,61 @@ export default function AggregateApiPage() {
                             </span>
                           )}
                         </TableCell>
+                        <TableCell className="align-middle">
+                          {isCoolingDown && runtimeStatus ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="block cursor-help text-left"
+                              >
+                                <div className="grid gap-1">
+                                  <Badge className="w-fit border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+                                    {t("冷却中")} {formatCooldownRemaining(
+                                      runtimeStatus.cooldownUntil,
+                                      runtimeStatusNowSeconds,
+                                    )}
+                                  </Badge>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {t("连续失败")} {runtimeStatus.consecutiveFailures}/
+                                    {runtimeStatus.failureThreshold}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 w-fit gap-1 px-1 text-[10px] text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+                                    disabled={!isServiceReady || resetCooldownMutation.isPending}
+                                    onClick={() => setResetCooldownApi(api)}
+                                  >
+                                    <RotateCcw className="h-3 w-3" />
+                                    {t("解除冷却")}
+                                  </Button>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-sm whitespace-pre-wrap break-words">
+                                <div className="grid gap-1 text-xs">
+                                  <span>{runtimeStatus.reason || t("连续上游请求失败")}</span>
+                                  <span>
+                                    {t("最后失败")}: {formatTsFromSeconds(
+                                      runtimeStatus.lastFailureAt,
+                                      t("未知时间"),
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("冷却截止")}: {formatTsFromSeconds(
+                                      runtimeStatus.cooldownUntil,
+                                      t("未知时间"),
+                                    )}
+                                  </span>
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                              {t("可路由")}
+                            </div>
+                          )}
+                        </TableCell>
                         <TableCell className="align-middle pr-4">
                           <div className="flex items-center justify-end gap-2">
                             <Switch
@@ -1816,6 +1911,7 @@ export default function AggregateApiPage() {
                   </div>
                 ))}
               </div>
+              <CapabilityRoutingPanel apiId={diagnosticsResult.id} />
             </div>
           </DialogContent>
         ) : null}
@@ -2191,6 +2287,23 @@ export default function AggregateApiPage() {
           if (!deleteId) return;
           deleteMutation.mutate(deleteId);
           setDeleteId(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(resetCooldownApi)}
+        onOpenChange={(open) => !open && setResetCooldownApi(null)}
+        title={t("解除冷却")}
+        description={t(
+          "解除后，{supplier} 将立即重新加入路由候选；若上游仍异常，可能再次失败并进入冷却。是否继续？",
+          { supplier: resetCooldownApi?.supplierName || resetCooldownApi?.url || "-" },
+        )}
+        confirmText={t("解除冷却")}
+        cancelText={t("取消")}
+        onConfirm={() => {
+          if (!resetCooldownApi) return;
+          resetCooldownMutation.mutate(resetCooldownApi.id);
+          setResetCooldownApi(null);
         }}
       />
     </div>

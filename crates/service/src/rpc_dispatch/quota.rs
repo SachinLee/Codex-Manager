@@ -120,6 +120,11 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                     .and_then(|p| p.get("outputPricePer1m"))
                     .and_then(|v| v.as_f64()),
                 long_context_threshold_tokens: super::i64_param(req, "longContextThresholdTokens"),
+                long_context_threshold_inclusive: req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("longContextThresholdInclusive"))
+                    .and_then(|v| v.as_bool()),
                 long_context_input_price_per_1m: req
                     .params
                     .as_ref()

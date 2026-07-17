@@ -107,4 +107,23 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   "额度模型白名单": "Quota model allowlist",
   "阻断": "Blocked",
   "Guard": "Guard",
+  "路由状态": "Routing status",
+  "冷却中": "Cooling down",
+  "连续失败": "Consecutive failures",
+  "解除冷却": "Clear cooldown",
+  "连续上游请求失败": "Consecutive upstream request failures",
+  "最后失败": "Last failure",
+  "冷却截止": "Cooldown ends",
+  "可路由": "Routable",
+  "已解除冷却，API 已重新加入路由候选":
+    "Cooldown cleared; the API has rejoined routing candidates",
+  "解除冷却失败": "Failed to clear cooldown",
+  "能力感知路由": "Capability-aware routing",
+  "按供应商能力保留原生请求，必要时仅执行安全降级。":
+    "Preserve native requests by supplier capability and apply only safe downgrades when needed.",
+  "加载中": "Loading",
+  "清除学习记录": "Clear learned facts",
+  "最近路由尝试": "Recent routing attempts",
+  "解除后，{supplier} 将立即重新加入路由候选；若上游仍异常，可能再次失败并进入冷却。是否继续？":
+    "After clearing, {supplier} will immediately rejoin routing candidates. If the upstream remains unavailable, it may fail again and re-enter cooldown. Continue?",
 };

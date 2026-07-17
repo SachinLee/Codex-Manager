@@ -12,6 +12,7 @@ use super::{
     set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed, set_env_overrides,
     set_gateway_account_max_inflight, set_gateway_auto_compact_enabled,
     set_gateway_background_tasks, set_gateway_compact_model_forward_rules,
+    set_gateway_capability_routing_mode,
     set_gateway_free_account_max_model, set_gateway_model_catalog_auto_remote_fetch,
     set_gateway_model_forward_rules, set_gateway_originator, set_gateway_quota_guard,
     set_gateway_reasoning_guard_bypass_after_consecutive,
@@ -44,6 +45,7 @@ pub(super) struct AppSettingsPatch {
     service_addr: Option<String>,
     pub(super) service_listen_mode: Option<String>,
     route_strategy: Option<String>,
+    capability_routing_mode: Option<String>,
     free_account_max_model: Option<String>,
     model_catalog_auto_remote_fetch: Option<bool>,
     model_forward_rules: Option<String>,
@@ -160,6 +162,9 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(strategy) = patch.route_strategy {
         let _ = set_gateway_route_strategy(&strategy)?;
+    }
+    if let Some(mode) = patch.capability_routing_mode {
+        let _ = set_gateway_capability_routing_mode(&mode)?;
     }
     if let Some(model) = patch.free_account_max_model {
         let _ = set_gateway_free_account_max_model(&model)?;

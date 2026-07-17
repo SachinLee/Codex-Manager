@@ -203,6 +203,9 @@ fn current_app_settings_value_inner(
         current_service_bind_mode()
     };
     let route_strategy = crate::gateway::current_route_strategy().to_string();
+    let capability_routing_mode = crate::gateway::current_capability_routing_mode()
+        .as_str()
+        .to_string();
     let free_account_max_model = current_gateway_free_account_max_model();
     let model_catalog_auto_remote_fetch = current_gateway_model_catalog_auto_remote_fetch();
     let model_forward_rules = current_gateway_model_forward_rules();
@@ -399,6 +402,14 @@ fn current_app_settings_value_inner(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "capabilityRoutingMode".to_string(),
+            capability_routing_mode.into(),
+        );
+        object.insert(
+            "capabilityRoutingModeOptions".to_string(),
+            serde_json::json!(["off", "observe", "enforce"]),
+        );
         object.insert(
             "autoCompactEnabled".to_string(),
             auto_compact_enabled.into(),

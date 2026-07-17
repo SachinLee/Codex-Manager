@@ -194,6 +194,8 @@ pub(super) fn maybe_respond_local_count_tokens(
                     output_tokens: Some(0),
                     total_tokens: Some(input_tokens.min(i64::MAX as u64) as i64),
                     reasoning_output_tokens: Some(0),
+                    provider_cost_usd_ticks: None,
+                    provider_cost_nano_usd: None,
                     first_response_ms: None,
                 },
             )?;

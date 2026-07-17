@@ -146,3 +146,58 @@ if hosted_image_generation_semantic_error(&value).is_some() {
 - Disabled model-list projection hides the threshold without mutating its source.
 - Enabled model-list projection preserves the threshold.
 - Frontend type-check and production build after changing the settings payload.
+
+## Scenario: Aggregate API Runtime Cooldown Status and Reset
+
+### 1. Scope / Trigger
+
+- Trigger: adding an Aggregate API runtime health/cooldown read or reset capability that spans gateway memory, service RPC, Tauri commands, Web command mapping, and typed frontend clients.
+- Runtime cooldown is process-local state; do not infer or persist it through Aggregate API configuration storage.
+
+### 2. Signatures
+
+- RPC methods: `aggregateApi/runtimeStatus/list` and `aggregateApi/runtimeStatus/reset`.
+- Reset params: `{ id: string }`.
+- Tauri commands: `service_aggregate_api_runtime_status_list(addr?: string)` and `service_aggregate_api_runtime_status_reset(addr?: string, id: string)`.
+- Frontend wrappers: `accountClient.listAggregateApiRuntimeStatuses()` and `accountClient.resetAggregateApiRuntimeStatus(apiId)`.
+
+### 3. Contracts
+
+- A status item uses camelCase fields: `aggregateApiId`, `isCoolingDown`, `consecutiveFailures`, `failureThreshold`, `cooldownUntil`, `remainingSecs`, `lastFailureAt`, and `reason`.
+- Listing returns only in-memory cooldown entries. Clients merge them with the persistent Aggregate API list and treat an absent entry as routable.
+- A reset clears both the cooldown entry and the matching system policy action so routing selection and request-log evidence cannot disagree.
+- Status reasons must be stable, sanitized classifications; never return raw upstream responses, API secrets, or authentication parameters.
+
+### 4. Validation & Error Matrix
+
+- Empty reset id -> `aggregate api id required`.
+- Unknown reset id -> `aggregate api not found`.
+- Existing API with no runtime entry -> successful reset with `isCoolingDown = false`.
+- Expired entries -> remove before list/status projection; remaining seconds must never be negative.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a cooling API reports the current failure count and a countdown, and reset lets it re-enter routing immediately.
+- Base: a healthy API has no list item and the UI displays the normal routable state without a reset action.
+- Bad: clearing only the cooldown map but leaving the policy action, which produces stale request-log route evidence.
+
+### 6. Tests Required
+
+- Cooldown unit test: threshold, snapshot countdown, expiration cleanup, and reset clearing both cooldown and policy action.
+- RPC test: list projects the active runtime item; reset succeeds for an existing API and rejects an unknown API.
+- Frontend build/type check and runtime transport coverage after changing command names or payload normalization.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+state.entries.remove(api_id);
+```
+
+#### Correct
+
+```rust
+state.entries.remove(api_id);
+clear_system_policy_action(PolicyTargetKind::AggregateApi, api_id);
+```

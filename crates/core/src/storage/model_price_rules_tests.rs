@@ -37,6 +37,7 @@ fn price_rule(id: &str, model_pattern: &str, source: &str, priority: i64) -> Mod
         cache_write_1h_price_per_1m: None,
         cache_hit_price_per_1m: None,
         long_context_threshold_tokens: None,
+        long_context_threshold_inclusive: false,
         long_context_input_price_per_1m: None,
         long_context_cached_input_price_per_1m: None,
         long_context_cache_write_price_per_1m: None,
