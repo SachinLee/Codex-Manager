@@ -124,6 +124,130 @@ if hosted_image_generation_semantic_error(&value).is_some() {
 }
 ```
 
+## Scenario: Provider Capability-Aware Aggregate Routing
+
+### 1. Scope / Trigger
+
+- Trigger: changing Aggregate API capability discovery, request compatibility,
+  safe downgrade, learned observations, routing mode, or capability management.
+- Applies across core storage, `gateway/capability/**`, the Aggregate API proxy,
+  app settings, RPC/Tauri/Web command surfaces, and the typed frontend client.
+
+### 2. Signatures
+
+- Private request header:
+  `x-codexmanager-required-capabilities: responses.hosted_tool.image_generation`.
+- Runtime setting: `gateway.capability_routing_mode`; environment override:
+  `CODEXMANAGER_CAPABILITY_ROUTING_MODE`; values: `off | observe | enforce`.
+- RPC methods:
+  - `aggregateApi/capabilities/get` with `{ id | apiId }`.
+  - `aggregateApi/capabilities/setOverride` with `{ id | apiId,
+    upstreamModelPattern?, protocol?, capabilityKey?, state }`.
+  - `aggregateApi/capabilities/resetOverride` and
+    `aggregateApi/capabilities/clearObservation` with the same scope fields.
+  - `aggregateApi/capabilities/listRecentAttempts` with `{ id | apiId, limit? }`.
+  - `aggregateApi/capabilities/setMode` with `{ mode }`.
+- Migration `116_gateway_capability_routing.sql` owns
+  `gateway_capability_overrides`, `gateway_capability_observations`, and
+  `gateway_upstream_attempt_events`.
+
+### 3. Contracts
+
+- Resolution precedence is `operator override > unexpired runtime observation >
+  unexpired probe observation > builtin > unknown`; scope specificity wins
+  before recency inside one source layer.
+- High-confidence runtime negative observations expire after seven days;
+  positive runtime/probe observations expire after 24 hours. Generic errors do
+  not create capability facts.
+- Every candidate plan and retry body is rebuilt from the immutable original
+  request. Candidate-local transforms must never leak into another candidate.
+- Native candidates run before safe-downgrade candidates; existing ordering is
+  stable inside each phase. Incompatible candidates are skipped.
+- `tools` with `tool_choice = auto` is optional. An explicitly selected tool or
+  a validated private required-capability header is required. The initial
+  allowlisted transform only removes an optional `image_generation` tool and
+  emits `drop_optional_image_generation`.
+- Capability rejection is health-neutral. It may consume one capability retry
+  for the same candidate, independently of transport and reasoning-guard retry
+  budgets, only before client delivery starts.
+- `off` preserves legacy routing and emits no capability attempt events;
+  `observe` records projected plans without reordering or rewriting;
+  `enforce` applies the plan and is the default.
+- The private required-capabilities header is consumed by Manager, accepts only
+  known capability keys, and must never be forwarded upstream.
+- Attempt events persist only structural signatures, bounded codes, timing, and
+  routing metadata. Never persist prompt/body values, secrets, tool arguments,
+  encrypted reasoning content, or image bytes.
+- RPC implementation, Tauri command registry, Web command map, typed frontend
+  wrapper, and UI must remain synchronized whenever a command changes.
+
+### 4. Validation & Error Matrix
+
+- Empty Aggregate API id -> `aggregate api id required`.
+- Unknown Aggregate API id -> `aggregate api not found`.
+- Unknown capability key in management scope or private header -> 400 /
+  `unsupported capability key`.
+- Override state outside `auto | supported | unsupported` -> validation error;
+  `auto` deletes the override.
+- Routing mode outside `off | observe | enforce` -> validation error; an invalid
+  environment value falls back to `enforce`.
+- Structured `permission_error` plus the exact image group-entitlement message
+  -> `capability.image_generation_not_enabled`, negative observation, no source
+  cooldown, and at most one safe same-candidate downgrade retry.
+- Generic HTTP 502 or vague upstream text -> ordinary upstream failure and no
+  learned capability fact.
+- Hosted-image diagnostic HTTP 400/422 without positive semantic evidence ->
+  `unknown`; it must not persist a supported observation.
+- Capability rejection after delivery begins -> no retry or failover.
+
+### 5. Good / Base / Bad Cases
+
+- Good: Grok rejects optional image generation before delivery; Manager learns
+  the scoped negative fact, retries once without that tool, returns the answer,
+  and keeps one final `request_logs` row.
+- Good: an operator `supported` override beats a stale runtime negative fact.
+- Base: an unknown candidate remains admissible and receives the original body.
+- Bad: treating every 400/422 probe or every 502 response as capability evidence.
+- Bad: mutating a shared body and accidentally removing tools for later
+  candidates, or incrementing source cooldown for a feature entitlement error.
+
+### 6. Tests Required
+
+- Core storage: override CRUD, observation coalescing/TTL/clear/prune, attempt
+  retention, and migration initialization.
+- Capability unit tests: scope precedence, intent requiredness, exact classifier
+  positives and near-match negatives, mode semantics, immutable transform, and
+  structural-signature redaction.
+- Gateway integration: first request contains optional image generation, exact
+  entitlement rejection is health-neutral, the same supplier is retried once
+  from the original body without the tool, both attempt phases are recorded,
+  and only one final request log exists.
+- Header tests: known declarations promote optional intent; unknown declarations
+  return 400; the private header is absent from upstream headers.
+- Probe tests: generic hosted-image 400/422 remains unknown and writes no
+  positive observation.
+- Cross-layer tests: RPC validation plus Tauri/Web/frontend command-name and
+  payload normalization coverage; run the frontend production build.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let effective_body = drop_image_tool(&mut shared_body);
+mark_source_failure(api_id, response.status());
+```
+
+#### Correct
+
+```rust
+let plan = plan_candidate(&immutable_original_body, candidate, facts, mode)?;
+if rejection.is_exact_capability_failure() && !delivery_started {
+    persist_health_neutral_observation(&rejection)?;
+    retry_once(plan_from_original_with_safe_transform)?;
+}
+```
+
 ## Scenario: Automatic Context Compaction Advertisement
 
 ### Scope / Trigger

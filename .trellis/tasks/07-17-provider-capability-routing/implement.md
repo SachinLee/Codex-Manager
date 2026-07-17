@@ -2,72 +2,83 @@
 
 ## Phase 0: Contract tests and scaffolding
 
-- [ ] Add failing unit tests for capability scope, precedence, TTL and intent.
-- [ ] Add failing request-transform tests for optional/required image tools and
-      stateless provider-state cleanup.
-- [ ] Create focused gateway capability module skeleton and typed contracts.
+- [x] Add unit tests for capability scope, precedence, TTL and intent.
+- [x] Add request-transform tests for optional/required image tools.
+- [ ] Add safe stateless provider-state cleanup and its replay-completeness tests.
+- [x] Create focused gateway capability modules and typed contracts.
 
 ## Phase 1: Storage foundation
 
 - [x] Add migration `116_gateway_capability_routing.sql` for overrides,
       observations and upstream attempt events.
-- [ ] Add focused core storage modules and public record/query types.
-- [ ] Implement override CRUD, observation upsert/coalescing, effective-scope
+- [x] Add focused core storage modules and public record/query types.
+- [x] Implement override CRUD, observation upsert/coalescing, effective-scope
       queries, expiry pruning and attempt-event retention pruning.
-- [ ] Add legacy-database migration and storage regression tests.
+- [x] Add additive migration and focused storage regression tests.
 
 ## Phase 2: Resolver and immutable planner
 
-- [ ] Implement capability keys, scope matching and precedence resolver.
-- [ ] Implement request intent extraction without prompt inspection.
-- [ ] Implement redacted structural signature.
-- [ ] Implement transform registry with explicit safety predicates.
-- [ ] Implement native/downgrade/incompatible candidate partitioning while
+- [x] Implement capability keys, scope matching and precedence resolver.
+- [x] Implement request intent extraction without prompt inspection.
+- [x] Implement redacted structural signature.
+- [x] Implement the optional image transform with explicit safety predicates.
+- [ ] Implement provider-state cleanup transforms only after a trustworthy
+      complete-stateless-replay signal is designed.
+- [x] Implement native/downgrade/incompatible candidate partitioning while
       preserving existing order inside each phase.
-- [ ] Add unit and property-style tests proving immutable body isolation.
+- [x] Add unit tests proving immutable body isolation.
 
 ## Phase 3: Failure classification and retry integration
 
-- [ ] Add structured HTTP/SSE error classification and exact image entitlement
+- [x] Add structured HTTP/SSE error classification and exact image entitlement
       classifier.
-- [ ] Add typed failure disposition separating capability from source health.
-- [ ] Integrate plan generation into the Aggregate API attempt flow through
+- [x] Separate capability failure handling from source health/cooldown effects.
+- [x] Integrate plan generation into the Aggregate API attempt flow through
       narrow helpers.
-- [ ] Add one bounded same-candidate capability retry from the original body.
-- [ ] Guard against retry/failover after response delivery starts.
-- [ ] Keep capability retry independent from transport and reasoning-guard
+- [x] Add one bounded same-candidate capability retry from the original body.
+- [x] Guard against retry/failover after response delivery starts.
+- [x] Keep capability retry independent from transport and reasoning-guard
       budgets.
-- [ ] Add full streaming/non-streaming/failover gateway tests.
+- [ ] Add a dedicated streaming rejection regression test; non-streaming
+      same-candidate downgrade and failover paths are covered.
 
 ## Phase 4: Observability and runtime mode
 
-- [ ] Add bounded async attempt-event recorder with synchronous test behavior and
+- [x] Add bounded async attempt-event recorder with synchronous test behavior and
       synchronous fallback on queue pressure.
-- [ ] Add sanitized route evidence and bounded metrics.
-- [ ] Add `capabilityRoutingMode` runtime/app setting and
+- [x] Add sanitized structural route evidence.
+- [ ] Add capability-specific bounded metrics.
+- [x] Add `capabilityRoutingMode` runtime/app setting and
       `CODEXMANAGER_CAPABILITY_ROUTING_MODE` override.
-- [ ] Implement and test `off`, `observe`, and `enforce` modes.
-- [ ] Verify final `request_logs` cardinality remains one row per client request.
+- [x] Implement and test `off`, `observe`, and `enforce` modes.
+- [x] Verify final `request_logs` cardinality remains one row per client request.
 
 ## Phase 5: Diagnostics, RPC and management UI
 
-- [ ] Feed eligible live diagnostic results into capability observations.
-- [ ] Add capability get/override/reset/clear/recent-attempt RPC methods.
-- [ ] Synchronize service dispatch, Tauri registry, Web command mapping and typed
+- [x] Feed eligible live diagnostic results into capability observations.
+- [x] Add capability get/override/reset/clear/recent-attempt/mode RPC methods.
+- [x] Synchronize service dispatch, Tauri registry, Web command mapping and typed
       frontend wrapper.
-- [ ] Add TypeScript normalization/types with backward-compatible defaults.
-- [ ] Add a focused Capability panel/hook to the existing Aggregate API page.
-- [ ] Add i18n strings and UI/runtime transport tests.
+- [x] Add TypeScript normalization/types with backward-compatible defaults.
+- [x] Add a focused Capability panel/hook to the existing Aggregate API page.
+- [x] Add focused frontend normalization/transport tests.
+- [x] Synchronize capability panel copy across English, Korean, and Russian
+      message resources.
 
 ## Phase 6: Verification and rollout review
 
-- [ ] Run focused core storage and migration tests.
-- [ ] Run focused service capability, Aggregate API and gateway tests.
+- [x] Run focused core storage tests.
+- [x] Run focused service capability and Aggregate API gateway tests.
 - [ ] Run full workspace tests because retry/cooldown behavior is shared.
-- [ ] Run frontend runtime tests and desktop static build.
+- [x] Run frontend production build and Tauri Rust check.
+- [ ] Obtain a clean full frontend runtime suite; capability tests pass, while
+      nine unrelated dirty-worktree tests currently fail.
 - [ ] Run dependency/security checks applicable to changed Rust and frontend
       packages.
-- [ ] Review diffs for secrets, raw request/response persistence, unbounded metric
+- [x] Review scoped diffs for secrets, raw request/response persistence,
+      provider-specific branches and legacy-file expansion.
+- [ ] Review capability metrics for unbounded labels after metrics are added.
+- [ ] Review remaining workspace diffs for unbounded metric
       labels, provider-specific branches and legacy-file expansion.
 - [ ] Validate `observe` telemetry and `off` rollback behavior with a controlled
       GPT-to-Grok reproduction.
