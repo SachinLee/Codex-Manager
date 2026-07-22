@@ -184,6 +184,8 @@ fn run_candidate_sequence_with_statuses(
         None,
         None,
         Some("account_rotation"),
+        None,
+        None,
         Some(setup.route_strategy_for_log),
         Some(setup.route_source_for_log),
         1,

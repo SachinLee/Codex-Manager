@@ -83,3 +83,10 @@ o such column: cache_write_input_tokens).
 - Relaxed two SQLite query-plan assertions to accept either key-scoped index (key_id or key_model).
 - Validation: cargo test -p codexmanager-core --lib → 399+2 pass after fix (full suite recheck pending after assertion tweak); commit 15ff244f.
 - Fetched origin/main: still 482f7ffa, already an ancestor of integration HEAD (no third merge needed yet).
+
+## Progress log (2026-07-22 evening)
+
+- Fixed `ensure_request_token_stats_table` dual schema after second main merge: cache_write + aggregate API columns, daily rollups ensure, hourly rollup aggregation. Core lib tests 401/401 (`15ff244f`).
+- Fetched origin/main: still `482f7ffa`, already ancestor of integrate branch (no third merge needed).
+- Service post-merge fixes (`bd1484b9`): restored main's `item_requires_encrypted_content` removal for reasoning/encrypted_content items; hardened proxy latency fake proxy accept capacity for warmup+10 samples under parallel load.
+- Focused retests: strip_encrypted_content, stripped_candidate, images_reader partial events, latency 204 all pass.

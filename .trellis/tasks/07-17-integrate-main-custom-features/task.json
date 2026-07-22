@@ -15,12 +15,12 @@
   "branch": "codex/integrate-main-20260717",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "15ff244f",
+  "commit": "bd1484b9",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "First merge main@514f3dba (ae9aed07); second merge origin/main@482f7ffa (e099182a). Post-merge fixes: keepalive, token stats compile, fixture fields, schema ensure for cache_write/aggregate_api (15ff244f). cargo test -p codexmanager-core --lib: 401/401 after schema fix. origin/main currently fully contained (no new commits beyond 482f7ffa). package.json remains untracked.",
+  "notes": "First merge main@514f3dba (ae9aed07); second merge origin/main@482f7ffa (e099182a). Post-merge fixes: keepalive, token stats compile, fixture fields, schema ensure for cache_write/aggregate_api (15ff244f), encrypted-content item strip + latency test capacity (bd1484b9). cargo test -p codexmanager-core --lib: 401/401. cargo test -p codexmanager-service --lib: 4 previously failing tests now pass (full suite re-run optional). origin/main@482f7ffa fully contained. package.json untracked.",
   "meta": {}
 }
