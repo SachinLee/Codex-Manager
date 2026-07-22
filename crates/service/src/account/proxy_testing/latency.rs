@@ -335,10 +335,11 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let handle = thread::spawn(move || {
             let _ = listener.set_nonblocking(true);
-            for _ in 0..10 {
+            // Warmup + 10 samples (+ occasional retries) under parallel cargo test load.
+            for _ in 0..24 {
                 let mut stream_opt = None;
                 let start_wait = Instant::now();
-                while start_wait.elapsed() < Duration::from_millis(500) {
+                while start_wait.elapsed() < Duration::from_millis(2_000) {
                     if let Ok((stream, _)) = listener.accept() {
                         stream_opt = Some(stream);
                         break;

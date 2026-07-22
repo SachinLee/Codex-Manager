@@ -31,6 +31,22 @@ pub(in crate::gateway) fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
 ///
 /// # 返回
 /// 返回函数执行结果
+fn item_requires_encrypted_content(value: &Value) -> bool {
+    let Value::Object(map) = value else {
+        return false;
+    };
+    if !map.contains_key("encrypted_content") {
+        return false;
+    }
+    map.get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|item_type| {
+            item_type.eq_ignore_ascii_case("reasoning")
+                || item_type.eq_ignore_ascii_case("encrypted_content")
+        })
+}
+
 fn strip_encrypted_content_value(value: &mut Value) -> bool {
     match value {
         Value::Object(map) => {
@@ -44,11 +60,16 @@ fn strip_encrypted_content_value(value: &mut Value) -> bool {
         }
         Value::Array(items) => {
             let mut changed = false;
-            for item in items.iter_mut() {
+            items.retain_mut(|item| {
+                if item_requires_encrypted_content(item) {
+                    changed = true;
+                    return false;
+                }
                 if strip_encrypted_content_value(item) {
                     changed = true;
                 }
-            }
+                true
+            });
             changed
         }
         _ => false,
