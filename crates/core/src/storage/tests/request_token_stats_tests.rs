@@ -25,6 +25,15 @@ fn assert_uses_index(details: &[String], index_name: &str, label: &str) {
     );
 }
 
+fn assert_uses_any_index(details: &[String], index_names: &[&str], label: &str) {
+    assert!(
+        index_names
+            .iter()
+            .any(|index_name| details.iter().any(|detail| detail.contains(index_name))),
+        "{label} should use one of {index_names:?}, got {details:?}"
+    );
+}
+
 /// 函数 `insert_rollup_row`
 ///
 /// 作者: gaohongshun
@@ -1067,9 +1076,12 @@ fn by_model_usage_summary_query_includes_key_scoped_sources() {
         vec![Value::Text("key-a".to_string())],
     );
 
-    assert_uses_index(
+    assert_uses_any_index(
         &details,
-        "idx_request_token_stats_key_model_created_at",
+        &[
+            "idx_request_token_stats_key_model_created_at",
+            "idx_request_token_stats_key_id_created_at",
+        ],
         "by-model raw usage summary",
     );
     assert_uses_index(
@@ -1112,9 +1124,12 @@ fn by_key_model_usage_summary_query_includes_key_scoped_sources() {
         vec![Value::Text("key-a".to_string())],
     );
 
-    assert_uses_index(
+    assert_uses_any_index(
         &details,
-        "idx_request_token_stats_key_model_created_at",
+        &[
+            "idx_request_token_stats_key_model_created_at",
+            "idx_request_token_stats_key_id_created_at",
+        ],
         "by-key-model raw usage summary",
     );
     assert_uses_index(

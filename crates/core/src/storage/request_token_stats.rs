@@ -693,19 +693,24 @@ impl Storage {
     pub fn insert_request_token_stat(&self, stat: &RequestTokenStat) -> Result<()> {
         self.conn.execute(
             "INSERT INTO request_token_stats (
-                request_log_id, key_id, account_id, model, actual_source_kind, actual_source_id,
-                input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
-                estimated_cost_usd, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                request_log_id, key_id, account_id, aggregate_api_id, aggregate_api_supplier_name, aggregate_api_url,
+                model, actual_source_kind, actual_source_id,
+                input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens,
+                reasoning_output_tokens, estimated_cost_usd, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             (
                 stat.request_log_id,
                 &stat.key_id,
                 &stat.account_id,
+                &stat.aggregate_api_id,
+                &stat.aggregate_api_supplier_name,
+                &stat.aggregate_api_url,
                 &stat.model,
                 &stat.actual_source_kind,
                 &stat.actual_source_id,
                 stat.input_tokens,
                 stat.cached_input_tokens,
+                stat.cache_write_input_tokens,
                 stat.output_tokens,
                 stat.total_tokens,
                 stat.reasoning_output_tokens,
@@ -771,7 +776,7 @@ impl Storage {
             &format!(
                 "INSERT INTO request_token_stat_hourly_rollups (
                     bucket_start, bucket_end, key_id, account_id, model, actual_source_kind, actual_source_id,
-                    owner_user_id, input_tokens, cached_input_tokens, output_tokens, total_tokens,
+                    owner_user_id, input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens,
                     reasoning_output_tokens, estimated_cost_usd, request_count, success_count,
                     error_count, updated_at
                  )
@@ -786,6 +791,7 @@ impl Storage {
                     COALESCE({USER_OWNER_EXPR}, ''),
                     IFNULL(SUM(CASE WHEN t.input_tokens > 0 THEN t.input_tokens ELSE 0 END), 0),
                     IFNULL(SUM(CASE WHEN t.cached_input_tokens > 0 THEN t.cached_input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.cache_write_input_tokens > 0 THEN t.cache_write_input_tokens ELSE 0 END), 0),
                     IFNULL(SUM(CASE WHEN t.output_tokens > 0 THEN t.output_tokens ELSE 0 END), 0),
                     IFNULL(SUM({token_total}), 0),
                     IFNULL(SUM(CASE WHEN t.reasoning_output_tokens > 0 THEN t.reasoning_output_tokens ELSE 0 END), 0),
@@ -815,6 +821,7 @@ impl Storage {
                     END,
                     input_tokens = request_token_stat_hourly_rollups.input_tokens + excluded.input_tokens,
                     cached_input_tokens = request_token_stat_hourly_rollups.cached_input_tokens + excluded.cached_input_tokens,
+                    cache_write_input_tokens = request_token_stat_hourly_rollups.cache_write_input_tokens + excluded.cache_write_input_tokens,
                     output_tokens = request_token_stat_hourly_rollups.output_tokens + excluded.output_tokens,
                     total_tokens = request_token_stat_hourly_rollups.total_tokens + excluded.total_tokens,
                     reasoning_output_tokens = request_token_stat_hourly_rollups.reasoning_output_tokens + excluded.reasoning_output_tokens,
@@ -1570,11 +1577,15 @@ impl Storage {
                 request_log_id INTEGER NOT NULL,
                 key_id TEXT,
                 account_id TEXT,
+                aggregate_api_id TEXT,
+                aggregate_api_supplier_name TEXT,
+                aggregate_api_url TEXT,
                 model TEXT,
                 actual_source_kind TEXT,
                 actual_source_id TEXT,
                 input_tokens INTEGER,
                 cached_input_tokens INTEGER,
+                cache_write_input_tokens INTEGER,
                 output_tokens INTEGER,
                 total_tokens INTEGER,
                 reasoning_output_tokens INTEGER,
@@ -1619,8 +1630,17 @@ impl Storage {
             [],
         )?;
         self.ensure_column("request_token_stats", "total_tokens", "INTEGER")?;
+        self.ensure_column("request_token_stats", "cache_write_input_tokens", "INTEGER")?;
+        self.ensure_column("request_token_stats", "aggregate_api_id", "TEXT")?;
+        self.ensure_column("request_token_stats", "aggregate_api_supplier_name", "TEXT")?;
+        self.ensure_column("request_token_stats", "aggregate_api_url", "TEXT")?;
         self.ensure_column("request_token_stats", "actual_source_kind", "TEXT")?;
         self.ensure_column("request_token_stats", "actual_source_id", "TEXT")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stats_aggregate_api_id_created_at
+             ON request_token_stats(aggregate_api_id, created_at DESC)",
+            [],
+        )?;
         if self.has_column("request_logs", "actual_source_kind")?
             && self.has_column("request_logs", "actual_source_id")?
         {
@@ -1664,11 +1684,14 @@ impl Storage {
                 model TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
                 estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
                 source_rows INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (key_id, account_id, model)
             )",
@@ -1684,6 +1707,21 @@ impl Storage {
              ON request_token_stat_rollups(model)",
             [],
         )?;
+        self.ensure_column(
+            "request_token_stat_rollups",
+            "cache_write_input_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column(
+            "request_token_stat_rollups",
+            "success_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column(
+            "request_token_stat_rollups",
+            "error_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS request_token_stat_hourly_rollups (
                 bucket_start INTEGER NOT NULL,
@@ -1696,6 +1734,7 @@ impl Storage {
                 owner_user_id TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1709,6 +1748,11 @@ impl Storage {
             [],
         )?;
         self.ensure_column("request_token_stat_hourly_rollups", "bucket_end", "INTEGER")?;
+        self.ensure_column(
+            "request_token_stat_hourly_rollups",
+            "cache_write_input_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         self.conn.execute(
             "UPDATE request_token_stat_hourly_rollups
              SET bucket_end = bucket_start + 3600
@@ -1735,6 +1779,9 @@ impl Storage {
              ON request_token_stat_hourly_rollups(actual_source_kind, actual_source_id, bucket_start)",
             [],
         )?;
+        // Legacy custom daily rollups remain for databases that still hold compacted
+        // rows; the bridge migration normalizes cache-write values against them.
+        self.ensure_request_token_daily_rollups_table()?;
         if self.has_column("request_logs", "input_tokens")? {
             let actual_source_kind_expr =
                 if self.has_column("request_logs", "actual_source_kind")? {
@@ -1747,16 +1794,41 @@ impl Storage {
             } else {
                 "NULL"
             };
+            let aggregate_api_id_expr =
+                if self.has_column("request_logs", "initial_aggregate_api_id")? {
+                    "initial_aggregate_api_id"
+                } else {
+                    "NULL"
+                };
+            let aggregate_api_supplier_name_expr =
+                if self.has_column("request_logs", "aggregate_api_supplier_name")? {
+                    "aggregate_api_supplier_name"
+                } else {
+                    "NULL"
+                };
+            let aggregate_api_url_expr = if self.has_column("request_logs", "aggregate_api_url")? {
+                "aggregate_api_url"
+            } else {
+                "NULL"
+            };
+            let cache_write_expr = if self.has_column("request_logs", "cache_write_input_tokens")?
+            {
+                "cache_write_input_tokens"
+            } else {
+                "NULL"
+            };
             let backfill_sql = format!(
                 "INSERT OR IGNORE INTO request_token_stats (
-                    request_log_id, key_id, account_id, model, actual_source_kind, actual_source_id,
-                    input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
-                    estimated_cost_usd, created_at
+                    request_log_id, key_id, account_id, aggregate_api_id, aggregate_api_supplier_name,
+                    aggregate_api_url, model, actual_source_kind, actual_source_id,
+                    input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens,
+                    total_tokens, reasoning_output_tokens, estimated_cost_usd, created_at
                  )
                  SELECT
-                    id, key_id, account_id, model, {actual_source_kind_expr}, {actual_source_id_expr},
-                    input_tokens, cached_input_tokens, output_tokens, NULL, reasoning_output_tokens,
-                    estimated_cost_usd, created_at
+                    id, key_id, account_id, {aggregate_api_id_expr}, {aggregate_api_supplier_name_expr},
+                    {aggregate_api_url_expr}, model, {actual_source_kind_expr}, {actual_source_id_expr},
+                    input_tokens, cached_input_tokens, {cache_write_expr}, output_tokens, NULL,
+                    reasoning_output_tokens, estimated_cost_usd, created_at
                  FROM request_logs
                  WHERE input_tokens IS NOT NULL
                     OR cached_input_tokens IS NOT NULL
@@ -1769,6 +1841,42 @@ impl Storage {
         self.backfill_request_token_stats_aggregate_api_context()?;
         Ok(())
     }
+
+    pub(super) fn ensure_request_token_daily_rollups_table(&self) -> Result<()> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS request_token_daily_rollups (
+                day_start_ts INTEGER NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'global',
+                source_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                max_duration_ms INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (day_start_ts, source_kind, source_id)
+            )",
+            [],
+        )?;
+        self.ensure_column(
+            "request_token_daily_rollups",
+            "cache_write_input_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_daily_rollups_source_day
+             ON request_token_daily_rollups(source_kind, source_id, day_start_ts)",
+            [],
+        )?;
+        Ok(())
+    }
+
     pub fn summarize_request_token_stats_by_account_between(
         &self,
         start_ts: i64,
