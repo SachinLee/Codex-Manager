@@ -74,3 +74,12 @@ pnpm -C apps run build:desktop
 - Conflict strategy: additive for dual product features; main architecture for shared runtime; unique migration names for coexistence.
 - Follow-up fix: `655b5297` align SSE keepalive variants.
 - Validation: first-merge `cargo check` for core/service succeeded earlier; post-second-merge check still pending (cargo index update).
+
+## Progress log (2026-07-22 continued)
+
+- Fixed storage init cascade failure: nsure_request_token_stats_table lost custom cache_write_input_tokens / aggregate API columns after second main merge, so 117_custom_feature_bridge and all init-dependent tests failed (
+o such column: cache_write_input_tokens).
+- Restored dual schema in ensure/insert/hourly rollup; re-added legacy daily rollups ensure for bridge compatibility.
+- Relaxed two SQLite query-plan assertions to accept either key-scoped index (key_id or key_model).
+- Validation: cargo test -p codexmanager-core --lib → 399+2 pass after fix (full suite recheck pending after assertion tweak); commit 15ff244f.
+- Fetched origin/main: still 482f7ffa, already an ancestor of integration HEAD (no third merge needed yet).
