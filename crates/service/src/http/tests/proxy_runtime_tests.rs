@@ -593,8 +593,8 @@ fn build_ws_request(
 async fn unsupported_responses_websocket_returns_426() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-unsupported");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     insert_api_key_record(
         &storage,
         "platform_key_ws_unsupported",
@@ -637,8 +637,8 @@ async fn unsupported_responses_websocket_returns_426() {
 async fn hybrid_responses_websocket_returns_426() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-hybrid-unsupported");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     insert_api_key_record(
         &storage,
         "platform_key_ws_hybrid_unsupported",
@@ -683,8 +683,8 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     let _org_guard = EnvGuard::set("OPENAI_ORGANIZATION", "org_ws_test");
     let _project_guard = EnvGuard::set("OPENAI_PROJECT", "proj_ws_test");
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-supported");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let (upstream_addr, mut upstream_events, capture_rx, upstream_handle) =
         start_mock_upstream_ws().await;
     insert_api_key_record(
@@ -964,8 +964,8 @@ async fn official_responses_websocket_preserves_explicit_prompt_cache_key_when_s
 ) {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-explicit-prompt-cache-key");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let (upstream_addr, mut upstream_events, capture_rx, upstream_handle) =
         start_mock_upstream_ws().await;
     insert_api_key_record(
@@ -1058,8 +1058,8 @@ async fn official_responses_websocket_preserves_explicit_prompt_cache_key_when_s
 async fn official_responses_websocket_retries_current_request_after_terminal_failure() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-failover");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let (upstream_addr, mut upstream_events, capture_rx, upstream_handle) =
         start_mock_upstream_ws_fail_then_success().await;
     insert_api_key_record(

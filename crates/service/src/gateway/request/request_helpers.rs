@@ -14,8 +14,6 @@ pub(crate) struct ParsedRequestMetadata {
     pub(crate) request_shape: Option<String>,
     pub(crate) has_prompt_cache_key: bool,
     pub(crate) prompt_cache_key: Option<String>,
-    pub(crate) session_id_candidate: Option<String>,
-    pub(crate) has_client_metadata: bool,
     pub(crate) has_previous_response_id: bool,
 }
 
@@ -55,13 +53,22 @@ impl InputSizeLimitError {
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
-    if body.is_empty() {
-        return ParsedRequestMetadata::default();
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+    let Some(value) = parse_request_json_value(body) else {
         return ParsedRequestMetadata::default();
     };
+    parse_request_metadata_from_value(&value)
+}
+
+pub(crate) fn parse_request_json_value(body: &[u8]) -> Option<Value> {
+    if body.is_empty() {
+        return None;
+    }
+    serde_json::from_slice::<Value>(body).ok()
+}
+
+pub(crate) fn parse_request_metadata_from_value(value: &Value) -> ParsedRequestMetadata {
     let Some(object) = value.as_object() else {
         return ParsedRequestMetadata::default();
     };
@@ -90,7 +97,6 @@ pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
         });
 
     let request_shape = Some(summarize_request_shape_from_object(object));
-    let has_client_metadata = object.contains_key("client_metadata");
     let has_prompt_cache_key = value
         .get("prompt_cache_key")
         .and_then(Value::as_str)
@@ -102,7 +108,6 @@ pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
-    let session_id_candidate = request_log_session_id_candidate_from_value(&value);
     let has_previous_response_id = value
         .get("previous_response_id")
         .and_then(Value::as_str)
@@ -122,107 +127,8 @@ pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
         request_shape,
         has_prompt_cache_key,
         prompt_cache_key,
-        session_id_candidate,
-        has_client_metadata,
         has_previous_response_id,
     }
-}
-
-pub(crate) fn request_log_session_id_candidate_from_value(value: &Value) -> Option<String> {
-    let object = value.as_object()?;
-    session_candidate_from_object(object, ExplicitSessionCandidate::Yes)
-        .or_else(|| {
-            object
-                .get("client_metadata")
-                .and_then(Value::as_object)
-                .and_then(|metadata| {
-                    session_candidate_from_object(metadata, ExplicitSessionCandidate::Yes)
-                })
-        })
-        .or_else(|| {
-            object
-                .get("metadata")
-                .and_then(Value::as_object)
-                .and_then(|metadata| {
-                    session_candidate_from_object(metadata, ExplicitSessionCandidate::Yes)
-                })
-        })
-        .or_else(|| {
-            object
-                .get("prompt_cache_key")
-                .and_then(Value::as_str)
-                .and_then(|value| normalize_session_candidate(value, ExplicitSessionCandidate::No))
-        })
-}
-
-#[derive(Clone, Copy)]
-enum ExplicitSessionCandidate {
-    Yes,
-    No,
-}
-
-fn session_candidate_from_object(
-    object: &serde_json::Map<String, Value>,
-    explicit: ExplicitSessionCandidate,
-) -> Option<String> {
-    [
-        "session_id",
-        "sessionId",
-        "codex_session_id",
-        "codexSessionId",
-        "thread_id",
-        "threadId",
-        "codex_thread_id",
-        "codexThreadId",
-    ]
-    .iter()
-    .find_map(|key| {
-        object
-            .get(*key)
-            .and_then(Value::as_str)
-            .and_then(|value| normalize_session_candidate(value, explicit))
-    })
-}
-
-fn normalize_session_candidate(value: &str, explicit: ExplicitSessionCandidate) -> Option<String> {
-    let normalized = value.trim();
-    if normalized.is_empty() || normalized.starts_with("pck:v1:") {
-        return None;
-    }
-    if matches!(explicit, ExplicitSessionCandidate::Yes)
-        || normalized.starts_with("local:")
-        || looks_like_codex_thread_id(normalized)
-    {
-        return Some(normalized.to_string());
-    }
-    None
-}
-
-fn looks_like_codex_thread_id(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 36 {
-        return false;
-    }
-    for (idx, byte) in bytes.iter().enumerate() {
-        if matches!(idx, 8 | 13 | 18 | 23) {
-            if *byte != b'-' {
-                return false;
-            }
-        } else if !byte.is_ascii_hexdigit() {
-            return false;
-        }
-    }
-    true
-}
-
-pub(crate) fn inspect_service_tier_for_log(body: &[u8]) -> ServiceTierLogDiagnostic {
-    if body.is_empty() {
-        return ServiceTierLogDiagnostic::default();
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return ServiceTierLogDiagnostic::default();
-    };
-    inspect_service_tier_value(value.get("service_tier"))
 }
 
 pub(crate) fn validate_text_input_limit_for_path(
@@ -232,9 +138,19 @@ pub(crate) fn validate_text_input_limit_for_path(
     if body.is_empty() || !is_text_input_limit_path(path) {
         return Ok(());
     }
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+    let Some(value) = parse_request_json_value(body) else {
         return Ok(());
     };
+    validate_text_input_limit_for_value(path, &value)
+}
+
+pub(crate) fn validate_text_input_limit_for_value(
+    path: &str,
+    value: &Value,
+) -> Result<(), InputSizeLimitError> {
+    if !is_text_input_limit_path(path) {
+        return Ok(());
+    }
     let actual_chars = count_path_text_input_chars(path, &value);
     if actual_chars > MAX_TEXT_INPUT_CHARS {
         return Err(InputSizeLimitError {

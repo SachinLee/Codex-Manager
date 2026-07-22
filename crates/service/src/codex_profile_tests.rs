@@ -207,10 +207,9 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
     let dir = temp_profile("codex-profile-candidates");
     fs::create_dir_all(&dir).expect("mkdir temp dir");
     let db_path = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
     let storage = Storage::open(&db_path).expect("open storage");
     storage.init().expect("init storage");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let mut active = test_account("acc-active-candidate", "active");
     active.label = "Active Candidate".to_string();
     active.group_name = Some("candidate-group".to_string());
@@ -298,7 +297,15 @@ fn auth_json_shapes_match_codex_modes() {
 
 #[test]
 fn write_profile_files_uses_internal_marker() {
+    let _lock = crate::test_env_guard();
     let dir = temp_profile("internal-marker");
+    fs::create_dir_all(&dir).expect("mkdir profile");
+    let db_path = dir.join("codexmanager.db");
+    Storage::open(&db_path)
+        .expect("open storage")
+        .init()
+        .expect("init storage");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let state = ManagedState {
         profile_dir: profile_key(&dir),
         mode: CodexProfileMode::Gateway,

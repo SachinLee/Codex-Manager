@@ -23,6 +23,41 @@ fn temp_db_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("codexmanager-{name}-{}-{nanos}.db", process::id()))
 }
 
+#[test]
+fn open_in_memory_configures_temp_store_for_query_workloads() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+
+    let temp_store: i64 = storage
+        .conn
+        .query_row("PRAGMA temp_store", [], |row| row.get(0))
+        .expect("read temp_store pragma");
+
+    assert_eq!(temp_store, 2, "expected temp_store=MEMORY");
+}
+
+#[test]
+fn open_file_configures_wal_and_temp_store() {
+    let path = temp_db_path("connection-config");
+    let storage = Storage::open(&path).expect("open file storage");
+
+    let journal_mode: String = storage
+        .conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .expect("read journal_mode pragma");
+    let temp_store: i64 = storage
+        .conn
+        .query_row("PRAGMA temp_store", [], |row| row.get(0))
+        .expect("read temp_store pragma");
+
+    assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+    assert_eq!(temp_store, 2, "expected temp_store=MEMORY");
+
+    drop(storage);
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(path.with_extension("db-wal"));
+    let _ = fs::remove_file(path.with_extension("db-shm"));
+}
+
 /// 函数 `init_tracks_schema_migrations_and_is_idempotent`
 ///
 /// 作者: gaohongshun
@@ -286,6 +321,15 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         )
         .expect("count 063 migration");
     assert_eq!(applied_063, 1);
+    let applied_063: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM schema_migrations WHERE version = '063_account_subscriptions_account_plan_type'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count 063 migration");
+    assert_eq!(applied_063, 1);
     let applied_064: i64 = storage
         .conn
         .query_row(
@@ -295,63 +339,216 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         )
         .expect("count 064 migration");
     assert_eq!(applied_064, 1);
-    let applied_066_service_tier_source: i64 = storage
+    let applied_066: i64 = storage
         .conn
         .query_row(
             "SELECT COUNT(1) FROM schema_migrations WHERE version = '066_request_logs_service_tier_source'",
             [],
             |row| row.get(0),
         )
-        .expect("count 066 service tier source migration");
-    assert_eq!(applied_066_service_tier_source, 1);
-    let applied_066_session_id: i64 = storage
-        .conn
-        .query_row(
-            "SELECT COUNT(1) FROM schema_migrations WHERE version = '066_request_logs_session_id'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count 066 session id migration");
-    assert_eq!(applied_066_session_id, 1);
-    let applied_067_model_reasoning_sources: i64 = storage
+        .expect("count 066 migration");
+    assert_eq!(applied_066, 1);
+    let applied_067: i64 = storage
         .conn
         .query_row(
             "SELECT COUNT(1) FROM schema_migrations WHERE version = '067_request_logs_model_reasoning_sources'",
             [],
             |row| row.get(0),
         )
-        .expect("count 067 model reasoning sources migration");
-    assert_eq!(applied_067_model_reasoning_sources, 1);
-    let applied_067_conversation_anchor: i64 = storage
-        .conn
-        .query_row(
-            "SELECT COUNT(1) FROM schema_migrations WHERE version = '067_request_logs_conversation_anchor'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count 067 conversation anchor migration");
-    assert_eq!(applied_067_conversation_anchor, 1);
-    let applied_068_route_strategy_source: i64 = storage
+        .expect("count 067 migration");
+    assert_eq!(applied_067, 1);
+    let applied_068: i64 = storage
         .conn
         .query_row(
             "SELECT COUNT(1) FROM schema_migrations WHERE version = '068_request_logs_route_strategy_source'",
             [],
             |row| row.get(0),
         )
-        .expect("count 068 route strategy source migration");
-    assert_eq!(applied_068_route_strategy_source, 1);
-    let applied_068_token_daily_rollups: i64 = storage
+        .expect("count 068 migration");
+    assert_eq!(applied_068, 1);
+    for version in [
+        "069_request_logs_filter_indexes",
+        "070_request_token_stats_reporting_indexes",
+        "071_model_source_lookup_indexes",
+        "072_accounts_group_name_filter_index",
+        "073_events_account_status_lookup_index",
+        "074_plugin_task_due_lookup_index",
+        "075_billing_rules_active_order_index",
+        "076_app_users_lower_username_index",
+        "077_api_key_owners_user_key_lookup_index",
+        "078_plugin_run_logs_task_lookup_index",
+        "079_wallet_ledger_entry_kind_index",
+        "080_accounts_identity_lookup_indexes",
+        "081_aggregate_api_balance_query_lookup_index",
+        "082_aggregate_api_status_order_index",
+        "083_aggregate_api_balance_query_order_index",
+        "084_aggregate_api_provider_status_order_index",
+        "085_model_price_rules_custom_exact_lookup_index",
+        "086_model_price_rules_enabled_pattern_lookup_index",
+        "087_request_token_stats_actual_source",
+        "088_request_token_stat_hourly_rollups",
+        "089_request_logs_ordered_filter_indexes",
+        "090_drop_redundant_request_log_filter_indexes",
+        "091_aggregate_api_list_order_index",
+        "092_drop_redundant_model_source_indexes",
+        "093_drop_redundant_account_manager_indexes",
+        "094_plugin_installs_list_order_index",
+        "095_model_catalog_scope_order_index",
+        "096_api_keys_list_order_index",
+        "097_tokens_refresh_due_order_index",
+        "098_accounts_list_order_index",
+        "099_model_groups_list_order_index",
+        "100_user_model_groups_group_lookup_index",
+        "101_events_account_cleanup_index",
+        "102_app_users_list_order_index",
+        "103_app_project_user_lookup_indexes",
+        "104_billing_rules_owner_lookup_indexes",
+        "105_redeem_records_lookup_indexes",
+        "106_account_manager_created_by_lookup_indexes",
+        "107_plugin_tasks_list_order_indexes",
+        "108_accounts_cleanup_status_lookup_index",
+        "116_request_logs_visibility",
+    ] {
+        let applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM schema_migrations WHERE version = ?1",
+                [version],
+                |row| row.get(0),
+            )
+            .expect("count reporting index migration");
+        assert_eq!(applied, 1, "migration {version} should be applied");
+    }
+
+    for redundant_index in [
+        "idx_request_logs_status_code_created_at",
+        "idx_request_logs_method_created_at",
+        "idx_request_logs_key_id_created_at",
+        "idx_request_logs_account_id_created_at",
+        "idx_request_logs_trace_id_created_at",
+        "idx_request_logs_model_created_at",
+        "idx_request_logs_request_type_created_at",
+        "idx_request_logs_gateway_mode_created_at",
+        "idx_request_logs_route_strategy_created_at",
+        "idx_request_logs_route_source_created_at",
+        "idx_request_logs_actual_source_id_created_at",
+    ] {
+        let exists: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [redundant_index],
+                |row| row.get(0),
+            )
+            .expect("check redundant request log index");
+        assert_eq!(exists, 0, "index {redundant_index} should be dropped");
+    }
+
+    let plugin_installs_list_order_index: i64 = storage
         .conn
         .query_row(
-            "SELECT COUNT(1) FROM schema_migrations WHERE version = '068_request_token_daily_rollups'",
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_plugin_installs_list_order'",
             [],
             |row| row.get(0),
         )
-        .expect("count 068 token daily rollups migration");
-    assert_eq!(applied_068_token_daily_rollups, 1);
-    assert!(storage
-        .has_table("request_token_daily_rollups")
-        .expect("check request_token_daily_rollups table"));
+        .expect("check plugin installs list order index");
+    assert_eq!(
+        plugin_installs_list_order_index, 1,
+        "idx_plugin_installs_list_order should exist"
+    );
+
+    let old_model_catalog_scope_sort_index: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_model_catalog_models_scope_sort'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("check old model catalog scope sort index");
+    assert_eq!(
+        old_model_catalog_scope_sort_index, 0,
+        "idx_model_catalog_models_scope_sort should be dropped"
+    );
+
+    let model_catalog_scope_order_index: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_model_catalog_models_scope_order'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("check model catalog scope order index");
+    assert_eq!(
+        model_catalog_scope_order_index, 1,
+        "idx_model_catalog_models_scope_order should exist"
+    );
+
+    for ordered_index in [
+        "idx_request_logs_status_code_created_at_id",
+        "idx_request_logs_method_created_at_id",
+        "idx_request_logs_key_id_created_at_id",
+        "idx_request_logs_account_id_created_at_id",
+        "idx_request_logs_trace_id_created_at_id",
+        "idx_request_logs_model_created_at_id",
+        "idx_request_logs_request_type_created_at_id",
+        "idx_request_logs_gateway_mode_created_at_id",
+        "idx_request_logs_route_strategy_created_at_id",
+        "idx_request_logs_route_source_created_at_id",
+        "idx_request_logs_actual_source_id_created_at_id",
+    ] {
+        let exists: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [ordered_index],
+                |row| row.get(0),
+            )
+            .expect("check ordered request log index");
+        assert_eq!(exists, 1, "index {ordered_index} should exist");
+    }
+
+    let old_aggregate_api_created_at_index: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_aggregate_apis_created_at'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("check old aggregate API created_at index");
+    assert_eq!(
+        old_aggregate_api_created_at_index, 0,
+        "idx_aggregate_apis_created_at should be dropped after list-order index migration"
+    );
+
+    let aggregate_api_list_order_index: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_aggregate_apis_list_order'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("check aggregate API list order index");
+    assert_eq!(
+        aggregate_api_list_order_index, 1,
+        "idx_aggregate_apis_list_order should exist"
+    );
+
+    for redundant_index in [
+        "idx_model_source_models_source",
+        "idx_model_source_mappings_platform",
+        "idx_app_wallets_owner",
+        "idx_billing_rules_status_priority",
+    ] {
+        let exists: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [redundant_index],
+                |row| row.get(0),
+            )
+            .expect("check redundant model source index");
+        assert_eq!(exists, 0, "index {redundant_index} should be dropped");
+    }
 
     assert!(!storage
         .has_column("accounts", "note")
@@ -365,6 +562,15 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
     assert!(storage
         .has_column("request_token_stats", "total_tokens")
         .expect("check request_token_stats.total_tokens"));
+    assert!(storage
+        .has_column("request_token_stats", "actual_source_kind")
+        .expect("check request_token_stats.actual_source_kind"));
+    assert!(storage
+        .has_column("request_token_stats", "actual_source_id")
+        .expect("check request_token_stats.actual_source_id"));
+    assert!(storage
+        .has_table("request_token_stat_hourly_rollups")
+        .expect("check request_token_stat_hourly_rollups table"));
     let gateway_error_log_table: i64 = storage
         .conn
         .query_row(
@@ -380,12 +586,6 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
     assert!(storage
         .has_column("request_logs", "trace_id")
         .expect("check request_logs.trace_id"));
-    assert!(storage
-        .has_column("request_logs", "session_id")
-        .expect("check request_logs.session_id"));
-    assert!(storage
-        .has_column("request_logs", "conversation_anchor")
-        .expect("check request_logs.conversation_anchor"));
     assert!(storage
         .has_column("request_logs", "original_path")
         .expect("check request_logs.original_path"));
@@ -672,6 +872,66 @@ fn sql_migration_can_fallback_to_compat_when_schema_already_exists() {
         )
         .expect("count 004 migration");
     assert_eq!(applied_004, 1);
+}
+
+#[test]
+fn init_repairs_legacy_aggregate_api_balance_columns_before_indexes() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TABLE aggregate_apis (
+                id TEXT PRIMARY KEY,
+                provider_type TEXT NOT NULL DEFAULT 'codex',
+                supplier_name TEXT,
+                sort INTEGER NOT NULL DEFAULT 0,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_test_at INTEGER,
+                last_test_status TEXT,
+                last_test_error TEXT
+            );",
+        )
+        .expect("create legacy aggregate_apis table");
+    storage
+        .ensure_migrations_table()
+        .expect("ensure migration tracker");
+    storage
+        .conn
+        .execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('054_aggregate_api_balance_query', 1)",
+            [],
+        )
+        .expect("insert legacy balance migration marker");
+
+    storage.init().expect("repair legacy aggregate API schema");
+
+    assert!(storage
+        .has_column("aggregate_apis", "balance_query_enabled")
+        .expect("check balance query column"));
+    assert!(storage
+        .has_column("aggregate_apis", "last_balance_json")
+        .expect("check balance result column"));
+    assert!(storage
+        .has_table("aggregate_api_balance_secrets")
+        .expect("check balance secrets table"));
+
+    for index in [
+        "idx_aggregate_apis_balance_query_lookup",
+        "idx_aggregate_apis_balance_query_order",
+    ] {
+        let exists: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index],
+                |row| row.get(0),
+            )
+            .expect("check aggregate balance index");
+        assert_eq!(exists, 1, "index {index} should be created after columns");
+    }
 }
 
 /// 函数 `api_key_profile_migration_backfills_existing_keys`
@@ -1401,13 +1661,23 @@ fn observability_storage_compaction_migration_rolls_up_and_prunes_legacy_rows() 
     let rolled_total_tokens: i64 = storage
         .conn
         .query_row(
-            "SELECT total_tokens FROM request_token_stat_rollups
+            "SELECT SUM(total_tokens) FROM request_token_stat_hourly_rollups
              WHERE key_id = 'key-migrate' AND account_id = 'acc-migrate' AND model = 'gpt-5'",
             [],
             |row| row.get(0),
         )
-        .expect("load rollup row");
+        .expect("load hourly rollup total");
     assert_eq!(rolled_total_tokens, 330);
+
+    let remaining_old_token_stats: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM request_token_stats WHERE created_at < ?1",
+            [2_000_000_i64],
+            |row| row.get(0),
+        )
+        .expect("count old token stats");
+    assert_eq!(remaining_old_token_stats, 0);
 
     let remaining_recent_token_stats: i64 = storage
         .conn

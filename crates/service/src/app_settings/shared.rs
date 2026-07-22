@@ -1,4 +1,5 @@
 pub const APP_SETTING_UPDATE_AUTO_CHECK_KEY: &str = "app.update.auto_check";
+pub const APP_SETTING_AUTO_START_ENABLED_KEY: &str = "app.auto_start_enabled";
 pub const APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY: &str = "app.close_to_tray_on_close";
 pub const APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY: &str =
     "app.lightweight_mode_on_close_to_tray";
@@ -11,32 +12,14 @@ pub const APP_SETTING_SERVICE_ADDR_KEY: &str = "app.service_addr";
 pub const APP_SETTING_AUTHOR_SPONSORS_KEY: &str = "author.sponsors";
 pub const APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY: &str = "author.server_recommendations";
 pub const APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY: &str = "gateway.route_strategy";
-pub const APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY: &str =
-    "gateway.capability_routing_mode";
+pub const APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY: &str = "gateway.capability_routing_mode";
 pub const APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY: &str = "gateway.free_account_max_model";
 pub const APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY: &str = "gateway.model_forward_rules";
 pub const APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY: &str =
     "gateway.compact_model_forward_rules";
-pub const APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY: &str = "gateway.auto_compact_enabled";
-pub const APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY: &str =
-    "gateway.model_catalog_auto_remote_fetch";
 pub const APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY: &str = "gateway.account_max_inflight";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY: &str = "gateway.reasoning_guard_enabled";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY: &str = "gateway.reasoning_guard_targets";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY: &str =
-    "gateway.reasoning_guard_match_mode";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY: &str =
-    "gateway.reasoning_guard_stream_action";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY: &str =
-    "gateway.reasoning_guard_continuation_marker_text";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY: &str =
-    "gateway.reasoning_guard_intercept_streaming";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY: &str =
-    "gateway.reasoning_guard_intercept_non_streaming";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY: &str =
-    "gateway.reasoning_guard_retry_attempts";
-pub const APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY: &str =
-    "gateway.reasoning_guard_bypass_after_consecutive";
+pub const APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY: &str =
+    "gateway.thread_aware_account_distribution_enabled";
 pub const APP_SETTING_GATEWAY_QUOTA_GUARD_KEY: &str = "gateway.quota_guard";
 pub const APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY: &str =
     "gateway.request_compression_enabled";
@@ -44,6 +27,8 @@ pub const APP_SETTING_GATEWAY_ORIGINATOR_KEY: &str = "gateway.originator";
 pub const APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY: &str = "gateway.user_agent_version";
 pub const APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY: &str = "gateway.residency_requirement";
 pub const APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY: &str = "gateway.upstream_proxy_url";
+pub const APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY: &str =
+    "gateway.upstream_proxy_bypass_hosts";
 pub const APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY: &str =
     "gateway.upstream_stream_timeout_ms";
 pub const APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY: &str =

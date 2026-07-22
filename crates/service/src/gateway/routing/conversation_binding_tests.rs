@@ -4,6 +4,7 @@ use super::{
     resolve_attempt_thread, CandidateRotationSource, RouteConversationSource,
 };
 use codexmanager_core::storage::{Account, ConversationBinding, Storage, Token};
+use std::collections::HashMap;
 
 /// 函数 `sample_account`
 ///
@@ -380,6 +381,7 @@ fn apply_candidate_rotation_reports_binding_source_when_binding_selected() {
         Some(&routing),
         "key-hash-1",
         Some("gpt-5.4"),
+        None,
     );
 
     assert_eq!(plan.source, CandidateRotationSource::ConversationBinding);
@@ -411,11 +413,83 @@ fn apply_candidate_rotation_reports_manual_preferred_source() {
         Some(&routing),
         "key-hash-1",
         Some("gpt-5.4"),
+        None,
     );
 
     assert_eq!(plan.source, CandidateRotationSource::ManualPreferredAccount);
     assert_eq!(plan.strategy_label, "manual_preferred_account");
     assert!(!plan.strategy_applied);
+}
+
+#[test]
+fn apply_candidate_rotation_prefers_less_bound_account_for_new_thread() {
+    let routing = prepare_conversation_routing(
+        "key-hash-1",
+        Some("conv-1"),
+        None,
+        &mut vec![
+            (sample_account("acc-1", 0), sample_token("acc-1")),
+            (sample_account("acc-2", 1), sample_token("acc-2")),
+            (sample_account("acc-3", 2), sample_token("acc-3")),
+        ],
+    )
+    .expect("routing context");
+    let mut candidates = vec![
+        (sample_account("acc-1", 0), sample_token("acc-1")),
+        (sample_account("acc-2", 1), sample_token("acc-2")),
+        (sample_account("acc-3", 2), sample_token("acc-3")),
+    ];
+    let account_binding_counts = HashMap::from([
+        ("acc-1".to_string(), 2),
+        ("acc-2".to_string(), 1),
+        ("acc-3".to_string(), 0),
+    ]);
+
+    let plan = apply_candidate_rotation(
+        &mut candidates,
+        Some(&routing),
+        "key-hash-1",
+        Some("gpt-5.4"),
+        Some(&account_binding_counts),
+    );
+
+    assert_eq!(
+        plan.source,
+        CandidateRotationSource::ThreadAwareDistribution
+    );
+    assert!(plan.strategy_applied);
+    assert_eq!(candidates[0].0.id, "acc-3");
+}
+
+#[test]
+fn apply_candidate_rotation_keeps_existing_binding_before_thread_distribution() {
+    let binding = sample_binding("acc-1");
+    let routing = prepare_conversation_routing(
+        "key-hash-1",
+        Some("conv-1"),
+        Some(&binding),
+        &mut vec![
+            (sample_account("acc-1", 0), sample_token("acc-1")),
+            (sample_account("acc-2", 1), sample_token("acc-2")),
+        ],
+    )
+    .expect("routing context");
+    let mut candidates = vec![
+        (sample_account("acc-1", 0), sample_token("acc-1")),
+        (sample_account("acc-2", 1), sample_token("acc-2")),
+    ];
+    let account_binding_counts = HashMap::from([("acc-1".to_string(), 4)]);
+
+    let plan = apply_candidate_rotation(
+        &mut candidates,
+        Some(&routing),
+        "key-hash-1",
+        Some("gpt-5.4"),
+        Some(&account_binding_counts),
+    );
+
+    assert_eq!(plan.source, CandidateRotationSource::ConversationBinding);
+    assert_eq!(candidates[0].0.id, "acc-1");
 }
 
 /// 函数 `terminal_response_creates_and_rebinds_conversation_binding_on_success`

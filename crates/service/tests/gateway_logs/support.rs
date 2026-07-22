@@ -3,12 +3,9 @@ mod shared;
 
 pub(super) use shared::{test_env_guard, EnvGuard};
 
-pub(super) use codexmanager_core::rpc::types::ModelInfo;
-pub(super) use codexmanager_core::rpc::types::ModelsResponse;
 pub(super) use codexmanager_core::storage::{
-    now_ts, Account, ApiKey, ApiKeyOwner, AppUser, ModelCatalogModelRecord,
-    ModelCatalogReasoningLevelRecord, ModelCatalogScopeRecord, ModelCatalogStringItemRecord,
-    ModelSourceMapping, ModelSourceModel, Storage, Token,
+    now_ts, Account, ApiKey, ApiKeyOwner, AppUser, ManagedModelV2Upsert, ModelRouteV2,
+    ModelSourceMapping, ModelSourceModel, Storage, Token, UserModelGroup,
 };
 pub(super) use sha2::{Digest, Sha256};
 pub(super) use std::collections::HashMap;
@@ -223,6 +220,26 @@ pub(super) fn hash_platform_key_for_test(key: &str) -> String {
     out
 }
 
+pub(super) struct GatewayModelForwardRulesResetGuard;
+
+impl GatewayModelForwardRulesResetGuard {
+    pub(super) fn reset() -> Self {
+        reset_gateway_model_forward_rules_for_test();
+        Self
+    }
+}
+
+impl Drop for GatewayModelForwardRulesResetGuard {
+    fn drop(&mut self) {
+        reset_gateway_model_forward_rules_for_test();
+    }
+}
+
+fn reset_gateway_model_forward_rules_for_test() {
+    codexmanager_service::set_gateway_model_forward_rules("")
+        .expect("reset gateway model forward rules");
+}
+
 /// 函数 `seed_model_catalog_models`
 ///
 /// 作者: gaohongshun
@@ -235,193 +252,93 @@ pub(super) fn hash_platform_key_for_test(key: &str) -> String {
 /// # 返回
 /// 无
 pub(super) fn seed_model_catalog_models(storage: &Storage, models: &[&str]) {
-    seed_model_catalog_response(
-        storage,
-        &ModelsResponse {
-            models: models
-                .iter()
-                .map(|slug| ModelInfo {
-                    slug: (*slug).to_string(),
-                    display_name: (*slug).to_string(),
-                    ..Default::default()
-                })
-                .collect::<Vec<_>>(),
-            ..Default::default()
-        },
-    );
+    for (index, slug) in models.iter().enumerate() {
+        let mut model = test_managed_model(storage, slug);
+        model.enabled = true;
+        model.supported_in_api = true;
+        model.visibility = "list".to_string();
+        model.sort_order = index as i64;
+        model.routes = vec![ModelRouteV2 {
+            id: String::new(),
+            source_kind: "account_pool".to_string(),
+            source_id: "default".to_string(),
+            upstream_model: (*slug).to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+        }];
+        storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                previous_slug: None,
+                model,
+            })
+            .expect("upsert V2 test model");
+    }
 }
 
-pub(super) fn seed_model_catalog_response(storage: &Storage, response: &ModelsResponse) {
-    let updated_at = now_ts();
-    storage
-        .upsert_model_catalog_scope(&ModelCatalogScopeRecord {
-            scope: "default".to_string(),
-            extra_json: serde_json::to_string(&response.extra).expect("serialize scope extra"),
-            updated_at,
-        })
-        .expect("upsert model catalog scope");
-
-    let rows = response
-        .models
-        .iter()
-        .enumerate()
-        .map(|(index, model)| ModelCatalogModelRecord {
-            scope: "default".to_string(),
-            slug: model.slug.clone(),
-            display_name: model.display_name.clone(),
-            source_kind: "remote".to_string(),
-            user_edited: false,
-            description: model.description.clone(),
-            default_reasoning_level: model.default_reasoning_level.clone(),
-            shell_type: model.shell_type.clone(),
-            visibility: model.visibility.clone(),
-            supported_in_api: Some(model.supported_in_api),
-            priority: Some(model.priority),
-            availability_nux_json: model
-                .availability_nux
-                .as_ref()
-                .map(|value| serde_json::to_string(value).expect("serialize availability_nux")),
-            upgrade_json: model
-                .upgrade
-                .as_ref()
-                .map(|value| serde_json::to_string(value).expect("serialize upgrade")),
-            base_instructions: model.base_instructions.clone(),
-            model_messages_json: model
-                .model_messages
-                .as_ref()
-                .map(|value| serde_json::to_string(value).expect("serialize model messages")),
-            supports_reasoning_summaries: model.supports_reasoning_summaries,
-            default_reasoning_summary: model.default_reasoning_summary.clone(),
-            support_verbosity: model.support_verbosity,
-            default_verbosity_json: model
-                .default_verbosity
-                .as_ref()
-                .map(|value| serde_json::to_string(value).expect("serialize default verbosity")),
-            apply_patch_tool_type: model.apply_patch_tool_type.clone(),
-            web_search_tool_type: model.web_search_tool_type.clone(),
-            truncation_mode: model
-                .truncation_policy
-                .as_ref()
-                .map(|policy| policy.mode.clone()),
-            truncation_limit: model.truncation_policy.as_ref().map(|policy| policy.limit),
-            truncation_extra_json: model.truncation_policy.as_ref().map(|policy| {
-                serde_json::to_string(&policy.extra).expect("serialize truncation extra")
-            }),
-            supports_parallel_tool_calls: model.supports_parallel_tool_calls,
-            supports_image_detail_original: model.supports_image_detail_original,
-            context_window: model.context_window,
-            auto_compact_token_limit: model.auto_compact_token_limit,
-            effective_context_window_percent: model.effective_context_window_percent,
-            minimal_client_version_json: model.minimal_client_version.as_ref().map(|value| {
-                serde_json::to_string(value).expect("serialize minimal client version")
-            }),
-            supports_search_tool: model.supports_search_tool,
-            extra_json: serde_json::to_string(&model.extra).expect("serialize model extra"),
-            sort_index: index as i64,
-            updated_at,
-        })
-        .collect::<Vec<_>>();
-    storage
-        .upsert_model_catalog_models(&rows)
-        .expect("upsert model catalog rows");
-
-    let reasoning_rows = response
-        .models
-        .iter()
-        .flat_map(|model| {
-            model
-                .supported_reasoning_levels
-                .iter()
-                .enumerate()
-                .map(|(index, level)| ModelCatalogReasoningLevelRecord {
-                    scope: "default".to_string(),
-                    slug: model.slug.clone(),
-                    effort: level.effort.clone(),
-                    description: level.description.clone(),
-                    extra_json: serde_json::to_string(&level.extra)
-                        .expect("serialize reasoning extra"),
-                    sort_index: index as i64,
-                    updated_at,
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    storage
-        .upsert_model_catalog_reasoning_levels(&reasoning_rows)
-        .expect("upsert reasoning rows");
-
-    seed_model_catalog_string_items(
-        storage,
-        &response.models,
-        updated_at,
-        |model| &model.additional_speed_tiers,
-        |storage, rows| {
-            storage
-                .upsert_model_catalog_additional_speed_tiers(rows)
-                .expect("upsert additional speed tiers");
-        },
-    );
-    seed_model_catalog_string_items(
-        storage,
-        &response.models,
-        updated_at,
-        |model| &model.experimental_supported_tools,
-        |storage, rows| {
-            storage
-                .upsert_model_catalog_experimental_supported_tools(rows)
-                .expect("upsert experimental supported tools");
-        },
-    );
-    seed_model_catalog_string_items(
-        storage,
-        &response.models,
-        updated_at,
-        |model| &model.input_modalities,
-        |storage, rows| {
-            storage
-                .upsert_model_catalog_input_modalities(rows)
-                .expect("upsert input modalities");
-        },
-    );
-    seed_model_catalog_string_items(
-        storage,
-        &response.models,
-        updated_at,
-        |model| &model.available_in_plans,
-        |storage, rows| {
-            storage
-                .upsert_model_catalog_available_in_plans(rows)
-                .expect("upsert available in plans");
-        },
-    );
-}
-
-fn seed_model_catalog_string_items<F>(
+pub(super) fn seed_model_catalog_route(
     storage: &Storage,
-    models: &[ModelInfo],
-    updated_at: i64,
-    select: impl Fn(&ModelInfo) -> &[String],
-    upsert: F,
-) where
-    F: Fn(&Storage, &[ModelCatalogStringItemRecord]),
-{
-    let rows = models
-        .iter()
-        .flat_map(|model| {
-            select(model)
-                .iter()
-                .enumerate()
-                .map(|(index, value)| ModelCatalogStringItemRecord {
-                    scope: "default".to_string(),
-                    slug: model.slug.clone(),
-                    value: value.clone(),
-                    sort_index: index as i64,
-                    updated_at,
-                })
-                .collect::<Vec<_>>()
+    model_slug: &str,
+    source_kind: &str,
+    source_id: &str,
+    upstream_model: &str,
+    priority: i64,
+) {
+    if storage
+        .get_managed_model_v2(model_slug)
+        .expect("get V2 test model")
+        .is_none()
+    {
+        seed_model_catalog_models(storage, &[model_slug]);
+    }
+    let mut model = storage
+        .get_managed_model_v2(model_slug)
+        .expect("get V2 test model")
+        .expect("V2 test model exists");
+    model
+        .routes
+        .retain(|route| route.source_kind != source_kind || route.source_id != source_id);
+    model.routes.push(ModelRouteV2 {
+        id: String::new(),
+        source_kind: source_kind.to_string(),
+        source_id: source_id.to_string(),
+        upstream_model: upstream_model.to_string(),
+        enabled: true,
+        priority,
+        weight: 1,
+    });
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: None,
+            model,
         })
-        .collect::<Vec<_>>();
-    upsert(storage, &rows);
+        .expect("upsert V2 test model route");
+}
+
+fn test_managed_model(storage: &Storage, slug: &str) -> codexmanager_core::storage::ManagedModelV2 {
+    if let Some(model) = storage
+        .get_managed_model_v2(slug)
+        .expect("get existing V2 test model")
+    {
+        return model;
+    }
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("get V2 test model template")
+        .expect("seeded V2 test model template");
+    model.id.clear();
+    model.slug = slug.to_string();
+    model.display_name = slug.to_string();
+    model.origin = "custom".to_string();
+    model.builtin_revision = None;
+    model.user_edited = false;
+    model.price.price_status = "custom".to_string();
+    model.price.price_source = Some("gateway integration test".to_string());
+    model.permission_group_ids.clear();
+    model.routes.clear();
+    model.created_at = 0;
+    model.updated_at = 0;
+    model
 }
 
 /// 函数 `decode_upstream_request_body`

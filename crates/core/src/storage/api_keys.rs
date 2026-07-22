@@ -363,6 +363,14 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_api_key_last_used_at_by_id(&self, key_id: &str, last_used_at: i64) -> Result<()> {
+        self.conn.execute(
+            api_key_touch_last_used_by_id_sql(),
+            (last_used_at.max(0), key_id),
+        )?;
+        Ok(())
+    }
+
     /// 函数 `update_api_key_status`
     ///
     /// 作者: gaohongshun
@@ -936,6 +944,10 @@ fn api_key_hash_exists_sql() -> &'static str {
 
 fn api_key_touch_last_used_by_hash_sql() -> &'static str {
     "UPDATE api_keys SET last_used_at = ?1 WHERE key_hash = ?2"
+}
+
+fn api_key_touch_last_used_by_id_sql() -> &'static str {
+    "UPDATE api_keys SET last_used_at = ?1 WHERE id = ?2"
 }
 
 fn api_key_update_status_by_id_sql() -> &'static str {

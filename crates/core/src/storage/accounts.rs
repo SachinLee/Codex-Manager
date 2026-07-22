@@ -6,10 +6,6 @@ use super::accounts_sql::*;
 use super::conversation_bindings::delete_conversation_bindings_for_account_sql;
 use super::events::delete_events_for_account_sql;
 use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
-use super::model_sources::{
-    delete_model_source_mapping_preferences_for_source_sql,
-    delete_model_source_mappings_for_source_sql, delete_model_source_models_for_source_sql,
-};
 use super::tokens::delete_token_for_account_sql;
 use super::usage::delete_usage_snapshots_for_account_sql;
 
@@ -22,8 +18,6 @@ use super::{
     AccountUpsertState, AccountUsageRefreshTarget, AccountUsageRefreshTokenTarget,
     AccountWorkspaceIdentity, Storage, Token,
 };
-
-const ACCOUNT_MODEL_SOURCE_KIND: &str = "openai_account";
 
 impl Storage {
     /// 函数 `insert_account`
@@ -667,20 +661,15 @@ impl Storage {
         if account_ids.is_empty() {
             return Ok(AccountSummaryStorageSnapshot::default());
         }
-        let (metadata, subscriptions, model_assignments, quota_overrides) =
-            if options.include_details {
-                (
-                    self.list_account_metadata_for_accounts(account_ids)?,
-                    self.list_account_subscriptions_for_accounts(account_ids)?,
-                    self.list_quota_source_model_assignments_for_sources(
-                        ACCOUNT_MODEL_SOURCE_KIND,
-                        account_ids,
-                    )?,
-                    self.list_account_quota_capacity_overrides_for_accounts(account_ids)?,
-                )
-            } else {
-                Default::default()
-            };
+        let (metadata, subscriptions, quota_overrides) = if options.include_details {
+            (
+                self.list_account_metadata_for_accounts(account_ids)?,
+                self.list_account_subscriptions_for_accounts(account_ids)?,
+                self.list_account_quota_capacity_overrides_for_accounts(account_ids)?,
+            )
+        } else {
+            Default::default()
+        };
         Ok(AccountSummaryStorageSnapshot {
             preferred_account_id: if options.include_preferred {
                 self.preferred_account_id()?
@@ -700,7 +689,7 @@ impl Storage {
             usage_snapshots: self.latest_usage_snapshots_for_accounts(account_ids)?,
             metadata,
             subscriptions,
-            model_assignments,
+            model_assignments: Vec::new(),
             quota_overrides,
         })
     }
@@ -1200,18 +1189,6 @@ impl Storage {
         tx.execute(delete_usage_snapshots_for_account_sql(), [account_id])?;
         tx.execute(delete_events_for_account_sql(), [account_id])?;
         tx.execute(delete_conversation_bindings_for_account_sql(), [account_id])?;
-        tx.execute(
-            delete_model_source_mappings_for_source_sql(),
-            (ACCOUNT_MODEL_SOURCE_KIND, account_id),
-        )?;
-        tx.execute(
-            delete_model_source_models_for_source_sql(),
-            (ACCOUNT_MODEL_SOURCE_KIND, account_id),
-        )?;
-        tx.execute(
-            delete_model_source_mapping_preferences_for_source_sql(),
-            (ACCOUNT_MODEL_SOURCE_KIND, account_id),
-        )?;
         tx.execute(delete_account_by_id_sql(), [account_id])?;
         tx.commit()?;
         Ok(())
@@ -1232,9 +1209,6 @@ impl Storage {
             delete_accounts_from_table(&tx, "usage_snapshots", "account_id", chunk)?;
             delete_accounts_from_table(&tx, "events", "account_id", chunk)?;
             delete_accounts_from_table(&tx, "conversation_bindings", "account_id", chunk)?;
-            delete_model_source_rows_for_accounts(&tx, "model_source_mappings", chunk)?;
-            delete_model_source_rows_for_accounts(&tx, "model_source_models", chunk)?;
-            delete_model_source_rows_for_accounts(&tx, "model_source_mapping_preferences", chunk)?;
             deleted += delete_accounts_from_table(&tx, "accounts", "id", chunk)?;
         }
         tx.commit()?;
@@ -1953,22 +1927,6 @@ fn delete_accounts_from_table(
         return Ok(0);
     };
     let sql = format!("DELETE FROM {table} WHERE {condition}");
-    tx.execute(&sql, params_from_iter(params))
-}
-
-fn delete_model_source_rows_for_accounts(
-    tx: &rusqlite::Transaction<'_>,
-    table: &str,
-    account_ids: &[String],
-) -> Result<usize> {
-    let Some((condition, params)) = text_id_in_clause("source_id", account_ids) else {
-        return Ok(0);
-    };
-    let sql = format!(
-        "DELETE FROM {table}
-         WHERE source_kind = 'openai_account'
-           AND {condition}"
-    );
     tx.execute(&sql, params_from_iter(params))
 }
 

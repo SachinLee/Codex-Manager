@@ -122,6 +122,53 @@ fn find_enabled_custom_exact_model_price_rule_filters_in_sql() {
 }
 
 #[test]
+fn model_price_rule_schema_closure_repairs_the_colliding_custom_113_shape() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage
+        .conn
+        .execute_batch(include_str!("../../migrations/055_model_price_rules.sql"))
+        .expect("create pre-custom-113 price-rule table");
+    storage
+        .conn
+        .execute(
+            "INSERT INTO model_price_rules(
+                id,provider,model_pattern,match_type,billing_mode,currency,unit,
+                input_price_per_1m,cached_input_price_per_1m,output_price_per_1m,
+                source,enabled,priority,created_at,updated_at
+             ) VALUES('custom-existing','openai','gpt-custom','exact','standard','USD',
+                'per_1m_tokens',1.0,0.1,2.0,'custom',1,1,1,1)",
+            [],
+        )
+        .expect("insert custom rule");
+
+    storage
+        .ensure_model_price_rules_table()
+        .expect("close legacy schema");
+
+    for column in [
+        "cache_write_price_per_1m",
+        "cache_write_5m_price_per_1m",
+        "cache_write_1h_price_per_1m",
+        "cache_hit_price_per_1m",
+        "long_context_threshold_inclusive",
+        "long_context_cache_write_price_per_1m",
+    ] {
+        assert!(
+            storage.has_column("model_price_rules", column).unwrap(),
+            "{column}"
+        );
+    }
+    let rule = storage
+        .list_enabled_model_price_rules()
+        .expect("read repaired custom rule")
+        .pop()
+        .expect("custom rule remains");
+    assert_eq!(rule.id, "custom-existing");
+    assert_eq!(rule.cache_write_price_per_1m, None);
+    assert!(!rule.long_context_threshold_inclusive);
+}
+
+#[test]
 fn find_enabled_custom_exact_model_price_rule_filters_billing_mode() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");

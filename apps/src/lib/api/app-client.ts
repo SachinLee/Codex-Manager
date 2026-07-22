@@ -104,7 +104,6 @@ function readModelGroupModel(value: unknown): ModelGroupModel {
     enabled: asBoolean(source.enabled, true),
     rateMultiplierMillis:
       typeof source.rateMultiplierMillis === "number" ? source.rateMultiplierMillis : null,
-    billingModelSlug: asString(source.billingModelSlug) || null,
     note: asString(source.note) || null,
     createdAt: asNumber(source.createdAt),
     updatedAt: asNumber(source.updatedAt),
@@ -324,7 +323,6 @@ export const appClient = {
       platformModelSlug: string;
       enabled?: boolean | null;
       rateMultiplierMillis?: number | null;
-      billingModelSlug?: string | null;
       note?: string | null;
     }>;
   }): Promise<ModelGroupListResult> {

@@ -1,4 +1,5 @@
 use codexmanager_core::storage::{now_ts, Account, ConversationBinding, Storage, Token};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationRoutingContext {
@@ -28,7 +29,7 @@ impl RouteConversationSource {
         )
     }
 
-    fn allows_initial_binding_create(self) -> bool {
+    pub(crate) fn allows_initial_binding_create(self) -> bool {
         !matches!(self, Self::PromptCacheKeyExistingOnly)
     }
 }
@@ -37,6 +38,7 @@ impl RouteConversationSource {
 pub(crate) enum CandidateRotationSource {
     ConversationBinding,
     ManualPreferredAccount,
+    ThreadAwareDistribution,
     RouteStrategy,
 }
 
@@ -56,6 +58,7 @@ impl CandidateRotationSource {
         match self {
             Self::ConversationBinding => "conversation_bound",
             Self::ManualPreferredAccount => "manual_preferred_account",
+            Self::ThreadAwareDistribution => "thread_aware_distribution",
             Self::RouteStrategy => "route_strategy",
         }
     }
@@ -223,6 +226,57 @@ fn switch_reason_for_account(
     }
 }
 
+fn thread_distribution_load(
+    account_id: &str,
+    account_binding_counts: &HashMap<String, usize>,
+) -> usize {
+    account_binding_counts
+        .get(account_id)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(super::account_inflight_count(account_id))
+}
+
+fn should_apply_thread_aware_distribution(
+    routing: Option<&ConversationRoutingContext>,
+    account_binding_counts: Option<&HashMap<String, usize>>,
+) -> bool {
+    if account_binding_counts.is_none() {
+        return false;
+    }
+    routing.is_some_and(|routing| {
+        routing.existing_binding.is_none()
+            && routing.manual_preferred_account_id.is_none()
+            && routing.source.allows_initial_binding_create()
+    })
+}
+
+fn rotate_to_least_loaded_thread_account(
+    candidates: &mut [(Account, Token)],
+    account_binding_counts: &HashMap<String, usize>,
+) -> bool {
+    if candidates.len() <= 1 {
+        return false;
+    }
+
+    let mut best_index = 0;
+    let mut best_load =
+        thread_distribution_load(candidates[0].0.id.as_str(), account_binding_counts);
+    for (index, (account, _)) in candidates.iter().enumerate().skip(1) {
+        let load = thread_distribution_load(account.id.as_str(), account_binding_counts);
+        if load < best_load {
+            best_index = index;
+            best_load = load;
+        }
+    }
+
+    if best_index > 0 {
+        candidates.rotate_left(best_index);
+        return true;
+    }
+    false
+}
+
 /// 函数 `prepare_conversation_routing`
 ///
 /// 作者: gaohongshun
@@ -305,6 +359,7 @@ pub(crate) fn apply_candidate_rotation(
     routing: Option<&ConversationRoutingContext>,
     key_id: &str,
     model_for_log: Option<&str>,
+    account_binding_counts: Option<&HashMap<String, usize>>,
 ) -> CandidateRotationPlan {
     if routing
         .as_ref()
@@ -341,6 +396,15 @@ pub(crate) fn apply_candidate_rotation(
             source: CandidateRotationSource::ManualPreferredAccount,
             strategy_label: "manual_preferred_account",
             strategy_applied: false,
+        };
+    }
+    if should_apply_thread_aware_distribution(routing, account_binding_counts) {
+        let strategy_applied = account_binding_counts
+            .is_some_and(|counts| rotate_to_least_loaded_thread_account(candidates, counts));
+        return CandidateRotationPlan {
+            source: CandidateRotationSource::ThreadAwareDistribution,
+            strategy_label: "thread_aware_distribution",
+            strategy_applied,
         };
     }
     CandidateRotationPlan {

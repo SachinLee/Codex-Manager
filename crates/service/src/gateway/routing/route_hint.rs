@@ -148,6 +148,21 @@ pub(crate) fn apply_balanced_round_robin<T>(
     }
 }
 
+pub(crate) fn preview_balanced_round_robin<T>(
+    candidates: &mut [T],
+    key_id: &str,
+    model: Option<&str>,
+) {
+    ensure_route_config_loaded();
+    if candidates.len() <= 1 {
+        return;
+    }
+    let start = current_start_index(key_id, model, candidates.len());
+    if start > 0 {
+        candidates.rotate_left(start);
+    }
+}
+
 /// 函数 `rotate_to_manual_preferred_account`
 ///
 /// 作者: gaohongshun
@@ -373,6 +388,24 @@ fn next_start_index(key_id: &str, model: Option<&str>, candidate_count: usize) -
         capacity,
     );
     start
+}
+
+fn current_start_index(key_id: &str, model: Option<&str>, candidate_count: usize) -> usize {
+    if candidate_count == 0 {
+        return 0;
+    }
+    let lock = ROUTE_STATE.get_or_init(|| Mutex::new(RouteRoundRobinState::default()));
+    let state_guard = crate::lock_utils::lock_recover(lock, "route_state");
+    let state = &*state_guard;
+    let key = key_model_key(key_id, model);
+    let Some(entry) = state.next_start_by_key_model.get(key.as_str()) else {
+        return 0;
+    };
+    let ttl = route_state_ttl();
+    if !ttl.is_zero() && is_entry_expired(entry.last_seen, Instant::now(), ttl) {
+        return 0;
+    }
+    entry.value % candidate_count
 }
 
 /// 函数 `apply_health_p2c`

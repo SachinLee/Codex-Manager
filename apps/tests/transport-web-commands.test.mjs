@@ -196,37 +196,50 @@ test("createWebCommandMap 为管理员用量分析提供 Web RPC 映射", () => 
   });
 });
 
-test("createWebCommandMap 为模型来源映射命令提供 Web RPC 映射", () => {
-  assert.deepEqual(commandMap.service_model_routing, {
-    rpcMethod: "apikey/modelRouting",
+test("createWebCommandMap 为模型目录 V2 原子命令提供 Web RPC 映射", () => {
+  assert.deepEqual(commandMap.service_managed_model_list_v2, {
+    rpcMethod: "apikey/managedModelListV2",
+  });
+  assert.deepEqual(commandMap.service_managed_model_get_v2, {
+    rpcMethod: "apikey/managedModelGetV2",
+  });
+  assert.deepEqual(commandMap.service_managed_model_delete_v2, {
+    rpcMethod: "apikey/managedModelDeleteV2",
   });
 
-  const sync = commandMap.service_model_source_sync;
-  assert.equal(sync.rpcMethod, "apikey/modelSourceSync");
-  assert.ok(sync.mapParams);
-  assert.deepEqual(sync.mapParams({ payload: { sourceKind: "aggregate_api" } }), {
-    sourceKind: "aggregate_api",
-  });
-
-  const saveMapping = commandMap.service_model_source_mapping_save;
-  assert.equal(saveMapping.rpcMethod, "apikey/modelSourceMappingSave");
-  assert.ok(saveMapping.mapParams);
+  const upsert = commandMap.service_managed_model_upsert_v2;
+  assert.equal(upsert.rpcMethod, "apikey/managedModelUpsertV2");
+  assert.ok(upsert.mapParams);
   assert.deepEqual(
-    saveMapping.mapParams({ payload: { platformModelSlug: "gpt-platform", sourceKind: "openai_account", sourceId: "acc-1", upstreamModel: "gpt-upstream" } }),
-    { platformModelSlug: "gpt-platform", sourceKind: "openai_account", sourceId: "acc-1", upstreamModel: "gpt-upstream" },
+    upsert.mapParams({ payload: { previousSlug: null, model: { slug: "local-x" } } }),
+    { previousSlug: null, model: { slug: "local-x" } },
   );
 
-  const saveSupplier = commandMap.service_aggregate_api_supplier_model_save;
-  assert.equal(saveSupplier.rpcMethod, "aggregateApi/supplierModels/save");
-  assert.ok(saveSupplier.mapParams);
-  assert.deepEqual(
-    saveSupplier.mapParams({ payload: { supplierKey: "Provider", providerType: "codex", upstreamModel: "provider-model" } }),
-    { supplierKey: "Provider", providerType: "codex", upstreamModel: "provider-model" },
-  );
+  for (const command of [
+    "service_managed_model_import_preview_v2",
+    "service_managed_model_import_commit_v2",
+  ]) {
+    const descriptor = commandMap[command];
+    assert.ok(descriptor.mapParams);
+    assert.deepEqual(
+      descriptor.mapParams({
+        payload: { jsonContent: "{}", conflictStrategy: "keep_existing" },
+      }),
+      { jsonContent: "{}", conflictStrategy: "keep_existing" },
+    );
+  }
+});
 
-  assert.deepEqual(commandMap.service_aggregate_api_supplier_models_import, {
-    rpcMethod: "aggregateApi/sourceModels/importSupplier",
-  });
+test("createWebCommandMap 不再暴露旧模型发现与供应商模型命令", () => {
+  for (const command of [
+    "service_model_routing",
+    "service_model_source_sync",
+    "service_model_source_mapping_save",
+    "service_aggregate_api_supplier_model_save",
+    "service_aggregate_api_supplier_models_import",
+  ]) {
+    assert.equal(commandMap[command], undefined);
+  }
 });
 
 test("createWebCommandMap 暴露 Codex 会话批量删除 RPC", () => {

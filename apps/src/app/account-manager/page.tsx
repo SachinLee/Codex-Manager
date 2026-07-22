@@ -67,6 +67,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  MetricCard,
+  PageHeader,
+  PageWorkspace,
+  WorkPanel,
+} from "@/components/layout/page-workspace";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { APP_SESSION_QUERY_KEY } from "@/hooks/useAppSession";
@@ -237,20 +243,13 @@ function StatCard({
   icon: typeof ShieldCheck;
 }) {
   return (
-    <Card className="glass-card shadow-sm">
-      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-        <div className="space-y-1">
-          <CardDescription>{title}</CardDescription>
-          <CardTitle className="text-2xl">{value}</CardTitle>
-        </div>
-        <div className="rounded-lg bg-primary/10 p-2 text-primary">
-          <Icon className="h-4 w-4" />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <p className="text-xs text-muted-foreground">{detail}</p>
-      </CardContent>
-    </Card>
+    <MetricCard
+      title={title}
+      value={value}
+      detail={detail}
+      icon={Icon}
+      tone="blue"
+    />
   );
 }
 
@@ -763,18 +762,26 @@ export default function AccountManagerPage() {
   const isRefreshing = statusQuery.isFetching || usersQuery.isFetching;
 
   return (
-    <div className="container mx-auto space-y-6 p-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{t("账号管理")}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {t("管理 Web 登录成员和额度分发钱包。平台 Key 归属在平台密钥中配置。")}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
+    <PageWorkspace>
+      <PageHeader
+        eyebrow={t("Access control")}
+        title={t("账号管理")}
+        description={t("管理 Web 登录成员和额度分发钱包。平台 Key 归属在平台密钥中配置。")}
+        meta={
+          <>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {modeLabel(status?.mode || "none", t)}
+            </Badge>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {t("共 {count} 个账号", { count: users.length })}
+            </Badge>
+          </>
+        }
+        actions={
+          <>
           <Button
             variant="outline"
-            className="glass-card h-10 gap-2 rounded-xl px-3 shadow-sm"
+            className="glass-card mission-panel h-9 gap-2 rounded-md px-3 shadow-sm"
             disabled={!canAccessManagementRpc || isRefreshing}
             onClick={() => void refreshAll()}
           >
@@ -782,18 +789,19 @@ export default function AccountManagerPage() {
             {t("刷新")}
           </Button>
           <Button
-            className="h-10 gap-2 shadow-sm shadow-primary/20"
+            className="h-9 gap-2 shadow-sm shadow-primary/20"
             disabled={!canAccessManagementRpc}
             onClick={() => setCreateDialogOpen(true)}
           >
             <Plus className="h-4 w-4" />
             {t("新建账号")}
           </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {!canAccessManagementRpc ? (
-        <Card className="glass-card shadow-sm">
+        <Card className="glass-card mission-panel shadow-sm">
           <CardContent className="flex items-start gap-3 py-5">
             <AlertCircle className="mt-0.5 h-5 w-5 text-destructive" />
             <div className="space-y-1">
@@ -837,7 +845,7 @@ export default function AccountManagerPage() {
         />
       </div>
 
-      <Card className="glass-card overflow-hidden py-0 shadow-sm">
+      <WorkPanel>
         <CardHeader className="border-b bg-background/35 py-4">
           <CardTitle>{t("登录账号")}</CardTitle>
           <CardDescription>
@@ -982,10 +990,10 @@ export default function AccountManagerPage() {
             </TableBody>
           </Table>
         </CardContent>
-      </Card>
+      </WorkPanel>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="glass-card sm:max-w-[560px]">
+        <DialogContent className="glass-card mission-panel sm:max-w-[560px]">
           <DialogHeader>
             <DialogTitle>{t("新建登录账号")}</DialogTitle>
             <DialogDescription>
@@ -1117,7 +1125,7 @@ export default function AccountManagerPage() {
           }
         }}
       >
-        <DialogContent className="glass-card sm:max-w-[560px]">
+        <DialogContent className="glass-card mission-panel sm:max-w-[560px]">
           <DialogHeader>
             <DialogTitle>{t("编辑登录账号")}</DialogTitle>
             <DialogDescription>
@@ -1236,7 +1244,7 @@ export default function AccountManagerPage() {
           }
         }}
       >
-        <DialogContent className="glass-card max-h-[85vh] overflow-y-auto sm:max-w-[760px]">
+        <DialogContent className="glass-card mission-panel max-h-[85vh] overflow-y-auto sm:max-w-[760px]">
           <DialogHeader>
             <DialogTitle>{t("成员用量详情")}</DialogTitle>
             <DialogDescription>
@@ -1286,7 +1294,7 @@ export default function AccountManagerPage() {
           }
         }}
       >
-        <DialogContent className="glass-card sm:max-w-[460px]">
+        <DialogContent className="glass-card mission-panel sm:max-w-[460px]">
           <DialogHeader>
             <DialogTitle>{t("删除登录账号")}</DialogTitle>
             <DialogDescription>
@@ -1329,7 +1337,7 @@ export default function AccountManagerPage() {
           }
         }}
       >
-        <DialogContent className="glass-card sm:max-w-[480px]">
+        <DialogContent className="glass-card mission-panel sm:max-w-[480px]">
           <DialogHeader>
             <DialogTitle>{t("修改可用额度")}</DialogTitle>
             <DialogDescription>
@@ -1395,6 +1403,6 @@ export default function AccountManagerPage() {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageWorkspace>
   );
 }

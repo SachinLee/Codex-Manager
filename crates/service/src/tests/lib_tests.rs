@@ -4,8 +4,8 @@ use codexmanager_core::rpc::types::{
     ModelGroupUsersSetParams,
 };
 use codexmanager_core::storage::{
-    Account, Event, ModelCatalogModelRecord, ModelGroupModel, PluginInstall, PluginRunLog,
-    PluginTask, RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
+    Account, Event, ModelCatalogModelRecord, ModelGroup, PluginInstall, PluginRunLog, PluginTask,
+    RequestLog, RequestTokenStat, Storage, Token, UsageSnapshotRecord,
 };
 
 /// 函数 `response_result`
@@ -142,7 +142,7 @@ fn member_actor_cannot_call_admin_only_rpc() {
 }
 
 #[test]
-fn password_mode_can_call_admin_and_model_source_rpcs() {
+fn password_mode_can_call_admin_rpcs() {
     let _guard = test_env_guard();
     let db_path = setup_dashboard_test_db("codexmanager-password-model-source-rpc");
     set_web_access_password(Some("password123")).expect("set web password");
@@ -164,69 +164,37 @@ fn password_mode_can_call_admin_and_model_source_rpcs() {
         "password mode unexpectedly denied accountManager/users/list: {admin_err}"
     );
 
-    for (method, params) in [
-        (
-            "apikey/modelSourceSync",
-            serde_json::json!({ "sourceKind": "aggregate_api" }),
-        ),
-        (
-            "apikey/modelSourceModelSave",
-            serde_json::json!({
-                "sourceKind": "aggregate_api",
-                "sourceId": "ag_test",
-                "upstreamModel": "gpt-4o"
-            }),
-        ),
-        (
-            "apikey/modelSourceMappingSave",
-            serde_json::json!({
-                "platformModelSlug": "gpt-4o",
-                "sourceKind": "aggregate_api",
-                "sourceId": "ag_test",
-                "upstreamModel": "gpt-4o"
-            }),
-        ),
-        (
-            "apikey/modelSourceMappingDelete",
-            serde_json::json!({
-                "id": "map_test",
-                "sourceKind": "openai_account",
-                "sourceId": "acc_test",
-                "upstreamModel": "gpt-test",
-            }),
-        ),
-    ] {
-        let resp = response_result(handle_request_with_actor(
-            rpc_request(method, params),
-            actor.clone(),
-        ));
-        let err = rpc_error(&resp);
-        assert!(
-            !err.contains("permission_denied"),
-            "{method} unexpectedly denied: {err}"
-        );
-    }
-
     let _ = std::fs::remove_file(db_path);
 }
 
 #[test]
-fn password_mode_member_cannot_prune_stale_remote_catalog() {
+fn removed_legacy_model_rpcs_return_unknown_method() {
     let _guard = test_env_guard();
     let db_path = setup_dashboard_test_db("codexmanager-member-prune-stale-remote-denied");
     set_web_access_password(Some("password123")).expect("set web password");
     set_web_auth_mode("password").expect("enable password mode");
 
-    let resp = response_result(handle_request_with_actor(
-        rpc_request("apikey/modelCatalogPruneStaleRemote", serde_json::json!({})),
-        RpcActor::from_parts(Some(ROLE_MEMBER), Some("member-user")),
-    ));
-
-    assert!(
-        rpc_error(&resp).contains("permission_denied"),
-        "{:?}",
-        resp.result
-    );
+    for method in [
+        "apikey/modelCatalogPruneStaleRemote",
+        "apikey/modelSourceSync",
+        "apikey/modelSourceModelSave",
+        "apikey/modelSourceMappingSave",
+        "apikey/modelSourceMappingDelete",
+        "quota/modelPriceRule/upsert",
+        "aggregateApi/supplierModels/list",
+    ] {
+        let resp = handle_request_with_actor(
+            rpc_request(method, serde_json::json!({})),
+            RpcActor::from_parts(Some(ROLE_MEMBER), Some("member-user")),
+        );
+        match resp {
+            JsonRpcMessage::Error(err) => {
+                assert_eq!(err.error.code, -32601, "{method}");
+                assert_eq!(err.error.message, "unknown_method", "{method}");
+            }
+            other => panic!("{method}: expected unknown_method, got {other:?}"),
+        }
+    }
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -436,8 +404,11 @@ fn setup_dashboard_test_db(name: &str) -> String {
         .to_string_lossy()
         .to_string();
     let _ = std::fs::remove_file(&db_path);
+    Storage::open(&db_path)
+        .expect("open test storage")
+        .init()
+        .expect("init test storage");
     std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
-    storage_helpers::initialize_storage().expect("init storage");
     db_path
 }
 
@@ -638,7 +609,7 @@ fn startup_snapshot_can_skip_account_details_for_light_dashboard_reads() {
     let full_account = &full_resp.result["accounts"][0];
     assert_eq!(full_account["note"].as_str(), Some("note"));
     assert_eq!(full_account["subscriptionPlan"].as_str(), Some("plus"));
-    assert_eq!(full_account["modelSlugs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(full_account["modelSlugs"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         full_account["quotaCapacityPrimaryWindowTokens"].as_i64(),
         Some(100)
@@ -984,26 +955,36 @@ fn set_model_group_models_validates_requested_catalog_slugs_only() {
     let _guard = test_env_guard();
     let db_path = setup_dashboard_test_db("codexmanager-model-group-model-slug-validation");
     set_web_auth_mode("accounts").expect("enable accounts mode");
-    seed_test_catalog_model("gpt-5-mini");
     let storage = storage_helpers::open_storage().expect("open storage");
-    let group_id = storage
-        .default_model_group_id()
-        .expect("read default model group")
-        .expect("default model group");
+    let group_id = "mg_explicit_test".to_string();
+    let now = codexmanager_core::storage::now_ts();
+    storage
+        .upsert_model_group(&ModelGroup {
+            id: group_id.clone(),
+            name: "Explicit test group".to_string(),
+            description: None,
+            status: "active".to_string(),
+            sort: 10,
+            is_default: false,
+            rate_multiplier_millis: 1_000,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("create explicit model group");
     drop(storage);
 
     let result = set_model_group_models(ModelGroupModelsSetParams {
         group_id: group_id.clone(),
         models: vec![
             ModelGroupModelUpsertParams {
-                platform_model_slug: "gpt-5-mini".to_string(),
+                platform_model_slug: "gpt-5.4-mini".to_string(),
                 enabled: Some(true),
                 rate_multiplier_millis: Some(1200),
                 billing_model_slug: None,
                 note: Some("primary".to_string()),
             },
             ModelGroupModelUpsertParams {
-                platform_model_slug: "gpt-5-mini".to_string(),
+                platform_model_slug: "gpt-5.4-mini".to_string(),
                 enabled: Some(false),
                 rate_multiplier_millis: Some(900),
                 billing_model_slug: None,
@@ -1016,12 +997,12 @@ fn set_model_group_models_validates_requested_catalog_slugs_only() {
     let saved = result
         .models
         .iter()
-        .filter(|item| item.group_id == group_id && item.platform_model_slug == "gpt-5-mini")
+        .filter(|item| item.group_id == group_id && item.platform_model_slug == "gpt-5.4-mini")
         .collect::<Vec<_>>();
     assert_eq!(saved.len(), 1);
     assert!(saved[0].enabled);
     assert_eq!(saved[0].rate_multiplier_millis, Some(1200));
-    assert_eq!(saved[0].note.as_deref(), Some("primary"));
+    assert_eq!(saved[0].note.as_deref(), Some("model_catalog_v2"));
 
     let err = set_model_group_models(ModelGroupModelsSetParams {
         group_id,
@@ -1091,67 +1072,87 @@ fn set_model_group_users_batches_member_validation_and_dedupes() {
 }
 
 #[test]
-fn wallet_charge_uses_model_group_billing_model_override() {
+fn wallet_charge_uses_v2_integer_snapshot_and_group_multiplier() {
     let _guard = test_env_guard();
-    let db_path = setup_dashboard_test_db("codexmanager-model-group-billing-override");
+    let db_path = setup_dashboard_test_db("codexmanager-model-group-billing-v2");
     set_web_auth_mode("accounts").expect("enable accounts mode");
     set_distribution_enabled(true).expect("enable distribution");
     let user = create_test_member("member-model-group-billing", Some(1_000_000));
-    let key_id = create_owned_test_api_key(&user.id, "member model group key", "gpt-5-mini");
-    seed_test_catalog_model("gpt-5-mini");
+    let key_id = create_owned_test_api_key(&user.id, "member model group key", "gpt-5.4-mini");
     let storage = storage_helpers::open_storage().expect("open storage");
     let group_id = storage
         .default_model_group_id()
         .expect("read default model group")
         .expect("default model group");
     let now = codexmanager_core::storage::now_ts();
+    let mut group = storage
+        .find_model_group(&group_id)
+        .expect("read group")
+        .expect("group");
+    group.rate_multiplier_millis = 1_500;
+    group.updated_at = now;
     storage
-        .replace_model_group_models(
-            &group_id,
-            &[ModelGroupModel {
-                group_id: group_id.clone(),
-                platform_model_slug: "gpt-5-mini".to_string(),
-                enabled: true,
-                rate_multiplier_millis: Some(1000),
-                billing_model_slug: Some("gpt-5.5".to_string()),
-                note: None,
-                created_at: now,
-                updated_at: now,
-            }],
-        )
-        .expect("save model group models");
+        .upsert_model_group(&group)
+        .expect("save group multiplier");
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            key_id: Some(key_id.clone()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            model: Some("gpt-5.4-mini".to_string()),
+            status_code: Some(200),
+            created_at: now,
+            ..RequestLog::default()
+        })
+        .expect("insert request log");
 
-    let ledger = wallet_charge_for_request(
+    let snapshot = auth::app_manager::record_request_charge_v2(
         &storage,
         Some(&key_id),
-        42,
-        0.00225,
-        Some("gpt-5-mini"),
+        request_log_id,
+        "gpt-5.4-mini",
         None,
-        Some(
-            serde_json::json!({
-                "inputTokens": 1000,
-                "cachedInputTokens": 0,
-                "outputTokens": 1000
-            })
-            .to_string(),
-        ),
+        "actual",
+        1_000,
+        0,
+        1_000,
+        Some(serde_json::json!({ "test": true }).to_string()),
+        true,
+        None,
+        None,
     )
-    .expect("charge wallet")
-    .expect("ledger entry");
+    .expect("charge wallet from V2 snapshot");
 
-    assert_eq!(ledger.amount_credit_micros, -35_000);
-    let usage: serde_json::Value =
-        serde_json::from_str(ledger.raw_usage_json.as_deref().unwrap()).expect("usage json");
-    assert_eq!(usage["billingModelSlug"], "gpt-5.5");
-    assert_eq!(usage["platformEstimatedCostUsd"], 0.00225);
-    assert!((usage["baseEstimatedCostUsd"].as_f64().unwrap() - 0.035).abs() < 0.000_001);
-    assert!((usage["chargedCostUsd"].as_f64().unwrap() - 0.035).abs() < 0.000_001);
+    assert_eq!(snapshot.rate_multiplier_millis, 1_500);
+    assert_eq!(snapshot.base_cost_microusd, 5_250);
+    assert_eq!(snapshot.charged_cost_microusd, 7_875);
     let wallet = storage
         .find_wallet_by_owner("user", &user.id)
         .expect("read wallet")
         .expect("wallet");
-    assert_eq!(wallet.balance_credit_micros, 965_000);
+    assert_eq!(wallet.balance_credit_micros, 992_125);
+    let repeated = auth::app_manager::record_request_charge_v2(
+        &storage,
+        Some(&key_id),
+        request_log_id,
+        "gpt-5.4-mini",
+        None,
+        "estimated",
+        99_999,
+        0,
+        99_999,
+        None,
+        true,
+        None,
+        None,
+    )
+    .expect("repeat terminal is idempotent");
+    assert_eq!(repeated, snapshot);
+    let wallet = storage
+        .find_wallet_by_owner("user", &user.id)
+        .expect("read wallet")
+        .expect("wallet");
+    assert_eq!(wallet.balance_credit_micros, 992_125);
 
     let _ = std::fs::remove_file(db_path);
 }

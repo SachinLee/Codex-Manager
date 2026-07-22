@@ -1,25 +1,20 @@
 use crate::gateway;
 use crate::usage_refresh;
+use std::collections::HashMap;
 
 use super::{
     apply_env_overrides_to_process, list_app_settings_map, normalize_optional_text,
     persisted_env_overrides_missing_process_env, reload_runtime_after_env_override_apply,
-    set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY,
-    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    save_persisted_app_setting, set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
+    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
-    APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
     SERVICE_BIND_MODE_SETTING_KEY,
@@ -58,6 +53,62 @@ fn any_process_env_has_value(names: &[&str]) -> bool {
     names.iter().any(|name| process_env_has_value(name))
 }
 
+fn merge_legacy_compact_model_forward_rules(
+    model_forward_rules: Option<&str>,
+    compact_model_forward_rules: Option<&str>,
+) -> Option<(String, bool)> {
+    let compact_lines = compact_model_forward_rules?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let mut lines = model_forward_rules
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut merged = false;
+    for compact_line in compact_lines {
+        if lines.iter().any(|line| line == compact_line) {
+            continue;
+        }
+        lines.push(compact_line.to_string());
+        merged = true;
+    }
+    Some((lines.join("\n"), merged))
+}
+
+fn migrate_legacy_compact_model_forward_rules(settings: &HashMap<String, String>) -> bool {
+    let Some((merged, merged_new_rules)) = merge_legacy_compact_model_forward_rules(
+        settings
+            .get(APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY)
+            .map(String::as_str),
+        settings
+            .get(APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY)
+            .map(String::as_str),
+    ) else {
+        return false;
+    };
+    if !process_env_has_value("CODEXMANAGER_MODEL_FORWARD_RULES") {
+        if let Err(err) = gateway::set_model_forward_rules(merged.as_str()) {
+            log::warn!("migrate legacy compact model forward rules failed: {err}");
+            return false;
+        }
+    }
+    if merged_new_rules {
+        let _ = save_persisted_app_setting(
+            APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
+            Some(merged.as_str()),
+        );
+    }
+    let _ = save_persisted_app_setting(APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY, None);
+    if !process_env_has_value("CODEXMANAGER_COMPACT_MODEL_FORWARD_RULES") {
+        let _ = gateway::set_compact_model_forward_rules("");
+    }
+    true
+}
+
 /// 函数 `sync_runtime_settings_from_storage`
 ///
 /// 作者: gaohongshun
@@ -70,7 +121,10 @@ fn any_process_env_has_value(names: &[&str]) -> bool {
 /// # 返回
 /// 无
 pub fn sync_runtime_settings_from_storage() {
-    let settings = list_app_settings_map();
+    let mut settings = list_app_settings_map();
+    if migrate_legacy_compact_model_forward_rules(&settings) {
+        settings = list_app_settings_map();
+    }
     let env_overrides = persisted_env_overrides_missing_process_env();
     if !env_overrides.is_empty() {
         apply_env_overrides_to_process(&env_overrides, &env_overrides);
@@ -121,11 +175,6 @@ pub fn sync_runtime_settings_from_storage() {
             }
         }
     }
-    if !process_env_has_value("CODEXMANAGER_AUTO_COMPACT_ENABLED") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY) {
-            gateway::set_auto_compact_enabled(super::parse_bool_with_default(raw, false));
-        }
-    }
     if !process_env_has_value("CODEXMANAGER_ACCOUNT_MAX_INFLIGHT") {
         if let Some(raw) = settings.get(APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY) {
             if let Ok(limit) = raw.trim().parse::<usize>() {
@@ -135,69 +184,12 @@ pub fn sync_runtime_settings_from_storage() {
             }
         }
     }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_ENABLED") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY) {
-            gateway::set_reasoning_guard_enabled(super::parse_bool_with_default(raw, true));
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_TARGETS") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY) {
-            gateway::set_reasoning_guard_targets_from_raw(raw);
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_MATCH_MODE") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY) {
-            gateway::set_reasoning_guard_match_mode(raw);
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_STREAM_ACTION") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY) {
-            gateway::set_reasoning_guard_stream_action(raw);
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_CONTINUATION_MARKER_TEXT") {
-        if let Some(raw) =
-            settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY)
-        {
-            gateway::set_reasoning_guard_continuation_marker_text(raw);
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY)
-        {
-            gateway::set_reasoning_guard_intercept_streaming(super::parse_bool_with_default(
-                raw, true,
-            ));
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING") {
-        if let Some(raw) =
-            settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY)
-        {
-            gateway::set_reasoning_guard_intercept_non_streaming(super::parse_bool_with_default(
-                raw, true,
-            ));
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS") {
-        if let Some(raw) = settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY) {
-            if let Ok(attempts) = raw.trim().parse::<usize>() {
-                gateway::set_reasoning_guard_retry_attempts(attempts);
-            } else {
-                log::warn!("parse persisted reasoning guard retry attempts failed: {raw}");
-            }
-        }
-    }
-    if !process_env_has_value("CODEXMANAGER_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE") {
-        if let Some(raw) =
-            settings.get(APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY)
-        {
-            if let Ok(threshold) = raw.trim().parse::<usize>() {
-                gateway::set_reasoning_guard_bypass_after_consecutive(threshold);
-            } else {
-                log::warn!("parse persisted reasoning guard bypass threshold failed: {raw}");
-            }
-        }
+    if let Some(raw) =
+        settings.get(APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY)
+    {
+        gateway::set_thread_aware_account_distribution_enabled(super::parse_bool_with_default(
+            raw, true,
+        ));
     }
     if !process_env_has_value("CODEXMANAGER_ORIGINATOR") {
         if let Some(originator) = settings.get(APP_SETTING_GATEWAY_ORIGINATOR_KEY) {
@@ -231,6 +223,13 @@ pub fn sync_runtime_settings_from_storage() {
             if let Err(err) = gateway::set_upstream_proxy_url(normalized.as_deref()) {
                 log::warn!("sync persisted upstream proxy failed: {err}");
             }
+        }
+    }
+    if !process_env_has_value("CODEXMANAGER_UPSTREAM_PROXY_BYPASS_HOSTS") {
+        if let Some(bypass_hosts) =
+            settings.get(APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY)
+        {
+            let _ = gateway::set_upstream_proxy_bypass_hosts(Some(bypass_hosts));
         }
     }
     if !process_env_has_value("CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS") {

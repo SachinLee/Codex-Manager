@@ -14,6 +14,7 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
   个启用: "enabled",
   个来源: "sources",
   今日: "Today",
+  "今日/缓存/推理 用量": "Today / cached / reasoning usage",
   今日用量: "Usage today",
   今日请求: "Requests today",
   "切换到本地网关后可统计请求日志、Token 和费用":

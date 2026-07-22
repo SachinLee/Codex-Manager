@@ -4,7 +4,7 @@ use codexmanager_core::storage::{
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use tiny_http::Request;
 
@@ -15,8 +15,7 @@ use crate::aggregate_api::{
 };
 use crate::gateway::protocol_adapter::adapt_openai_responses_to_anthropic_messages;
 use crate::gateway::request_log::RequestLogUsage;
-use crate::gateway::upstream::support::payload_rewrite::build_continuation_recovery_body;
-use crate::gateway::capability::{
+use crate::gateway::{
     apply_transform, classify_capability_error, current_capability_routing_mode,
     parse_required_capabilities, record_runtime_capability_rejection,
     resolve_persisted_candidate_plan, structural_contract_signature, CandidatePlan,
@@ -26,122 +25,50 @@ use serde_json::Value;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
 const AGGREGATE_API_LARGE_REQUEST_BODY_BYTES: usize = 20 * 1024 * 1024;
-pub(crate) const AGGREGATE_API_DAILY_SPEND_LIMIT_EXHAUSTED: &str =
-    "aggregate_api_daily_spend_limit_exhausted";
 
-fn aggregate_api_is_in_cooldown(api_id: &str) -> bool {
-    crate::gateway::gateway_is_aggregate_api_in_cooldown(api_id)
-}
-
-fn clear_aggregate_api_cooldown(api_id: &str) {
-    crate::gateway::gateway_clear_aggregate_api_cooldown(api_id)
-}
-
-fn record_aggregate_api_failure(api_id: &str) {
-    crate::gateway::gateway_record_aggregate_api_failure(api_id);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_capability_attempt(
-    mode: CapabilityRoutingMode,
-    trace_id: &str,
-    attempt_index: i64,
-    phase: CandidatePlanPhase,
-    candidate_id: &str,
-    supplier_name: Option<&str>,
-    upstream_model: Option<&str>,
-    protocol: &str,
-    path: &str,
-    contract_signature: &str,
-    transform_codes_json: &str,
-    error_class: Option<&str>,
-    error_code: Option<&str>,
-    http_status: Option<u16>,
-    duration_ms: Option<i64>,
-    outcome: &str,
-) {
-    if mode == CapabilityRoutingMode::Off {
-        return;
+fn daily_spend_limit_microusd(limit_usd: Option<f64>) -> Option<i64> {
+    let limit_usd = limit_usd?;
+    if !limit_usd.is_finite() || limit_usd <= 0.0 {
+        return None;
     }
-    crate::gateway::record_gateway_capability_attempt_event(GatewayUpstreamAttemptEvent {
-        trace_id: trace_id.to_string(),
-        attempt_index,
-        phase: phase.as_str().to_string(),
-        source_kind: "aggregate_api".to_string(),
-        source_id: candidate_id.to_string(),
-        supplier_name: supplier_name.map(str::to_string),
-        upstream_model: upstream_model.map(str::to_string),
-        protocol: protocol.to_string(),
-        request_path: path.to_string(),
-        contract_signature: contract_signature.to_string(),
-        capability_decisions_json: format!("{{\"imageGeneration\":\"{}\"}}", phase.as_str()),
-        transform_codes_json: transform_codes_json.to_string(),
-        error_class: error_class.map(str::to_string),
-        error_code: error_code.map(str::to_string),
-        http_status: http_status.map(i64::from),
-        duration_ms,
-        outcome: outcome.to_string(),
-        delivery_started: false,
-        created_at: now_ts(),
-        ..Default::default()
-    });
-}
-
-fn order_capability_planned_candidates(
-    mut candidates: Vec<(AggregateApi, CandidatePlan)>,
-    mode: CapabilityRoutingMode,
-) -> Vec<(AggregateApi, CandidatePlan)> {
-    if mode == CapabilityRoutingMode::Enforce {
-        candidates.sort_by_key(|(_, plan)| plan.phase);
+    let microusd = limit_usd * 1_000_000.0;
+    if !microusd.is_finite() || microusd > i64::MAX as f64 {
+        return None;
     }
-    candidates
+    Some(microusd.ceil() as i64)
 }
 
-fn should_record_aggregate_api_failure_after_bridge(
-    is_reasoning_guard: bool,
-    upstream_error_hint: bool,
-    stream_terminal_error: bool,
-) -> bool {
-    !is_reasoning_guard && (upstream_error_hint || stream_terminal_error)
+fn aggregate_api_has_daily_budget(
+    storage: &Storage,
+    candidate: &AggregateApi,
+    day_start: i64,
+    day_end: i64,
+) -> Result<bool, String> {
+    let Some(limit_microusd) = daily_spend_limit_microusd(candidate.daily_spend_limit_usd) else {
+        return Ok(true);
+    };
+    let charged_microusd = storage
+        .sum_aggregate_api_charged_spend_microusd_between(candidate.id.as_str(), day_start, day_end)
+        .map_err(|err| format!("read aggregate api daily spend failed: {err}"))?;
+    Ok(charged_microusd < limit_microusd)
 }
-
-fn reasoning_guard_action_label(
-    action: super::super::super::ReasoningGuardBridgeAction,
-) -> &'static str {
-    match action {
-        super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
-        super::super::super::ReasoningGuardBridgeAction::InternalRetry => "internal_retry",
-        super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery => {
-            "continuation_recovery"
-        }
-        super::super::super::ReasoningGuardBridgeAction::Block => "block",
-        super::super::super::ReasoningGuardBridgeAction::BypassAfterConsecutive => {
-            "bypass_after_consecutive"
-        }
-    }
-}
+const AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS: usize = 1;
 
 #[allow(clippy::too_many_arguments)]
 fn record_aggregate_api_reasoning_guard_event(
     storage: &Storage,
     trace_id: &str,
-    candidate_id: &str,
+    aggregate_api_id: &str,
     supplier_name: Option<&str>,
     upstream_model: Option<&str>,
-    cost_multiplier: f64,
-    path: &str,
-    is_stream: bool,
-    action: super::super::super::ReasoningGuardBridgeAction,
+    request_path: &str,
+    action: &str,
     target_token: Option<i64>,
+    is_stream: bool,
     attempt_index: i64,
     final_status_code: Option<u16>,
     usage: RequestLogUsage,
 ) {
-    let cost_multiplier = if cost_multiplier.is_finite() && cost_multiplier > 0.0 {
-        cost_multiplier
-    } else {
-        1.0
-    };
     let estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
         storage,
         upstream_model,
@@ -149,18 +76,18 @@ fn record_aggregate_api_reasoning_guard_event(
         usage.cached_input_tokens,
         usage.cache_write_input_tokens,
         usage.output_tokens,
-    ) * cost_multiplier;
-    let event = GatewayReasoningGuardEvent {
+    );
+    crate::gateway::record_gateway_reasoning_guard_event(GatewayReasoningGuardEvent {
         trace_id: Some(trace_id.to_string()),
         request_log_id: None,
         mode: if is_stream { "stream" } else { "non_stream" }.to_string(),
-        action: reasoning_guard_action_label(action).to_string(),
+        action: action.to_string(),
         target_token,
         source_kind: Some("aggregate_api".to_string()),
-        source_id: Some(candidate_id.to_string()),
+        source_id: Some(aggregate_api_id.to_string()),
         supplier_name: supplier_name.map(str::to_string),
         upstream_model: upstream_model.map(str::to_string),
-        request_path: Some(path.to_string()),
+        request_path: Some(request_path.to_string()),
         attempt_index,
         final_status_code: final_status_code.map(i64::from),
         input_tokens: usage.input_tokens,
@@ -170,43 +97,7 @@ fn record_aggregate_api_reasoning_guard_event(
         reasoning_output_tokens: usage.reasoning_output_tokens,
         estimated_cost_usd: Some(estimated_cost_usd),
         created_at: now_ts(),
-    };
-    super::super::super::record_gateway_reasoning_guard_event(event);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_aggregate_api_reasoning_guard_recovered_event(
-    trace_id: &str,
-    candidate_id: &str,
-    supplier_name: Option<&str>,
-    upstream_model: Option<&str>,
-    path: &str,
-    is_stream: bool,
-    attempt_index: i64,
-    final_status_code: Option<u16>,
-) {
-    let event = GatewayReasoningGuardEvent {
-        trace_id: Some(trace_id.to_string()),
-        request_log_id: None,
-        mode: if is_stream { "stream" } else { "non_stream" }.to_string(),
-        action: "recovered".to_string(),
-        target_token: None,
-        source_kind: Some("aggregate_api".to_string()),
-        source_id: Some(candidate_id.to_string()),
-        supplier_name: supplier_name.map(str::to_string),
-        upstream_model: upstream_model.map(str::to_string),
-        request_path: Some(path.to_string()),
-        attempt_index,
-        final_status_code: final_status_code.map(i64::from),
-        input_tokens: None,
-        cached_input_tokens: None,
-        output_tokens: None,
-        total_tokens: None,
-        reasoning_output_tokens: None,
-        estimated_cost_usd: None,
-        created_at: now_ts(),
-    };
-    super::super::super::record_gateway_reasoning_guard_event(event);
+    });
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,8 +180,18 @@ fn build_upstream_url(base_url: &str, effective_path: &str) -> Result<reqwest::U
     let (path_part, query_part) = trimmed_path
         .split_once('?')
         .map_or((trimmed_path, None), |(path, query)| (path, Some(query)));
-    let suffix = path_part.trim_start_matches('/');
+    let raw_suffix = path_part.trim_start_matches('/');
     let base_path = url.path().trim_end_matches('/').to_string();
+    let suffix = if (base_path == "/v1" || base_path.ends_with("/v1"))
+        && (raw_suffix == "v1" || raw_suffix.starts_with("v1/"))
+    {
+        raw_suffix
+            .strip_prefix("v1")
+            .unwrap_or(raw_suffix)
+            .trim_start_matches('/')
+    } else {
+        raw_suffix
+    };
     let combined_path = if base_path.is_empty() || base_path == "/" {
         format!("/{}", suffix)
     } else if suffix.is_empty() {
@@ -327,6 +228,152 @@ fn rewrite_body_model_override(body: &Bytes, model_override: Option<&str>) -> By
         "model".to_string(),
         Value::String(model_override.to_string()),
     );
+    serde_json::to_vec(&value)
+        .map(Bytes::from)
+        .unwrap_or_else(|_| body.clone())
+}
+
+fn rewrite_body_for_candidate_transport(
+    body: &Bytes,
+    candidate: &AggregateApi,
+    path: &str,
+    upstream_url: &str,
+) -> Bytes {
+    let rewritten = rewrite_body_model_override(body, candidate.model_override.as_deref());
+    if normalize_provider_type_value(candidate.provider_type.as_str())
+        == AGGREGATE_API_PROVIDER_CODEX
+        && super::super::config::should_send_chatgpt_account_header(upstream_url)
+    {
+        return Bytes::from(super::super::super::apply_codex_candidate_transport_rules(
+            path,
+            rewritten.to_vec(),
+        ));
+    }
+    rewritten
+}
+
+fn is_minimax_responses_request(base_url: &str, supplier_name: Option<&str>, path: &str) -> bool {
+    let is_responses_path = path == "/v1/responses" || path.starts_with("/v1/responses?");
+    if !is_responses_path {
+        return false;
+    }
+    if supplier_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("minimax"))
+    {
+        return true;
+    }
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+        .is_some_and(|host| host == "minimax.io" || host.ends_with(".minimax.io"))
+}
+
+fn minimax_text_content(value: &Value) -> Option<String> {
+    let Some(items) = value.as_array() else {
+        return value.as_str().map(str::to_string);
+    };
+    let mut parts = Vec::new();
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            return None;
+        };
+        let item_type = obj
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !matches!(item_type, "input_text" | "output_text" | "text") {
+            return None;
+        }
+        let Some(text) = obj.get("text").and_then(Value::as_str) else {
+            return None;
+        };
+        parts.push(text);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\n"))
+}
+
+fn normalize_minimax_text_content(value: &mut Value) -> bool {
+    let Some(text) = minimax_text_content(value) else {
+        return false;
+    };
+    *value = Value::String(text);
+    true
+}
+
+fn minimax_input_item_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    let obj = value.as_object()?;
+    if obj
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|item_type| matches!(item_type, "input_text" | "output_text" | "text"))
+    {
+        return obj.get("text").and_then(Value::as_str).map(str::to_string);
+    }
+    obj.get("content").and_then(minimax_text_content)
+}
+
+fn normalize_minimax_responses_input(input: &mut Value) -> bool {
+    let Some(items) = input.as_array() else {
+        return false;
+    };
+    let mut parts = Vec::new();
+    for item in items {
+        if let Some(text) = minimax_input_item_text(item) {
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+    }
+    if parts.is_empty() {
+        return false;
+    }
+    *input = Value::String(parts.join("\n\n"));
+    true
+}
+
+fn rewrite_minimax_responses_body(
+    body: &Bytes,
+    base_url: &str,
+    supplier_name: Option<&str>,
+    path: &str,
+) -> Bytes {
+    if !is_minimax_responses_request(base_url, supplier_name, path) {
+        return body.clone();
+    }
+    let Ok(mut value) = serde_json::from_slice::<Value>(body.as_ref()) else {
+        return body.clone();
+    };
+    let Some(input) = value.get_mut("input") else {
+        return body.clone();
+    };
+
+    let mut changed = false;
+    if let Some(items) = input.as_array_mut() {
+        for item in items {
+            if let Some(content) = item.get_mut("content") {
+                if normalize_minimax_text_content(content) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    if normalize_minimax_responses_input(input) {
+        changed = true;
+    }
+
+    if !changed {
+        return body.clone();
+    }
     serde_json::to_vec(&value)
         .map(Bytes::from)
         .unwrap_or_else(|_| body.clone())
@@ -569,6 +616,117 @@ fn request_requires_image_generation(request: &Request) -> Result<bool, String> 
     Ok(required)
 }
 
+fn aggregate_api_terminal_failure_status(status_code: u16, message: &str) -> Option<u16> {
+    if status_code == 413 {
+        return Some(413);
+    }
+
+    let normalized = message.trim().to_ascii_lowercase();
+    let mentions_size = normalized.contains("too large")
+        || normalized.contains("payload large")
+        || normalized.contains("payload size")
+        || normalized.contains("content length")
+        || normalized.contains("content-length")
+        || normalized.contains("max 20971520")
+        || normalized.contains("maximum request body");
+    let mentions_request_body = normalized.contains("request body")
+        || normalized.contains("body")
+        || normalized.contains("payload");
+
+    if matches!(status_code, 400 | 413) && mentions_size && mentions_request_body {
+        Some(413)
+    } else {
+        None
+    }
+}
+
+fn aggregate_api_large_body_transport_failure_status(body_len: usize, err: &str) -> Option<u16> {
+    if body_len <= AGGREGATE_API_LARGE_REQUEST_BODY_BYTES {
+        return None;
+    }
+
+    let normalized = err.trim().to_ascii_lowercase();
+    if normalized.contains("request or response body error")
+        || normalized.contains("request body")
+        || normalized.contains("response body")
+        || normalized.contains("body error")
+    {
+        Some(413)
+    } else {
+        None
+    }
+}
+
+fn aggregate_api_terminal_failure_message(status_code: u16, message: &str) -> String {
+    if status_code != 413 {
+        return message.to_string();
+    }
+
+    let trimmed = message.trim();
+    if let Some((head, tail)) = trimmed.rsplit_once(" (") {
+        if let Some(tail) = tail.strip_suffix(')') {
+            return format!("{}: {}", head.trim(), tail.trim());
+        }
+    }
+    trimmed.to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_capability_attempt(
+    mode: CapabilityRoutingMode,
+    trace_id: &str,
+    attempt_index: i64,
+    phase: CandidatePlanPhase,
+    candidate_id: &str,
+    supplier_name: Option<&str>,
+    upstream_model: Option<&str>,
+    protocol: &str,
+    path: &str,
+    contract_signature: &str,
+    transform_codes_json: &str,
+    error_class: Option<&str>,
+    error_code: Option<&str>,
+    http_status: Option<u16>,
+    duration_ms: Option<i64>,
+    outcome: &str,
+) {
+    if mode == CapabilityRoutingMode::Off {
+        return;
+    }
+    crate::gateway::record_gateway_capability_attempt_event(GatewayUpstreamAttemptEvent {
+        trace_id: trace_id.to_string(),
+        attempt_index,
+        phase: phase.as_str().to_string(),
+        source_kind: "aggregate_api".to_string(),
+        source_id: candidate_id.to_string(),
+        supplier_name: supplier_name.map(str::to_string),
+        upstream_model: upstream_model.map(str::to_string),
+        protocol: protocol.to_string(),
+        request_path: path.to_string(),
+        contract_signature: contract_signature.to_string(),
+        capability_decisions_json: format!("{{\"imageGeneration\":\"{}\"}}", phase.as_str()),
+        transform_codes_json: transform_codes_json.to_string(),
+        error_class: error_class.map(str::to_string),
+        error_code: error_code.map(str::to_string),
+        http_status: http_status.map(i64::from),
+        duration_ms,
+        outcome: outcome.to_string(),
+        delivery_started: false,
+        created_at: now_ts(),
+        ..Default::default()
+    });
+}
+
+fn order_capability_planned_candidates(
+    mut candidates: Vec<(AggregateApi, CandidatePlan)>,
+    mode: CapabilityRoutingMode,
+) -> Vec<(AggregateApi, CandidatePlan)> {
+    if mode == CapabilityRoutingMode::Enforce {
+        candidates.sort_by_key(|(_, plan)| plan.phase);
+    }
+    candidates
+}
+
 /// 函数 `respond_error`
 ///
 /// 作者: gaohongshun
@@ -617,6 +775,21 @@ fn normalize_candidate_order(mut candidates: Vec<AggregateApi>) -> Vec<Aggregate
     candidates
 }
 
+fn promote_preferred_aggregate_candidate(candidates: &mut Vec<AggregateApi>, preferred_id: &str) {
+    let preferred_id = preferred_id.trim();
+    if preferred_id.is_empty() {
+        return;
+    }
+    let Some(index) = candidates.iter().position(|api| api.id == preferred_id) else {
+        return;
+    };
+    if index == 0 {
+        return;
+    }
+    let preferred = candidates.remove(index);
+    candidates.insert(0, preferred);
+}
+
 /// 函数 `apply_gateway_route_strategy_to_aggregate_candidates`
 ///
 /// 作者: gaohongshun
@@ -645,7 +818,7 @@ pub(crate) fn apply_gateway_route_strategy_to_aggregate_candidates(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let preserves_head = preferred_id
-        .and_then(|preferred_id| candidates.first().map(|first| (preferred_id, first)))
+        .zip(candidates.first())
         .is_some_and(|(preferred_id, first)| first.id == preferred_id);
 
     if preserves_head {
@@ -658,6 +831,84 @@ pub(crate) fn apply_gateway_route_strategy_to_aggregate_candidates(
         }
     } else {
         super::super::super::route_hint::apply_balanced_round_robin(candidates, key_id, model);
+    }
+}
+
+pub(crate) fn preview_gateway_route_strategy_to_aggregate_candidates(
+    candidates: &mut [AggregateApi],
+    key_id: &str,
+    model: Option<&str>,
+    preferred_aggregate_api_id: Option<&str>,
+) {
+    if candidates.len() <= 1 {
+        return;
+    }
+    if crate::gateway::current_route_strategy() != "balanced" {
+        return;
+    }
+
+    let preferred_id = preferred_aggregate_api_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let preserves_head = preferred_id
+        .zip(candidates.first())
+        .is_some_and(|(preferred_id, first)| first.id == preferred_id);
+
+    if preserves_head {
+        if candidates.len() > 1 {
+            super::super::super::route_hint::preview_balanced_round_robin(
+                &mut candidates[1..],
+                key_id,
+                model,
+            );
+        }
+    } else {
+        super::super::super::route_hint::preview_balanced_round_robin(candidates, key_id, model);
+    }
+}
+
+pub(crate) fn prepare_first_aggregate_candidate_client(
+    candidates: &[AggregateApi],
+    trace_id: &str,
+) {
+    if let Some(candidate) = candidates.first() {
+        prepare_aggregate_candidate_client(candidate, trace_id, "first");
+    }
+}
+
+fn prepare_next_aggregate_candidate_client(
+    ordered_candidates: &[(String, String)],
+    candidate_idx: usize,
+    trace_id: &str,
+) {
+    let Some((candidate_id, candidate_url)) = ordered_candidates.get(candidate_idx + 1) else {
+        return;
+    };
+    if let Err(err) = super::super::super::prepare_upstream_client_for_aggregate_api_candidate(
+        candidate_id.as_str(),
+        candidate_url.as_str(),
+    ) {
+        log::warn!(
+            "event=gateway_aggregate_candidate_client_prepare_failed trace_id={} aggregate_api_id={} phase=next err={}",
+            trace_id,
+            candidate_id,
+            err
+        );
+    }
+}
+
+fn prepare_aggregate_candidate_client(candidate: &AggregateApi, trace_id: &str, phase: &str) {
+    if let Err(err) = super::super::super::prepare_upstream_client_for_aggregate_api_candidate(
+        candidate.id.as_str(),
+        candidate.url.as_str(),
+    ) {
+        log::warn!(
+            "event=gateway_aggregate_candidate_client_prepare_failed trace_id={} aggregate_api_id={} phase={} err={}",
+            trace_id,
+            candidate.id,
+            phase,
+            err
+        );
     }
 }
 
@@ -757,61 +1008,6 @@ fn aggregate_api_failure_message(
     } else {
         format!("{} [{}]", parts.remove(0), parts.join(", "))
     }
-}
-
-fn aggregate_api_terminal_failure_status(status_code: u16, message: &str) -> Option<u16> {
-    if status_code == 413 {
-        return Some(413);
-    }
-
-    let normalized = message.trim().to_ascii_lowercase();
-    let mentions_size = normalized.contains("too large")
-        || normalized.contains("payload large")
-        || normalized.contains("payload size")
-        || normalized.contains("content length")
-        || normalized.contains("content-length")
-        || normalized.contains("max 20971520")
-        || normalized.contains("maximum request body");
-    let mentions_request_body = normalized.contains("request body")
-        || normalized.contains("body")
-        || normalized.contains("payload");
-
-    if matches!(status_code, 400 | 413) && mentions_size && mentions_request_body {
-        Some(413)
-    } else {
-        None
-    }
-}
-
-fn aggregate_api_large_body_transport_failure_status(body_len: usize, err: &str) -> Option<u16> {
-    if body_len <= AGGREGATE_API_LARGE_REQUEST_BODY_BYTES {
-        return None;
-    }
-
-    let normalized = err.trim().to_ascii_lowercase();
-    if normalized.contains("request or response body error")
-        || normalized.contains("request body")
-        || normalized.contains("response body")
-        || normalized.contains("body error")
-    {
-        Some(413)
-    } else {
-        None
-    }
-}
-
-fn aggregate_api_terminal_failure_message(status_code: u16, message: &str) -> String {
-    if status_code != 413 {
-        return message.to_string();
-    }
-
-    let trimmed = message.trim();
-    if let Some((head, tail)) = trimmed.rsplit_once(" (") {
-        if let Some(tail) = tail.strip_suffix(')') {
-            return format!("{}: {}", head.trim(), tail.trim());
-        }
-    }
-    trimmed.to_string()
 }
 
 /// 函数 `build_aggregate_api_request`
@@ -997,13 +1193,9 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
     };
 
     let mut candidates = storage
-        .list_aggregate_apis()
+        .list_active_aggregate_apis_by_provider_type(provider_type)
         .map_err(|err| err.to_string())?
         .into_iter()
-        .filter(|api| {
-            api.status == "active"
-                && normalize_provider_type_value(api.provider_type.as_str()) == provider_type
-        })
         .collect::<Vec<_>>();
     candidates = normalize_candidate_order(candidates);
 
@@ -1011,13 +1203,7 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        if let Some(preferred) = storage
-            .find_aggregate_api_by_id(api_id)
-            .map_err(|err| err.to_string())?
-        {
-            candidates.retain(|api| api.id != preferred.id);
-            candidates.insert(0, preferred);
-        }
+        promote_preferred_aggregate_candidate(&mut candidates, api_id);
     }
 
     if candidates.is_empty() {
@@ -1026,71 +1212,6 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
         ))
     } else {
         Ok(candidates)
-    }
-}
-
-pub(crate) fn filter_daily_spend_limited_candidates(
-    storage: &Storage,
-    candidates: Vec<AggregateApi>,
-    day_start_ts: i64,
-    day_end_ts: i64,
-) -> Result<Vec<AggregateApi>, String> {
-    if candidates.is_empty() {
-        return Ok(candidates);
-    }
-    let usage_by_api = storage
-        .summarize_request_token_stats_by_aggregate_api_between(day_start_ts, day_end_ts)
-        .map_err(|err| format!("aggregate_api_daily_usage_read_failed: {err}"))?
-        .into_iter()
-        .map(|item| (item.aggregate_api_id, item.estimated_cost_usd.max(0.0)))
-        .collect::<std::collections::HashMap<_, _>>();
-
-    Ok(candidates
-        .into_iter()
-        .filter(|api| {
-            let Some(limit) = api
-                .daily_spend_limit_usd
-                .filter(|value| value.is_finite() && *value > 0.0)
-            else {
-                return true;
-            };
-            let used = usage_by_api.get(api.id.as_str()).copied().unwrap_or(0.0);
-            let available = used < limit;
-            if !available {
-                log::info!(
-                    "event=aggregate_api_daily_spend_limit_skip api_id={} used_usd={:.6} limit_usd={:.6}",
-                    api.id,
-                    used,
-                    limit
-                );
-            }
-            available
-        })
-        .collect())
-}
-
-pub(crate) fn filter_aggregate_api_cooldown_candidates(
-    candidates: Vec<AggregateApi>,
-) -> Vec<AggregateApi> {
-    if candidates.is_empty() {
-        return candidates;
-    }
-
-    let mut available = Vec::with_capacity(candidates.len());
-    let mut cooled = Vec::new();
-    for api in candidates {
-        if aggregate_api_is_in_cooldown(api.id.as_str()) {
-            cooled.push(api);
-        } else {
-            available.push(api);
-        }
-    }
-
-    if available.is_empty() || cooled.is_empty() {
-        available.extend(cooled);
-        available
-    } else {
-        available
     }
 }
 
@@ -1129,8 +1250,6 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub service_tier_for_log: Option<&'a str>,
     pub effective_service_tier_for_log: Option<&'a str>,
     pub service_tier_source_for_log: Option<&'a str>,
-    pub session_id_for_log: Option<&'a str>,
-    pub conversation_anchor_for_log: Option<&'a str>,
     pub aggregate_api_candidates: Vec<AggregateApi>,
     pub request_deadline: Option<Instant>,
     pub started_at: Instant,
@@ -1163,12 +1282,12 @@ pub(in super::super) fn proxy_aggregate_request(
         service_tier_for_log,
         effective_service_tier_for_log,
         service_tier_source_for_log,
-        session_id_for_log,
-        conversation_anchor_for_log,
         aggregate_api_candidates,
         request_deadline,
         started_at,
     } = params;
+    let estimated_input_tokens =
+        super::super::super::request_log::estimate_input_tokens_from_body(body.as_ref());
     if aggregate_api_candidates.is_empty() {
         let message = "aggregate api not found".to_string();
         super::super::super::record_gateway_request_outcome(path, 404, Some("aggregate_api"));
@@ -1185,6 +1304,118 @@ pub(in super::super) fn proxy_aggregate_request(
         return Ok(());
     }
 
+    let mut cooling_down_candidate_ids = Vec::new();
+    let aggregate_api_candidates = aggregate_api_candidates
+        .into_iter()
+        .filter(|candidate| {
+            let is_cooling_down =
+                super::super::super::gateway_is_aggregate_api_in_cooldown(candidate.id.as_str());
+            if is_cooling_down {
+                log::info!(
+                    "event=aggregate_api_candidate_skipped_cooldown trace_id={} aggregate_api_id={}",
+                    trace_id,
+                    candidate.id
+                );
+                cooling_down_candidate_ids.push(candidate.id.clone());
+            }
+            !is_cooling_down
+        })
+        .collect::<Vec<_>>();
+    if aggregate_api_candidates.is_empty() {
+        let message = "all aggregate apis are cooling down".to_string();
+        super::super::super::record_gateway_request_outcome(path, 503, Some("aggregate_api"));
+        super::super::super::write_request_log(
+            storage,
+            super::super::super::request_log::RequestLogTraceContext {
+                trace_id: Some(trace_id),
+                original_path: Some(original_path),
+                adapted_path: Some(path),
+                attempted_aggregate_api_ids: Some(cooling_down_candidate_ids.as_slice()),
+                ..Default::default()
+            },
+            Some(key_id),
+            None,
+            path,
+            request_method,
+            model_for_log,
+            reasoning_for_log,
+            None,
+            Some(503),
+            RequestLogUsage {
+                estimated_input_tokens: Some(estimated_input_tokens),
+                ..Default::default()
+            },
+            Some(message.as_str()),
+            Some(started_at.elapsed().as_millis()),
+        );
+        respond_error(request, 503, message.as_str(), Some(trace_id));
+        return Ok(());
+    }
+
+    let (day_start, day_end) = crate::time_bounds::local_day_bounds_ts()?;
+    let mut daily_limited_candidate_ids = Vec::new();
+    let mut budget_eligible_candidates = Vec::with_capacity(aggregate_api_candidates.len());
+    for candidate in aggregate_api_candidates {
+        if aggregate_api_has_daily_budget(storage, &candidate, day_start, day_end)? {
+            budget_eligible_candidates.push(candidate);
+        } else {
+            log::info!(
+                "event=aggregate_api_daily_spend_limit_reached trace_id={} aggregate_api_id={}",
+                trace_id,
+                candidate.id
+            );
+            daily_limited_candidate_ids.push(candidate.id.clone());
+        }
+    }
+    if budget_eligible_candidates.is_empty() {
+        let message = "aggregate api daily spend limit exceeded".to_string();
+        super::super::super::record_gateway_request_outcome(path, 429, Some("aggregate_api"));
+        super::super::super::trace_log::log_request_final(
+            trace_id,
+            429,
+            Some(key_id),
+            None,
+            Some(message.as_str()),
+            started_at.elapsed().as_millis(),
+        );
+        super::super::super::write_request_log(
+            storage,
+            super::super::super::request_log::RequestLogTraceContext {
+                trace_id: Some(trace_id),
+                original_path: Some(original_path),
+                adapted_path: Some(path),
+                gateway_mode: gateway_mode_for_log,
+                route_strategy: route_strategy_for_log,
+                route_source: route_source_for_log,
+                client_model: client_model_for_log,
+                model_source: model_source_for_log,
+                client_reasoning_effort: client_reasoning_for_log,
+                reasoning_source: reasoning_source_for_log,
+                service_tier: service_tier_for_log,
+                effective_service_tier: effective_service_tier_for_log,
+                service_tier_source: service_tier_source_for_log,
+                attempted_aggregate_api_ids: Some(daily_limited_candidate_ids.as_slice()),
+                ..Default::default()
+            },
+            Some(key_id),
+            None,
+            path,
+            request_method,
+            model_for_log,
+            reasoning_for_log,
+            None,
+            Some(429),
+            RequestLogUsage {
+                estimated_input_tokens: Some(estimated_input_tokens),
+                ..Default::default()
+            },
+            Some(message.as_str()),
+            Some(started_at.elapsed().as_millis()),
+        );
+        respond_error(request, 429, message.as_str(), Some(trace_id));
+        return Ok(());
+    }
+
     let image_generation_declared_required = match request_requires_image_generation(&request) {
         Ok(value) => value,
         Err(message) => {
@@ -1193,18 +1424,6 @@ pub(in super::super) fn proxy_aggregate_request(
             return Ok(());
         }
     };
-
-    let client = super::super::super::fresh_upstream_client();
-    let mut request = Some(request);
-    let mut attempted_aggregate_api_ids = Vec::new();
-    let mut last_attempt_url: Option<String> = None;
-    let mut last_attempt_id: Option<String> = None;
-    let mut last_attempt_upstream_model: Option<String> = None;
-    let mut last_attempt_supplier_name: Option<String> = None;
-    let mut last_attempt_error: Option<String> = None;
-    let mut last_failure_status = 502u16;
-    let mut terminal_failure = false;
-
     let capability_mode = current_capability_routing_mode();
     let capability_contract_signature = structural_contract_signature(body);
     let capability_protocol = if path.contains("responses") {
@@ -1212,7 +1431,7 @@ pub(in super::super) fn proxy_aggregate_request(
     } else {
         "chat_completions"
     };
-    let planned_candidates = aggregate_api_candidates
+    let planned_candidates = budget_eligible_candidates
         .into_iter()
         .map(|candidate| {
             let upstream_model = candidate
@@ -1257,22 +1476,50 @@ pub(in super::super) fn proxy_aggregate_request(
     let planned_candidates =
         order_capability_planned_candidates(planned_candidates, capability_mode);
 
+    let mut request = Some(request);
+    let mut attempted_aggregate_api_ids = Vec::new();
+    let mut last_attempt_url: Option<String> = None;
+    let mut last_attempt_id: Option<String> = None;
+    let mut last_attempt_upstream_model: Option<String> = None;
+    let mut last_attempt_supplier_name: Option<String> = None;
+    let mut last_attempt_error: Option<String> = None;
+    let mut last_failure_status = 502u16;
+    let mut terminal_failure = false;
+
     let total_candidates = planned_candidates.len();
-    for (candidate_idx, (candidate, candidate_plan)) in
-        planned_candidates.into_iter().enumerate()
-    {
+    let secrets_by_candidate_id = aggregate_api_secrets_by_candidate_id(
+        storage,
+        &planned_candidates
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let ordered_candidates = planned_candidates
+        .iter()
+        .map(|(candidate, _)| (candidate.id.clone(), candidate.url.clone()))
+        .collect::<Vec<_>>();
+    for (candidate_idx, (candidate, candidate_plan)) in planned_candidates.into_iter().enumerate() {
+        prepare_next_aggregate_candidate_client(
+            ordered_candidates.as_slice(),
+            candidate_idx,
+            trace_id,
+        );
         attempted_aggregate_api_ids.push(candidate.id.clone());
         let candidate_id = candidate.id.clone();
         let candidate_upstream_model =
             aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();
         let candidate_url = candidate.url.clone();
-        let candidate_cost_multiplier = candidate.cost_multiplier;
+        let client = super::super::super::upstream_client_for_aggregate_api_candidate(
+            candidate_id.as_str(),
+            candidate_url.as_str(),
+        );
         last_attempt_id = Some(candidate_id.clone());
         last_attempt_upstream_model = candidate_upstream_model.clone();
         let mut capability_phase = candidate_plan.phase;
-        let mut capability_transform_codes_json = serde_json::to_string(&candidate_plan.transform_codes)
-            .unwrap_or_else(|_| "[]".to_string());
+        let mut capability_transform_codes_json =
+            serde_json::to_string(&candidate_plan.transform_codes)
+                .unwrap_or_else(|_| "[]".to_string());
         if capability_mode == CapabilityRoutingMode::Enforce
             && capability_phase == CandidatePlanPhase::Incompatible
         {
@@ -1298,10 +1545,7 @@ pub(in super::super) fn proxy_aggregate_request(
             last_failure_status = 502;
             continue;
         }
-        let Some(secret) = storage
-            .find_aggregate_api_secret_by_id(candidate.id.as_str())
-            .map_err(|err| err.to_string())?
-        else {
+        let Some(secret) = secrets_by_candidate_id.get(candidate.id.as_str()) else {
             last_attempt_url = Some(candidate_url.clone());
             last_attempt_supplier_name = candidate_supplier_name.clone();
             last_attempt_error = Some("aggregate api secret not found".to_string());
@@ -1331,25 +1575,41 @@ pub(in super::super) fn proxy_aggregate_request(
             }
         };
 
+        let base_upstream_url =
+            match build_upstream_url(candidate_url.as_str(), effective_path.as_str()) {
+                Ok(url) => url,
+                Err(_) => {
+                    last_attempt_url = Some(candidate_url.clone());
+                    last_attempt_supplier_name = candidate_supplier_name.clone();
+                    last_attempt_error = Some("invalid aggregate api url".to_string());
+                    last_failure_status = 502;
+                    continue;
+                }
+            };
         let mut succeeded = false;
+        let mut cooldown_eligible_failure = false;
+        // Every retry starts from this immutable candidate plan.  Candidate-local
+        // transforms and continuation recovery must not leak into later retries.
+        let original_candidate_body = candidate_plan.effective_body;
+        let mut effective_candidate_body = original_candidate_body.clone();
+        let mut continuation_body_override: Option<Bytes> = None;
+        let mut transport_retry_budget_remaining = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL;
+        let mut capability_retry_budget_remaining =
+            usize::from(capability_mode == CapabilityRoutingMode::Enforce);
+        let mut capacity_retry_budget_remaining = AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS;
         let mut reasoning_guard_retry_budget_remaining =
-            super::super::super::reasoning_guard_retry_attempts();
-        let mut reasoning_guard_retry_attempt_index = 0_i64;
-        let capability_retry_budget = usize::from(capability_mode == CapabilityRoutingMode::Enforce);
+            crate::gateway::reasoning_guard_retry_attempts();
+        let mut reasoning_guard_retry_attempts_used = 0usize;
         let max_attempts_per_channel = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL
-            + reasoning_guard_retry_budget_remaining
-            + capability_retry_budget;
-        let mut retry_body_override: Option<Bytes> = None;
-        let mut effective_candidate_body = candidate_plan.effective_body;
-        let mut capability_retry_used = false;
-        let mut candidate_health_neutral_failure = false;
+            + capability_retry_budget_remaining
+            + capacity_retry_budget_remaining
+            + reasoning_guard_retry_budget_remaining;
         for attempt_idx in 0..=max_attempts_per_channel {
-            candidate_health_neutral_failure = false;
             if super::super::support::deadline::is_expired(request_deadline) {
                 let message = "aggregate api request timeout".to_string();
-                let request = request
-                    .take()
-                    .expect("request should still be available for timeout response");
+                let request = request.take().ok_or_else(|| {
+                    "aggregate api request already consumed before timeout response".to_string()
+                })?;
                 super::super::super::record_gateway_request_outcome(
                     path,
                     504,
@@ -1367,8 +1627,6 @@ pub(in super::super) fn proxy_aggregate_request(
                     storage,
                     super::super::super::request_log::RequestLogTraceContext {
                         trace_id: Some(trace_id),
-                        session_id: session_id_for_log,
-                        conversation_anchor: conversation_anchor_for_log,
                         original_path: Some(original_path),
                         adapted_path: Some(path),
                         gateway_mode: gateway_mode_for_log,
@@ -1388,7 +1646,6 @@ pub(in super::super) fn proxy_aggregate_request(
                         upstream_model: candidate_upstream_model.as_deref(),
                         actual_source_kind: Some("aggregate_api"),
                         actual_source_id: Some(candidate_id.as_str()),
-                        cost_multiplier: Some(candidate_cost_multiplier),
                         ..Default::default()
                     },
                     Some(key_id),
@@ -1399,7 +1656,10 @@ pub(in super::super) fn proxy_aggregate_request(
                     reasoning_for_log,
                     Some(candidate_url.as_str()),
                     Some(504),
-                    RequestLogUsage::default(),
+                    RequestLogUsage {
+                        estimated_input_tokens: Some(estimated_input_tokens),
+                        ..Default::default()
+                    },
                     Some(message.as_str()),
                     Some(started_at.elapsed().as_millis()),
                 );
@@ -1407,17 +1667,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 return Ok(());
             }
 
-            let mut url = match build_upstream_url(candidate_url.as_str(), effective_path.as_str())
-            {
-                Ok(url) => url,
-                Err(_) => {
-                    last_attempt_url = Some(candidate_url.clone());
-                    last_attempt_supplier_name = candidate_supplier_name.clone();
-                    last_attempt_error = Some("invalid aggregate api url".to_string());
-                    last_failure_status = 502;
-                    break;
-                }
-            };
+            let mut url = base_upstream_url.clone();
 
             match &auth_config {
                 AggregateApiAuthConfig::ApiKeyQuery { name } => {
@@ -1437,24 +1687,49 @@ pub(in super::super) fn proxy_aggregate_request(
                 _ => {}
             }
 
-            let attempt_body = retry_body_override
-                .as_ref()
-                .unwrap_or(&effective_candidate_body);
-            let rewritten_body =
-                rewrite_body_model_override(attempt_body, candidate.model_override.as_deref());
+            // A continuation body is consumed exactly once.  Any later retry
+            // rebuilds from the immutable candidate body (or its one safe
+            // capability downgrade), never from a previous continuation body.
+            let attempt_candidate_body = continuation_body_override
+                .take()
+                .unwrap_or_else(|| effective_candidate_body.clone());
+            let candidate_body = rewrite_body_for_candidate_transport(
+                &attempt_candidate_body,
+                &candidate,
+                path,
+                base_upstream_url.as_str(),
+            );
+            let candidate_body = rewrite_minimax_responses_body(
+                &candidate_body,
+                candidate.url.as_str(),
+                candidate.supplier_name.as_deref(),
+                path,
+            );
             let upstream_body = if bridge_responses_to_anthropic {
-                Bytes::from(adapt_openai_responses_to_anthropic_messages(
-                    rewritten_body.as_ref(),
+                match adapt_openai_responses_to_anthropic_messages(
+                    candidate_body.as_ref(),
                     candidate.model_override.as_deref(),
-                )?)
+                ) {
+                    Ok(body) => Bytes::from(body),
+                    Err(err) => {
+                        last_attempt_url = Some(base_upstream_url.to_string());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error = Some(err);
+                        last_failure_status = 502;
+                        break;
+                    }
+                }
             } else {
-                rewritten_body
+                candidate_body
             };
 
+            let request_ref = request.as_ref().ok_or_else(|| {
+                "aggregate api request already consumed before upstream attempt".to_string()
+            })?;
             let builder = if bridge_responses_to_anthropic {
                 build_anthropic_bridge_aggregate_api_request(
                     &client,
-                    request.as_ref().expect("request should still be available"),
+                    request_ref,
                     method,
                     url.clone(),
                     &upstream_body,
@@ -1467,7 +1742,7 @@ pub(in super::super) fn proxy_aggregate_request(
             } else {
                 build_aggregate_api_request(
                     &client,
-                    request.as_ref().expect("request should still be available"),
+                    request_ref,
                     method,
                     url.clone(),
                     &upstream_body,
@@ -1497,30 +1772,13 @@ pub(in super::super) fn proxy_aggregate_request(
                         duration_ms,
                         true,
                     );
-                    record_capability_attempt(
-                        capability_mode,
-                        trace_id,
-                        i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
-                        capability_phase,
-                        candidate_id.as_str(),
-                        candidate_supplier_name.as_deref(),
-                        candidate_upstream_model.as_deref(),
-                        capability_protocol,
-                        path,
-                        capability_contract_signature.as_str(),
-                        capability_transform_codes_json.as_str(),
-                        Some("transport"),
-                        Some("transport.request_failed"),
-                        None,
-                        Some(i64::try_from(duration_ms).unwrap_or(i64::MAX)),
-                        "failed",
-                    );
                     let message = format!("aggregate api upstream error: {err}");
                     last_attempt_url = Some(url.as_str().to_string());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
-                    if let Some(status) =
-                        aggregate_api_large_body_transport_failure_status(body.len(), &message)
-                    {
+                    if let Some(status) = aggregate_api_large_body_transport_failure_status(
+                        upstream_body.len(),
+                        &message,
+                    ) {
                         last_attempt_error = Some("request body too large".to_string());
                         last_failure_status = status;
                         terminal_failure = true;
@@ -1528,7 +1786,10 @@ pub(in super::super) fn proxy_aggregate_request(
                     }
                     last_attempt_error = Some(message);
                     last_failure_status = 502;
-                    if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
+                    cooldown_eligible_failure = true;
+                    if transport_retry_budget_remaining > 0 {
+                        transport_retry_budget_remaining =
+                            transport_retry_budget_remaining.saturating_sub(1);
                         continue;
                     }
                     break;
@@ -1536,6 +1797,7 @@ pub(in super::super) fn proxy_aggregate_request(
             };
 
             if !upstream.status().is_success() {
+                cooldown_eligible_failure = true;
                 let status_code = upstream.status().as_u16();
                 let upstream_request_id = first_upstream_header(
                     upstream.headers(),
@@ -1559,10 +1821,21 @@ pub(in super::super) fn proxy_aggregate_request(
                 );
                 last_attempt_url = Some(url.as_str().to_string());
                 last_attempt_supplier_name = candidate_supplier_name.clone();
+                if let Some(status) = aggregate_api_terminal_failure_status(status_code, &message) {
+                    last_attempt_error =
+                        Some(aggregate_api_terminal_failure_message(status, &message));
+                    last_failure_status = status;
+                    terminal_failure = true;
+                    cooldown_eligible_failure = false;
+                    break;
+                }
                 if capability_mode != CapabilityRoutingMode::Off {
                     if let Some(classified) =
                         classify_capability_error(status_code, upstream_body.as_ref())
                     {
+                        // Capability entitlement failures describe a request/candidate
+                        // mismatch, not supplier transport health.
+                        cooldown_eligible_failure = false;
                         record_capability_attempt(
                             capability_mode,
                             trace_id,
@@ -1578,10 +1851,12 @@ pub(in super::super) fn proxy_aggregate_request(
                             Some("capability"),
                             Some(classified.code),
                             Some(status_code),
-                            Some(i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX)),
+                            Some(
+                                i64::try_from(attempt_started_at.elapsed().as_millis())
+                                    .unwrap_or(i64::MAX),
+                            ),
                             "rejected",
                         );
-                        candidate_health_neutral_failure = true;
                         if let Err(err) = record_runtime_capability_rejection(
                             storage,
                             candidate_id.as_str(),
@@ -1598,20 +1873,20 @@ pub(in super::super) fn proxy_aggregate_request(
                             );
                         }
                         if capability_mode == CapabilityRoutingMode::Enforce
-                            && !capability_retry_used
+                            && capability_retry_budget_remaining > 0
                         {
                             if let Some(downgraded) = apply_transform(
-                                body,
+                                original_candidate_body.as_ref(),
                                 TransformCode::DropOptionalImageGeneration,
                             ) {
                                 effective_candidate_body = downgraded;
-                                retry_body_override = None;
                                 capability_phase = CandidatePlanPhase::Downgrade;
                                 capability_transform_codes_json = serde_json::to_string(&[
                                     TransformCode::DropOptionalImageGeneration.as_str(),
                                 ])
                                 .unwrap_or_else(|_| "[]".to_string());
-                                capability_retry_used = true;
+                                capability_retry_budget_remaining =
+                                    capability_retry_budget_remaining.saturating_sub(1);
                                 last_attempt_error = Some(message);
                                 last_failure_status = 502;
                                 continue;
@@ -1622,65 +1897,38 @@ pub(in super::super) fn proxy_aggregate_request(
                         break;
                     }
                 }
-                record_capability_attempt(
-                    capability_mode,
-                    trace_id,
-                    i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
-                    capability_phase,
-                    candidate_id.as_str(),
-                    candidate_supplier_name.as_deref(),
-                    candidate_upstream_model.as_deref(),
-                    capability_protocol,
-                    path,
-                    capability_contract_signature.as_str(),
-                    capability_transform_codes_json.as_str(),
-                    Some("upstream"),
-                    Some("upstream.http_error"),
-                    Some(status_code),
-                    Some(i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX)),
-                    "failed",
-                );
-                if let Some(status) = aggregate_api_terminal_failure_status(status_code, &message) {
-                    last_attempt_error =
-                        Some(aggregate_api_terminal_failure_message(status, &message));
-                    last_failure_status = status;
-                    terminal_failure = true;
-                    break;
-                }
                 last_attempt_error = Some(message);
                 last_failure_status = 502;
-                if attempt_idx < AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
+                let capacity_error = crate::gateway::is_selected_model_capacity_error(
+                    last_attempt_error.as_deref().unwrap_or_default(),
+                );
+                if capacity_error {
+                    // Capacity handling has its own retry budget and must not
+                    // make a supplier appear unhealthy.
+                    cooldown_eligible_failure = false;
+                    if capacity_retry_budget_remaining > 0 {
+                        capacity_retry_budget_remaining =
+                            capacity_retry_budget_remaining.saturating_sub(1);
+                        super::super::super::record_gateway_upstream_capacity_internal_retry();
+                        continue;
+                    }
+                }
+                if transport_retry_budget_remaining > 0 {
+                    transport_retry_budget_remaining =
+                        transport_retry_budget_remaining.saturating_sub(1);
                     continue;
                 }
                 break;
             }
 
-            record_capability_attempt(
-                capability_mode,
-                trace_id,
-                i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
-                capability_phase,
-                candidate_id.as_str(),
-                candidate_supplier_name.as_deref(),
-                candidate_upstream_model.as_deref(),
-                capability_protocol,
-                path,
-                capability_contract_signature.as_str(),
-                capability_transform_codes_json.as_str(),
-                None,
-                None,
-                Some(upstream.status().as_u16()),
-                Some(i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX)),
-                "accepted",
-            );
-
             let inflight_guard = super::super::super::acquire_account_inflight(key_id);
             let passthrough_sse_protocol =
                 resolve_passthrough_sse_protocol(path, response_adapter_for_candidate);
-            let bridge = super::super::super::respond_with_upstream(
-                request
-                    .take()
-                    .expect("request should be available before bridge"),
+            let upstream_request = request.take().ok_or_else(|| {
+                "aggregate api request already consumed before bridge".to_string()
+            })?;
+            let mut bridge = super::super::super::respond_with_upstream(
+                upstream_request,
                 GatewayUpstreamResponse::Blocking(upstream),
                 inflight_guard,
                 response_adapter_for_candidate,
@@ -1691,7 +1939,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 is_stream,
                 false,
                 Some(trace_id),
-                candidate_upstream_model.as_deref().or(model_for_log),
+                candidate_upstream_model.as_deref(),
                 Some(candidate_id.as_str()),
                 reasoning_guard_retry_budget_remaining,
                 started_at,
@@ -1725,38 +1973,35 @@ pub(in super::super) fn proxy_aggregate_request(
                     last_sse_event_type: bridge.last_sse_event_type.as_deref(),
                 },
             );
-            let bridge_ok = bridge.is_ok(is_stream);
-            let mut final_error = bridge.upstream_error_hint.clone();
-            if final_error.is_none() && !bridge_ok {
-                final_error =
-                    Some(bridge.error_message(is_stream).unwrap_or_else(|| {
-                        "aggregate api upstream response incomplete".to_string()
-                    }));
-            }
-            let status_code =
-                bridge
-                    .delivered_status_code
-                    .unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
-            let status_code = if final_error.is_some() && status_code < 400 {
-                502
-            } else {
-                status_code
-            };
-            let is_reasoning_guard = bridge.reasoning_guard_action.is_some();
             if let Some(action) = bridge.reasoning_guard_action {
+                // Reasoning Guard outcomes are local policy decisions.  They
+                // deliberately do not affect supplier cooldown health.
+                cooldown_eligible_failure = false;
+                let action_name = match action {
+                    super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
+                    super::super::super::ReasoningGuardBridgeAction::InternalRetry => {
+                        "internal_retry"
+                    }
+                    super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery => {
+                        "continuation_recovery"
+                    }
+                    super::super::super::ReasoningGuardBridgeAction::Block => "block",
+                    super::super::super::ReasoningGuardBridgeAction::BypassAfterConsecutive => {
+                        "bypass_after_consecutive"
+                    }
+                };
                 record_aggregate_api_reasoning_guard_event(
                     storage,
                     trace_id,
                     candidate_id.as_str(),
                     candidate_supplier_name.as_deref(),
                     candidate_upstream_model.as_deref(),
-                    candidate_cost_multiplier,
                     path,
-                    is_stream,
-                    action,
+                    action_name,
                     bridge.reasoning_guard_target_token,
-                    reasoning_guard_retry_attempt_index,
-                    Some(status_code),
+                    is_stream,
+                    i64::try_from(reasoning_guard_retry_attempts_used).unwrap_or(i64::MAX),
+                    bridge.delivered_status_code,
                     RequestLogUsage {
                         input_tokens: bridge.usage.input_tokens,
                         cached_input_tokens: bridge.usage.cached_input_tokens,
@@ -1767,86 +2012,134 @@ pub(in super::super) fn proxy_aggregate_request(
                         provider_cost_usd_ticks: bridge.usage.provider_cost_usd_ticks,
                         provider_cost_nano_usd: bridge.usage.provider_cost_nano_usd,
                         first_response_ms: bridge.usage.first_response_ms,
+                        ..Default::default()
                     },
                 );
-                if matches!(
+
+                let should_retry_reasoning_guard = matches!(
                     action,
                     super::super::super::ReasoningGuardBridgeAction::InternalRetry
                         | super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
-                ) {
-                    if let Some(returned_request) = bridge.pending_failover_request {
-                        request = Some(returned_request);
-                        if reasoning_guard_retry_budget_remaining == 0 {
-                            log::warn!(
-                                "event=aggregate_api_reasoning_guard_retry_without_budget trace_id={} aggregate_api_id={}",
-                                trace_id,
-                                candidate_id
+                );
+                if should_retry_reasoning_guard
+                    && reasoning_guard_retry_budget_remaining > 0
+                    && bridge.pending_failover_request.is_some()
+                {
+                    let returned_request = bridge
+                        .pending_failover_request
+                        .take()
+                        .expect("checked pending reasoning guard retry request");
+                    if action
+                        == super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
+                    {
+                        let Some(continuation_body) = super::super::support::payload_rewrite::build_continuation_recovery_body(
+                            original_candidate_body.as_ref(),
+                            &crate::gateway::current_reasoning_guard_continuation_marker_text(),
+                        ) else {
+                            last_attempt_error = Some(
+                                "aggregate api reasoning guard continuation body unavailable"
+                                    .to_string(),
                             );
+                            last_failure_status = 502;
+                            request = Some(returned_request);
                             break;
-                        }
-                        reasoning_guard_retry_budget_remaining =
-                            reasoning_guard_retry_budget_remaining.saturating_sub(1);
-                        reasoning_guard_retry_attempt_index =
-                            reasoning_guard_retry_attempt_index.saturating_add(1);
-                        retry_body_override = if action
-                            == super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
-                        {
-                            let continuation_base_body = rewrite_body_model_override(
-                                body,
-                                candidate.model_override.as_deref(),
-                            );
-                            build_continuation_recovery_body(
-                                continuation_base_body.as_ref(),
-                                &crate::gateway::current_reasoning_guard_continuation_marker_text(),
-                            )
-                            .map(Bytes::from)
-                            .or_else(|| {
-                                log::warn!(
-                                    "event=aggregate_api_reasoning_guard_continuation_body_unavailable trace_id={} aggregate_api_id={}",
-                                    trace_id,
-                                    candidate_id
-                                );
-                                None
-                            })
-                        } else {
-                            None
                         };
-                        super::super::super::record_gateway_reasoning_guard_internal_retry(
-                            is_stream,
-                        );
-                        log::warn!(
-                            "event=aggregate_api_reasoning_guard_internal_retry trace_id={} aggregate_api_id={} remaining={}",
-                            trace_id,
-                            candidate_id,
-                            reasoning_guard_retry_budget_remaining
-                        );
-                        continue;
+                        continuation_body_override = Some(Bytes::from(continuation_body));
                     }
+                    request = Some(returned_request);
+                    reasoning_guard_retry_budget_remaining =
+                        reasoning_guard_retry_budget_remaining.saturating_sub(1);
+                    reasoning_guard_retry_attempts_used =
+                        reasoning_guard_retry_attempts_used.saturating_add(1);
+                    super::super::super::record_gateway_reasoning_guard_internal_retry(is_stream);
+                    continue;
                 }
             }
+            let bridge_ok = bridge.is_ok(is_stream);
+            let mut final_error = bridge.upstream_error_hint.clone();
+            if final_error.is_none() && !bridge_ok {
+                final_error =
+                    Some(bridge.error_message(is_stream).unwrap_or_else(|| {
+                        "aggregate api upstream response incomplete".to_string()
+                    }));
+            }
+            if final_error
+                .as_deref()
+                .is_some_and(crate::gateway::is_selected_model_capacity_error)
+                && capacity_retry_budget_remaining > 0
+                && bridge.pending_failover_request.is_some()
+            {
+                cooldown_eligible_failure = false;
+                request = bridge.pending_failover_request.take();
+                capacity_retry_budget_remaining = capacity_retry_budget_remaining.saturating_sub(1);
+                super::super::super::record_gateway_upstream_capacity_internal_retry();
+                continue;
+            }
+            let status_code =
+                bridge
+                    .delivered_status_code
+                    .unwrap_or(if bridge_ok { 200 } else { 502 });
+            let status_code = if final_error.is_some() && status_code < 400 {
+                502
+            } else {
+                status_code
+            };
             let usage = bridge.usage;
-            if reasoning_guard_retry_attempt_index > 0 && !is_reasoning_guard && bridge_ok {
-                record_aggregate_api_reasoning_guard_recovered_event(
+
+            if bridge_ok && final_error.is_none() && bridge.reasoning_guard_action.is_none() {
+                super::super::super::gateway_clear_aggregate_api_cooldown(candidate_id.as_str());
+                // A clean terminal response supersedes any earlier retryable
+                // transport failure for this candidate.
+                cooldown_eligible_failure = false;
+            } else if final_error.is_some() && bridge.reasoning_guard_action.is_none() {
+                cooldown_eligible_failure = true;
+            }
+
+            if capability_mode != CapabilityRoutingMode::Off {
+                record_capability_attempt(
+                    capability_mode,
+                    trace_id,
+                    i64::try_from(candidate_idx * 100 + attempt_idx).unwrap_or(i64::MAX),
+                    capability_phase,
+                    candidate_id.as_str(),
+                    candidate_supplier_name.as_deref(),
+                    candidate_upstream_model.as_deref(),
+                    capability_protocol,
+                    path,
+                    capability_contract_signature.as_str(),
+                    capability_transform_codes_json.as_str(),
+                    final_error.as_deref().map(|_| "upstream"),
+                    None,
+                    Some(status_code),
+                    Some(
+                        i64::try_from(attempt_started_at.elapsed().as_millis()).unwrap_or(i64::MAX),
+                    ),
+                    if bridge_ok && final_error.is_none() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                );
+            }
+
+            if reasoning_guard_retry_attempts_used > 0
+                && bridge.reasoning_guard_action.is_none()
+                && bridge_ok
+            {
+                record_aggregate_api_reasoning_guard_event(
+                    storage,
                     trace_id,
                     candidate_id.as_str(),
                     candidate_supplier_name.as_deref(),
                     candidate_upstream_model.as_deref(),
                     path,
+                    "recovered",
+                    None,
                     is_stream,
-                    reasoning_guard_retry_attempt_index,
+                    i64::try_from(reasoning_guard_retry_attempts_used).unwrap_or(i64::MAX),
                     Some(status_code),
+                    RequestLogUsage::default(),
                 );
-            }
-            if is_reasoning_guard {
-                // Reasoning Guard is a synthetic gateway decision, not aggregate API health.
-            } else if should_record_aggregate_api_failure_after_bridge(
-                is_reasoning_guard,
-                bridge.upstream_error_hint.is_some(),
-                bridge.stream_terminal_error.is_some(),
-            ) {
-                record_aggregate_api_failure(candidate_id.as_str());
-            } else {
-                clear_aggregate_api_cooldown(candidate_id.as_str());
             }
 
             super::super::super::record_gateway_request_outcome(
@@ -1866,8 +2159,6 @@ pub(in super::super) fn proxy_aggregate_request(
                 storage,
                 super::super::super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
-                    session_id: session_id_for_log,
-                    conversation_anchor: conversation_anchor_for_log,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     gateway_mode: gateway_mode_for_log,
@@ -1887,7 +2178,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     upstream_model: candidate_upstream_model.as_deref(),
                     actual_source_kind: Some("aggregate_api"),
                     actual_source_id: Some(candidate_id.as_str()),
-                    cost_multiplier: Some(candidate_cost_multiplier),
+                    aggregate_api_cost_multiplier: Some(candidate.cost_multiplier),
                     ..Default::default()
                 },
                 Some(key_id),
@@ -1908,6 +2199,8 @@ pub(in super::super) fn proxy_aggregate_request(
                     provider_cost_usd_ticks: usage.provider_cost_usd_ticks,
                     provider_cost_nano_usd: usage.provider_cost_nano_usd,
                     first_response_ms: usage.first_response_ms,
+                    estimated_input_tokens: Some(estimated_input_tokens),
+                    ..Default::default()
                 },
                 final_error.as_deref(),
                 Some(started_at.elapsed().as_millis()),
@@ -1916,12 +2209,12 @@ pub(in super::super) fn proxy_aggregate_request(
             break;
         }
 
-        if succeeded {
-            return Ok(());
+        if cooldown_eligible_failure {
+            super::super::super::gateway_record_aggregate_api_failure(candidate_id.as_str());
         }
 
-        if !terminal_failure && !candidate_health_neutral_failure {
-            record_aggregate_api_failure(candidate_id.as_str());
+        if succeeded {
+            return Ok(());
         }
 
         if terminal_failure {
@@ -1936,9 +2229,9 @@ pub(in super::super) fn proxy_aggregate_request(
     let message =
         last_attempt_error.unwrap_or_else(|| "aggregate api upstream response failed".to_string());
     let status_code = last_failure_status;
-    let request = request
-        .take()
-        .expect("request should still be available for failure response");
+    let request = request.take().ok_or_else(|| {
+        "aggregate api request already consumed before failure response".to_string()
+    })?;
     super::super::super::record_gateway_request_outcome(path, status_code, Some("aggregate_api"));
     super::super::super::trace_log::log_request_final(
         trace_id,
@@ -1952,8 +2245,6 @@ pub(in super::super) fn proxy_aggregate_request(
         storage,
         super::super::super::request_log::RequestLogTraceContext {
             trace_id: Some(trace_id),
-            session_id: session_id_for_log,
-            conversation_anchor: conversation_anchor_for_log,
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
@@ -1983,12 +2274,28 @@ pub(in super::super) fn proxy_aggregate_request(
         reasoning_for_log,
         last_attempt_url.as_deref(),
         Some(status_code),
-        RequestLogUsage::default(),
+        RequestLogUsage {
+            estimated_input_tokens: Some(estimated_input_tokens),
+            ..Default::default()
+        },
         Some(message.as_str()),
         Some(started_at.elapsed().as_millis()),
     );
     respond_error(request, status_code, message.as_str(), Some(trace_id));
     Ok(())
+}
+
+fn aggregate_api_secrets_by_candidate_id(
+    storage: &Storage,
+    candidates: &[AggregateApi],
+) -> Result<HashMap<String, String>, String> {
+    let candidate_ids = candidates
+        .iter()
+        .map(|candidate| candidate.id.clone())
+        .collect::<Vec<_>>();
+    storage
+        .list_aggregate_api_secrets_for_ids(&candidate_ids)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
@@ -2038,6 +2345,75 @@ mod bridge_tests {
         }
     }
 
+    #[test]
+    fn daily_spend_limit_is_normalized_to_integer_microusd() {
+        assert_eq!(daily_spend_limit_microusd(Some(1.25)), Some(1_250_000));
+        assert_eq!(daily_spend_limit_microusd(Some(0.000_000_9)), Some(1));
+        assert_eq!(daily_spend_limit_microusd(Some(0.0)), None);
+        assert_eq!(daily_spend_limit_microusd(Some(f64::NAN)), None);
+    }
+
+    #[test]
+    fn candidate_transport_rewrite_isolated_between_codex_and_generic_upstreams() {
+        let _guard = crate::test_env_guard();
+        let body = Bytes::from_static(
+            br#"{"model":"platform-model","input":"hello","stream":false,"service_tier":"fast"}"#,
+        );
+        let mut codex = candidate("codex", 0);
+        codex.model_override = Some("gpt-5.4".to_string());
+        let mut generic = candidate("generic", 1);
+        generic.model_override = Some("MiniMax-M3".to_string());
+        let mut claude = candidate("claude", 2);
+        claude.provider_type = AGGREGATE_API_PROVIDER_CLAUDE.to_string();
+
+        let codex_body = rewrite_body_for_candidate_transport(
+            &body,
+            &codex,
+            "/v1/responses",
+            "https://chatgpt.com/backend-api/codex/responses",
+        );
+        let generic_body = rewrite_body_for_candidate_transport(
+            &body,
+            &generic,
+            "/v1/responses",
+            "https://api.example.com/v1/responses",
+        );
+        let claude_body = rewrite_body_for_candidate_transport(
+            &body,
+            &claude,
+            "/v1/responses",
+            "https://proxy.example.com/backend-api/codex/responses",
+        );
+        let codex_value: Value = serde_json::from_slice(codex_body.as_ref()).expect("codex body");
+        let generic_value: Value =
+            serde_json::from_slice(generic_body.as_ref()).expect("generic body");
+        let claude_value: Value =
+            serde_json::from_slice(claude_body.as_ref()).expect("claude body");
+
+        assert_eq!(codex_value["model"], "gpt-5.4");
+        assert_eq!(
+            codex_value["instructions"],
+            "Follow the user's instructions."
+        );
+        assert_eq!(codex_value["stream"], true);
+        assert_eq!(codex_value["store"], false);
+        assert_eq!(codex_value["service_tier"], "priority");
+
+        assert_eq!(generic_value["model"], "MiniMax-M3");
+        assert_eq!(generic_value["input"], "hello");
+        assert_eq!(generic_value["stream"], false);
+        assert_eq!(generic_value["service_tier"], "fast");
+        assert!(generic_value.get("instructions").is_none());
+        assert!(generic_value.get("store").is_none());
+        assert!(generic_value.get("tool_choice").is_none());
+        assert!(generic_value.get("include").is_none());
+
+        assert_eq!(claude_value["model"], "platform-model");
+        assert_eq!(claude_value["service_tier"], "fast");
+        assert!(claude_value.get("instructions").is_none());
+        assert!(claude_value.get("store").is_none());
+    }
+
     /// 函数 `ids`
     ///
     /// 作者: gaohongshun
@@ -2051,34 +2427,6 @@ mod bridge_tests {
     /// 返回函数执行结果
     fn ids(items: &[AggregateApi]) -> Vec<String> {
         items.iter().map(|item| item.id.clone()).collect()
-    }
-
-    fn capability_plan(phase: CandidatePlanPhase) -> CandidatePlan {
-        CandidatePlan {
-            phase,
-            effective_body: Bytes::from_static(br#"{}"#),
-            transform_codes: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn capability_phases_preserve_order_within_each_phase() {
-        let ordered = order_capability_planned_candidates(
-            vec![
-                (candidate("downgrade-a", 0), capability_plan(CandidatePlanPhase::Downgrade)),
-                (candidate("native-a", 1), capability_plan(CandidatePlanPhase::Native)),
-                (candidate("downgrade-b", 2), capability_plan(CandidatePlanPhase::Downgrade)),
-                (candidate("native-b", 3), capability_plan(CandidatePlanPhase::Native)),
-            ],
-            CapabilityRoutingMode::Enforce,
-        );
-        assert_eq!(
-            ordered
-                .iter()
-                .map(|(candidate, _)| candidate.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["native-a", "native-b", "downgrade-a", "downgrade-b"]
-        );
     }
 
     /// 函数 `balanced_route_strategy_rotates_aggregate_candidates`
@@ -2124,6 +2472,52 @@ mod bridge_tests {
             None,
         );
         assert_eq!(ids(&second), vec!["agg-b", "agg-c", "agg-a"]);
+
+        if let Some(value) = previous {
+            std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", value);
+        } else {
+            std::env::remove_var("CODEXMANAGER_ROUTE_STRATEGY");
+        }
+        crate::gateway::reload_runtime_config_from_env();
+    }
+
+    #[test]
+    fn preview_route_strategy_does_not_advance_balanced_aggregate_order() {
+        let _guard = crate::test_env_guard();
+        let previous = std::env::var("CODEXMANAGER_ROUTE_STRATEGY").ok();
+        std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", "balanced");
+        crate::gateway::reload_runtime_config_from_env();
+
+        let key_id = "gk-aggregate-preview-route-strategy";
+        let model = Some("gpt-5.4-mini");
+        let mut preview = vec![
+            candidate("agg-a", 0),
+            candidate("agg-b", 1),
+            candidate("agg-c", 2),
+        ];
+        preview_gateway_route_strategy_to_aggregate_candidates(&mut preview, key_id, model, None);
+        assert_eq!(ids(&preview), vec!["agg-a", "agg-b", "agg-c"]);
+
+        let mut first_apply = vec![
+            candidate("agg-a", 0),
+            candidate("agg-b", 1),
+            candidate("agg-c", 2),
+        ];
+        apply_gateway_route_strategy_to_aggregate_candidates(&mut first_apply, key_id, model, None);
+        assert_eq!(ids(&first_apply), vec!["agg-a", "agg-b", "agg-c"]);
+
+        let mut second_apply = vec![
+            candidate("agg-a", 0),
+            candidate("agg-b", 1),
+            candidate("agg-c", 2),
+        ];
+        apply_gateway_route_strategy_to_aggregate_candidates(
+            &mut second_apply,
+            key_id,
+            model,
+            None,
+        );
+        assert_eq!(ids(&second_apply), vec!["agg-b", "agg-c", "agg-a"]);
 
         if let Some(value) = previous {
             std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", value);
@@ -2203,697 +2597,5 @@ mod bridge_tests {
 }
 
 #[cfg(test)]
-mod tests {
-    use codexmanager_core::storage::{now_ts, AggregateApi, RequestTokenStat, Storage};
-
-    use super::{
-        aggregate_api_large_body_transport_failure_status, aggregate_api_terminal_failure_status,
-        build_aggregate_api_request, build_anthropic_bridge_aggregate_api_request,
-        build_upstream_url, effective_action_path,
-        filter_aggregate_api_cooldown_candidates, filter_daily_spend_limited_candidates,
-        request_requires_image_generation, resolve_aggregate_api_rotation_candidates,
-        resolve_passthrough_sse_protocol,
-        responses_to_anthropic_messages_action_path, rewrite_body_model_override,
-        should_record_aggregate_api_failure_after_bridge, AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
-    };
-    use crate::aggregate_api::{
-        AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
-        AGGREGATE_API_PROVIDER_GEMINI,
-    };
-    use crate::gateway::{PassthroughSseProtocol, ResponseAdapter};
-    use bytes::Bytes;
-
-    fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
-        AggregateApi {
-            id: "agg-path-test".to_string(),
-            provider_type: "claude".to_string(),
-            supplier_name: Some("test".to_string()),
-            sort: 0,
-            url: "https://open.bigmodel.cn/api/anthropic".to_string(),
-            auth_type: "apikey".to_string(),
-            auth_params_json: None,
-            action: action.map(str::to_string),
-            model_override: None,
-            cost_multiplier: 1.0,
-            daily_spend_limit_usd: None,
-            status: "active".to_string(),
-            created_at: 0,
-            updated_at: 0,
-            last_test_at: None,
-            last_test_status: None,
-            last_test_error: None,
-            balance_query_enabled: false,
-            balance_query_template: None,
-            balance_query_base_url: None,
-            balance_query_user_id: None,
-            balance_query_config_json: None,
-            last_balance_at: None,
-            last_balance_status: None,
-            last_balance_error: None,
-            last_balance_json: None,
-        }
-    }
-
-    #[test]
-    fn empty_custom_action_uses_base_url_without_original_path() {
-        let api = aggregate_api_with_action(Some(""));
-        let path = effective_action_path(&api, "/v1/messages?beta=true");
-        assert_eq!(path, "");
-    }
-
-    #[test]
-    fn messages_passthrough_uses_anthropic_native_terminal_rules_without_provider_gate() {
-        let protocol = resolve_passthrough_sse_protocol(
-            "/v1/messages?beta=true",
-            ResponseAdapter::Passthrough,
-        );
-        assert_eq!(protocol, Some(PassthroughSseProtocol::AnthropicNative));
-    }
-
-    #[test]
-    fn messages_passthrough_protocol_still_requires_passthrough_adapter() {
-        let protocol = resolve_passthrough_sse_protocol(
-            "/v1/messages?beta=true",
-            ResponseAdapter::AnthropicMessagesFromResponses,
-        );
-        assert_eq!(protocol, None);
-    }
-
-    #[test]
-    fn build_upstream_url_preserves_base_path_prefix() {
-        let url = build_upstream_url(
-            "https://open.bigmodel.cn/api/anthropic",
-            "/v1/messages?beta=true",
-        )
-        .expect("build upstream url");
-        assert_eq!(
-            url.as_str(),
-            "https://open.bigmodel.cn/api/anthropic/v1/messages?beta=true"
-        );
-    }
-
-    #[test]
-    fn build_upstream_url_keeps_root_base_behavior() {
-        let url = build_upstream_url("https://api.example.com", "/v1/messages?beta=true")
-            .expect("build upstream url");
-        assert_eq!(
-            url.as_str(),
-            "https://api.example.com/v1/messages?beta=true"
-        );
-    }
-
-    #[test]
-    fn responses_bridge_uses_messages_suffix_for_anthropic_v1_base_url() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://api.anthropic.com/v1".to_string();
-
-        let path = responses_to_anthropic_messages_action_path(&api, "/v1/responses");
-        let url = build_upstream_url(api.url.as_str(), path.as_str()).expect("build upstream url");
-
-        assert_eq!(url.as_str(), "https://api.anthropic.com/v1/messages");
-    }
-
-    #[test]
-    fn responses_bridge_keeps_v1_messages_for_deepseek_anthropic_base_url() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://api.deepseek.com/anthropic".to_string();
-
-        let path = responses_to_anthropic_messages_action_path(&api, "/v1/responses");
-        let url = build_upstream_url(api.url.as_str(), path.as_str()).expect("build upstream url");
-
-        assert_eq!(
-            url.as_str(),
-            "https://api.deepseek.com/anthropic/v1/messages"
-        );
-    }
-
-    #[test]
-    fn responses_bridge_respects_custom_action_path() {
-        let mut api = aggregate_api_with_action(Some("/messages?beta=true"));
-        api.url = "https://api.anthropic.com/v1".to_string();
-
-        let path = responses_to_anthropic_messages_action_path(&api, "/v1/responses");
-        let url = build_upstream_url(api.url.as_str(), path.as_str()).expect("build upstream url");
-
-        assert_eq!(
-            path.as_str(),
-            "/messages?beta=true",
-            "custom action should remain the upstream bridge action"
-        );
-        assert_eq!(
-            url.as_str(),
-            "https://api.anthropic.com/v1/messages?beta=true"
-        );
-    }
-
-    #[test]
-    fn anthropic_bridge_request_adds_required_messages_headers_with_default_auth() {
-        let request: tiny_http::Request = tiny_http::TestRequest::new()
-            .with_header(
-                tiny_http::Header::from_bytes("Authorization", "Bearer client-key")
-                    .expect("auth header"),
-            )
-            .into();
-        let client = reqwest::blocking::Client::new();
-        let builder = build_anthropic_bridge_aggregate_api_request(
-            &client,
-            &request,
-            &reqwest::Method::POST,
-            reqwest::Url::parse("https://api.anthropic.com/v1/messages").expect("url"),
-            &Bytes::from_static(br#"{"model":"claude-sonnet","messages":[]}"#),
-            "sk-ant-test",
-            &crate::gateway::upstream::protocol::aggregate_api::AggregateApiAuthConfig::ApiKeyDefaultBearer,
-            &std::collections::HashSet::new(),
-            None,
-            true,
-        )
-        .expect("build request")
-        .build()
-        .expect("finalize request");
-
-        assert_eq!(
-            builder
-                .headers()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer sk-ant-test")
-        );
-        assert_eq!(
-            builder
-                .headers()
-                .get("x-api-key")
-                .and_then(|value| value.to_str().ok()),
-            Some("sk-ant-test")
-        );
-        assert_eq!(
-            builder
-                .headers()
-                .get("anthropic-version")
-                .and_then(|value| value.to_str().ok()),
-            Some("2023-06-01")
-        );
-        assert_eq!(
-            builder
-                .headers()
-                .get("accept")
-                .and_then(|value| value.to_str().ok()),
-            Some("text/event-stream")
-        );
-    }
-
-    #[test]
-    fn private_required_capability_header_is_consumed_and_not_forwarded() {
-        let request: tiny_http::Request = tiny_http::TestRequest::new()
-            .with_header(
-                tiny_http::Header::from_bytes(
-                    "x-codexmanager-required-capabilities",
-                    "responses.hosted_tool.image_generation",
-                )
-                .expect("required capability header"),
-            )
-            .into();
-        assert!(request_requires_image_generation(&request).expect("valid header"));
-
-        let built = build_aggregate_api_request(
-            &reqwest::blocking::Client::new(),
-            &request,
-            &reqwest::Method::POST,
-            reqwest::Url::parse("https://example.com/v1/responses").expect("url"),
-            &Bytes::from_static(br#"{"input":[]}"#),
-            "secret",
-            &crate::gateway::upstream::protocol::aggregate_api::AggregateApiAuthConfig::ApiKeyDefaultBearer,
-            &std::collections::HashSet::new(),
-            None,
-            false,
-        )
-        .expect("request builder")
-        .build()
-        .expect("request");
-        assert!(built
-            .headers()
-            .get("x-codexmanager-required-capabilities")
-            .is_none());
-    }
-
-    #[test]
-    fn rewrite_body_model_override_replaces_json_model() {
-        let body = Bytes::from_static(br#"{"model":"claude-sonnet","messages":[]}"#);
-
-        let rewritten = rewrite_body_model_override(&body, Some("qwen3.5-plus"));
-
-        let value: serde_json::Value =
-            serde_json::from_slice(rewritten.as_ref()).expect("parse rewritten body");
-        assert_eq!(value["model"], "qwen3.5-plus");
-        assert_eq!(value["messages"].as_array().map(Vec::len), Some(0));
-    }
-
-    #[test]
-    fn aggregate_api_body_too_large_failure_is_terminal_413() {
-        assert_eq!(
-            aggregate_api_terminal_failure_status(
-                400,
-                "code=invalid_request_error type=invalid_request_error Request body too large (max 20971520 bytes)",
-            ),
-            Some(413)
-        );
-        assert_eq!(
-            aggregate_api_terminal_failure_status(413, "payload too large"),
-            Some(413)
-        );
-        assert_eq!(
-            aggregate_api_terminal_failure_status(400, "unsupported model"),
-            None
-        );
-    }
-
-    #[test]
-    fn aggregate_api_large_body_transport_error_is_terminal_413() {
-        assert_eq!(
-            aggregate_api_large_body_transport_failure_status(
-                AGGREGATE_API_LARGE_REQUEST_BODY_BYTES + 1,
-                "aggregate api upstream error: request or response body error",
-            ),
-            Some(413)
-        );
-        assert_eq!(
-            aggregate_api_large_body_transport_failure_status(
-                AGGREGATE_API_LARGE_REQUEST_BODY_BYTES,
-                "aggregate api upstream error: request or response body error",
-            ),
-            None
-        );
-        assert_eq!(
-            aggregate_api_large_body_transport_failure_status(
-                AGGREGATE_API_LARGE_REQUEST_BODY_BYTES + 1,
-                "aggregate api upstream error: connection reset",
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn gemini_native_candidates_resolve_to_gemini_provider_only() {
-        let storage = Storage::open_in_memory().expect("open storage");
-        storage.init().expect("init storage");
-        let now = now_ts();
-        for (id, provider_type) in [
-            ("agg-codex", AGGREGATE_API_PROVIDER_CODEX),
-            ("agg-claude", AGGREGATE_API_PROVIDER_CLAUDE),
-            ("agg-gemini", AGGREGATE_API_PROVIDER_GEMINI),
-        ] {
-            storage
-                .insert_aggregate_api(&AggregateApi {
-                    id: id.to_string(),
-                    provider_type: provider_type.to_string(),
-                    supplier_name: Some(id.to_string()),
-                    sort: 0,
-                    url: format!("https://{id}.example.com"),
-                    auth_type: AGGREGATE_API_AUTH_APIKEY.to_string(),
-                    auth_params_json: None,
-                    action: None,
-                    model_override: None,
-                    cost_multiplier: 1.0,
-                    daily_spend_limit_usd: None,
-                    status: "active".to_string(),
-                    created_at: now,
-                    updated_at: now,
-                    last_test_at: None,
-                    last_test_status: None,
-                    last_test_error: None,
-                    balance_query_enabled: false,
-                    balance_query_template: None,
-                    balance_query_base_url: None,
-                    balance_query_user_id: None,
-                    balance_query_config_json: None,
-                    last_balance_at: None,
-                    last_balance_status: None,
-                    last_balance_error: None,
-                    last_balance_json: None,
-                })
-                .expect("insert aggregate api");
-        }
-
-        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "gemini_native", None)
-            .expect("resolve gemini candidates");
-        let candidate_ids = candidates
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(candidate_ids, vec!["agg-gemini"]);
-    }
-
-    #[test]
-    fn aggregate_candidates_keep_successful_zero_balance_apis() {
-        let storage = Storage::open_in_memory().expect("open storage");
-        storage.init().expect("init storage");
-        let now = now_ts();
-
-        let mut zero_balance = aggregate_api_with_action(None);
-        zero_balance.id = "agg-zero-balance".to_string();
-        zero_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        zero_balance.sort = 0;
-        zero_balance.created_at = now;
-        zero_balance.updated_at = now;
-        zero_balance.balance_query_enabled = true;
-        zero_balance.last_balance_status = Some("success".to_string());
-        zero_balance.last_balance_json =
-            Some(r#"{"isValid":true,"remaining":0,"unit":"USD","total":10,"used":10}"#.to_string());
-
-        let mut available = aggregate_api_with_action(None);
-        available.id = "agg-available-balance".to_string();
-        available.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        available.sort = 1;
-        available.created_at = now + 1;
-        available.updated_at = now + 1;
-        available.balance_query_enabled = true;
-        available.last_balance_status = Some("success".to_string());
-        available.last_balance_json = Some(
-            r#"{"isValid":true,"remaining":2.5,"unit":"USD","total":10,"used":7.5}"#.to_string(),
-        );
-
-        storage
-            .insert_aggregate_api(&zero_balance)
-            .expect("insert zero balance aggregate api");
-        storage
-            .insert_aggregate_api(&available)
-            .expect("insert available aggregate api");
-
-        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
-            .expect("resolve candidates");
-        let candidate_ids = candidates
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            candidate_ids,
-            vec!["agg-zero-balance", "agg-available-balance"]
-        );
-    }
-
-    #[test]
-    fn aggregate_candidates_keep_unknown_or_failed_balance_apis() {
-        let storage = Storage::open_in_memory().expect("open storage");
-        storage.init().expect("init storage");
-        let now = now_ts();
-
-        let mut failed_balance = aggregate_api_with_action(None);
-        failed_balance.id = "agg-failed-balance".to_string();
-        failed_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        failed_balance.sort = 0;
-        failed_balance.created_at = now;
-        failed_balance.updated_at = now;
-        failed_balance.balance_query_enabled = true;
-        failed_balance.last_balance_status = Some("failed".to_string());
-        failed_balance.last_balance_error = Some("template=generic; timeout".to_string());
-
-        let mut missing_balance = aggregate_api_with_action(None);
-        missing_balance.id = "agg-missing-balance".to_string();
-        missing_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        missing_balance.sort = 1;
-        missing_balance.created_at = now + 1;
-        missing_balance.updated_at = now + 1;
-        missing_balance.balance_query_enabled = true;
-        missing_balance.last_balance_status = Some("success".to_string());
-        missing_balance.last_balance_json = Some(r#"{"isValid":true,"unit":"USD"}"#.to_string());
-
-        let mut failed_zero_balance = aggregate_api_with_action(None);
-        failed_zero_balance.id = "agg-failed-zero-balance".to_string();
-        failed_zero_balance.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        failed_zero_balance.sort = 2;
-        failed_zero_balance.created_at = now + 2;
-        failed_zero_balance.updated_at = now + 2;
-        failed_zero_balance.balance_query_enabled = true;
-        failed_zero_balance.last_balance_status = Some("failed".to_string());
-        failed_zero_balance.last_balance_json = Some(r#"{"remaining":0,"unit":"USD"}"#.to_string());
-
-        storage
-            .insert_aggregate_api(&failed_balance)
-            .expect("insert failed balance aggregate api");
-        storage
-            .insert_aggregate_api(&missing_balance)
-            .expect("insert missing balance aggregate api");
-        storage
-            .insert_aggregate_api(&failed_zero_balance)
-            .expect("insert failed zero balance aggregate api");
-
-        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
-            .expect("resolve candidates");
-        let candidate_ids = candidates
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            candidate_ids,
-            vec![
-                "agg-failed-balance",
-                "agg-missing-balance",
-                "agg-failed-zero-balance"
-            ]
-        );
-    }
-
-    #[test]
-    fn preferred_zero_balance_aggregate_candidate_is_retained() {
-        let storage = Storage::open_in_memory().expect("open storage");
-        storage.init().expect("init storage");
-        let now = now_ts();
-
-        let mut preferred = aggregate_api_with_action(None);
-        preferred.id = "agg-preferred-zero-balance".to_string();
-        preferred.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        preferred.sort = 10;
-        preferred.created_at = now;
-        preferred.updated_at = now;
-        preferred.balance_query_enabled = true;
-        preferred.last_balance_status = Some("success".to_string());
-        preferred.last_balance_json = Some(r#"{"remaining":0,"unit":"USD"}"#.to_string());
-
-        let mut fallback = aggregate_api_with_action(None);
-        fallback.id = "agg-fallback-positive-balance".to_string();
-        fallback.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        fallback.sort = 0;
-        fallback.created_at = now + 1;
-        fallback.updated_at = now + 1;
-        fallback.balance_query_enabled = true;
-        fallback.last_balance_status = Some("success".to_string());
-        fallback.last_balance_json = Some(r#"{"remaining":1,"unit":"USD"}"#.to_string());
-
-        storage
-            .insert_aggregate_api(&preferred)
-            .expect("insert preferred aggregate api");
-        storage
-            .insert_aggregate_api(&fallback)
-            .expect("insert fallback aggregate api");
-
-        let candidates = resolve_aggregate_api_rotation_candidates(
-            &storage,
-            "openai_compat",
-            Some("agg-preferred-zero-balance"),
-        )
-        .expect("resolve candidates");
-        let candidate_ids = candidates
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            candidate_ids,
-            vec![
-                "agg-preferred-zero-balance",
-                "agg-fallback-positive-balance"
-            ]
-        );
-    }
-
-    #[test]
-    fn daily_spend_limited_candidates_are_skipped() {
-        let storage = Storage::open_in_memory().expect("open storage");
-        storage.init().expect("init storage");
-        let now = now_ts();
-        let mut exhausted = aggregate_api_with_action(None);
-        exhausted.id = "agg-exhausted".to_string();
-        exhausted.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        exhausted.daily_spend_limit_usd = Some(1.0);
-        let mut available = aggregate_api_with_action(None);
-        available.id = "agg-available".to_string();
-        available.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
-        available.daily_spend_limit_usd = Some(2.0);
-
-        storage
-            .insert_aggregate_api(&exhausted)
-            .expect("insert exhausted aggregate api");
-        storage
-            .insert_aggregate_api(&available)
-            .expect("insert available aggregate api");
-        storage
-            .insert_request_token_stat(&RequestTokenStat {
-                request_log_id: 1,
-                aggregate_api_id: Some("agg-exhausted".to_string()),
-                estimated_cost_usd: Some(1.0),
-                created_at: now,
-                ..RequestTokenStat::default()
-            })
-            .expect("insert exhausted usage");
-        storage
-            .insert_request_token_stat(&RequestTokenStat {
-                request_log_id: 2,
-                aggregate_api_id: Some("agg-available".to_string()),
-                estimated_cost_usd: Some(1.5),
-                created_at: now,
-                ..RequestTokenStat::default()
-            })
-            .expect("insert available usage");
-
-        let candidates = resolve_aggregate_api_rotation_candidates(&storage, "openai_compat", None)
-            .expect("resolve candidates");
-        let filtered = filter_daily_spend_limited_candidates(
-            &storage,
-            candidates,
-            now.saturating_sub(60),
-            now.saturating_add(60),
-        )
-        .expect("filter daily limit");
-        let candidate_ids = filtered
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(candidate_ids, vec!["agg-available"]);
-    }
-
-    #[test]
-    fn cooldown_candidates_skip_only_when_others_are_available() {
-        let _guard = crate::test_env_guard();
-        crate::gateway::reload_runtime_config_from_env();
-
-        let mut cooled = aggregate_api_with_action(None);
-        cooled.id = "agg-cooled".to_string();
-        let mut available = aggregate_api_with_action(None);
-        available.id = "agg-available".to_string();
-
-        for _ in 0..5 {
-            crate::gateway::gateway_record_aggregate_api_failure("agg-cooled");
-        }
-        let filtered =
-            filter_aggregate_api_cooldown_candidates(vec![cooled.clone(), available.clone()]);
-        assert_eq!(
-            filtered
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["agg-available"]
-        );
-
-        for _ in 0..5 {
-            crate::gateway::gateway_record_aggregate_api_failure("agg-only-cooled");
-        }
-        let filtered = filter_aggregate_api_cooldown_candidates(vec![cooled]);
-        assert_eq!(
-            filtered
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["agg-cooled"]
-        );
-        crate::gateway::reload_runtime_config_from_env();
-    }
-
-    #[test]
-    fn reasoning_guard_bridge_result_does_not_count_as_aggregate_api_failure() {
-        assert!(!should_record_aggregate_api_failure_after_bridge(
-            true, true, false
-        ));
-        assert!(!should_record_aggregate_api_failure_after_bridge(
-            true, false, true
-        ));
-        assert!(should_record_aggregate_api_failure_after_bridge(
-            false, true, false
-        ));
-        assert!(should_record_aggregate_api_failure_after_bridge(
-            false, false, true
-        ));
-        assert!(!should_record_aggregate_api_failure_after_bridge(
-            false, false, false
-        ));
-    }
-
-    /// 函数 `final_error_promotes_success_status_to_bad_gateway`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn final_error_promotes_success_status_to_bad_gateway() {
-        let status_code = bridge_status_code(Some(200), true, Some("unsupported model"));
-        assert_eq!(status_code, 502);
-    }
-
-    /// 函数 `successful_bridge_keeps_success_status`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn successful_bridge_keeps_success_status() {
-        let status_code = bridge_status_code(Some(200), true, None);
-        assert_eq!(status_code, 200);
-    }
-
-    /// 函数 `incomplete_bridge_without_status_defaults_to_bad_gateway`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// 无
-    ///
-    /// # 返回
-    /// 无
-    #[test]
-    fn incomplete_bridge_without_status_defaults_to_bad_gateway() {
-        let status_code = bridge_status_code(None, false, None);
-        assert_eq!(status_code, 502);
-    }
-
-    /// 函数 `bridge_status_code`
-    ///
-    /// 作者: gaohongshun
-    ///
-    /// 时间: 2026-04-02
-    ///
-    /// # 参数
-    /// - delivered_status_code: 参数 delivered_status_code
-    /// - bridge_ok: 参数 bridge_ok
-    /// - final_error: 参数 final_error
-    ///
-    /// # 返回
-    /// 返回函数执行结果
-    fn bridge_status_code(
-        delivered_status_code: Option<u16>,
-        bridge_ok: bool,
-        final_error: Option<&str>,
-    ) -> u16 {
-        let status_code =
-            delivered_status_code.unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
-        if final_error.is_some() && status_code < 400 {
-            502
-        } else {
-            status_code
-        }
-    }
-}
+#[path = "aggregate_api_tests.rs"]
+mod tests;

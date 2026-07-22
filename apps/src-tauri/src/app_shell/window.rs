@@ -13,6 +13,13 @@ const TRAY_PREVIEW_WIDTH: f64 = 360.0;
 const TRAY_PREVIEW_HEIGHT: f64 = 390.0;
 const TRAY_PREVIEW_MARGIN: f64 = 8.0;
 static SHOW_MAIN_WINDOW_PENDING: AtomicBool = AtomicBool::new(false);
+static MAIN_WINDOW_CREATED_ONCE: AtomicBool = AtomicBool::new(false);
+
+struct MainWindowHandle {
+    window: tauri::WebviewWindow,
+    created: bool,
+    created_after_initial: bool,
+}
 
 /// 函数 `show_main_window`
 ///
@@ -33,10 +40,16 @@ fn show_main_window(app: &tauri::AppHandle) -> bool {
     log::info!("show main window requested");
     hide_tray_preview_window(app);
     KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE.store(false, Ordering::Relaxed);
-    let Some(window) = ensure_main_window(app) else {
+    let Some(main_window) = ensure_main_window(app) else {
         return false;
     };
-    reveal_main_window(&window)
+    if should_navigate_created_main_window_to_app(
+        main_window.created,
+        main_window.created_after_initial,
+    ) {
+        navigate_created_main_window_to_app(&main_window.window);
+    }
+    reveal_main_window(&main_window.window)
 }
 
 fn reveal_main_window(window: &tauri::WebviewWindow) -> bool {
@@ -154,9 +167,14 @@ pub(crate) fn toggle_tray_preview_window(
 ///
 /// # 返回
 /// 返回函数执行结果
-fn ensure_main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+fn ensure_main_window(app: &tauri::AppHandle) -> Option<MainWindowHandle> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        return Some(window);
+        MAIN_WINDOW_CREATED_ONCE.store(true, Ordering::Release);
+        return Some(MainWindowHandle {
+            window,
+            created: false,
+            created_after_initial: false,
+        });
     }
 
     let mut config = app
@@ -193,14 +211,39 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         })
         .build()
     {
-        Ok(window) => Some(window),
+        Ok(window) => {
+            let created_after_initial = MAIN_WINDOW_CREATED_ONCE.swap(true, Ordering::AcqRel);
+            Some(MainWindowHandle {
+                window,
+                created: true,
+                created_after_initial,
+            })
+        }
         Err(err) => {
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                return Some(window);
+                MAIN_WINDOW_CREATED_ONCE.store(true, Ordering::Release);
+                return Some(MainWindowHandle {
+                    window,
+                    created: false,
+                    created_after_initial: false,
+                });
             }
             log::warn!("create main window failed: {}", err);
             None
         }
+    }
+}
+
+fn should_navigate_created_main_window_to_app(created: bool, created_after_initial: bool) -> bool {
+    cfg!(debug_assertions) && created && created_after_initial
+}
+
+fn navigate_created_main_window_to_app(window: &tauri::WebviewWindow) {
+    if let Err(err) = navigate_window_to_app_url(window) {
+        log::warn!(
+            "navigate recreated main window from startup page to app failed: {}",
+            err
+        );
     }
 }
 
@@ -325,7 +368,7 @@ fn resolve_tray_preview_position(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_tray_preview_position;
+    use super::{resolve_tray_preview_position, should_navigate_created_main_window_to_app};
     use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalRect, PhysicalSize, Rect};
 
     #[test]
@@ -360,5 +403,15 @@ mod tests {
 
         assert!(position.y < 870);
         assert!(position.y >= 8);
+    }
+
+    #[test]
+    fn created_main_window_navigation_is_only_for_recreated_windows() {
+        assert!(!should_navigate_created_main_window_to_app(false, true));
+        assert!(!should_navigate_created_main_window_to_app(true, false));
+        #[cfg(debug_assertions)]
+        assert!(should_navigate_created_main_window_to_app(true, true));
+        #[cfg(not(debug_assertions))]
+        assert!(!should_navigate_created_main_window_to_app(true, true));
     }
 }

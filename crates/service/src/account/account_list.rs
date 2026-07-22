@@ -60,7 +60,6 @@ struct AccountSummarySetup {
     usage_snapshots: Vec<UsageSnapshotRecord>,
     metadata: HashMap<String, AccountMetadata>,
     subscriptions: HashMap<String, AccountSubscription>,
-    model_slugs_by_account: HashMap<String, Vec<String>>,
     quota_overrides: HashMap<String, AccountQuotaCapacityOverride>,
 }
 
@@ -275,13 +274,6 @@ fn account_summary_setup_from_snapshot(
         .into_iter()
         .map(|item| (item.account_id.clone(), item))
         .collect::<HashMap<String, AccountSubscription>>();
-    let mut model_slugs_by_account: HashMap<String, Vec<String>> = HashMap::new();
-    for assignment in snapshot.model_assignments {
-        model_slugs_by_account
-            .entry(assignment.source_id)
-            .or_default()
-            .push(assignment.model_slug);
-    }
     let quota_overrides = snapshot
         .quota_overrides
         .into_iter()
@@ -294,7 +286,6 @@ fn account_summary_setup_from_snapshot(
         usage_snapshots: snapshot.usage_snapshots,
         metadata,
         subscriptions,
-        model_slugs_by_account,
         quota_overrides,
     }
 }
@@ -323,7 +314,6 @@ where
                 &usages,
                 &setup.metadata,
                 &setup.subscriptions,
-                &setup.model_slugs_by_account,
                 &setup.quota_overrides,
             )
         })
@@ -353,7 +343,6 @@ fn map_account_summary<A>(
     usages: &HashMap<String, &UsageSnapshotRecord>,
     metadata: &HashMap<String, AccountMetadata>,
     subscriptions: &HashMap<String, AccountSubscription>,
-    model_slugs_by_account: &HashMap<String, Vec<String>>,
     quota_overrides: &HashMap<String, AccountQuotaCapacityOverride>,
 ) -> AccountSummary
 where
@@ -377,10 +366,6 @@ where
     );
     let has_token = tokens.contains_key(&account_id);
     let account_metadata = metadata.get(&account_id);
-    let model_slugs = model_slugs_by_account
-        .get(&account_id)
-        .cloned()
-        .unwrap_or_default();
     let quota_override = quota_overrides.get(&account_id);
     let (fallback_plan_type, plan_type_raw) = match plan {
         Some(value) => (Some(value.normalized), value.raw),
@@ -407,7 +392,7 @@ where
         subscription.and_then(|value| value.renews_at),
         account_metadata.and_then(|value| value.note.clone()),
         account_metadata.and_then(|value| value.tags.clone()),
-        model_slugs,
+        Vec::new(),
         quota_override.and_then(|value| value.primary_window_tokens),
         quota_override.and_then(|value| value.secondary_window_tokens),
     )

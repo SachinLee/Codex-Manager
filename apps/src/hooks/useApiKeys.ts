@@ -3,6 +3,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { accountClient } from "@/lib/api/account-client";
+import {
+  managedModelsV2Client,
+  managedModelV2ToModelInfo,
+} from "@/lib/api/managed-models-v2";
 import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import {
   buildStartupSnapshotQueryKey,
@@ -87,8 +91,11 @@ export function useApiKeys() {
   });
 
   const modelsQuery = useQuery({
-    queryKey: ["apikey-models"],
-    queryFn: () => accountClient.listModels(false),
+    queryKey: ["managed-models-v2", "selector"],
+    queryFn: async () => {
+      const result = await managedModelsV2Client.list(false);
+      return { models: result.items.map(managedModelV2ToModelInfo) };
+    },
     enabled: areApiKeyQueriesEnabled,
     retry: 1,
     placeholderData: (previousData) =>
@@ -111,7 +118,7 @@ export function useApiKeys() {
   const invalidateAll = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
-      queryClient.invalidateQueries({ queryKey: ["apikey-models"] }),
+      queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
       queryClient.invalidateQueries({ queryKey: ["apikey-usage-stats"] }),
       queryClient.invalidateQueries({ queryKey: ["apikey-usage-overview"] }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
@@ -184,18 +191,6 @@ export function useApiKeys() {
     },
   });
 
-  const refreshModelsMutation = useMutation({
-    mutationFn: (refreshRemote: boolean) => accountClient.listModels(refreshRemote),
-    onSuccess: async (models) => {
-      queryClient.setQueryData(["apikey-models"], models);
-      await queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] });
-      toast.success(t("模型列表已刷新"));
-    },
-    onError: (error: unknown) => {
-      toast.error(`${t("刷新模型失败")}: ${getAppErrorMessage(error)}`);
-    },
-  });
-
   const readSecretMutation = useMutation({
     mutationFn: (id: string) => accountClient.readApiKeySecret(id),
     onError: (error: unknown) => {
@@ -232,16 +227,22 @@ export function useApiKeys() {
       if (!ensureServiceReady(enabled ? "启用密钥" : "禁用密钥")) return;
       toggleStatusMutation.mutate({ id, enabled });
     },
-    refreshModels: (refreshRemote = true) => {
+    refreshModels: () => {
       if (!ensureServiceReady("刷新模型")) return;
-      refreshModelsMutation.mutate(refreshRemote);
+      void modelsQuery.refetch().then((result) => {
+        if (result.error) {
+          toast.error(`${t("刷新模型失败")}: ${getAppErrorMessage(result.error)}`);
+          return;
+        }
+        toast.success(t("模型列表已刷新"));
+      });
     },
     readApiKeySecret: async (id: string) => {
       if (!ensureServiceReady("读取密钥")) return "";
       return await readSecretMutation.mutateAsync(id);
     },
     isToggling: toggleStatusMutation.isPending,
-    isRefreshingModels: refreshModelsMutation.isPending,
+    isRefreshingModels: modelsQuery.isRefetching,
     isReadingSecret: readSecretMutation.isPending,
   };
 }

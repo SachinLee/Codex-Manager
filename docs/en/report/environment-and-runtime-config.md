@@ -53,6 +53,7 @@
 - `CODEXMANAGER_ROUTE_STRATEGY`
 - `CODEXMANAGER_CAPABILITY_ROUTING_MODE` (`off`, `observe`, or `enforce`; defaults to `enforce`, and the environment overrides the persisted UI value)
 - `CODEXMANAGER_UPSTREAM_PROXY_URL`
+- `CODEXMANAGER_UPSTREAM_PROXY_BYPASS_HOSTS`
 - `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS`
 - `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS`
 - `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS`
@@ -87,6 +88,7 @@
 
 - `CODEXMANAGER_UPSTREAM_BASE_URL`
 - `CODEXMANAGER_UPSTREAM_PROXY_URL`
+- `CODEXMANAGER_UPSTREAM_PROXY_BYPASS_HOSTS`
 - `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS`: gateway request total timeout in milliseconds. Default `0` means the service does not cut requests off by total duration.
 - `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS`
 - `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM`: makes ChatGPT `/v1/responses` streaming upstream requests try WebSocket first. Default `0`. This is experimental; failures fall back to HTTP streaming and the path uses the configured upstream proxy and connect timeout.
@@ -275,6 +277,7 @@ Safety note:
 
 - 如果同时设置了 `CODEXMANAGER_UPSTREAM_PROXY_URL` 和 `CODEXMANAGER_PROXY_LIST`，单个上游代理优先，代理池会被旁路。
 - `CODEXMANAGER_PROXY_LIST` 更适合“按账号稳定分流多个出口”；`CODEXMANAGER_UPSTREAM_PROXY_URL` 更适合“全局统一走一个出口”。
+- `CODEXMANAGER_UPSTREAM_PROXY_BYPASS_HOSTS` / the settings page `代理 Bypass 域名` field only affects aggregate API upstream URLs. Use one host per line or comma/semicolon-separated hosts. Exact hosts and `*.example.com` subdomain wildcards are supported. Matching aggregate APIs connect directly and skip `CODEXMANAGER_UPSTREAM_PROXY_URL`.
 
 ### 改了 env 文件但没生效
 

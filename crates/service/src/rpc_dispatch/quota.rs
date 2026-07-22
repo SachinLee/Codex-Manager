@@ -1,4 +1,4 @@
-use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse, ModelPriceRuleUpsertInput};
+use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 
 use crate::quota::{
     api_key_usage,
@@ -59,15 +59,6 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let id = super::str_param(req, "id").unwrap_or("");
             super::value_or_error(read::delete_billing_rule(id))
         }
-        "quota/sourceModels/set" => {
-            let source_kind = super::str_param(req, "sourceKind").unwrap_or("");
-            let source_id = super::str_param(req, "sourceId").unwrap_or("");
-            super::value_or_error(read::set_quota_source_models(
-                source_kind,
-                source_id,
-                string_array_param(req, "modelSlugs"),
-            ))
-        }
         "quota/capacityTemplate/update" => {
             let plan_type = super::str_param(req, "planType").unwrap_or("");
             super::value_or_error(read::update_account_quota_capacity_template(
@@ -83,72 +74,6 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 super::i64_param(req, "primaryWindowTokens"),
                 super::i64_param(req, "secondaryWindowTokens"),
             ))
-        }
-        "quota/modelPriceRules/list" => super::value_or_error(read::list_model_price_rules()),
-        "quota/modelPriceRule/read" => {
-            let model_pattern = super::str_param(req, "modelPattern").unwrap_or("");
-            let billing_mode = super::string_param(req, "billingMode");
-            super::value_or_error(read::read_model_price_rule(model_pattern, billing_mode))
-        }
-        "quota/modelPriceRule/upsert" => {
-            let input = ModelPriceRuleUpsertInput {
-                id: super::string_param(req, "id"),
-                provider: super::string_param(req, "provider"),
-                model_pattern: super::str_param(req, "modelPattern")
-                    .unwrap_or("")
-                    .to_string(),
-                match_type: super::string_param(req, "matchType"),
-                billing_mode: super::string_param(req, "billingMode"),
-                input_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("inputPricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                cached_input_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("cachedInputPricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                cache_write_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("cacheWritePricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                output_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("outputPricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                long_context_threshold_tokens: super::i64_param(req, "longContextThresholdTokens"),
-                long_context_threshold_inclusive: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("longContextThresholdInclusive"))
-                    .and_then(|v| v.as_bool()),
-                long_context_input_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("longContextInputPricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                long_context_cached_input_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("longContextCachedInputPricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                long_context_cache_write_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("longContextCacheWritePricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                long_context_output_price_per_1m: req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("longContextOutputPricePer1m"))
-                    .and_then(|v| v.as_f64()),
-                enabled: super::bool_param(req, "enabled"),
-                priority: super::i64_param(req, "priority"),
-            };
-            super::value_or_error(read::upsert_model_price_rule(input))
         }
         "quota/refreshSources" => {
             super::value_or_error(read::refresh_quota_sources(QuotaRefreshSourcesInput {

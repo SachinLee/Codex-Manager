@@ -1,0 +1,1779 @@
+use std::collections::HashSet;
+
+use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use super::{now_ts, ModelGroupAccess, ModelGroupModel, ModelPriceTierV2, Storage};
+
+const MIGRATION_VERSION: &str = "112_model_catalog_v2";
+const GPT56_PRICING_MIGRATION_VERSION: &str = "114_model_catalog_gpt56_prices";
+const CODEX_METADATA_MIGRATION_VERSION: &str = "115_model_catalog_codex_metadata";
+const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
+
+#[derive(Debug, Clone, Deserialize)]
+struct BuiltinCatalogFixture {
+    revision: i64,
+    source_sha256: String,
+    models: Vec<BuiltinModelSeed>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BuiltinModelSeed {
+    slug: String,
+    display_name: String,
+    description: String,
+    visibility: String,
+    priority: i64,
+    default_reasoning_effort: String,
+    context_window: i64,
+    max_context_window: i64,
+    capabilities: Value,
+    price_status: String,
+    price_source: Option<String>,
+    price_tiers: Vec<ModelPriceTierV2>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceV2 {
+    pub price_status: String,
+    #[serde(default)]
+    pub price_source: Option<String>,
+    #[serde(default)]
+    pub input_microusd_per_1m: Option<i64>,
+    #[serde(default)]
+    pub cached_input_microusd_per_1m: Option<i64>,
+    #[serde(default)]
+    pub output_microusd_per_1m: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRouteV2 {
+    #[serde(default)]
+    pub id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub upstream_model: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default = "default_weight")]
+    pub weight: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedModelV2 {
+    pub id: String,
+    pub slug: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub origin: String,
+    pub enabled: bool,
+    pub supported_in_api: bool,
+    pub visibility: String,
+    pub sort_order: i64,
+    #[serde(default)]
+    pub context_window: Option<i64>,
+    #[serde(default)]
+    pub max_context_window: Option<i64>,
+    #[serde(default)]
+    pub default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub capabilities: Value,
+    pub instructions_mode: String,
+    #[serde(default)]
+    pub instructions_text: Option<String>,
+    #[serde(default)]
+    pub builtin_revision: Option<i64>,
+    #[serde(default)]
+    pub user_edited: bool,
+    pub price: ModelPriceV2,
+    #[serde(default)]
+    pub price_tiers: Vec<ModelPriceTierV2>,
+    #[serde(default)]
+    pub routes: Vec<ModelRouteV2>,
+    #[serde(default)]
+    pub permission_group_ids: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedModelV2Upsert {
+    #[serde(default)]
+    pub previous_slug: Option<String>,
+    pub model: ManagedModelV2,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogV2Stats {
+    pub total: i64,
+    pub enabled: i64,
+    pub builtin: i64,
+    pub custom: i64,
+    pub price_missing: i64,
+    pub missing_route: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_weight() -> i64 {
+    1
+}
+
+fn fixture() -> BuiltinCatalogFixture {
+    serde_json::from_str(include_str!("../../seeds/model_catalog_v2_2026_07_10.json"))
+        .expect("model catalog V2 fixture must be valid")
+}
+
+fn clean_optional(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+fn stable_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn builtin_id(slug: &str) -> String {
+    format!("builtin:{}", slug.trim().to_ascii_lowercase())
+}
+
+fn custom_id(slug: &str) -> String {
+    format!("custom:{}", stable_hash(&slug.trim().to_ascii_lowercase()))
+}
+
+fn route_id(model_id: &str, route: &ModelRouteV2) -> String {
+    let identity = format!(
+        "{model_id}\0{}\0{}\0{}",
+        route.source_kind, route.source_id, route.upstream_model
+    );
+    format!("route:{}", stable_hash(&identity))
+}
+
+fn validate_price(model: &ManagedModelV2) -> Result<()> {
+    let price = &model.price;
+    let status = price.price_status.as_str();
+    if !matches!(status, "official" | "estimated" | "custom" | "missing") {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "invalid price_status".to_string(),
+        ));
+    }
+    let rates = [
+        price.input_microusd_per_1m,
+        price.cached_input_microusd_per_1m,
+        price.output_microusd_per_1m,
+    ];
+    if rates.iter().flatten().any(|rate| *rate < 0) {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "model prices cannot be negative".to_string(),
+        ));
+    }
+    if status == "missing" {
+        if rates.iter().any(Option::is_some) || !model.price_tiers.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "missing price must not contain rates or tiers".to_string(),
+            ));
+        }
+        if !model.permission_group_ids.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "model_price_missing: missing-price models cannot join billing groups".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    if rates.iter().any(Option::is_none) {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "priced model requires input, cached input, and output rates".to_string(),
+        ));
+    }
+    let base = model
+        .price_tiers
+        .iter()
+        .find(|tier| tier.min_input_tokens == 0)
+        .ok_or_else(|| {
+            rusqlite::Error::InvalidParameterName(
+                "priced model requires a min_input_tokens=0 tier".to_string(),
+            )
+        })?;
+    if Some(base.input_microusd_per_1m) != price.input_microusd_per_1m
+        || Some(base.cached_input_microusd_per_1m) != price.cached_input_microusd_per_1m
+        || Some(base.output_microusd_per_1m) != price.output_microusd_per_1m
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "model base price must match the zero-threshold tier".to_string(),
+        ));
+    }
+    let mut thresholds = HashSet::new();
+    for tier in &model.price_tiers {
+        if tier.min_input_tokens < 0
+            || tier.input_microusd_per_1m < 0
+            || tier.cached_input_microusd_per_1m < 0
+            || tier.output_microusd_per_1m < 0
+            || !thresholds.insert(tier.min_input_tokens)
+        {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "invalid or duplicate model price tier".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_model(model: &ManagedModelV2) -> Result<()> {
+    if model.slug.trim().is_empty() || model.display_name.trim().is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "model slug and display name are required".to_string(),
+        ));
+    }
+    if !matches!(model.origin.as_str(), "builtin" | "custom") {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "invalid model origin".to_string(),
+        ));
+    }
+    if !matches!(model.visibility.as_str(), "list" | "hide") {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "invalid model visibility".to_string(),
+        ));
+    }
+    if !matches!(
+        model.instructions_mode.as_str(),
+        "passthrough" | "fallback" | "override"
+    ) {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "invalid instructions mode".to_string(),
+        ));
+    }
+    if model.instructions_mode == "override"
+        && model
+            .instructions_text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "override instructions require non-empty text".to_string(),
+        ));
+    }
+    for route in &model.routes {
+        if !matches!(route.source_kind.as_str(), "account_pool" | "aggregate_api")
+            || route.source_id.trim().is_empty()
+            || route.upstream_model.trim().is_empty()
+            || route.weight <= 0
+        {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "invalid model route".to_string(),
+            ));
+        }
+    }
+    validate_price(model)
+}
+
+fn map_model(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<ManagedModelV2> {
+    let id: String = row.get(0)?;
+    let tags_json: String = row.get(7)?;
+    let capabilities_json: String = row.get(16)?;
+    let mut model = ManagedModelV2 {
+        id: id.clone(),
+        slug: row.get(1)?,
+        display_name: row.get(2)?,
+        description: row.get(3)?,
+        provider: row.get(4)?,
+        family: row.get(5)?,
+        category: row.get(6)?,
+        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        origin: row.get(8)?,
+        enabled: row.get::<_, i64>(9)? != 0,
+        supported_in_api: row.get::<_, i64>(10)? != 0,
+        visibility: row.get(11)?,
+        sort_order: row.get(12)?,
+        context_window: row.get(13)?,
+        max_context_window: row.get(14)?,
+        default_reasoning_effort: row.get(15)?,
+        capabilities: serde_json::from_str(&capabilities_json)
+            .unwrap_or(Value::Object(Default::default())),
+        instructions_mode: row.get(17)?,
+        instructions_text: row.get(18)?,
+        builtin_revision: row.get(19)?,
+        user_edited: row.get::<_, i64>(20)? != 0,
+        created_at: row.get(21)?,
+        updated_at: row.get(22)?,
+        price: ModelPriceV2 {
+            price_status: row.get(23)?,
+            price_source: row.get(24)?,
+            input_microusd_per_1m: row.get(25)?,
+            cached_input_microusd_per_1m: row.get(26)?,
+            output_microusd_per_1m: row.get(27)?,
+        },
+        price_tiers: Vec::new(),
+        routes: Vec::new(),
+        permission_group_ids: Vec::new(),
+    };
+    model.price_tiers = list_tiers(conn, &id)?;
+    model.routes = list_routes(conn, &id)?;
+    model.permission_group_ids = list_permission_groups(conn, &id)?;
+    Ok(model)
+}
+
+const MODEL_SELECT: &str = "SELECT
+    m.id,m.slug,m.display_name,m.description,m.provider,m.family,m.category,m.tags_json,
+    m.origin,m.enabled,m.supported_in_api,m.visibility,m.sort_order,m.context_window,
+    m.max_context_window,m.default_reasoning_effort,m.capabilities_json,
+    m.instructions_mode,m.instructions_text,m.builtin_revision,m.user_edited,m.created_at,m.updated_at,
+    p.price_status,p.price_source,p.input_microusd_per_1m,p.cached_input_microusd_per_1m,
+    p.output_microusd_per_1m
+  FROM models m JOIN model_prices p ON p.model_id=m.id";
+
+fn list_tiers(conn: &Connection, model_id: &str) -> Result<Vec<ModelPriceTierV2>> {
+    let mut stmt = conn.prepare(
+        "SELECT min_input_tokens,input_microusd_per_1m,cached_input_microusd_per_1m,
+                output_microusd_per_1m
+         FROM model_price_tiers WHERE model_id=?1 ORDER BY min_input_tokens ASC",
+    )?;
+    stmt.query_map([model_id], |row| {
+        Ok(ModelPriceTierV2 {
+            min_input_tokens: row.get(0)?,
+            input_microusd_per_1m: row.get(1)?,
+            cached_input_microusd_per_1m: row.get(2)?,
+            output_microusd_per_1m: row.get(3)?,
+        })
+    })?
+    .collect()
+}
+
+fn list_routes(conn: &Connection, model_id: &str) -> Result<Vec<ModelRouteV2>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,source_kind,source_id,upstream_model,enabled,priority,weight
+         FROM model_routes WHERE model_id=?1 ORDER BY priority DESC,id ASC",
+    )?;
+    stmt.query_map([model_id], |row| {
+        Ok(ModelRouteV2 {
+            id: row.get(0)?,
+            source_kind: row.get(1)?,
+            source_id: row.get(2)?,
+            upstream_model: row.get(3)?,
+            enabled: row.get::<_, i64>(4)? != 0,
+            priority: row.get(5)?,
+            weight: row.get(6)?,
+        })
+    })?
+    .collect()
+}
+
+fn list_permission_groups(conn: &Connection, model_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT group_id FROM model_group_models_v2
+         WHERE model_id=?1 AND enabled=1 ORDER BY group_id ASC",
+    )?;
+    stmt.query_map([model_id], |row| row.get(0))?.collect()
+}
+
+fn insert_seed(
+    conn: &Connection,
+    fixture: &BuiltinCatalogFixture,
+    seed: &BuiltinModelSeed,
+    now: i64,
+) -> Result<()> {
+    let proposed_id = builtin_id(&seed.slug);
+    conn.execute(
+        "INSERT OR IGNORE INTO models (
+           id,slug,display_name,description,origin,enabled,supported_in_api,visibility,
+           sort_order,context_window,max_context_window,default_reasoning_effort,
+           capabilities_json,instructions_mode,instructions_text,builtin_revision,user_edited,
+           created_at,updated_at
+        ) VALUES (?1,?2,?3,?4,'builtin',1,1,?5,?6,?7,?8,?9,?10,'passthrough',NULL,?11,0,?12,?12)",
+        params![
+            proposed_id,
+            seed.slug,
+            seed.display_name,
+            seed.description,
+            seed.visibility,
+            seed.priority,
+            seed.context_window,
+            seed.max_context_window,
+            seed.default_reasoning_effort,
+            serde_json::to_string(&seed.capabilities).expect("serialize seed capabilities"),
+            fixture.revision,
+            now
+        ],
+    )?;
+    let (id, origin) = conn.query_row(
+        "SELECT id,origin FROM models WHERE slug=?1 COLLATE NOCASE",
+        [&seed.slug],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    if origin != "builtin" {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "builtin seed slug {} is owned by a custom model",
+            seed.slug
+        )));
+    }
+    let base = seed
+        .price_tiers
+        .iter()
+        .find(|tier| tier.min_input_tokens == 0);
+    conn.execute(
+        "INSERT OR IGNORE INTO model_prices (
+           model_id,currency,input_microusd_per_1m,cached_input_microusd_per_1m,
+           output_microusd_per_1m,price_status,price_source,created_at,updated_at
+         ) VALUES (?1,'USD',?2,?3,?4,?5,?6,?7,?7)",
+        params![
+            id,
+            base.map(|tier| tier.input_microusd_per_1m),
+            base.map(|tier| tier.cached_input_microusd_per_1m),
+            base.map(|tier| tier.output_microusd_per_1m),
+            seed.price_status,
+            seed.price_source,
+            now
+        ],
+    )?;
+    for tier in &seed.price_tiers {
+        conn.execute(
+            "INSERT OR IGNORE INTO model_price_tiers (
+               model_id,min_input_tokens,input_microusd_per_1m,
+               cached_input_microusd_per_1m,output_microusd_per_1m
+             ) VALUES (?1,?2,?3,?4,?5)",
+            params![
+                id,
+                tier.min_input_tokens,
+                tier.input_microusd_per_1m,
+                tier.cached_input_microusd_per_1m,
+                tier.output_microusd_per_1m
+            ],
+        )?;
+    }
+    let route = ModelRouteV2 {
+        source_kind: "account_pool".to_string(),
+        source_id: "default".to_string(),
+        upstream_model: seed.slug.clone(),
+        enabled: true,
+        priority: 0,
+        weight: 1,
+        ..Default::default()
+    };
+    conn.execute(
+        "INSERT OR IGNORE INTO model_routes (
+           id,model_id,source_kind,source_id,upstream_model,enabled,priority,weight,created_at,updated_at
+         ) VALUES (?1,?2,?3,?4,?5,1,0,1,?6,?6)",
+        params![route_id(&id, &route), id, route.source_kind, route.source_id, route.upstream_model, now],
+    )?;
+    Ok(())
+}
+
+fn seed_missing(conn: &Connection) -> Result<()> {
+    let fixture = fixture();
+    let now = now_ts();
+    for seed in &fixture.models {
+        insert_seed(conn, &fixture, seed, now)?;
+    }
+    conn.execute(
+        "INSERT INTO model_catalog_v2_meta(key,value) VALUES('builtin_revision',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [fixture.revision.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO model_catalog_v2_meta(key,value) VALUES('fixture_sha256',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [fixture.source_sha256],
+    )?;
+    Ok(())
+}
+
+fn migrate_legacy_catalog(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT slug,display_name,source_kind,user_edited,description,default_reasoning_level,
+                visibility,supported_in_api,context_window,extra_json,sort_index,updated_at
+         FROM model_catalog_models
+         WHERE scope='default' AND TRIM(slug) <> ''
+         ORDER BY sort_index ASC,slug ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, bool>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<bool>>(7)?,
+            row.get::<_, Option<i64>>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+        ))
+    })?;
+    let legacy = rows.collect::<Result<Vec<_>>>()?;
+    drop(stmt);
+    for (
+        slug,
+        display_name,
+        source_kind,
+        user_edited,
+        description,
+        reasoning,
+        visibility,
+        supported,
+        context,
+        extra,
+        sort,
+        updated_at,
+    ) in legacy
+    {
+        let existing: Option<(String, String)> = conn
+            .query_row(
+                "SELECT id,origin FROM models WHERE slug=?1 COLLATE NOCASE",
+                [&slug],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((id, origin)) = existing {
+            if origin == "builtin" && user_edited {
+                let normalized_visibility = match visibility.as_deref() {
+                    Some("hide" | "hidden") => "hide",
+                    _ => "list",
+                };
+                let enabled = !matches!(visibility.as_deref(), Some("disabled" | "unavailable"));
+                conn.execute(
+                    "UPDATE models SET display_name=?2,description=?3,enabled=?4,visibility=?5,
+                       supported_in_api=?6,context_window=COALESCE(?7,context_window),
+                       default_reasoning_effort=COALESCE(?8,default_reasoning_effort),
+                       sort_order=?9,user_edited=1,updated_at=?10 WHERE id=?1",
+                    params![
+                        id,
+                        display_name,
+                        description,
+                        enabled,
+                        normalized_visibility,
+                        supported.unwrap_or(true),
+                        context,
+                        reasoning,
+                        sort,
+                        updated_at
+                    ],
+                )?;
+            }
+            continue;
+        }
+        if source_kind != "custom" && !user_edited {
+            continue;
+        }
+        let id = custom_id(&slug);
+        let capabilities = serde_json::from_str::<Value>(&extra)
+            .ok()
+            .filter(|value| value.is_object())
+            .unwrap_or(Value::Object(Default::default()));
+        conn.execute(
+            "INSERT INTO models (
+               id,slug,display_name,description,origin,enabled,supported_in_api,visibility,
+               sort_order,context_window,max_context_window,default_reasoning_effort,
+               capabilities_json,instructions_mode,instructions_text,builtin_revision,user_edited,
+               created_at,updated_at
+             ) VALUES (?1,?2,?3,?4,'custom',?5,?6,?7,?8,?9,?9,?10,?11,'passthrough',NULL,NULL,1,?12,?12)",
+            params![id, slug, display_name, description,
+                !matches!(visibility.as_deref(), Some("disabled" | "unavailable")),
+                supported.unwrap_or(true), if matches!(visibility.as_deref(), Some("hide" | "hidden")) { "hide" } else { "list" },
+                sort, context, reasoning, capabilities.to_string(), updated_at],
+        )?;
+        conn.execute(
+            "INSERT INTO model_prices(model_id,currency,price_status,created_at,updated_at)
+             VALUES(?1,'USD','missing',?2,?2)",
+            params![id, updated_at],
+        )?;
+    }
+    Ok(())
+}
+
+fn usd_rate_to_microusd(value: f64) -> Option<i64> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    let scaled = value * 1_000_000.0;
+    if scaled > i64::MAX as f64 {
+        return None;
+    }
+    Some(scaled.round() as i64)
+}
+
+fn migrate_legacy_prices(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT model_pattern,input_price_per_1m,cached_input_price_per_1m,output_price_per_1m,
+                long_context_threshold_tokens,long_context_input_price_per_1m,
+                long_context_cached_input_price_per_1m,long_context_output_price_per_1m,
+                source,updated_at
+         FROM model_price_rules
+         WHERE enabled=1 AND match_type='exact' AND source='custom'
+         ORDER BY priority ASC,updated_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<f64>>(1)?,
+            row.get::<_, Option<f64>>(2)?,
+            row.get::<_, Option<f64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<f64>>(5)?,
+            row.get::<_, Option<f64>>(6)?,
+            row.get::<_, Option<f64>>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, i64>(9)?,
+        ))
+    })?;
+    let rules = rows.collect::<Result<Vec<_>>>()?;
+    drop(stmt);
+    for (
+        slug,
+        input,
+        cached,
+        output,
+        threshold,
+        long_input,
+        long_cached,
+        long_output,
+        source,
+        updated_at,
+    ) in rules
+    {
+        let (Some(input), Some(cached), Some(output)) = (
+            input.and_then(usd_rate_to_microusd),
+            cached.and_then(usd_rate_to_microusd),
+            output.and_then(usd_rate_to_microusd),
+        ) else {
+            continue;
+        };
+        let Some(model_id) = conn
+            .query_row(
+                "SELECT id FROM models WHERE slug=?1 COLLATE NOCASE",
+                [&slug],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            continue;
+        };
+        conn.execute(
+            "UPDATE model_prices SET input_microusd_per_1m=?2,cached_input_microusd_per_1m=?3,
+               output_microusd_per_1m=?4,price_status='custom',price_source=?5,updated_at=?6
+             WHERE model_id=?1",
+            params![model_id, input, cached, output, source, updated_at],
+        )?;
+        conn.execute(
+            "DELETE FROM model_price_tiers WHERE model_id=?1",
+            [&model_id],
+        )?;
+        conn.execute(
+            "INSERT INTO model_price_tiers(model_id,min_input_tokens,input_microusd_per_1m,
+               cached_input_microusd_per_1m,output_microusd_per_1m) VALUES(?1,0,?2,?3,?4)",
+            params![model_id, input, cached, output],
+        )?;
+        if let (Some(threshold), Some(long_input), Some(long_cached), Some(long_output)) = (
+            threshold,
+            long_input.and_then(usd_rate_to_microusd),
+            long_cached.and_then(usd_rate_to_microusd),
+            long_output.and_then(usd_rate_to_microusd),
+        ) {
+            if threshold > 0 {
+                conn.execute(
+                    "INSERT INTO model_price_tiers(model_id,min_input_tokens,input_microusd_per_1m,
+                       cached_input_microusd_per_1m,output_microusd_per_1m) VALUES(?1,?2,?3,?4,?5)",
+                    params![model_id, threshold, long_input, long_cached, long_output],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn migrate_legacy_routes(conn: &Connection) -> Result<()> {
+    let now = now_ts();
+    let mut stmt = conn.prepare(
+        "SELECT r.platform_model_slug,r.source_kind,r.source_id,r.upstream_model,
+                r.enabled,r.priority,r.weight
+         FROM model_source_mappings r
+         JOIN aggregate_apis a ON a.id=r.source_id
+         LEFT JOIN model_source_mapping_preferences pref
+           ON pref.source_kind=r.source_kind AND pref.source_id=r.source_id
+          AND pref.upstream_model=r.upstream_model
+         WHERE r.enabled=1 AND r.source_kind='aggregate_api' AND pref.preference IS NULL
+           AND (r.upstream_model<>r.platform_model_slug OR r.priority<>0 OR r.weight<>1
+             OR EXISTS(SELECT 1 FROM quota_source_model_assignments q
+                       WHERE q.source_kind=r.source_kind AND q.source_id=r.source_id
+                         AND q.model_slug=r.platform_model_slug))
+         ORDER BY r.priority DESC,r.id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, bool>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    })?;
+    let mappings = rows.collect::<Result<Vec<_>>>()?;
+    drop(stmt);
+    for (slug, old_kind, source_id, upstream_model, enabled, priority, weight) in mappings {
+        let Some(model_id) = conn
+            .query_row(
+                "SELECT id FROM models WHERE slug=?1 COLLATE NOCASE",
+                [&slug],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            continue;
+        };
+        let (source_kind, source_id) = match old_kind.as_str() {
+            "openai_account" => ("account_pool", "default".to_string()),
+            "aggregate_api" => ("aggregate_api", source_id),
+            _ => continue,
+        };
+        let route = ModelRouteV2 {
+            source_kind: source_kind.to_string(),
+            source_id,
+            upstream_model,
+            enabled,
+            priority,
+            weight: weight.max(1),
+            ..Default::default()
+        };
+        conn.execute(
+            "INSERT OR IGNORE INTO model_routes(id,model_id,source_kind,source_id,upstream_model,
+               enabled,priority,weight,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+            params![route_id(&model_id,&route),model_id,route.source_kind,route.source_id,route.upstream_model,route.enabled,route.priority,route.weight,now],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_legacy_groups(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO model_group_models_v2(group_id,model_id,enabled,
+           rate_multiplier_millis,created_at,updated_at)
+         SELECT old.group_id,m.id,old.enabled,old.rate_multiplier_millis,old.created_at,old.updated_at
+         FROM model_group_models old
+         JOIN model_groups g ON g.id=old.group_id AND g.is_default=0
+         JOIN models m ON m.slug=old.platform_model_slug COLLATE NOCASE
+         JOIN model_prices p ON p.model_id=m.id AND p.price_status<>'missing'",
+        [],
+    )?;
+    Ok(())
+}
+
+fn migration_smoke(conn: &Connection) -> Result<()> {
+    let model_count: i64 = conn.query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))?;
+    let builtin_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM models WHERE origin='builtin'",
+        [],
+        |row| row.get(0),
+    )?;
+    let orphan_count: i64 = conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM model_prices p LEFT JOIN models m ON m.id=p.model_id WHERE m.id IS NULL)
+          +(SELECT COUNT(*) FROM model_price_tiers p LEFT JOIN models m ON m.id=p.model_id WHERE m.id IS NULL)
+          +(SELECT COUNT(*) FROM model_routes r LEFT JOIN models m ON m.id=r.model_id WHERE m.id IS NULL)",
+        [], |row| row.get(0))?;
+    if model_count < 8 || builtin_count != 8 || orphan_count != 0 {
+        return Err(rusqlite::Error::SqliteFailure(
+            (),
+            Some("model catalog V2 smoke check failed".to_string()),
+        ));
+    }
+    Ok(())
+}
+
+fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<String> {
+    let mut model = input.model.clone();
+    model.slug = model.slug.trim().to_string();
+    model.display_name = model.display_name.trim().to_string();
+    model.description = clean_optional(model.description);
+    model.provider = clean_optional(model.provider);
+    model.family = clean_optional(model.family);
+    model.category = clean_optional(model.category);
+    model.instructions_text = clean_optional(model.instructions_text);
+    validate_model(&model)?;
+
+    let previous = input.previous_slug.as_deref().unwrap_or(&model.slug).trim();
+    let existing = tx
+        .query_row(
+            "SELECT id,origin,created_at FROM models WHERE slug=?1 COLLATE NOCASE",
+            [previous],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let now = now_ts();
+    let (id, origin, created_at) = match existing {
+        Some((id, origin, created_at)) => {
+            if origin == "builtin" && model.slug.to_lowercase() != previous.to_lowercase() {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "builtin model slug cannot be renamed".to_string(),
+                ));
+            }
+            if model.origin != origin {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "model origin cannot be changed".to_string(),
+                ));
+            }
+            (id, origin, created_at)
+        }
+        None => {
+            if model.origin != "custom" {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "only custom models can be created".to_string(),
+                ));
+            }
+            (
+                if model.id.trim().is_empty() {
+                    custom_id(&model.slug)
+                } else {
+                    model.id.clone()
+                },
+                "custom".to_string(),
+                now,
+            )
+        }
+    };
+    tx.execute(
+        "INSERT INTO models(id,slug,display_name,description,provider,family,category,tags_json,
+           origin,enabled,supported_in_api,visibility,sort_order,context_window,max_context_window,
+           default_reasoning_effort,capabilities_json,instructions_mode,instructions_text,
+           builtin_revision,user_edited,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,1,?21,?22)
+         ON CONFLICT(id) DO UPDATE SET slug=excluded.slug,display_name=excluded.display_name,
+           description=excluded.description,provider=excluded.provider,family=excluded.family,
+           category=excluded.category,tags_json=excluded.tags_json,enabled=excluded.enabled,
+           supported_in_api=excluded.supported_in_api,visibility=excluded.visibility,
+           sort_order=excluded.sort_order,context_window=excluded.context_window,
+           max_context_window=excluded.max_context_window,
+           default_reasoning_effort=excluded.default_reasoning_effort,
+           capabilities_json=excluded.capabilities_json,instructions_mode=excluded.instructions_mode,
+           instructions_text=excluded.instructions_text,user_edited=1,updated_at=excluded.updated_at",
+        params![id,model.slug,model.display_name,model.description,model.provider,model.family,model.category,
+            serde_json::to_string(&model.tags)
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,origin,model.enabled,
+            model.supported_in_api,model.visibility,model.sort_order,model.context_window,model.max_context_window,
+            model.default_reasoning_effort,model.capabilities.to_string(),model.instructions_mode,model.instructions_text,
+            model.builtin_revision,created_at,now],
+    )?;
+    tx.execute(
+        "INSERT INTO model_prices(model_id,currency,input_microusd_per_1m,
+           cached_input_microusd_per_1m,output_microusd_per_1m,price_status,price_source,
+           created_at,updated_at) VALUES(?1,'USD',?2,?3,?4,?5,?6,?7,?8)
+         ON CONFLICT(model_id) DO UPDATE SET input_microusd_per_1m=excluded.input_microusd_per_1m,
+           cached_input_microusd_per_1m=excluded.cached_input_microusd_per_1m,
+           output_microusd_per_1m=excluded.output_microusd_per_1m,
+           price_status=excluded.price_status,price_source=excluded.price_source,
+           updated_at=excluded.updated_at",
+        params![
+            id,
+            model.price.input_microusd_per_1m,
+            model.price.cached_input_microusd_per_1m,
+            model.price.output_microusd_per_1m,
+            model.price.price_status,
+            model.price.price_source,
+            created_at,
+            now
+        ],
+    )?;
+    tx.execute("DELETE FROM model_price_tiers WHERE model_id=?1", [&id])?;
+    for tier in &model.price_tiers {
+        tx.execute(
+            "INSERT INTO model_price_tiers(model_id,min_input_tokens,input_microusd_per_1m,
+            cached_input_microusd_per_1m,output_microusd_per_1m) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                id,
+                tier.min_input_tokens,
+                tier.input_microusd_per_1m,
+                tier.cached_input_microusd_per_1m,
+                tier.output_microusd_per_1m
+            ],
+        )?;
+    }
+    tx.execute("DELETE FROM model_routes WHERE model_id=?1", [&id])?;
+    for route in &model.routes {
+        let route_id = if route.id.trim().is_empty() {
+            route_id(&id, route)
+        } else {
+            route.id.clone()
+        };
+        tx.execute(
+            "INSERT INTO model_routes(id,model_id,source_kind,source_id,upstream_model,
+            enabled,priority,weight,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+            params![
+                route_id,
+                id,
+                route.source_kind,
+                route.source_id,
+                route.upstream_model,
+                route.enabled,
+                route.priority,
+                route.weight,
+                now
+            ],
+        )?;
+    }
+    tx.execute("DELETE FROM model_group_models_v2 WHERE model_id=?1", [&id])?;
+    for group_id in &model.permission_group_ids {
+        if group_id == DEFAULT_MODEL_GROUP_ID {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO model_group_models_v2(group_id,model_id,enabled,created_at,updated_at)
+            VALUES(?1,?2,1,?3,?3)",
+            params![group_id, id, now],
+        )?;
+    }
+    Ok(id)
+}
+
+impl Storage {
+    pub(super) fn apply_model_catalog_v2_migration(&self) -> Result<()> {
+        if self.has_migration(MIGRATION_VERSION)? {
+            return Ok(());
+        }
+        let has_legacy_catalog = self.has_table("model_catalog_models")?;
+        let has_legacy_prices = self.has_table("model_price_rules")?;
+        let has_legacy_routes = self.has_table("model_source_mappings")?
+            && self.has_table("aggregate_apis")?
+            && self.has_table("model_source_mapping_preferences")?
+            && self.has_table("quota_source_model_assignments")?;
+        let has_legacy_groups = self.has_table("model_group_models")?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(include_str!("../../migrations/112_model_catalog_v2.sql"))?;
+        seed_missing(&self.conn)?;
+        if has_legacy_catalog {
+            migrate_legacy_catalog(&self.conn)?;
+        }
+        if has_legacy_prices {
+            migrate_legacy_prices(&self.conn)?;
+        }
+        if has_legacy_routes {
+            migrate_legacy_routes(&self.conn)?;
+        }
+        if has_legacy_groups {
+            migrate_legacy_groups(&self.conn)?;
+        }
+        migration_smoke(&self.conn)?;
+        tx.execute(
+            "INSERT INTO model_catalog_v2_meta(key,value) VALUES('cutover_state','complete')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![MIGRATION_VERSION, now_ts()],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
+    pub(super) fn seed_missing_builtin_models_v2(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        seed_missing(&self.conn)?;
+        tx.commit()
+    }
+
+    pub(super) fn apply_gpt56_pricing_migration(&self) -> Result<()> {
+        if self.has_migration(GPT56_PRICING_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(include_str!(
+            "../../migrations/114_model_catalog_gpt56_prices.sql"
+        ))?;
+        let invalid_rows: i64 = tx.query_row(
+            "SELECT COUNT(*)
+             FROM models m
+             JOIN model_prices p ON p.model_id=m.id
+             LEFT JOIN model_price_tiers t
+               ON t.model_id=m.id AND t.min_input_tokens=0
+             WHERE p.price_source='user_provided_openai_gpt-5.6_2026-07-14_cached_at_input_rate'
+               AND (m.origin<>'builtin' OR p.price_status<>'estimated'
+                 OR p.input_microusd_per_1m IS NULL
+                 OR p.cached_input_microusd_per_1m IS NULL
+                 OR p.output_microusd_per_1m IS NULL
+                 OR t.model_id IS NULL
+                 OR t.input_microusd_per_1m<>p.input_microusd_per_1m
+                 OR t.cached_input_microusd_per_1m<>p.cached_input_microusd_per_1m
+                 OR t.output_microusd_per_1m<>p.output_microusd_per_1m)",
+            [],
+            |row| row.get(0),
+        )?;
+        if invalid_rows != 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                (),
+                Some("GPT-5.6 pricing migration smoke check failed".to_string()),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![GPT56_PRICING_MIGRATION_VERSION, now_ts()],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(GPT56_PRICING_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
+    pub(super) fn apply_model_catalog_codex_metadata_migration(&self) -> Result<()> {
+        if self.has_migration(CODEX_METADATA_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+        let fixture = fixture();
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ts();
+        for seed in &fixture.models {
+            tx.execute(
+                "UPDATE models
+                 SET capabilities_json=?1,builtin_revision=?2,updated_at=?3
+                 WHERE origin='builtin' AND user_edited=0
+                   AND slug=?4 COLLATE NOCASE
+                   AND COALESCE(builtin_revision,0) < ?2",
+                params![
+                    serde_json::to_string(&seed.capabilities)
+                        .expect("serialize builtin Codex capabilities"),
+                    fixture.revision,
+                    now,
+                    seed.slug
+                ],
+            )?;
+        }
+        tx.execute_batch(include_str!(
+            "../../migrations/115_model_catalog_codex_metadata.sql"
+        ))?;
+        let stale_rows: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM models
+             WHERE origin='builtin' AND user_edited=0
+               AND COALESCE(builtin_revision,0) < ?1",
+            [fixture.revision],
+            |row| row.get(0),
+        )?;
+        if stale_rows != 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                (),
+                Some("Codex model metadata migration smoke check failed".to_string()),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![CODEX_METADATA_MIGRATION_VERSION, now],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(CODEX_METADATA_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn smoke_check_model_catalog_v2(&self) -> Result<()> {
+        migration_smoke(&self.conn)
+    }
+
+    pub fn list_managed_models_v2(&self, include_hidden: bool) -> Result<Vec<ManagedModelV2>> {
+        let sql = if include_hidden {
+            format!("{MODEL_SELECT} ORDER BY m.sort_order ASC,m.slug ASC")
+        } else {
+            format!("{MODEL_SELECT} WHERE m.visibility='list' ORDER BY m.sort_order ASC,m.slug ASC")
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut models = Vec::new();
+        while let Some(row) = rows.next()? {
+            models.push(map_model(&self.conn, row)?);
+        }
+        Ok(models)
+    }
+
+    pub fn list_api_models_v2(&self) -> Result<Vec<ManagedModelV2>> {
+        let sql = format!("{MODEL_SELECT} WHERE m.enabled=1 AND m.supported_in_api=1 AND m.visibility='list' ORDER BY m.sort_order ASC,m.slug ASC");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut models = Vec::new();
+        while let Some(row) = rows.next()? {
+            models.push(map_model(&self.conn, row)?);
+        }
+        Ok(models)
+    }
+
+    pub fn get_managed_model_v2(&self, slug: &str) -> Result<Option<ManagedModelV2>> {
+        let sql = format!("{MODEL_SELECT} WHERE m.slug=?1 COLLATE NOCASE");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([slug.trim()])?;
+        rows.next()?
+            .map(|row| map_model(&self.conn, row))
+            .transpose()
+    }
+
+    pub fn get_enabled_model_v2(&self, slug: &str) -> Result<Option<ManagedModelV2>> {
+        let sql = format!("{MODEL_SELECT} WHERE m.slug=?1 COLLATE NOCASE AND m.enabled=1 AND m.supported_in_api=1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([slug.trim()])?;
+        rows.next()?
+            .map(|row| map_model(&self.conn, row))
+            .transpose()
+    }
+
+    pub fn model_catalog_v2_stats(&self) -> Result<ModelCatalogV2Stats> {
+        self.conn.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(m.enabled),0),
+                    COALESCE(SUM(m.origin='builtin'),0),COALESCE(SUM(m.origin='custom'),0),
+                    COALESCE(SUM(p.price_status='missing'),0),
+                    COALESCE(SUM(NOT EXISTS(SELECT 1 FROM model_routes r WHERE r.model_id=m.id AND r.enabled=1)),0)
+             FROM models m JOIN model_prices p ON p.model_id=m.id",
+            [],
+            |row| Ok(ModelCatalogV2Stats { total:row.get(0)?,enabled:row.get(1)?,builtin:row.get(2)?,custom:row.get(3)?,price_missing:row.get(4)?,missing_route:row.get(5)? }),
+        )
+    }
+
+    pub fn upsert_managed_model_v2(&self, input: &ManagedModelV2Upsert) -> Result<ManagedModelV2> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id = write_model(&tx, input)?;
+        tx.commit()?;
+        self.get_managed_model_v2(&input.model.slug)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+            .map(|mut model| {
+                model.id = id;
+                model
+            })
+    }
+
+    pub fn upsert_managed_models_v2(
+        &self,
+        inputs: &[ManagedModelV2Upsert],
+    ) -> Result<Vec<ManagedModelV2>> {
+        let tx = self.conn.unchecked_transaction()?;
+        for input in inputs {
+            write_model(&tx, input)?;
+        }
+        tx.commit()?;
+        inputs
+            .iter()
+            .map(|input| {
+                self.get_managed_model_v2(&input.model.slug)?
+                    .ok_or(rusqlite::Error::QueryReturnedNoRows)
+            })
+            .collect()
+    }
+
+    pub fn delete_managed_model_v2(&self, slug: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let origin = tx
+            .query_row(
+                "SELECT origin FROM models WHERE slug=?1 COLLATE NOCASE",
+                [slug.trim()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match origin.as_deref() {
+            Some("builtin") => {
+                tx.execute("UPDATE models SET enabled=0,user_edited=1,updated_at=?2 WHERE slug=?1 COLLATE NOCASE",params![slug.trim(),now_ts()])?;
+            }
+            Some("custom") => {
+                tx.execute(
+                    "DELETE FROM models WHERE slug=?1 COLLATE NOCASE",
+                    [slug.trim()],
+                )?;
+            }
+            _ => return Err(rusqlite::Error::QueryReturnedNoRows),
+        }
+        tx.commit()
+    }
+
+    pub fn list_enabled_routes_v2(&self, slug: &str) -> Result<Vec<ModelRouteV2>> {
+        let Some(model_id) = self.conn.query_row(
+            "SELECT id FROM models WHERE slug=?1 COLLATE NOCASE AND enabled=1 AND supported_in_api=1",
+            [slug.trim()],|row| row.get::<_,String>(0)).optional()? else { return Ok(Vec::new()) };
+        Ok(list_routes(&self.conn, &model_id)?
+            .into_iter()
+            .filter(|route| route.enabled)
+            .collect())
+    }
+
+    pub fn allowed_model_slugs_for_user_v2(&self, user_id: &str, now: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT m.slug
+             FROM user_model_groups u JOIN model_groups g ON g.id=u.group_id
+             JOIN models m ON m.enabled=1 AND m.supported_in_api=1
+             JOIN model_prices p ON p.model_id=m.id
+             LEFT JOIN model_group_models_v2 gm ON gm.group_id=g.id AND gm.model_id=m.id AND gm.enabled=1
+             WHERE u.user_id=?1 AND u.status='active' AND (u.expires_at IS NULL OR u.expires_at>?2)
+               AND g.status='active' AND ((g.is_default=1) OR (gm.model_id IS NOT NULL AND p.price_status<>'missing'))
+             ORDER BY m.slug ASC")?;
+        stmt.query_map(params![user_id, now], |row| row.get(0))?
+            .collect()
+    }
+
+    pub fn list_model_group_models_v2(&self) -> Result<Vec<ModelGroupModel>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT gm.group_id,m.slug,gm.enabled,gm.rate_multiplier_millis,
+                    gm.created_at,gm.updated_at
+             FROM model_group_models_v2 gm JOIN models m ON m.id=gm.model_id
+             ORDER BY gm.group_id ASC,m.slug ASC",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(ModelGroupModel {
+                group_id: row.get(0)?,
+                platform_model_slug: row.get(1)?,
+                enabled: row.get::<_, i64>(2)? != 0,
+                rate_multiplier_millis: row.get(3)?,
+                billing_model_slug: None,
+                note: Some("model_catalog_v2".to_string()),
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?
+        .collect()
+    }
+
+    pub fn replace_model_group_models_v2(
+        &self,
+        group_id: &str,
+        models: &[ModelGroupModel],
+    ) -> Result<()> {
+        let is_default = self.conn.query_row(
+            "SELECT is_default FROM model_groups WHERE id=?1",
+            [group_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0;
+        if is_default && !models.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "default model group uses all_enabled_models and cannot store explicit models"
+                    .to_string(),
+            ));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM model_group_models_v2 WHERE group_id=?1",
+            [group_id],
+        )?;
+        for model in models {
+            let (model_id, price_status) = tx.query_row(
+                "SELECT m.id,p.price_status FROM models m JOIN model_prices p ON p.model_id=m.id
+                 WHERE m.slug=?1 COLLATE NOCASE AND m.enabled=1 AND m.supported_in_api=1",
+                [model.platform_model_slug.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            if price_status == "missing" {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "model_price_missing: {}",
+                    model.platform_model_slug
+                )));
+            }
+            tx.execute(
+                "INSERT INTO model_group_models_v2(group_id,model_id,enabled,
+                   rate_multiplier_millis,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    group_id,
+                    model_id,
+                    model.enabled,
+                    model.rate_multiplier_millis,
+                    model.created_at,
+                    model.updated_at
+                ],
+            )?;
+        }
+        tx.commit()
+    }
+
+    pub fn resolve_model_group_access_for_user_v2(
+        &self,
+        user_id: &str,
+        slug: &str,
+        now: i64,
+    ) -> Result<Option<ModelGroupAccess>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT g.id,g.name,m.slug,g.rate_multiplier_millis,gm.rate_multiplier_millis
+             FROM user_model_groups u JOIN model_groups g ON g.id=u.group_id
+             JOIN models m ON m.slug=?2 COLLATE NOCASE AND m.enabled=1 AND m.supported_in_api=1
+             JOIN model_prices p ON p.model_id=m.id
+             LEFT JOIN model_group_models_v2 gm ON gm.group_id=g.id AND gm.model_id=m.id AND gm.enabled=1
+             WHERE u.user_id=?1 AND u.status='active' AND (u.expires_at IS NULL OR u.expires_at>?3)
+               AND g.status='active' AND ((g.is_default=1) OR (gm.model_id IS NOT NULL AND p.price_status<>'missing'))",
+        )?;
+        let rows = stmt.query_map(params![user_id, slug.trim(), now], |row| {
+            let group_rate = row.get::<_, i64>(3)?.max(0);
+            let model_rate = row.get::<_, Option<i64>>(4)?.unwrap_or(1_000).max(0);
+            let effective = i128::from(group_rate) * i128::from(model_rate) / 1_000;
+            Ok(ModelGroupAccess {
+                group_id: row.get(0)?,
+                group_name: row.get(1)?,
+                platform_model_slug: row.get(2)?,
+                rate_multiplier_millis: i64::try_from(effective).map_err(|_| {
+                    rusqlite::Error::InvalidParameterName(
+                        "model group multiplier exceeds SQLite INTEGER range".to_string(),
+                    )
+                })?,
+                billing_model_slug: None,
+            })
+        })?;
+        let mut best = None;
+        for row in rows {
+            let access = row?;
+            if best.as_ref().is_none_or(|current: &ModelGroupAccess| {
+                access.rate_multiplier_millis < current.rate_multiplier_millis
+            }) {
+                best = Some(access);
+            }
+        }
+        Ok(best)
+    }
+
+    pub fn resolve_model_group_rate_v2(
+        &self,
+        user_id: &str,
+        slug: &str,
+        now: i64,
+    ) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT g.rate_multiplier_millis,gm.rate_multiplier_millis
+             FROM user_model_groups u JOIN model_groups g ON g.id=u.group_id
+             JOIN models m ON m.slug=?2 COLLATE NOCASE AND m.enabled=1 AND m.supported_in_api=1
+             JOIN model_prices p ON p.model_id=m.id
+             LEFT JOIN model_group_models_v2 gm ON gm.group_id=g.id AND gm.model_id=m.id AND gm.enabled=1
+             WHERE u.user_id=?1 AND u.status='active' AND (u.expires_at IS NULL OR u.expires_at>?3)
+               AND g.status='active' AND ((g.is_default=1) OR (gm.model_id IS NOT NULL AND p.price_status<>'missing'))",
+        )?;
+        let rows = stmt.query_map(params![user_id, slug.trim(), now], |row| {
+            let group_rate = row.get::<_, i64>(0)?.max(0);
+            let model_rate = row.get::<_, Option<i64>>(1)?.unwrap_or(1_000).max(0);
+            let effective = i128::from(group_rate) * i128::from(model_rate) / 1_000;
+            i64::try_from(effective).map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "model group multiplier exceeds SQLite INTEGER range".to_string(),
+                )
+            })
+        })?;
+        let mut best = None;
+        for row in rows {
+            let rate = row?;
+            if best.is_none_or(|current| rate < current) {
+                best = Some(rate);
+            }
+        }
+        Ok(best)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn storage() -> Storage {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        storage
+    }
+
+    #[test]
+    fn fixture_contains_no_prompt_fields() {
+        let raw = include_str!("../../seeds/model_catalog_v2_2026_07_10.json");
+        let value: Value = serde_json::from_str(raw).expect("parse fixture");
+        assert_eq!(value["models"].as_array().map(Vec::len), Some(8));
+        assert_eq!(value["revision"].as_i64(), Some(3));
+        assert!(!raw.contains("base_instructions"));
+        assert!(!raw.contains("instructions_template"));
+        assert!(!raw.contains("instructions_text"));
+        for model in value["models"].as_array().expect("fixture models") {
+            let capabilities = model["capabilities"].as_object().expect("capabilities");
+            assert_eq!(
+                capabilities
+                    .get("include_skills_usage_instructions")
+                    .and_then(Value::as_bool),
+                Some(false)
+            );
+            for key in [
+                "additional_speed_tiers",
+                "default_verbosity",
+                "apply_patch_tool_type",
+                "truncation_mode",
+                "truncation_limit",
+                "max_context_window",
+            ] {
+                if key == "max_context_window" {
+                    assert!(model.get(key).is_some(), "{} missing {key}", model["slug"]);
+                } else {
+                    assert!(
+                        capabilities.contains_key(key),
+                        "{} missing capability {key}",
+                        model["slug"]
+                    );
+                }
+            }
+        }
+        for slug in ["gpt-5.6-sol", "gpt-5.6-terra"] {
+            let model = value["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model["slug"] == slug)
+                .unwrap();
+            assert_eq!(model["capabilities"]["multi_agent_version"], "v2");
+            assert_eq!(model["capabilities"]["tool_mode"], "code_mode_only");
+            assert_eq!(model["capabilities"]["use_responses_lite"], true);
+        }
+    }
+
+    #[test]
+    fn fresh_catalog_seeds_prices_routes_and_hidden_model() {
+        let storage = storage();
+        let all = storage.list_managed_models_v2(true).expect("list all");
+        let visible = storage.list_api_models_v2().expect("list visible");
+        assert_eq!(all.len(), 8);
+        assert_eq!(visible.len(), 7);
+        assert_eq!(
+            all.iter()
+                .filter(|model| model.price.price_status == "missing")
+                .count(),
+            1
+        );
+        for (slug, input, output) in [
+            ("gpt-5.6-sol", 5_000_000, 30_000_000),
+            ("gpt-5.6-terra", 2_500_000, 15_000_000),
+            ("gpt-5.6-luna", 1_000_000, 6_000_000),
+        ] {
+            let model = all.iter().find(|model| model.slug == slug).unwrap();
+            assert_eq!(model.price.price_status, "estimated");
+            assert_eq!(model.price.input_microusd_per_1m, Some(input));
+            assert_eq!(model.price.cached_input_microusd_per_1m, Some(input));
+            assert_eq!(model.price.output_microusd_per_1m, Some(output));
+            assert_eq!(model.price_tiers.len(), 1);
+        }
+        let gpt54 = all.iter().find(|model| model.slug == "gpt-5.4").unwrap();
+        assert_eq!(gpt54.price_tiers.len(), 2);
+        assert_eq!(gpt54.price_tiers[1].min_input_tokens, 272_000);
+        let sol = all
+            .iter()
+            .find(|model| model.slug == "gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(sol.builtin_revision, Some(3));
+        assert_eq!(sol.capabilities["multi_agent_version"], "v2");
+        assert_eq!(sol.capabilities["tool_mode"], "code_mode_only");
+        assert_eq!(sol.capabilities["use_responses_lite"], true);
+        assert_eq!(sol.capabilities["comp_hash"], "3000");
+        assert!(all
+            .iter()
+            .all(|model| model.instructions_mode == "passthrough"
+                && model.instructions_text.is_none()));
+    }
+
+    #[test]
+    fn seed_is_idempotent_and_does_not_overwrite_builtin_edits() {
+        let storage = storage();
+        storage.conn.execute("UPDATE models SET display_name='Edited',enabled=0,user_edited=1 WHERE slug='gpt-5.4'",[]).unwrap();
+        storage.seed_missing_builtin_models_v2().unwrap();
+        let model = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        assert_eq!(model.display_name, "Edited");
+        assert!(!model.enabled);
+    }
+
+    #[test]
+    fn gpt56_pricing_migration_only_fills_unedited_missing_builtin_prices() {
+        let storage = storage();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_PRICING_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        for slug in ["gpt-5.6-sol", "gpt-5.6-terra"] {
+            storage
+                .conn
+                .execute(
+                    "DELETE FROM model_price_tiers
+                     WHERE model_id=(SELECT id FROM models WHERE slug=?1)",
+                    [slug],
+                )
+                .unwrap();
+            storage
+                .conn
+                .execute(
+                    "UPDATE model_prices
+                     SET input_microusd_per_1m=NULL,cached_input_microusd_per_1m=NULL,
+                         output_microusd_per_1m=NULL,price_status='missing',price_source=NULL
+                     WHERE model_id=(SELECT id FROM models WHERE slug=?1)",
+                    [slug],
+                )
+                .unwrap();
+        }
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET user_edited=1 WHERE slug='gpt-5.6-terra'",
+                [],
+            )
+            .unwrap();
+
+        storage.apply_gpt56_pricing_migration().unwrap();
+        storage.apply_gpt56_pricing_migration().unwrap();
+
+        let sol = storage
+            .get_managed_model_v2("gpt-5.6-sol")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sol.price.price_status, "estimated");
+        assert_eq!(sol.price.input_microusd_per_1m, Some(5_000_000));
+        assert_eq!(sol.price.cached_input_microusd_per_1m, Some(5_000_000));
+        assert_eq!(sol.price.output_microusd_per_1m, Some(30_000_000));
+        assert_eq!(sol.price_tiers.len(), 1);
+        assert_eq!(sol.builtin_revision, Some(3));
+
+        let terra = storage
+            .get_managed_model_v2("gpt-5.6-terra")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terra.price.price_status, "missing");
+        assert!(terra.price_tiers.is_empty());
+
+        let applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
+                [GPT56_PRICING_MIGRATION_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn codex_metadata_migration_updates_only_unedited_builtin_rows() {
+        let storage = storage();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [CODEX_METADATA_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET capabilities_json='{}',builtin_revision=2,user_edited=0
+                 WHERE slug='gpt-5.6-sol'",
+                [],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET capabilities_json=?1,builtin_revision=2,user_edited=1
+                 WHERE slug='gpt-5.6-terra'",
+                [r#"{"custom":true}"#],
+            )
+            .unwrap();
+
+        storage
+            .apply_model_catalog_codex_metadata_migration()
+            .unwrap();
+        storage
+            .apply_model_catalog_codex_metadata_migration()
+            .unwrap();
+
+        let sol = storage
+            .get_managed_model_v2("gpt-5.6-sol")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sol.builtin_revision, Some(3));
+        assert_eq!(sol.capabilities["multi_agent_version"], "v2");
+        assert_eq!(sol.capabilities["use_responses_lite"], true);
+
+        let terra = storage
+            .get_managed_model_v2("gpt-5.6-terra")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terra.builtin_revision, Some(2));
+        assert_eq!(terra.capabilities["custom"], true);
+
+        let applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
+                [CODEX_METADATA_MIGRATION_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn seed_reuses_legacy_builtin_id_for_existing_slug() {
+        let storage = storage();
+        let slug = "gpt-5.4";
+        let current_id = builtin_id(slug);
+        let legacy_id = "builtin:gpt-5_4";
+
+        storage
+            .conn
+            .execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;")
+            .expect("disable foreign keys for legacy fixture");
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET id=?2 WHERE id=?1",
+                params![current_id, legacy_id],
+            )
+            .expect("rewrite legacy model id");
+        for table in ["model_prices", "model_price_tiers", "model_routes"] {
+            storage
+                .conn
+                .execute(
+                    &format!("UPDATE {table} SET model_id=?2 WHERE model_id=?1"),
+                    params![current_id, legacy_id],
+                )
+                .expect("rewrite legacy child model id");
+        }
+        storage
+            .conn
+            .execute_batch("COMMIT; PRAGMA foreign_keys=ON;")
+            .expect("commit legacy fixture");
+
+        storage
+            .seed_missing_builtin_models_v2()
+            .expect("seed with legacy builtin id");
+
+        let model = storage
+            .get_managed_model_v2(slug)
+            .expect("read model")
+            .expect("model exists");
+        assert_eq!(model.id, legacy_id);
+        assert_eq!(model.price.price_status, "official");
+        assert_eq!(model.price_tiers.len(), 2);
+        assert_eq!(model.routes.len(), 1);
+        let foreign_key_errors: i64 = storage
+            .conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check");
+        assert_eq!(foreign_key_errors, 0);
+    }
+
+    #[test]
+    fn builtin_delete_disables_and_custom_delete_removes() {
+        let storage = storage();
+        storage.delete_managed_model_v2("gpt-5.4").unwrap();
+        assert!(
+            !storage
+                .get_managed_model_v2("gpt-5.4")
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        let mut custom = storage
+            .get_managed_model_v2("gpt-5.4-mini")
+            .unwrap()
+            .unwrap();
+        custom.id = String::new();
+        custom.slug = "local-model".into();
+        custom.display_name = "Local".into();
+        custom.origin = "custom".into();
+        custom.builtin_revision = None;
+        custom.user_edited = false;
+        custom.price.price_status = "custom".into();
+        custom.routes.clear();
+        storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                previous_slug: None,
+                model: custom,
+            })
+            .unwrap();
+        storage.delete_managed_model_v2("local-model").unwrap();
+        assert!(storage
+            .get_managed_model_v2("local-model")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn invalid_atomic_upsert_rolls_back_everything() {
+        let storage = storage();
+        let mut first = storage
+            .get_managed_model_v2("gpt-5.4-mini")
+            .unwrap()
+            .unwrap();
+        first.id = String::new();
+        first.slug = "ok-custom".into();
+        first.origin = "custom".into();
+        first.builtin_revision = None;
+        let mut invalid = first.clone();
+        invalid.slug = "bad-custom".into();
+        invalid.price.price_status = "missing".into();
+        let _err = storage
+            .upsert_managed_models_v2(&[
+                ManagedModelV2Upsert {
+                    previous_slug: None,
+                    model: first,
+                },
+                ManagedModelV2Upsert {
+                    previous_slug: None,
+                    model: invalid,
+                },
+            ])
+            .unwrap_err();
+        assert!(storage.get_managed_model_v2("ok-custom").unwrap().is_none());
+    }
+
+    #[test]
+    fn migration_ignores_incomplete_legacy_route_schema() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage
+            .conn
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                    version TEXT PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE model_groups (id TEXT PRIMARY KEY);
+                 CREATE TABLE request_logs (id INTEGER PRIMARY KEY);
+                 CREATE TABLE model_source_mappings (id TEXT PRIMARY KEY);",
+            )
+            .expect("create partial legacy schema");
+
+        storage
+            .apply_model_catalog_v2_migration()
+            .expect("migrate partial legacy schema");
+
+        assert_eq!(
+            storage
+                .list_managed_models_v2(true)
+                .expect("list migrated models")
+                .len(),
+            8
+        );
+    }
+}

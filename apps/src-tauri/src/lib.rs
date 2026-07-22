@@ -1,6 +1,9 @@
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
+
 mod app_shell;
 mod app_storage;
 mod codex_injector;
@@ -15,6 +18,13 @@ use app_shell::{
 };
 
 const USAGE_REFRESH_COMPLETED_EVENT: &str = "usage-refresh-completed";
+#[cfg(target_os = "linux")]
+const AYATANA_APPINDICATOR_LOG_DOMAIN: &str = "libayatana-appindicator";
+#[cfg(target_os = "linux")]
+const AYATANA_DEPRECATED_MESSAGE: &str =
+    "libayatana-appindicator is deprecated. Please use libayatana-appindicator-glib in newly written code.";
+#[cfg(target_os = "linux")]
+static AYATANA_LOG_HANDLER_ID: OnceLock<glib::LogHandlerId> = OnceLock::new();
 
 #[derive(Clone, Serialize)]
 struct UsageRefreshCompletedPayload {
@@ -23,6 +33,33 @@ struct UsageRefreshCompletedPayload {
     total: usize,
     completed_at: i64,
 }
+
+#[cfg(target_os = "linux")]
+fn is_known_ayatana_deprecation_notice(domain: Option<&str>, message: &str) -> bool {
+    domain == Some(AYATANA_APPINDICATOR_LOG_DOMAIN)
+        && message.trim() == AYATANA_DEPRECATED_MESSAGE
+}
+
+#[cfg(target_os = "linux")]
+fn install_ayatana_deprecation_notice_filter() {
+    let _ = AYATANA_LOG_HANDLER_ID.get_or_init(|| {
+        glib::log_set_handler(
+            Some(AYATANA_APPINDICATOR_LOG_DOMAIN),
+            glib::LogLevels::LEVEL_WARNING,
+            false,
+            false,
+            |domain, level, message| {
+                if is_known_ayatana_deprecation_notice(domain, message) {
+                    return;
+                }
+                glib::log_default_handler(domain, level, Some(message));
+            },
+        )
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_ayatana_deprecation_notice_filter() {}
 
 /// 函数 `run`
 ///
@@ -37,7 +74,19 @@ struct UsageRefreshCompletedPayload {
 /// 无
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_ayatana_deprecation_notice_filter();
+
     let app = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::all())
+                .build(),
+        )
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("CodexManager")
+                .build(),
+        )
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             log::info!(
                 "secondary instance intercepted; focusing main window (args: {:?}, cwd: {})",
@@ -67,6 +116,12 @@ pub fn run() {
             if let Ok(log_dir) = app.path().app_log_dir() {
                 log::info!("log dir: {}", log_dir.display());
             }
+            codexmanager_service::initialize_storage_if_needed().map_err(|err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("database migration failed; refusing desktop startup: {err}"),
+                )
+            })?;
             let usage_refresh_event_app = app.handle().clone();
             codexmanager_service::set_usage_refresh_completed_handler(move |event| {
                 let payload = UsageRefreshCompletedPayload {

@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-14
+
+### Changed
+
+- 模型目录一次性切换到 V2：fresh DB 内置 8 个 builtin（普通列表显示 7 个），模型、整数价格阶梯、routes、权限组和 instructions policy 由单个事务保存。
+- Gateway、本地 `/v1/models`、模型组和模型选择器只读取 V2；删除远端目录 merge/prune、供应商 `/models` 发现、请求时 bootstrap 和编译期价格 fallback。
+- 模型管理页新增本地 JSON preview/commit、price missing、route/instructions 编辑；builtin 只能禁用，custom 可以删除。
+- `models_cache.json` 改为桌面/Web 都只由用户主动导出，且导出不包含模型人格 prompt。
+- Codex 缓存导出补齐 GPT-5.6 的 Max/Ultra、`multi_agent_version`、`tool_mode`、Responses Lite、最大上下文和 comp hash 等运行元数据；显式 Ultra 请求按“客户端 Ultra、上游 Max”分别记录。
+- 钱包扣费改为整数价格 tier、不可变 request charge snapshot 与幂等 ledger 同事务更新。
+- 为 GPT-5.6 Sol、Terra、Luna 写入 5/30、2.5/15、1/6 USD / 1M tokens 的默认 input/output 价格；缓存输入暂按 input 同价保守计费，并只迁移仍为 missing 的未编辑 builtin。
+- 发布版本提升到 `0.4.1`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
+### Fixed
+
+- 修复旧 V2 builtin 下划线 ID 在启动迁移时触发 SQLite 外键错误 787，导致桌面端拒绝启动的问题。
+- 修复模型目录编辑器打开既有模型时出现空白草稿，并补齐中文界面的字段名、控件标题和可访问名称。
+- 修复管理员深链接在桌面会话初始化时被重置到首页的问题。
+- 修复 Codex 请求改写在候选上游之间串扰，确保每个候选使用隔离的请求体。
+
 ## [0.4.0] - 2026-06-24
 
 ### Changed

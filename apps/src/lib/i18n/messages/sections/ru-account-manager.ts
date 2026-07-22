@@ -3,6 +3,7 @@
 import type { MessageCatalog } from "../types";
 
 export const RU_ACCOUNT_MANAGER_MESSAGES: MessageCatalog = {
+  "Access control": "Контроль доступа",
   "Key 消耗明细": "Детализация использования Key",
   "Token 消耗曲线": "График расхода токенов",
   不修改则留空: "Оставьте пустым, чтобы не менять",
@@ -22,6 +23,7 @@ export const RU_ACCOUNT_MANAGER_MESSAGES: MessageCatalog = {
   可用额度: "Доступный кредит",
   可用额度已更新: "Доступный кредит обновлен",
   可选: "Необязательно",
+  "共 {count} 个账号": "{count} аккаунтов",
   "填写后会替换该账号的登录密码，至少 8 位。":
     "Если заполнено, пароль входа для этого аккаунта будет заменен. Минимум 8 символов.",
   已开启: "Включено",

@@ -47,7 +47,7 @@ fn is_stream_request(obj: &serde_json::Map<String, Value>) -> bool {
 /// 返回函数执行结果
 fn map_responses_role_to_chat(role: &str) -> &'static str {
     match role {
-        "developer" => "system",
+        "developer" | "system" => "system",
         "assistant" => "assistant",
         "tool" => "tool",
         _ => "user",
@@ -322,8 +322,7 @@ pub(super) fn normalize_responses_payload(
     if let Some(instructions) = obj
         .get("instructions")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
     {
         messages.push(json!({
             "role": "system",

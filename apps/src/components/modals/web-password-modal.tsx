@@ -70,7 +70,8 @@ function billingModeLockReasonLabel(reason: string): string {
  */
 export function WebPasswordModal({ open, onOpenChange }: WebPasswordModalProps) {
   const { t } = useI18n();
-  const { appSettings, setAppSettings } = useAppStore();
+  const appSettings = useAppStore((state) => state.appSettings);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
   const { canAccessManagementRpc, isDesktopRuntime } = useRuntimeCapabilities();
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");

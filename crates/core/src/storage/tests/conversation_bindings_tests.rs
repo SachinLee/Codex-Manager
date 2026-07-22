@@ -178,6 +178,37 @@ fn conversation_binding_delete_helpers_remove_rows() {
 }
 
 #[test]
+fn active_conversation_binding_account_counts_groups_by_platform_key() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    for (conversation_id, account_id, platform_key_hash, status) in [
+        ("conv-1", "acc-1", "key-hash-1", "active"),
+        ("conv-2", "acc-1", "key-hash-1", "active"),
+        ("conv-3", "acc-2", "key-hash-1", "active"),
+        ("conv-4", "acc-2", "key-hash-1", "archived"),
+        ("conv-5", "acc-3", "key-hash-2", "active"),
+    ] {
+        let mut binding = sample_binding();
+        binding.platform_key_hash = platform_key_hash.to_string();
+        binding.conversation_id = conversation_id.to_string();
+        binding.account_id = account_id.to_string();
+        binding.status = status.to_string();
+        storage
+            .upsert_conversation_binding(&binding)
+            .expect("insert binding");
+    }
+
+    let counts = storage
+        .active_conversation_binding_account_counts("key-hash-1")
+        .expect("load counts");
+
+    assert_eq!(counts.get("acc-1"), Some(&2));
+    assert_eq!(counts.get("acc-2"), Some(&1));
+    assert_eq!(counts.get("acc-3"), None);
+}
+
+#[test]
 fn conversation_binding_lookup_and_cleanup_queries_use_indexes() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage.init().expect("init schema");

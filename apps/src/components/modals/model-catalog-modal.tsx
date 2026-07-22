@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
+
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -10,12 +14,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -24,275 +24,245 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ManagedModelPayload, ModelPriceRuleUpsertPayload } from "@/lib/api/account-client";
-import type { ModelPriceRuleEntry } from "@/lib/api/account-client";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  microusdToUsdPerMillion,
+  usdPerMillionToMicrousd,
+} from "@/lib/api/managed-models-v2";
 import { useI18n } from "@/lib/i18n/provider";
-import { ManagedModelInfo } from "@/types";
+import type { AggregateApi } from "@/types/api-key";
+import type {
+  ManagedModelV2,
+  ManagedModelV2Upsert,
+  ModelInstructionsModeV2,
+  ModelPriceTierV2,
+  ModelRouteSourceKindV2,
+  ModelRouteV2,
+  ModelVisibilityV2,
+} from "@/types/model-v2";
 
-type TranslateFn = ReturnType<typeof useI18n>["t"];
+type RouteDraft = {
+  key: string;
+  id: string;
+  sourceKind: ModelRouteSourceKindV2;
+  sourceId: string;
+  upstreamModel: string;
+  enabled: boolean;
+  priority: string;
+  weight: string;
+};
+
+type ModelDraft = {
+  slug: string;
+  displayName: string;
+  description: string;
+  provider: string;
+  family: string;
+  category: string;
+  tags: string;
+  enabled: boolean;
+  supportedInApi: boolean;
+  visibility: ModelVisibilityV2;
+  sortOrder: string;
+  contextWindow: string;
+  maxContextWindow: string;
+  defaultReasoningEffort: string;
+  capabilitiesJson: string;
+  inputPrice: string;
+  cachedInputPrice: string;
+  outputPrice: string;
+  longContextThreshold: string;
+  longInputPrice: string;
+  longCachedInputPrice: string;
+  longOutputPrice: string;
+  routes: RouteDraft[];
+  instructionsMode: ModelInstructionsModeV2;
+  instructionsText: string;
+};
 
 interface ModelCatalogModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  model?: ManagedModelInfo | null;
-  nextSortIndex: number;
+  model?: ManagedModelV2 | null;
+  nextSortOrder: number;
+  aggregateApis?: AggregateApi[];
   isSaving?: boolean;
-  onSave: (payload: ManagedModelPayload) => Promise<ManagedModelInfo | null>;
-  onSavePriceRule?: (payload: ModelPriceRuleUpsertPayload) => Promise<void>;
-  priceBillingMode?: "standard" | "priority";
-  onPriceBillingModeChange?: (value: "standard" | "priority") => void;
-  priceRule?: ModelPriceRuleEntry | null;
+  onSave: (input: ManagedModelV2Upsert) => Promise<ManagedModelV2 | null>;
 }
 
-interface ModelCatalogDraft {
-  slug: string;
-  displayName: string;
-  description: string;
-  sourceKind: string;
-  userEdited: boolean;
-  supportedInApi: boolean;
-  sortIndex: string;
-  priority: string;
-  visibility: string;
-  defaultReasoningLevel: string;
-  advancedJson: string;
-  inputPricePer1m: string;
-  cachedInputPricePer1m: string;
-  cacheWritePricePer1m: string;
-  outputPricePer1m: string;
-  longContextThresholdTokens: string;
-  longContextThresholdInclusive: boolean;
-  longContextInputPricePer1m: string;
-  longContextCachedInputPricePer1m: string;
-  longContextCacheWritePricePer1m: string;
-  longContextOutputPricePer1m: string;
+const DEFAULT_CAPABILITIES = {
+  reasoningEfforts: [],
+  serviceTiers: [],
+  inputModalities: ["text", "image"],
+  supportsParallelToolCalls: true,
+};
+
+function routeDraft(route: ModelRouteV2, index: number): RouteDraft {
+  return {
+    key: route.id || `route-${index}-${route.sourceKind}-${route.sourceId}`,
+    id: route.id,
+    sourceKind: route.sourceKind,
+    sourceId: route.sourceId,
+    upstreamModel: route.upstreamModel,
+    enabled: route.enabled,
+    priority: String(route.priority),
+    weight: String(route.weight),
+  };
 }
 
-const EDITABLE_ADVANCED_KEYS = [
-  "supportedReasoningLevels",
-  "shellType",
-  "additionalSpeedTiers",
-  "serviceTiers",
-  "defaultServiceTier",
-  "availabilityNux",
-  "upgrade",
-  "upgradeInfo",
-  "baseInstructions",
-  "modelMessages",
-  "supportsReasoningSummaries",
-  "defaultReasoningSummary",
-  "supportVerbosity",
-  "defaultVerbosity",
-  "applyPatchToolType",
-  "webSearchToolType",
-  "truncationPolicy",
-  "supportsParallelToolCalls",
-  "supportsImageDetailOriginal",
-  "contextWindow",
-  "autoCompactTokenLimit",
-  "effectiveContextWindowPercent",
-  "experimentalSupportedTools",
-  "inputModalities",
-  "minimalClientVersion",
-  "supportsSearchTool",
-  "availableInPlans",
-];
-
-const UNSET_SELECT_VALUE = "__unset__";
-
-const VISIBILITY_OPTIONS = [
-  { value: "list", label: "list" },
-  { value: "hide", label: "hide" },
-] as const;
-
-const REASONING_EFFORT_OPTIONS = [
-  { value: "low", label: "low" },
-  { value: "medium", label: "medium" },
-  { value: "high", label: "high" },
-  { value: "xhigh", label: "xhigh" },
-] as const;
-
-function normalizeOptionalSelectValue(value: string | null): string {
-  if (!value || value === UNSET_SELECT_VALUE) {
-    return "";
-  }
-  if (value === "hidden") {
-    return "hide";
-  }
-  return value;
-}
-
-function normalizeVisibilityValue(value: string | null | undefined): string {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized === "hidden") {
-    return "hide";
-  }
-  return normalized;
-}
-
-function toPrettyJson(value: unknown): string {
-  if (
-    !value ||
-    (typeof value === "object" &&
-      !Array.isArray(value) &&
-      Object.keys(value).length === 0)
-  ) {
-    return "";
-  }
-  if (Array.isArray(value) && value.length === 0) {
-    return "";
-  }
-  return JSON.stringify(value, null, 2);
-}
-
-function parseOptionalNumber(text: string, label: string, t: TranslateFn): number {
-  const parsed = Number(text.trim() || "0");
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`${label} ${t("必须是数字")}`);
-  }
-  return parsed;
-}
-
-function parseJsonObject(
-  text: string,
-  label: string,
-  t: TranslateFn,
-): Record<string, unknown> {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(t("必须是对象"));
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    throw new Error(
-      `${label} ${t("不是有效 JSON 对象")}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
-
-function buildAdvancedJson(model: ManagedModelInfo | null | undefined): string {
-  if (!model) {
-    return toPrettyJson({
-      inputModalities: ["text", "image"],
-      supportedReasoningLevels: [],
-      additionalSpeedTiers: [],
-      serviceTiers: [],
-      defaultServiceTier: null,
-      experimentalSupportedTools: [],
-      availableInPlans: [],
-    });
-  }
-
-  const advanced = Object.fromEntries(
-    Object.entries(model).filter(([key]) =>
-      EDITABLE_ADVANCED_KEYS.includes(key),
-    ),
-  );
-  const extra = Object.fromEntries(
-    Object.entries(model).filter(
-      ([key]) =>
-        ![
-          "slug",
-          "displayName",
-          "description",
-          "sourceKind",
-          "userEdited",
-          "supportedInApi",
-          "sortIndex",
-          "updatedAt",
-          "priority",
-          "visibility",
-          "defaultReasoningLevel",
-          ...EDITABLE_ADVANCED_KEYS,
-        ].includes(key),
-    ),
-  );
-  return toPrettyJson({ ...advanced, ...extra });
-}
-
-function buildDraft(
-  model: ManagedModelInfo | null | undefined,
-  nextSortIndex: number,
-  priceRule?: ModelPriceRuleEntry | null,
-): ModelCatalogDraft {
+function buildDraft(model: ManagedModelV2 | null | undefined, nextSortOrder: number): ModelDraft {
+  const longTier = model?.priceTiers.find((tier) => tier.minInputTokens > 0);
   return {
     slug: model?.slug || "",
     displayName: model?.displayName || "",
     description: model?.description || "",
-    sourceKind: model?.sourceKind || "custom",
-    userEdited: model?.userEdited ?? true,
-    supportedInApi: model?.supportedInApi ?? false,
-    sortIndex: String(model?.sortIndex ?? nextSortIndex),
-    priority: String(model?.priority ?? 0),
-    visibility: normalizeVisibilityValue(model?.visibility),
-    defaultReasoningLevel: model?.defaultReasoningLevel || "",
-    advancedJson: buildAdvancedJson(model),
-    inputPricePer1m: priceRule?.inputPricePer1m != null ? String(priceRule.inputPricePer1m) : "",
-    cachedInputPricePer1m: priceRule?.cachedInputPricePer1m != null ? String(priceRule.cachedInputPricePer1m) : "",
-    cacheWritePricePer1m: priceRule?.cacheWritePricePer1m != null ? String(priceRule.cacheWritePricePer1m) : "",
-    outputPricePer1m: priceRule?.outputPricePer1m != null ? String(priceRule.outputPricePer1m) : "",
-    longContextThresholdTokens: priceRule?.longContextThresholdTokens != null ? String(priceRule.longContextThresholdTokens) : "",
-    longContextThresholdInclusive: priceRule?.longContextThresholdInclusive ?? false,
-    longContextInputPricePer1m: priceRule?.longContextInputPricePer1m != null ? String(priceRule.longContextInputPricePer1m) : "",
-    longContextCachedInputPricePer1m: priceRule?.longContextCachedInputPricePer1m != null ? String(priceRule.longContextCachedInputPricePer1m) : "",
-    longContextCacheWritePricePer1m: priceRule?.longContextCacheWritePricePer1m != null ? String(priceRule.longContextCacheWritePricePer1m) : "",
-    longContextOutputPricePer1m: priceRule?.longContextOutputPricePer1m != null ? String(priceRule.longContextOutputPricePer1m) : "",
+    provider: model?.provider || "",
+    family: model?.family || "",
+    category: model?.category || "",
+    tags: model?.tags.join(", ") || "",
+    enabled: model?.enabled ?? true,
+    supportedInApi: model?.supportedInApi ?? true,
+    visibility: model?.visibility || "list",
+    sortOrder: String(model?.sortOrder ?? nextSortOrder),
+    contextWindow: model?.contextWindow == null ? "" : String(model.contextWindow),
+    maxContextWindow:
+      model?.maxContextWindow == null ? "" : String(model.maxContextWindow),
+    defaultReasoningEffort: model?.defaultReasoningEffort || "",
+    capabilitiesJson: JSON.stringify(model?.capabilities || DEFAULT_CAPABILITIES, null, 2),
+    inputPrice: microusdToUsdPerMillion(model?.price.inputMicrousdPer1m ?? null),
+    cachedInputPrice: microusdToUsdPerMillion(
+      model?.price.cachedInputMicrousdPer1m ?? null,
+    ),
+    outputPrice: microusdToUsdPerMillion(model?.price.outputMicrousdPer1m ?? null),
+    longContextThreshold: longTier ? String(longTier.minInputTokens) : "",
+    longInputPrice: microusdToUsdPerMillion(longTier?.inputMicrousdPer1m ?? null),
+    longCachedInputPrice: microusdToUsdPerMillion(
+      longTier?.cachedInputMicrousdPer1m ?? null,
+    ),
+    longOutputPrice: microusdToUsdPerMillion(longTier?.outputMicrousdPer1m ?? null),
+    routes:
+      model?.routes.map(routeDraft) ||
+      [
+        routeDraft(
+          {
+            id: "",
+            sourceKind: "account_pool",
+            sourceId: "default",
+            upstreamModel: "",
+            enabled: true,
+            priority: 0,
+            weight: 1,
+          },
+          0,
+        ),
+      ],
+    instructionsMode: model?.instructionsMode || "passthrough",
+    instructionsText: model?.instructionsText || "",
   };
 }
 
-function buildDefaultModel(
-  nextSortIndex: number,
-  updatedAt: number,
-): ManagedModelInfo {
+function optionalPositiveInteger(value: string, label: string): number | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} 必须是正整数`);
+  }
+  return parsed;
+}
+
+function integer(value: string, label: string, minimum?: number): number {
+  const parsed = Number(value.trim());
+  if (!Number.isSafeInteger(parsed) || (minimum != null && parsed < minimum)) {
+    throw new Error(`${label} 必须是${minimum === 1 ? "正" : ""}整数`);
+  }
+  return parsed;
+}
+
+function parseCapabilities(value: string): Record<string, unknown> {
+  const parsed = JSON.parse(value || "{}");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("关键能力 JSON 必须是对象");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function buildPrice(
+  draft: ModelDraft,
+  model: ManagedModelV2 | null | undefined,
+): Pick<ManagedModelV2, "price" | "priceTiers"> {
+  const baseValues = [draft.inputPrice, draft.cachedInputPrice, draft.outputPrice];
+  const hasBasePrice = baseValues.some((value) => value.trim() !== "");
+  if (!hasBasePrice) {
+    if (
+      [
+        draft.longContextThreshold,
+        draft.longInputPrice,
+        draft.longCachedInputPrice,
+        draft.longOutputPrice,
+      ].some((value) => value.trim() !== "")
+    ) {
+      throw new Error("配置长上下文价格前必须先填写基础三价");
+    }
+    return {
+      price: {
+        priceStatus: "missing",
+        priceSource: null,
+        inputMicrousdPer1m: null,
+        cachedInputMicrousdPer1m: null,
+        outputMicrousdPer1m: null,
+      },
+      priceTiers: [],
+    };
+  }
+  if (baseValues.some((value) => value.trim() === "")) {
+    throw new Error("输入、缓存输入和输出价格必须同时填写");
+  }
+
+  const baseTier: ModelPriceTierV2 = {
+    minInputTokens: 0,
+    inputMicrousdPer1m: usdPerMillionToMicrousd(draft.inputPrice),
+    cachedInputMicrousdPer1m: usdPerMillionToMicrousd(draft.cachedInputPrice),
+    outputMicrousdPer1m: usdPerMillionToMicrousd(draft.outputPrice),
+  };
+  const priceTiers = [baseTier];
+  const longValues = [
+    draft.longContextThreshold,
+    draft.longInputPrice,
+    draft.longCachedInputPrice,
+    draft.longOutputPrice,
+  ];
+  if (longValues.some((value) => value.trim() !== "")) {
+    if (longValues.some((value) => value.trim() === "")) {
+      throw new Error("长上下文阈值和三项价格必须完整填写");
+    }
+    priceTiers.push({
+      minInputTokens: integer(draft.longContextThreshold, "长上下文阈值", 1),
+      inputMicrousdPer1m: usdPerMillionToMicrousd(draft.longInputPrice),
+      cachedInputMicrousdPer1m: usdPerMillionToMicrousd(
+        draft.longCachedInputPrice,
+      ),
+      outputMicrousdPer1m: usdPerMillionToMicrousd(draft.longOutputPrice),
+    });
+  }
+
+  const unchanged =
+    model != null &&
+    model.price.inputMicrousdPer1m === baseTier.inputMicrousdPer1m &&
+    model.price.cachedInputMicrousdPer1m === baseTier.cachedInputMicrousdPer1m &&
+    model.price.outputMicrousdPer1m === baseTier.outputMicrousdPer1m &&
+    JSON.stringify(model.priceTiers) === JSON.stringify(priceTiers);
   return {
-    slug: "",
-    displayName: "",
-    description: null,
-    defaultReasoningLevel: null,
-    supportedReasoningLevels: [],
-    shellType: null,
-    visibility: null,
-    supportedInApi: false,
-    priority: 0,
-    additionalSpeedTiers: [],
-    serviceTiers: [],
-    defaultServiceTier: null,
-    availabilityNux: null,
-    upgrade: null,
-    upgradeInfo: null,
-    baseInstructions: null,
-    modelMessages: null,
-    supportsReasoningSummaries: null,
-    defaultReasoningSummary: null,
-    supportVerbosity: null,
-    defaultVerbosity: null,
-    applyPatchToolType: null,
-    webSearchToolType: null,
-    truncationPolicy: null,
-    supportsParallelToolCalls: null,
-    supportsImageDetailOriginal: null,
-    contextWindow: null,
-    autoCompactTokenLimit: null,
-    effectiveContextWindowPercent: null,
-    experimentalSupportedTools: [],
-    inputModalities: ["text", "image"],
-    minimalClientVersion: null,
-    supportsSearchTool: null,
-    availableInPlans: [],
-    sourceKind: "custom",
-    userEdited: true,
-    sortIndex: nextSortIndex,
-    updatedAt,
+    price: {
+      priceStatus: unchanged ? model.price.priceStatus : "custom",
+      priceSource: unchanged ? model.price.priceSource : "local-ui",
+      inputMicrousdPer1m: baseTier.inputMicrousdPer1m,
+      cachedInputMicrousdPer1m: baseTier.cachedInputMicrousdPer1m,
+      outputMicrousdPer1m: baseTier.outputMicrousdPer1m,
+    },
+    priceTiers,
   };
 }
 
@@ -300,566 +270,504 @@ export function ModelCatalogModal({
   open,
   onOpenChange,
   model,
-  nextSortIndex,
+  nextSortOrder,
+  aggregateApis = [],
   isSaving = false,
   onSave,
-  onSavePriceRule,
-  priceBillingMode = "standard",
-  onPriceBillingModeChange,
-  priceRule,
 }: ModelCatalogModalProps) {
   const { t } = useI18n();
-  const [draft, setDraft] = useState<ModelCatalogDraft>(() =>
-    buildDraft(model, nextSortIndex, priceRule),
+  const [draft, setDraft] = useState<ModelDraft>(() =>
+    buildDraft(model, nextSortOrder),
   );
-  const [priceError, setPriceError] = useState<string | null>(null);
-  const [savingPrice, setSavingPrice] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const frameId = window.requestAnimationFrame(() => {
-      setDraft(buildDraft(model, nextSortIndex, priceRule));
-      setPriceError(null);
-      setSavingPrice(false);
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, nextSortIndex, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    setDraft((prev) => ({
-      ...prev,
-      inputPricePer1m:
-        priceRule?.inputPricePer1m != null
-          ? String(priceRule.inputPricePer1m)
-          : "",
-      cachedInputPricePer1m:
-        priceRule?.cachedInputPricePer1m != null
-          ? String(priceRule.cachedInputPricePer1m)
-          : "",
-      cacheWritePricePer1m:
-        priceRule?.cacheWritePricePer1m != null
-          ? String(priceRule.cacheWritePricePer1m)
-          : "",
-      outputPricePer1m:
-        priceRule?.outputPricePer1m != null
-          ? String(priceRule.outputPricePer1m)
-          : "",
-      longContextThresholdTokens:
-        priceRule?.longContextThresholdTokens != null
-          ? String(priceRule.longContextThresholdTokens)
-          : "",
-      longContextInputPricePer1m:
-        priceRule?.longContextInputPricePer1m != null
-          ? String(priceRule.longContextInputPricePer1m)
-          : "",
-      longContextCachedInputPricePer1m:
-        priceRule?.longContextCachedInputPricePer1m != null
-          ? String(priceRule.longContextCachedInputPricePer1m)
-          : "",
-      longContextCacheWritePricePer1m:
-        priceRule?.longContextCacheWritePricePer1m != null
-          ? String(priceRule.longContextCacheWritePricePer1m)
-          : "",
-      longContextOutputPricePer1m:
-        priceRule?.longContextOutputPricePer1m != null
-          ? String(priceRule.longContextOutputPricePer1m)
-          : "",
-    }));
-  }, [priceRule, open]);
+  const [error, setError] = useState<string | null>(null);
 
   const title = useMemo(
-    () => (model ? t("编辑模型") : t("新增模型")),
+    () => (model ? t("编辑模型") : t("新增自定义模型")),
     [model, t],
   );
 
-  const updateDraft = <K extends keyof ModelCatalogDraft>(
-    key: K,
-    value: ModelCatalogDraft[K],
-  ) => {
+  const updateDraft = <K extends keyof ModelDraft>(key: K, value: ModelDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
+  const updateRoute = <K extends keyof RouteDraft>(
+    index: number,
+    key: K,
+    value: RouteDraft[K],
+  ) => {
+    setDraft((current) => ({
+      ...current,
+      routes: current.routes.map((route, routeIndex) =>
+        routeIndex === index ? { ...route, [key]: value } : route,
+      ),
+    }));
+  };
+
+  const addRoute = (sourceKind: ModelRouteSourceKindV2) => {
+    const sourceId =
+      sourceKind === "account_pool" ? "default" : aggregateApis[0]?.id || "";
+    setDraft((current) => ({
+      ...current,
+      routes: [
+        ...current.routes,
+        {
+          key: `new-${Date.now()}-${current.routes.length}`,
+          id: "",
+          sourceKind,
+          sourceId,
+          upstreamModel: current.slug.trim(),
+          enabled: true,
+          priority: "0",
+          weight: "1",
+        },
+      ],
+    }));
+  };
+
   const handleSave = async () => {
-    const slug = draft.slug.trim();
-    if (!slug) {
-      setPriceError(t("模型 slug 不能为空"));
-      return;
-    }
-
-    const advancedFields = parseJsonObject(draft.advancedJson, t("高级 JSON"), t);
-    const nextModel: ManagedModelInfo = {
-      ...buildDefaultModel(nextSortIndex, model?.updatedAt ?? 0),
-      ...advancedFields,
-      slug,
-      displayName: draft.displayName.trim() || slug,
-      description: draft.description.trim() || null,
-      sourceKind: draft.sourceKind,
-      userEdited: draft.userEdited,
-      supportedInApi: draft.supportedInApi,
-      sortIndex: parseOptionalNumber(draft.sortIndex, t("排序权重"), t),
-      priority: parseOptionalNumber(draft.priority, t("Priority"), t),
-      visibility: draft.visibility.trim() || null,
-      defaultReasoningLevel: draft.defaultReasoningLevel.trim() || null,
-      updatedAt: model?.updatedAt ?? 0,
-    };
-
-    const ip = draft.inputPricePer1m.trim();
-    const cp = draft.cachedInputPricePer1m.trim();
-    const wp = draft.cacheWritePricePer1m.trim();
-    const op = draft.outputPricePer1m.trim();
-    const longThreshold = draft.longContextThresholdTokens.trim();
-    const longIp = draft.longContextInputPricePer1m.trim();
-    const longCp = draft.longContextCachedInputPricePer1m.trim();
-    const longWp = draft.longContextCacheWritePricePer1m.trim();
-    const longOp = draft.longContextOutputPricePer1m.trim();
-    const hasAnyPriceText = [ip, cp, wp, op, longThreshold, longIp, longCp, longWp, longOp].some(
-      (value) => value !== "",
-    );
-    const isClearingExistingOverride = !hasAnyPriceText && !!priceRule?.id;
-    const hasUserInput = hasAnyPriceText || isClearingExistingOverride;
-
-    if (hasUserInput) {
-      const inputNum = ip !== "" ? Number(ip) : null;
-      const cachedNum = cp !== "" ? Number(cp) : null;
-      const writeNum = wp !== "" ? Number(wp) : null;
-      const outputNum = op !== "" ? Number(op) : null;
-      const longThresholdNum = longThreshold !== "" ? Number(longThreshold) : null;
-      const longNumbers = [longIp, longCp, longWp, longOp]
-        .filter((value) => value !== "")
-        .map(Number);
+    try {
+      setError(null);
+      const slug = draft.slug.trim();
+      if (!slug) throw new Error("模型 slug 不能为空");
+      const price = buildPrice(draft, model);
       if (
-        (inputNum !== null && (!Number.isFinite(inputNum) || inputNum < 0)) ||
-        (cachedNum !== null && (!Number.isFinite(cachedNum) || cachedNum < 0)) ||
-        (writeNum !== null && (!Number.isFinite(writeNum) || writeNum < 0)) ||
-        (outputNum !== null && (!Number.isFinite(outputNum) || outputNum < 0)) ||
-        longNumbers.some((value) => !Number.isFinite(value) || value < 0) ||
-        (longThresholdNum !== null &&
-          (!Number.isInteger(longThresholdNum) || longThresholdNum < 0))
+        price.price.priceStatus === "missing" &&
+        (model?.permissionGroupIds.length || 0) > 0
       ) {
-        setPriceError(t("价格必须为非负有效数字"));
-        return;
+        throw new Error("缺失价格的模型不能保留在计费权限组中");
       }
-      if (!isClearingExistingOverride && (inputNum == null || outputNum == null)) {
-        setPriceError(t("输入价格和输出价格必须同时填写"));
-        return;
-      }
-    }
-
-    const saved = await onSave({
-      previousSlug: model?.slug || null,
-      sourceKind: nextModel.sourceKind,
-      userEdited: nextModel.userEdited,
-      sortIndex: nextModel.sortIndex,
-      model: nextModel,
-    });
-    if (saved) {
-      if (onSavePriceRule && slug && hasUserInput) {
-        try {
-          setSavingPrice(true);
-          await onSavePriceRule({
-            id: priceRule?.id,
-            provider: priceRule?.provider ?? undefined,
-            modelPattern: slug,
-            billingMode: priceBillingMode,
-            inputPricePer1m: isClearingExistingOverride ? 0 : Number(ip),
-            cachedInputPricePer1m: isClearingExistingOverride
-              ? null
-              : (cp !== "" ? Number(cp) : null),
-            cacheWritePricePer1m: isClearingExistingOverride
-              ? null
-              : (wp !== "" ? Number(wp) : null),
-            outputPricePer1m: isClearingExistingOverride ? 0 : Number(op),
-            longContextThresholdTokens: isClearingExistingOverride
-              ? null
-              : (longThreshold !== "" ? Number(longThreshold) : null),
-            longContextThresholdInclusive: isClearingExistingOverride
-              ? false
-              : draft.longContextThresholdInclusive,
-            longContextInputPricePer1m: isClearingExistingOverride
-              ? null
-              : (longIp !== "" ? Number(longIp) : null),
-            longContextCachedInputPricePer1m: isClearingExistingOverride
-              ? null
-              : (longCp !== "" ? Number(longCp) : null),
-            longContextCacheWritePricePer1m: isClearingExistingOverride
-              ? null
-              : (longWp !== "" ? Number(longWp) : null),
-            longContextOutputPricePer1m: isClearingExistingOverride
-              ? null
-              : (longOp !== "" ? Number(longOp) : null),
-            enabled: isClearingExistingOverride ? false : true,
-          });
-        } catch (error) {
-          setPriceError(
-            `${t("模型已保存，但价格保存失败")}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          setSavingPrice(false);
-          return;
+      const routes: ModelRouteV2[] = draft.routes.map((route) => {
+        const sourceId =
+          route.sourceKind === "account_pool" ? "default" : route.sourceId.trim();
+        if (!sourceId || !route.upstreamModel.trim()) {
+          throw new Error("每条路由都必须填写来源和上游模型");
         }
-        setSavingPrice(false);
+        return {
+          id: route.id,
+          sourceKind: route.sourceKind,
+          sourceId,
+          upstreamModel: route.upstreamModel.trim(),
+          enabled: route.enabled,
+          priority: integer(route.priority, "路由优先级"),
+          weight: integer(route.weight, "路由权重", 1),
+        };
+      });
+      if (
+        draft.instructionsMode === "override" &&
+        !draft.instructionsText.trim()
+      ) {
+        throw new Error("override 模式必须填写 instructions text");
       }
-      onOpenChange(false);
+
+      const nextModel: ManagedModelV2 = {
+        id: model?.id || "",
+        slug,
+        displayName: draft.displayName.trim() || slug,
+        description: draft.description.trim() || null,
+        provider: draft.provider.trim() || null,
+        family: draft.family.trim() || null,
+        category: draft.category.trim() || null,
+        tags: draft.tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        origin: model?.origin || "custom",
+        enabled: draft.enabled,
+        supportedInApi: draft.supportedInApi,
+        visibility: draft.visibility,
+        sortOrder: integer(draft.sortOrder, "排序"),
+        contextWindow: optionalPositiveInteger(draft.contextWindow, "上下文窗口"),
+        maxContextWindow: optionalPositiveInteger(
+          draft.maxContextWindow,
+          "最大上下文窗口",
+        ),
+        defaultReasoningEffort: draft.defaultReasoningEffort.trim() || null,
+        capabilities: parseCapabilities(draft.capabilitiesJson),
+        instructionsMode: draft.instructionsMode,
+        instructionsText: draft.instructionsText.trim() || null,
+        builtinRevision: model?.builtinRevision || null,
+        userEdited: model?.userEdited || false,
+        ...price,
+        routes,
+        permissionGroupIds:
+          price.price.priceStatus === "missing"
+            ? []
+            : model?.permissionGroupIds || [],
+        createdAt: model?.createdAt || 0,
+        updatedAt: model?.updatedAt || 0,
+      };
+      const saved = await onSave({
+        previousSlug: model?.slug || null,
+        model: nextModel,
+      });
+      if (saved) onOpenChange(false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-card p-0 md:max-w-[750px] xl:max-w-[1360px]">
-        <div className="max-h-[84vh] overflow-y-auto p-6">
+      <DialogContent className="glass-card p-0 sm:max-w-[960px] xl:max-w-[1180px]">
+        <div className="max-h-[84vh] overflow-y-auto p-5">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>
-              {t(
-                "核心字段单独编辑，其余官方 `/models` 参数请直接在高级 JSON 中维护。",
-              )}
+              {t("模型、价格、路由和指令策略将通过一次原子保存提交。")}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="mt-6 grid gap-6">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="model-slug">Slug</Label>
-                <Input
-                  id="model-slug"
-                  value={draft.slug}
-                  onChange={(event) => updateDraft("slug", event.target.value)}
-                  placeholder="gpt-5.4"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="model-display-name">{t("显示名称")}</Label>
-                <Input
-                  id="model-display-name"
-                  value={draft.displayName}
-                  onChange={(event) =>
-                    updateDraft("displayName", event.target.value)
-                  }
-                  placeholder="GPT-5.4"
-                />
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="model-description">{t("描述")}</Label>
-                <Textarea
-                  id="model-description"
-                  rows={3}
-                  value={draft.description}
-                  onChange={(event) =>
-                    updateDraft("description", event.target.value)
-                  }
-                />
-              </div>
-            </div>
+          <Tabs defaultValue="basic" className="mt-5">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="basic">{t("基本信息")}</TabsTrigger>
+              <TabsTrigger value="price">{t("价格")}</TabsTrigger>
+              <TabsTrigger value="routes">{t("路由")}</TabsTrigger>
+              <TabsTrigger value="instructions">{t("指令策略")}</TabsTrigger>
+            </TabsList>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label>{t("来源类型")}</Label>
-                <Select
-                  value={draft.sourceKind}
-                  onValueChange={(value) =>
-                    updateDraft("sourceKind", value || "custom")
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                    <SelectItem value="custom">{t("自定义")}</SelectItem>
-                    <SelectItem value="remote">{t("远端同步")}</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="model-sort-index">{t("排序权重")}</Label>
-                <Input
-                  id="model-sort-index"
-                  type="number"
-                  value={draft.sortIndex}
-                  onChange={(event) =>
-                    updateDraft("sortIndex", event.target.value)
-                  }
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="model-priority">{t("Priority")}</Label>
-                <Input
-                  id="model-priority"
-                  type="number"
-                  value={draft.priority}
-                  onChange={(event) =>
-                    updateDraft("priority", event.target.value)
-                  }
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>{t("可见性")}</Label>
-                <Select
-                  value={draft.visibility.trim() || UNSET_SELECT_VALUE}
-                  onValueChange={(value) =>
-                    updateDraft("visibility", normalizeOptionalSelectValue(value))
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder={t("未设置")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                    <SelectItem value={UNSET_SELECT_VALUE}>{t("未设置")}</SelectItem>
-                    {VISIBILITY_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label>{t("默认推理等级")}</Label>
-                <Select
-                  value={draft.defaultReasoningLevel.trim() || UNSET_SELECT_VALUE}
-                  onValueChange={(value) =>
-                    updateDraft(
-                      "defaultReasoningLevel",
-                      normalizeOptionalSelectValue(value),
-                    )
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder={t("未设置")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                    <SelectItem value={UNSET_SELECT_VALUE}>{t("未设置")}</SelectItem>
-                    {REASONING_EFFORT_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <Card size="sm">
-                <CardContent className="flex items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium">{t("可用于 API")}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {t("开启后必须至少配置一个启用映射，否则只能保存为草稿。")}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={draft.supportedInApi}
-                    onCheckedChange={(checked) =>
-                      updateDraft("supportedInApi", checked)
-                    }
-                  />
-                </CardContent>
-              </Card>
-              <Card size="sm">
-                <CardContent className="flex items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium">{t("保留本地覆写")}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {t("开启后，远端刷新不会直接覆盖当前本地版本。")}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={draft.userEdited}
-                    onCheckedChange={(checked) =>
-                      updateDraft("userEdited", checked)
-                    }
-                  />
-                </CardContent>
-              </Card>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">{t("Token 价格 (USD / 1M tokens)")}</Label>
-              <p className="text-xs text-muted-foreground">
-                {t("零表示不计费，价格将用于请求成本估算。")}
-              </p>
-              {priceError ? (
-                <p className="text-xs text-destructive">{priceError}</p>
-              ) : null}
-            </div>
-            <div className="space-y-2">
-              <Label>{t("价格档位")}</Label>
-              <Select
-                value={priceBillingMode}
-                onValueChange={(value) =>
-                  onPriceBillingModeChange?.(
-                    value === "priority" ? "priority" : "standard",
-                  )
-                }
-              >
-                <SelectTrigger className="w-full md:w-64">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="standard">Standard</SelectItem>
-                    <SelectItem value="priority">Fast / Priority</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-4 md:grid-cols-4">
-              <div className="space-y-2">
-                <Label htmlFor="price-input">{t("输入价格")}</Label>
-                <Input
-                  id="price-input"
-                  type="number"
-                  step="0.0001"
-                  min="0"
-                  value={draft.inputPricePer1m}
-                  onChange={(event) =>
-                    updateDraft("inputPricePer1m", event.target.value)
-                  }
-                  placeholder="0"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="price-cached">{t("缓存输入价格")}</Label>
-                <Input
-                  id="price-cached"
-                  type="number"
-                  step="0.0001"
-                  min="0"
-                  value={draft.cachedInputPricePer1m}
-                  onChange={(event) =>
-                    updateDraft("cachedInputPricePer1m", event.target.value)
-                  }
-                  placeholder="0"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="price-output">{t("输出价格")}</Label>
-                <Input
-                  id="price-output"
-                  type="number"
-                  step="0.0001"
-                  min="0"
-                  value={draft.outputPricePer1m}
-                  onChange={(event) =>
-                    updateDraft("outputPricePer1m", event.target.value)
-                  }
-                  placeholder="0"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="price-cache-write">{t("缓存写入价格")}</Label>
-                <Input
-                  id="price-cache-write"
-                  type="number"
-                  step="0.0001"
-                  min="0"
-                  value={draft.cacheWritePricePer1m}
-                  onChange={(event) =>
-                    updateDraft("cacheWritePricePer1m", event.target.value)
-                  }
-                  placeholder={t("留空时按输入价格")}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2 rounded-md border border-border/60 p-4">
-              <Label>{t("长上下文价格（可选）")}</Label>
-              <p className="text-xs text-muted-foreground">
-                {draft.longContextThresholdInclusive
-                  ? t("输入 token 大于或等于阈值时整次请求使用这组价格。")
-                  : t("输入 token 严格大于阈值时整次请求使用这组价格；Priority 未公布长上下文价格时请留空。")}
-              </p>
-              <div className="mt-3 grid gap-4 md:grid-cols-6">
+            <TabsContent value="basic" className="mt-4 space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="price-long-threshold">{t("阈值")}</Label>
+                  <Label htmlFor="model-slug">{t("模型标识（Slug）")}</Label>
                   <Input
-                    id="price-long-threshold"
-                    type="number"
-                    step="1"
-                    min="0"
-                    value={draft.longContextThresholdTokens}
-                    onChange={(event) =>
-                      updateDraft("longContextThresholdTokens", event.target.value)
-                    }
-                    placeholder="272000"
+                    id="model-slug"
+                    value={draft.slug}
+                    disabled={model?.origin === "builtin"}
+                    onChange={(event) => {
+                      const slug = event.target.value;
+                      setDraft((current) => ({
+                        ...current,
+                        slug,
+                        routes: current.routes.map((route) =>
+                          route.upstreamModel.trim()
+                            ? route
+                            : { ...route, upstreamModel: slug },
+                        ),
+                      }));
+                    }}
                   />
                 </div>
-                <div className="flex items-center gap-2 pt-7">
-                  <Switch
-                    id="price-long-threshold-inclusive"
-                    checked={draft.longContextThresholdInclusive}
-                    onCheckedChange={(checked) =>
-                      updateDraft("longContextThresholdInclusive", checked)
-                    }
+                <div className="space-y-2">
+                  <Label htmlFor="model-display-name">{t("显示名称")}</Label>
+                  <Input
+                    id="model-display-name"
+                    value={draft.displayName}
+                    onChange={(event) => updateDraft("displayName", event.target.value)}
                   />
-                  <Label htmlFor="price-long-threshold-inclusive" className="text-xs">
-                    {t("阈值包含等于")}
-                  </Label>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="price-long-input">{t("长输入")}</Label>
-                  <Input id="price-long-input" type="number" step="0.0001" min="0" value={draft.longContextInputPricePer1m} onChange={(event) => updateDraft("longContextInputPricePer1m", event.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="price-long-cached">{t("长缓存读取")}</Label>
-                  <Input id="price-long-cached" type="number" step="0.0001" min="0" value={draft.longContextCachedInputPricePer1m} onChange={(event) => updateDraft("longContextCachedInputPricePer1m", event.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="price-long-write">{t("长缓存写入")}</Label>
-                  <Input id="price-long-write" type="number" step="0.0001" min="0" value={draft.longContextCacheWritePricePer1m} onChange={(event) => updateDraft("longContextCacheWritePricePer1m", event.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="price-long-output">{t("长输出")}</Label>
-                  <Input id="price-long-output" type="number" step="0.0001" min="0" value={draft.longContextOutputPricePer1m} onChange={(event) => updateDraft("longContextOutputPricePer1m", event.target.value)} />
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="model-description">{t("描述")}</Label>
+                  <Textarea
+                    id="model-description"
+                    rows={2}
+                    value={draft.description}
+                    onChange={(event) => updateDraft("description", event.target.value)}
+                  />
                 </div>
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="model-advanced-json">{t("高级 JSON")}</Label>
-              <Textarea
-                id="model-advanced-json"
-                rows={20}
-                value={draft.advancedJson}
-                onChange={(event) =>
-                  updateDraft("advancedJson", event.target.value)
-                }
-                placeholder='{"inputModalities":["text","image"],"supportedReasoningLevels":[{"effort":"medium","description":"balanced"}]}'
-              />
+              <div className="grid gap-4 md:grid-cols-3">
+                {([
+                  ["provider", "提供方"],
+                  ["family", "模型系列"],
+                  ["category", "模型分类"],
+                ] as const).map(([field, label]) => (
+                  <div key={field} className="space-y-2">
+                    <Label htmlFor={`model-${field}`}>{t(label)}</Label>
+                    <Input
+                      id={`model-${field}`}
+                      value={draft[field]}
+                      onChange={(event) => updateDraft(field, event.target.value)}
+                    />
+                  </div>
+                ))}
+                <div className="space-y-2 md:col-span-3">
+                  <Label htmlFor="model-tags">{t("标签")}</Label>
+                  <Input
+                    id="model-tags"
+                    value={draft.tags}
+                    onChange={(event) => updateDraft("tags", event.target.value)}
+                    placeholder={t("例如：编程, 推理")}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-4">
+                <div className="space-y-2">
+                  <Label htmlFor="model-sort-order">{t("排序")}</Label>
+                  <Input
+                    id="model-sort-order"
+                    type="number"
+                    value={draft.sortOrder}
+                    onChange={(event) => updateDraft("sortOrder", event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="model-context-window">{t("上下文窗口")}</Label>
+                  <Input
+                    id="model-context-window"
+                    type="number"
+                    min="1"
+                    value={draft.contextWindow}
+                    onChange={(event) => updateDraft("contextWindow", event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="model-max-context-window">{t("最大上下文窗口")}</Label>
+                  <Input
+                    id="model-max-context-window"
+                    type="number"
+                    min="1"
+                    value={draft.maxContextWindow}
+                    onChange={(event) =>
+                      updateDraft("maxContextWindow", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="model-reasoning-effort">{t("默认推理强度")}</Label>
+                  <Input
+                    id="model-reasoning-effort"
+                    value={draft.defaultReasoningEffort}
+                    onChange={(event) =>
+                      updateDraft("defaultReasoningEffort", event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <Card size="sm">
+                  <CardContent className="flex items-center justify-between gap-3">
+                    <Label htmlFor="model-enabled">{t("启用模型")}</Label>
+                    <Switch
+                      id="model-enabled"
+                      checked={draft.enabled}
+                      onCheckedChange={(checked) => updateDraft("enabled", checked)}
+                    />
+                  </CardContent>
+                </Card>
+                <Card size="sm">
+                  <CardContent className="flex items-center justify-between gap-3">
+                    <Label htmlFor="model-supported-api">{t("可用于 API")}</Label>
+                    <Switch
+                      id="model-supported-api"
+                      checked={draft.supportedInApi}
+                      onCheckedChange={(checked) =>
+                        updateDraft("supportedInApi", checked)
+                      }
+                    />
+                  </CardContent>
+                </Card>
+                <div className="space-y-2">
+                  <Label htmlFor="model-visibility">{t("可见性")}</Label>
+                  <Select
+                    value={draft.visibility}
+                    onValueChange={(value) =>
+                      updateDraft("visibility", (value || "list") as ModelVisibilityV2)
+                    }
+                  >
+                    <SelectTrigger id="model-visibility" aria-label={t("可见性")}>
+                      <SelectValue>
+                        {(value) => value === "hide" ? t("隐藏") : t("列表显示")}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="list">{t("列表显示")}</SelectItem>
+                        <SelectItem value="hide">{t("隐藏")}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="model-capabilities">{t("关键能力 JSON")}</Label>
+                <Textarea
+                  id="model-capabilities"
+                  rows={10}
+                  className="font-mono text-xs"
+                  value={draft.capabilitiesJson}
+                  onChange={(event) =>
+                    updateDraft("capabilitiesJson", event.target.value)
+                  }
+                />
+              </div>
+            </TabsContent>
+
+            <TabsContent value="price" className="mt-4 space-y-4">
+              <Card size="sm">
+                <CardHeader><CardTitle>{t("基础价格（美元 / 百万令牌）")}</CardTitle></CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="price-input">{t("输入价格")}</Label>
+                    <Input id="price-input" inputMode="decimal" value={draft.inputPrice} onChange={(event) => updateDraft("inputPrice", event.target.value)} placeholder={t("留空表示价格缺失")} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="price-cached">{t("缓存输入价格")}</Label>
+                    <Input id="price-cached" inputMode="decimal" value={draft.cachedInputPrice} onChange={(event) => updateDraft("cachedInputPrice", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="price-output">{t("输出价格")}</Label>
+                    <Input id="price-output" inputMode="decimal" value={draft.outputPrice} onChange={(event) => updateDraft("outputPrice", event.target.value)} />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card size="sm">
+                <CardHeader><CardTitle>{t("可选长上下文阶梯价")}</CardTitle></CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="price-long-threshold">{t("输入令牌阈值")}</Label>
+                    <Input id="price-long-threshold" type="number" min="1" value={draft.longContextThreshold} onChange={(event) => updateDraft("longContextThreshold", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="price-long-input">{t("输入价格")}</Label>
+                    <Input id="price-long-input" inputMode="decimal" value={draft.longInputPrice} onChange={(event) => updateDraft("longInputPrice", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="price-long-cached">{t("缓存输入价格")}</Label>
+                    <Input id="price-long-cached" inputMode="decimal" value={draft.longCachedInputPrice} onChange={(event) => updateDraft("longCachedInputPrice", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="price-long-output">{t("输出价格")}</Label>
+                    <Input id="price-long-output" inputMode="decimal" value={draft.longOutputPrice} onChange={(event) => updateDraft("longOutputPrice", event.target.value)} />
+                  </div>
+                </CardContent>
+              </Card>
               <p className="text-xs text-muted-foreground">
-                {t(
-                  "在这里维护所有复杂字段，包括 supportedReasoningLevels、truncationPolicy、inputModalities、availableInPlans 以及任意扩展字段。",
-                )}
+                {t("价格按十进制字符串无损转换为整数 micro-USD；三个基础价格必须同时存在或同时留空。")}
               </p>
-            </div>
-          </div>
+            </TabsContent>
+
+            <TabsContent value="routes" className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-muted-foreground">
+                  {t("上游模型名始终手填；这里不会访问供应商 `/models`。")}
+                </p>
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => addRoute("account_pool")}>
+                    <Plus className="mr-1.5 h-4 w-4" />{t("添加账号池路由")}
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => addRoute("aggregate_api")}>
+                    <Plus className="mr-1.5 h-4 w-4" />{t("添加聚合路由")}
+                  </Button>
+                </div>
+              </div>
+
+              {draft.routes.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  {t("当前模型没有 route，启用后将显示 missing route。")}
+                </div>
+              ) : (
+                draft.routes.map((route, index) => (
+                  <Card key={route.key} size="sm">
+                    <CardContent className="space-y-3">
+                      <div className="grid gap-3 md:grid-cols-[170px_minmax(0,1fr)_minmax(0,1fr)]">
+                        <div className="space-y-2">
+                          <Label htmlFor={`route-kind-${index}`}>{t("来源类型")}</Label>
+                          <Select
+                            value={route.sourceKind}
+                            onValueChange={(value) => {
+                              const sourceKind = (value || "account_pool") as ModelRouteSourceKindV2;
+                              updateRoute(index, "sourceKind", sourceKind);
+                              updateRoute(index, "sourceId", sourceKind === "account_pool" ? "default" : "");
+                            }}
+                          >
+                            <SelectTrigger id={`route-kind-${index}`} aria-label={t("来源类型")}>
+                              <SelectValue>
+                                {(value) => value === "aggregate_api" ? t("聚合 API") : t("账号池")}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent><SelectGroup>
+                              <SelectItem value="account_pool">{t("账号池")}</SelectItem>
+                              <SelectItem value="aggregate_api">{t("聚合 API")}</SelectItem>
+                            </SelectGroup></SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`route-source-${index}`}>{t("来源 ID")}</Label>
+                          {route.sourceKind === "aggregate_api" && aggregateApis.length > 0 ? (
+                            <Select value={route.sourceId} onValueChange={(value) => updateRoute(index, "sourceId", value || "")}>
+                              <SelectTrigger id={`route-source-${index}`} aria-label={t("来源 ID")}><SelectValue placeholder={t("选择聚合 API")} /></SelectTrigger>
+                              <SelectContent><SelectGroup>
+                                {aggregateApis.map((api) => (
+                                  <SelectItem key={api.id} value={api.id}>{api.supplierName || api.id}</SelectItem>
+                                ))}
+                              </SelectGroup></SelectContent>
+                            </Select>
+                          ) : (
+                            <Input id={`route-source-${index}`} value={route.sourceId} disabled={route.sourceKind === "account_pool"} onChange={(event) => updateRoute(index, "sourceId", event.target.value)} />
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`route-model-${index}`}>{t("上游模型")}</Label>
+                          <Input id={`route-model-${index}`} value={route.upstreamModel} onChange={(event) => updateRoute(index, "upstreamModel", event.target.value)} />
+                        </div>
+                      </div>
+                      <div className="grid items-end gap-3 md:grid-cols-[120px_120px_1fr_auto]">
+                        <div className="space-y-2">
+                          <Label htmlFor={`route-priority-${index}`}>{t("优先级")}</Label>
+                          <Input id={`route-priority-${index}`} type="number" value={route.priority} onChange={(event) => updateRoute(index, "priority", event.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`route-weight-${index}`}>{t("权重")}</Label>
+                          <Input id={`route-weight-${index}`} type="number" min="1" value={route.weight} onChange={(event) => updateRoute(index, "weight", event.target.value)} />
+                        </div>
+                        <div className="flex h-9 items-center gap-2">
+                          <Switch id={`route-enabled-${index}`} aria-label={t("启用路由")} checked={route.enabled} onCheckedChange={(checked) => updateRoute(index, "enabled", checked)} />
+                          <Label htmlFor={`route-enabled-${index}`}>{t("启用路由")}</Label>
+                        </div>
+                        <Button type="button" variant="ghost" size="icon" aria-label={t("删除路由")} onClick={() => updateDraft("routes", draft.routes.filter((_, routeIndex) => routeIndex !== index))}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </TabsContent>
+
+            <TabsContent value="instructions" className="mt-4 space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="model-instructions-mode">{t("指令模式")}</Label>
+                <Select value={draft.instructionsMode} onValueChange={(value) => updateDraft("instructionsMode", (value || "passthrough") as ModelInstructionsModeV2)}>
+                  <SelectTrigger id="model-instructions-mode" aria-label={t("指令模式")}>
+                    <SelectValue>
+                      {(value) => value === "fallback" ? t("兜底") : value === "override" ? t("覆盖") : t("透传")}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent><SelectGroup>
+                    <SelectItem value="passthrough">{t("透传")}</SelectItem>
+                    <SelectItem value="fallback">{t("兜底")}</SelectItem>
+                    <SelectItem value="override">{t("覆盖")}</SelectItem>
+                  </SelectGroup></SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="model-instructions-text">{t("指令文本")}</Label>
+                <Textarea id="model-instructions-text" rows={14} value={draft.instructionsText} disabled={draft.instructionsMode === "passthrough"} onChange={(event) => updateDraft("instructionsText", event.target.value)} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {draft.instructionsMode === "passthrough"
+                  ? t("客户端 instructions 原样传递，模型文本不参与请求。")
+                  : draft.instructionsMode === "fallback"
+                    ? t("仅当所有客户端 instruction channel 都为空时使用模型文本。")
+                    : t("模型文本替换顶层及连续 leading system/developer instructions；文本不能为空。")}
+              </p>
+            </TabsContent>
+          </Tabs>
+
+          {error ? <p className="mt-4 text-sm text-destructive">{error}</p> : null}
         </div>
 
         <div className="border-t border-border/50 px-5 py-3">
           <DialogFooter>
-            <DialogClose
-              className={buttonVariants({ variant: "ghost" })}
-              type="button"
-            >
+            <DialogClose className={buttonVariants({ variant: "ghost" })} type="button">
               {t("取消")}
             </DialogClose>
-            <Button
-              onClick={() => {
-                void handleSave();
-              }}
-              disabled={isSaving || savingPrice}
-            >
+            <Button type="button" disabled={isSaving} onClick={() => void handleSave()}>
               {isSaving ? t("保存中...") : t("保存模型")}
             </Button>
           </DialogFooter>

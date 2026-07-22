@@ -87,13 +87,21 @@ fn is_codex_backend_base(base: &str) -> bool {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn should_apply_codex_responses_compat(path: &str, explicit_upstream_base: Option<&str>) -> bool {
+fn should_apply_codex_responses_compat(
+    path: &str,
+    explicit_upstream_base: Option<&str>,
+    resolve_default_upstream_base: bool,
+) -> bool {
     if !responses::is_responses_path(path) {
         return false;
     }
-    let resolved_base = explicit_upstream_base
-        .map(str::to_string)
-        .unwrap_or_else(super::upstream::config::resolve_upstream_base_url);
+    let resolved_base = match explicit_upstream_base {
+        Some(base) => base.to_string(),
+        None if resolve_default_upstream_base => {
+            super::upstream::config::resolve_upstream_base_url()
+        }
+        None => return false,
+    };
     let normalized_base = super::upstream::config::normalize_upstream_base_url(&resolved_base);
     is_codex_backend_base(&normalized_base)
 }
@@ -235,23 +243,31 @@ fn apply_model_forward_rule_if_needed(obj: &mut serde_json::Map<String, Value>) 
     true
 }
 
-fn apply_compact_model_forward_rule_if_needed(obj: &mut serde_json::Map<String, Value>) -> bool {
-    let Some(current_model) = obj
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-    let Some(forwarded_model) = super::resolve_compact_forwarded_model(current_model) else {
-        return false;
-    };
-    if forwarded_model.eq_ignore_ascii_case(current_model) {
-        return false;
+fn normalize_client_ultra_for_upstream(obj: &mut serde_json::Map<String, Value>) -> bool {
+    let mut changed = false;
+    if let Some(Value::String(effort)) = obj.get_mut("reasoning_effort") {
+        if effort.trim().eq_ignore_ascii_case("ultra") {
+            *effort =
+                crate::reasoning_effort::normalize_client_reasoning_effort_for_upstream(effort)
+                    .expect("ultra must normalize to an upstream effort")
+                    .to_string();
+            changed = true;
+        }
     }
-    obj.insert("model".to_string(), Value::String(forwarded_model));
-    true
+    if let Some(Value::String(effort)) = obj
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .and_then(|reasoning| reasoning.get_mut("effort"))
+    {
+        if effort.trim().eq_ignore_ascii_case("ultra") {
+            *effort =
+                crate::reasoning_effort::normalize_client_reasoning_effort_for_upstream(effort)
+                    .expect("ultra must normalize to an upstream effort")
+                    .to_string();
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn compact_model_override_for_path(path: &str) -> Option<String> {
@@ -413,6 +429,7 @@ pub(super) fn apply_request_overrides_with_service_tier_and_prompt_cache_key_sco
         false,
         service_tier,
         allow_codex_compat_rewrite,
+        true,
     )
 }
 
@@ -500,7 +517,58 @@ pub(super) fn apply_request_overrides_with_service_tier_and_forced_prompt_cache_
         true,
         service_tier,
         allow_codex_compat_rewrite,
+        true,
     )
+}
+
+pub(super) fn apply_request_overrides_for_deferred_aggregate(
+    path: &str,
+    body: Vec<u8>,
+    model_slug: Option<&str>,
+    reasoning_effort: Option<&str>,
+    service_tier: Option<&str>,
+) -> Vec<u8> {
+    apply_request_overrides_with_prompt_cache_key_mode(
+        path,
+        body,
+        model_slug,
+        reasoning_effort,
+        None,
+        None,
+        false,
+        service_tier,
+        false,
+        false,
+    )
+}
+
+pub(super) fn apply_codex_candidate_transport_rules(path: &str, body: Vec<u8>) -> Vec<u8> {
+    if body.is_empty() {
+        return body;
+    }
+    let Ok(mut payload) = serde_json::from_slice::<Value>(&body) else {
+        return body;
+    };
+    let Some(obj) = payload.as_object_mut() else {
+        return body;
+    };
+    let installation_id = crate::process_env::resolve_installation_id()
+        .inspect_err(|err| {
+            log::warn!("event=gateway_installation_id_resolve_failed error={}", err);
+        })
+        .ok();
+    let result = responses::apply_codex_http_request_rules(
+        path,
+        obj,
+        true,
+        None,
+        false,
+        installation_id.as_deref(),
+    );
+    if !result.changed {
+        return body;
+    }
+    serde_json::to_vec(&payload).unwrap_or(body)
 }
 
 /// 函数 `apply_request_overrides_with_prompt_cache_key_mode`
@@ -531,8 +599,10 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
     force_prompt_cache_key: bool,
     service_tier: Option<&str>,
     allow_codex_compat_rewrite: bool,
+    resolve_default_upstream_base: bool,
 ) -> Vec<u8> {
-    let use_codex_responses_compat = should_apply_codex_responses_compat(path, upstream_base_url);
+    let use_codex_responses_compat =
+        should_apply_codex_responses_compat(path, upstream_base_url, resolve_default_upstream_base);
     let use_codex_compat_rewrite = allow_codex_compat_rewrite && use_codex_responses_compat;
     let chat_rules_path = chat_request_rules_path(path);
     let normalized_model = model_slug
@@ -554,6 +624,12 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
             let mut changed = false;
             let mut dropped_keys = Vec::new();
 
+            // Ultra 由 Codex 客户端负责多代理编排；单个上游请求必须使用 Max。
+            // 客户端原始值在进入此重写前已单独采集，供请求日志展示 ultra -> max。
+            if normalize_client_ultra_for_upstream(obj) {
+                changed = true;
+            }
+
             let effective_model = compact_model_override
                 .as_deref()
                 .or(normalized_model.as_deref());
@@ -562,11 +638,7 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
                     .unwrap_or_else(|| model.to_string());
                 obj.insert("model".to_string(), Value::String(forwarded_model));
                 changed = true;
-            } else if responses::is_compact_path(path) {
-                if apply_compact_model_forward_rule_if_needed(obj) {
-                    changed = true;
-                }
-            } else if use_codex_compat_rewrite && apply_model_forward_rule_if_needed(obj) {
+            } else if apply_model_forward_rule_if_needed(obj) {
                 changed = true;
             }
 

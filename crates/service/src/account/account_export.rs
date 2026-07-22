@@ -125,7 +125,7 @@ pub(crate) fn export_accounts_to_directory(
 
                 let file_path =
                     build_account_export_file_path(&output_path, &account, &mut file_name_counter);
-                let json = build_account_export_json(&account, &token, metadata.get(&account.id))?;
+                let json = build_account_export_json(&account, token, metadata.get(&account.id))?;
                 std::fs::write(&file_path, json).map_err(|err| {
                     format!("write export file failed ({}): {err}", file_path.display())
                 })?;
@@ -198,7 +198,7 @@ pub(crate) fn export_accounts_data(
                     .and_then(|value| value.to_str())
                     .map(str::to_string)
                     .ok_or_else(|| "build export file name failed".to_string())?;
-                let json = build_account_export_json(&account, &token, metadata.get(&account.id))?;
+                let json = build_account_export_json(&account, token, metadata.get(&account.id))?;
                 let content = String::from_utf8(json)
                     .map_err(|err| format!("encode export utf8 failed: {err}"))?;
                 files.push(ExportAccountFile { file_name, content });
@@ -250,7 +250,7 @@ fn build_single_export_bundle_json(
 
         payloads.push(build_account_export_payload(
             account,
-            &token,
+            token,
             metadata.get(&account.id),
         ));
         exported += 1;

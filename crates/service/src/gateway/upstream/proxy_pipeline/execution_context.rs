@@ -24,6 +24,7 @@ pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     conversation_anchor_for_log: Option<&'a str>,
     route_strategy_for_log: Option<&'a str>,
     route_source_for_log: Option<&'a str>,
+    estimated_input_tokens: i64,
     candidate_count: usize,
     account_max_inflight: usize,
 }
@@ -64,6 +65,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         conversation_anchor_for_log: Option<&'a str>,
         route_strategy_for_log: Option<&'a str>,
         route_source_for_log: Option<&'a str>,
+        estimated_input_tokens: i64,
         candidate_count: usize,
         account_max_inflight: usize,
     ) -> Self {
@@ -90,6 +92,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             conversation_anchor_for_log,
             route_strategy_for_log,
             route_source_for_log,
+            estimated_input_tokens,
             candidate_count,
             account_max_inflight,
         }
@@ -129,7 +132,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         &self,
         account_id: &str,
         idx: usize,
-        is_bound_account: bool,
+        _is_bound_account: bool,
     ) -> Option<candidates::CandidateSkipReason> {
         candidates::candidate_skip_reason_for_proxy(
             account_id,
@@ -137,7 +140,6 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             self.candidate_count,
             self.account_max_inflight,
             self.protocol_type == crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
-            is_bound_account,
         )
     }
 
@@ -323,25 +325,17 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         upstream_url: Option<&str>,
         model_for_log: Option<&str>,
         status_code: u16,
-        usage: super::super::super::request_log::RequestLogUsage,
+        mut usage: super::super::super::request_log::RequestLogUsage,
         error: Option<&str>,
         elapsed_ms: u128,
         attempted_account_ids: Option<&[String]>,
     ) {
+        if usage.estimated_input_tokens.is_none() {
+            usage.estimated_input_tokens = Some(self.estimated_input_tokens);
+        }
         let platform_model_for_log = self.model_for_log.or(model_for_log);
         let direct_upstream_model =
             resolve_direct_upstream_model_for_log(platform_model_for_log, model_for_log);
-        let mapped_upstream_model = final_account_id.and_then(|account_id| {
-            let platform_model =
-                platform_model_for_mapping_lookup(platform_model_for_log, direct_upstream_model)?;
-            self.storage
-                .find_enabled_model_source_mapping(platform_model, "openai_account", account_id)
-                .ok()
-                .flatten()
-                .map(|mapping| mapping.upstream_model)
-                .filter(|upstream_model| !upstream_model.trim().is_empty())
-        });
-        let upstream_model_for_log = direct_upstream_model.or(mapped_upstream_model.as_deref());
         super::super::super::request_log::write_request_log_with_attempts(
             self.storage,
             super::super::super::request_log::RequestLogTraceContext {
@@ -362,7 +356,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
                 service_tier: self.service_tier_for_log,
                 effective_service_tier: self.effective_service_tier_for_log,
                 service_tier_source: self.service_tier_source_for_log,
-                upstream_model: upstream_model_for_log,
+                upstream_model: direct_upstream_model,
                 actual_source_kind: final_account_id.map(|_| "openai_account"),
                 actual_source_id: final_account_id,
                 ..Default::default()
@@ -495,18 +489,6 @@ fn resolve_direct_upstream_model_for_log<'a>(
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     (candidate_model != platform_model).then_some(candidate_model)
-}
-
-fn platform_model_for_mapping_lookup<'a>(
-    platform_model_for_log: Option<&'a str>,
-    direct_upstream_model: Option<&str>,
-) -> Option<&'a str> {
-    if direct_upstream_model.is_some() {
-        return None;
-    }
-    platform_model_for_log
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]

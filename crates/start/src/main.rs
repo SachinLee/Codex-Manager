@@ -597,7 +597,10 @@ fn main() {
     codexmanager_service::init_logging();
     // 进一步对齐 service/web 的便携化初始化，确保 DB/RPC token 落点一致。
     codexmanager_service::portable::bootstrap_current_process();
-    let _ = codexmanager_service::initialize_storage_if_needed();
+    if let Err(err) = codexmanager_service::initialize_storage_if_needed() {
+        eprintln!("数据库迁移失败，拒绝启动：{err}");
+        std::process::exit(1);
+    }
     codexmanager_service::sync_runtime_settings_from_storage();
 
     let dir = exe_dir();

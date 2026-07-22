@@ -7,6 +7,7 @@ use base64::Engine;
 use bytes::Bytes;
 use codexmanager_core::storage::{ApiKey, ConversationBinding};
 use reqwest::Method;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tiny_http::Request;
 
@@ -60,6 +61,46 @@ fn resolve_effective_request_overrides(
         normalized_reasoning,
         normalized_service_tier,
     )
+}
+
+fn instruction_protocol_for_passthrough(
+    protocol_type: &str,
+) -> crate::models_v2::instructions::InstructionProtocolV2 {
+    match protocol_type {
+        PROTOCOL_ANTHROPIC_NATIVE => {
+            crate::models_v2::instructions::InstructionProtocolV2::Anthropic
+        }
+        PROTOCOL_GEMINI_NATIVE => crate::models_v2::instructions::InstructionProtocolV2::Gemini,
+        _ => crate::models_v2::instructions::InstructionProtocolV2::OpenAi,
+    }
+}
+
+fn apply_model_instructions_policy(
+    storage: &codexmanager_core::storage::Storage,
+    model_slug: Option<&str>,
+    body: Vec<u8>,
+    protocol: crate::models_v2::instructions::InstructionProtocolV2,
+) -> Result<Vec<u8>, LocalValidationError> {
+    let Some(model_slug) = model_slug.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(body);
+    };
+    let model = storage
+        .get_enabled_model_v2(model_slug)
+        .map_err(|err| {
+            LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
+        })?
+        .ok_or_else(|| LocalValidationError::new(404, format!("model_not_found: {model_slug}")))?;
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
+        return Ok(body);
+    };
+    crate::models_v2::instructions::apply_model_instructions_v2(&mut value, &model, protocol)
+        .map_err(|err| LocalValidationError::new(400, err))?;
+    serde_json::to_vec(&value).map_err(|err| {
+        LocalValidationError::new(
+            500,
+            format!("serialize instructions policy body failed: {err}"),
+        )
+    })
 }
 
 fn is_removed_openai_compat_request_path(normalized_path: &str) -> bool {
@@ -139,12 +180,12 @@ fn ensure_anthropic_model_is_listed(
         ));
     };
 
-    let models = crate::apikey_models::read_model_options_from_storage(storage).map_err(|err| {
+    let models = crate::models_v2::models_response_with_storage(storage).map_err(|err| {
         LocalValidationError::new(
             500,
             crate::gateway::bilingual_error(
-                "读取模型缓存失败",
-                format!("model options cache read failed: {err}"),
+                "读取模型目录 V2 失败",
+                format!("model catalog V2 read failed: {err}"),
             ),
         )
     })?;
@@ -285,10 +326,8 @@ fn resolve_compact_model_override_for_request(
     if let Some(explicit_override) = super::super::current_compact_model_override() {
         return Some(explicit_override);
     }
-    let model = base_model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    super::super::resolve_compact_forwarded_model(model)
+    let _ = base_model;
+    None
 }
 
 fn maybe_wrap_compact_response_adapter(
@@ -655,18 +694,39 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
         .map_err(|err| format!("serialize responses compatibility request failed: {err}"))
 }
 
-fn default_omitted_responses_stream_to_true(body: Vec<u8>) -> Vec<u8> {
-    let Ok(mut payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return body;
+fn default_omitted_responses_stream_to_true_snapshot(body: Vec<u8>) -> ParsedRequestBodySnapshot {
+    let Some(mut payload) = super::super::parse_request_json_value(&body) else {
+        return ParsedRequestBodySnapshot {
+            body,
+            value: None,
+            metadata: ParsedRequestMetadata::default(),
+        };
     };
     let Some(obj) = payload.as_object_mut() else {
-        return body;
+        let metadata = super::super::parse_request_metadata_from_value(&payload);
+        return ParsedRequestBodySnapshot {
+            body,
+            value: Some(payload),
+            metadata,
+        };
     };
-    if obj.contains_key("stream") {
-        return body;
+    let mut rewritten_body = body;
+    if !obj.contains_key("stream") {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(true));
+        if let Ok(serialized) = serde_json::to_vec(&payload) {
+            rewritten_body = serialized;
+        }
     }
-    obj.insert("stream".to_string(), serde_json::Value::Bool(true));
-    serde_json::to_vec(&payload).unwrap_or(body)
+    let metadata = super::super::parse_request_metadata_from_value(&payload);
+    ParsedRequestBodySnapshot {
+        body: rewritten_body,
+        value: Some(payload),
+        metadata,
+    }
+}
+
+fn default_omitted_responses_stream_to_true(body: Vec<u8>) -> Vec<u8> {
+    default_omitted_responses_stream_to_true_snapshot(body).body
 }
 
 const DEFAULT_IMAGES_TOOL_MODEL: &str = "gpt-image-2";
@@ -1346,17 +1406,29 @@ fn resolve_override_source_for_log(
     }
 }
 
+fn resolve_reasoning_source_for_log(
+    client_value: Option<&str>,
+    effective_value: Option<&str>,
+    api_key_profile_value: Option<&str>,
+) -> Option<String> {
+    if api_key_profile_value
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        && crate::reasoning_effort::is_ultra_to_max_normalization(client_value, effective_value)
+    {
+        return Some("client_request_normalized".to_string());
+    }
+    resolve_override_source_for_log(client_value, effective_value, api_key_profile_value)
+}
+
 fn resolve_preferred_client_prompt_cache_key(
     protocol_type: &str,
-    incoming_headers: &super::super::IncomingHeaderSnapshot,
+    _incoming_headers: &super::super::IncomingHeaderSnapshot,
     initial_request_meta: &ParsedRequestMetadata,
     client_request_meta: &ParsedRequestMetadata,
-    native_codex_client: bool,
+    _native_codex_client: bool,
 ) -> Option<String> {
     if protocol_type == PROTOCOL_ANTHROPIC_NATIVE {
-        return None;
-    }
-    if native_codex_client {
         return None;
     }
 
@@ -1371,25 +1443,15 @@ fn resolve_preferred_client_prompt_cache_key(
         return None;
     };
 
-    if has_complete_native_thread_anchor(incoming_headers) {
-        // 中文注释：原生 Codex 已经提供稳定线程锚点时，prompt_cache_key 不能反客为主；
-        // 否则会和 conversation_id / 完整 session+turn-state 冲突，导致 resume 线程异常。
-        return None;
-    }
-
+    // An explicitly supplied cache key is request data, not a locally generated
+    // conversation anchor.  Preserve it even when the client also provides
+    // native session/conversation headers; routing still prioritizes those
+    // headers independently.
     Some(preferred)
 }
 
 fn header_value_present(value: Option<&str>) -> bool {
     value.map(str::trim).is_some_and(|value| !value.is_empty())
-}
-
-fn has_complete_native_thread_anchor(
-    incoming_headers: &super::super::IncomingHeaderSnapshot,
-) -> bool {
-    header_value_present(incoming_headers.conversation_id())
-        || (header_value_present(incoming_headers.session_id())
-            && header_value_present(incoming_headers.turn_state()))
 }
 
 fn is_turn_state_only_anchor(incoming_headers: &super::super::IncomingHeaderSnapshot) -> bool {
@@ -1419,10 +1481,9 @@ fn resolve_local_conversation_id(
     client_has_prompt_cache_key: bool,
     native_codex_client: bool,
 ) -> Option<String> {
-    let allow_prompt_cache_fallback = native_codex_client || !client_has_prompt_cache_key;
     super::super::resolve_local_conversation_id_with_sticky_fallback(
         incoming_headers,
-        allow_prompt_cache_fallback
+        (native_codex_client || !client_has_prompt_cache_key)
             && should_derive_compat_conversation_anchor(protocol_type, normalized_path),
     )
 }
@@ -1582,6 +1643,57 @@ fn resolve_client_is_stream(
             && normalized_path.contains(":streamGenerateContent"))
 }
 
+struct ParsedRequestBodySnapshot {
+    body: Vec<u8>,
+    value: Option<Value>,
+    metadata: ParsedRequestMetadata,
+}
+
+fn normalize_official_responses_body_snapshot(
+    path: &str,
+    body: Vec<u8>,
+) -> ParsedRequestBodySnapshot {
+    let Some(value) = super::super::parse_request_json_value(&body) else {
+        return ParsedRequestBodySnapshot {
+            body,
+            value: None,
+            metadata: ParsedRequestMetadata::default(),
+        };
+    };
+    let (body, value) =
+        super::super::normalize_official_responses_http_body_with_value(path, body, value);
+    let metadata = value
+        .as_ref()
+        .map(super::super::parse_request_metadata_from_value)
+        .unwrap_or_default();
+    ParsedRequestBodySnapshot {
+        body,
+        value,
+        metadata,
+    }
+}
+
+fn validate_text_input_limit_for_snapshot(
+    path: &str,
+    value: Option<&Value>,
+) -> Result<(), super::super::request_helpers::InputSizeLimitError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    super::super::validate_text_input_limit_for_value(path, value)
+}
+
+fn validate_text_input_limit_for_body_or_snapshot(
+    path: &str,
+    body: &[u8],
+    value: Option<&Value>,
+) -> Result<(), super::super::request_helpers::InputSizeLimitError> {
+    if let Some(value) = value {
+        return super::super::validate_text_input_limit_for_value(path, value);
+    }
+    super::super::validate_text_input_limit_for_path(path, body)
+}
+
 /// 函数 `apply_passthrough_request_overrides`
 ///
 /// 作者: gaohongshun
@@ -1615,22 +1727,20 @@ fn apply_passthrough_request_overrides(
     let effective_model = model_override
         .map(str::to_string)
         .or(default_effective_model);
-    let rewritten_body =
-        super::super::apply_request_overrides_with_service_tier_and_prompt_cache_key_scope(
-            path,
-            body,
-            effective_model.as_deref(),
-            effective_reasoning.as_deref(),
-            effective_service_tier.as_deref(),
-            api_key.upstream_base_url.as_deref(),
-            None,
-            true,
-        );
-    let rewritten_body = super::super::normalize_official_responses_http_body(
-        transport_request_path(path).as_str(),
-        rewritten_body,
+    // Aggregate and hybrid fallback requests share this body across candidates.
+    // Candidate-specific Codex transport rules are applied only inside the
+    // aggregate attempt loop after the actual upstream has been selected.
+    let rewritten_body = super::super::apply_request_overrides_for_deferred_aggregate(
+        path,
+        body,
+        effective_model.as_deref(),
+        effective_reasoning.as_deref(),
+        effective_service_tier.as_deref(),
     );
-    let request_meta = super::super::parse_request_metadata(&rewritten_body);
+    let request_meta = super::super::parse_request_json_value(&rewritten_body)
+        .as_ref()
+        .map(super::super::parse_request_metadata_from_value)
+        .unwrap_or_default();
     (
         rewritten_body,
         request_meta.model.or(api_key.model_slug.clone()),
@@ -1694,7 +1804,11 @@ pub(super) fn build_local_validation_result(
             crate::gateway::bilingual_error("不支持的请求方法", "unsupported method"),
         )
     })?;
-    let initial_service_tier_diagnostic = super::super::inspect_service_tier_for_log(&body);
+    let initial_request_value = super::super::parse_request_json_value(&body);
+    let initial_service_tier_diagnostic = initial_request_value
+        .as_ref()
+        .map(|value| super::super::inspect_service_tier_value(value.get("service_tier")))
+        .unwrap_or_default();
     super::super::log_client_service_tier(
         trace_id.as_str(),
         "http",
@@ -1703,9 +1817,11 @@ pub(super) fn build_local_validation_result(
         initial_service_tier_diagnostic.raw_value.as_deref(),
         initial_service_tier_diagnostic.normalized_value.as_deref(),
     );
-    let initial_request_meta = super::super::parse_request_metadata(&body);
-    let native_codex_client = is_native_codex_client_request(&incoming_headers)
-        || initial_request_meta.has_client_metadata;
+    let initial_request_meta = initial_request_value
+        .as_ref()
+        .map(super::super::parse_request_metadata_from_value)
+        .unwrap_or_default();
+    let native_codex_client = is_native_codex_client_request(&incoming_headers);
     let compact_gateway_mode =
         is_compact_subagent_request(normalized_path.as_str(), &incoming_headers)
             .then_some("compact".to_string());
@@ -1768,7 +1884,7 @@ pub(super) fn build_local_validation_result(
             api_key.model_slug.as_deref(),
         );
         let client_reasoning_for_log = initial_request_meta.reasoning_effort.clone();
-        let reasoning_source_for_log = resolve_override_source_for_log(
+        let reasoning_source_for_log = resolve_reasoning_source_for_log(
             client_reasoning_for_log.as_deref(),
             reasoning_for_log.as_deref(),
             api_key.reasoning_effort.as_deref(),
@@ -1778,23 +1894,35 @@ pub(super) fn build_local_validation_result(
             effective_service_tier_for_log.as_deref(),
             api_key.service_tier.as_deref(),
         );
+        rewritten_body = apply_model_instructions_policy(
+            &storage,
+            model_for_log.as_deref(),
+            rewritten_body,
+            instruction_protocol_for_passthrough(effective_protocol_type),
+        )?;
+        let mut rewritten_body_value_for_validation = None;
         if is_non_native_openai_responses_api_request(
             effective_protocol_type,
             logical_path.as_str(),
             native_codex_client,
         ) {
-            rewritten_body = default_omitted_responses_stream_to_true(rewritten_body);
+            let snapshot = default_omitted_responses_stream_to_true_snapshot(rewritten_body);
+            rewritten_body = snapshot.body;
+            rewritten_body_value_for_validation = snapshot.value;
         }
         let transport_path = transport_request_path(logical_path.as_str());
-        super::super::validate_text_input_limit_for_path(&transport_path, &rewritten_body)
-            .map_err(|err| LocalValidationError::new(400, err.message()))?;
+        validate_text_input_limit_for_body_or_snapshot(
+            &transport_path,
+            &rewritten_body,
+            rewritten_body_value_for_validation.as_ref(),
+        )
+        .map_err(|err| LocalValidationError::new(400, err.message()))?;
         let incoming_headers = incoming_headers
             .with_conversation_id_override(initial_local_conversation_id.as_deref());
         let request_log_session_id = incoming_headers
             .session_id()
             .or(incoming_headers.parent_thread_id())
-            .map(str::to_string)
-            .or(initial_request_meta.session_id_candidate.clone());
+            .map(str::to_string);
         let is_stream = resolve_client_is_stream(
             effective_protocol_type,
             logical_path.as_str(),
@@ -1855,17 +1983,31 @@ pub(super) fn build_local_validation_result(
         compact_model_override_for_logical_request.as_deref(),
     )
     .0;
+    let passthrough_model_for_policy = compact_model_override_for_logical_request
+        .as_deref()
+        .or(api_key.model_slug.as_deref())
+        .or(initial_request_meta.model.as_deref());
+    passthrough_body = apply_model_instructions_policy(
+        &storage,
+        passthrough_model_for_policy,
+        passthrough_body,
+        instruction_protocol_for_passthrough(effective_protocol_type),
+    )?;
+    let mut passthrough_body_value_for_validation = None;
     if is_non_native_openai_responses_api_request(
         effective_protocol_type,
         logical_path.as_str(),
         native_codex_client,
     ) {
-        passthrough_body = default_omitted_responses_stream_to_true(passthrough_body);
+        let snapshot = default_omitted_responses_stream_to_true_snapshot(passthrough_body);
+        passthrough_body = snapshot.body;
+        passthrough_body_value_for_validation = snapshot.value;
     }
     let passthrough_transport_path = transport_request_path(logical_path.as_str());
-    super::super::validate_text_input_limit_for_path(
+    validate_text_input_limit_for_body_or_snapshot(
         &passthrough_transport_path,
         &passthrough_body,
+        passthrough_body_value_for_validation.as_ref(),
     )
     .map_err(|err| LocalValidationError::new(400, err.message()))?;
     let original_body = body.clone();
@@ -1999,6 +2141,15 @@ pub(super) fn build_local_validation_result(
             .or(initial_request_meta.model.as_deref()),
     )
     .or(effective_model);
+    let instruction_model = effective_model
+        .as_deref()
+        .or(initial_request_meta.model.as_deref());
+    body = apply_model_instructions_policy(
+        &storage,
+        instruction_model,
+        body,
+        crate::models_v2::instructions::InstructionProtocolV2::OpenAi,
+    )?;
     let preferred_prompt_cache_key = resolve_preferred_client_prompt_cache_key(
         effective_protocol_type,
         &incoming_headers,
@@ -2093,11 +2244,16 @@ pub(super) fn build_local_validation_result(
     }
     response_adapter = maybe_wrap_compact_response_adapter(path.as_str(), response_adapter);
     let normalized_transport_path = transport_request_path(path.as_str());
-    body = super::super::normalize_official_responses_http_body(&normalized_transport_path, body);
-    super::super::validate_text_input_limit_for_path(&normalized_transport_path, &body)
-        .map_err(|err| LocalValidationError::new(400, err.message()))?;
+    let normalized_body =
+        normalize_official_responses_body_snapshot(&normalized_transport_path, body);
+    validate_text_input_limit_for_snapshot(
+        &normalized_transport_path,
+        normalized_body.value.as_ref(),
+    )
+    .map_err(|err| LocalValidationError::new(400, err.message()))?;
 
-    let request_meta = super::super::parse_request_metadata(&body);
+    let request_meta = normalized_body.metadata;
+    body = normalized_body.body;
     let client_model_for_log = client_request_meta.model.clone();
     let model_for_log = request_meta.model.or(api_key.model_slug.clone());
     let model_source_for_log = resolve_override_source_for_log(
@@ -2109,14 +2265,7 @@ pub(super) fn build_local_validation_result(
     let reasoning_for_log = request_meta
         .reasoning_effort
         .or(api_key.reasoning_effort.clone());
-    let request_log_session_id = incoming_headers
-        .session_id()
-        .or(incoming_headers.parent_thread_id())
-        .map(str::to_string)
-        .or(client_request_meta.session_id_candidate)
-        .or(initial_request_meta.session_id_candidate)
-        .or(request_meta.session_id_candidate);
-    let reasoning_source_for_log = resolve_override_source_for_log(
+    let reasoning_source_for_log = resolve_reasoning_source_for_log(
         client_reasoning_for_log.as_deref(),
         reasoning_for_log.as_deref(),
         api_key.reasoning_effort.as_deref(),
@@ -2137,6 +2286,10 @@ pub(super) fn build_local_validation_result(
     );
     let has_prompt_cache_key = request_meta.has_prompt_cache_key;
     let request_shape = client_request_meta.request_shape;
+    let request_log_session_id = incoming_headers
+        .session_id()
+        .or(incoming_headers.parent_thread_id())
+        .map(str::to_string);
 
     ensure_anthropic_model_is_listed(&storage, effective_protocol_type, model_for_log.as_deref())?;
 

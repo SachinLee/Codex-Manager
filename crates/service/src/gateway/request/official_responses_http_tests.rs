@@ -1,4 +1,7 @@
-use super::{apply_codex_http_request_rules, normalize_official_responses_http_body};
+use super::{
+    apply_codex_http_request_rules, normalize_official_responses_http_body,
+    normalize_official_responses_http_body_with_value,
+};
 use serde_json::{json, Value};
 
 #[test]
@@ -27,6 +30,26 @@ fn responses_http_normalizer_preserves_official_shape_and_unknown_fields() {
     assert_eq!(value["tool_choice"], "auto");
     assert_eq!(value["stream"], true);
     assert_eq!(value["custom_passthrough"], true);
+}
+
+#[test]
+fn responses_http_normalizer_with_value_matches_byte_normalizer() {
+    let value = json!({
+        "model": "gpt-5.4",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        "custom_passthrough": true
+    });
+    let body = serde_json::to_vec(&value).expect("serialize body");
+
+    let expected = normalize_official_responses_http_body("/v1/responses", body.clone());
+    let (actual, normalized_value) =
+        normalize_official_responses_http_body_with_value("/v1/responses", body, value);
+
+    assert_eq!(actual, expected);
+    let normalized_value = normalized_value.expect("normalized value");
+    assert_eq!(normalized_value["model"], "gpt-5.4");
+    assert_eq!(normalized_value["custom_passthrough"], true);
+    assert_eq!(normalized_value["stream"], false);
 }
 
 #[test]

@@ -47,7 +47,6 @@ export interface Account {
   subscriptionRenewsAt: number | null;
   note: string | null;
   tags: string[];
-  modelSlugs: string[];
   quotaCapacityPrimaryWindowTokens: number | null;
   quotaCapacitySecondaryWindowTokens: number | null;
   isAvailable: boolean;

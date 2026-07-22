@@ -1,4 +1,3 @@
-use codexmanager_core::storage::Storage;
 use rusqlite::{backup::Backup, Connection};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -181,23 +180,27 @@ fn db_has_user_data(path: &Path) -> bool {
     if !path.is_file() {
         return false;
     }
-    let storage = match Storage::open(path) {
-        Ok(storage) => storage,
+    let conn = match Connection::open(path) {
+        Ok(conn) => conn,
         Err(_) => return false,
     };
-    let _ = storage.init();
-    storage
-        .list_accounts()
-        .map(|items| !items.is_empty())
-        .unwrap_or(false)
-        || storage
-            .list_tokens()
-            .map(|items| !items.is_empty())
-            .unwrap_or(false)
-        || storage
-            .list_api_keys()
-            .map(|items| !items.is_empty())
-            .unwrap_or(false)
+    ["accounts", "tokens", "api_keys"].into_iter().any(|table| {
+        let exists = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)
+            .unwrap_or(false);
+        exists
+            && conn
+                .query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map(|count| count > 0)
+                .unwrap_or(false)
+    })
 }
 
 /// 函数 `legacy_db_candidates`

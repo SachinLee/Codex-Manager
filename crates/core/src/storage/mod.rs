@@ -18,6 +18,8 @@ mod conversation_bindings;
 mod events;
 mod gateway_capabilities;
 mod key_id_filters;
+mod model_billing_v2;
+mod model_catalog_v2;
 mod model_groups;
 mod model_options;
 mod model_price_rules;
@@ -33,6 +35,13 @@ mod request_token_stats;
 mod settings;
 mod tokens;
 mod usage;
+
+pub use model_billing_v2::{
+    ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2, ModelPriceTierV2,
+};
+pub use model_catalog_v2::{
+    ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats, ModelPriceV2, ModelRouteV2,
+};
 
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -519,33 +528,6 @@ pub struct RequestTokenStat {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct RequestPricingSnapshot {
-    pub request_log_id: i64,
-    pub billing_mode: String,
-    pub context_band: String,
-    pub long_context_threshold_tokens: Option<i64>,
-    pub long_context_threshold_inclusive: Option<bool>,
-    pub matched_rule_id: Option<String>,
-    pub matched_pattern: Option<String>,
-    pub price_source: Option<String>,
-    pub match_quality: Option<String>,
-    pub price_status: String,
-    pub cost_source: Option<String>,
-    pub provider_cost_usd_ticks: Option<i64>,
-    pub provider_cost_usd: Option<f64>,
-    pub local_estimated_cost_usd: Option<f64>,
-    pub pricing_variance_usd: Option<f64>,
-    pub plain_input_cost_usd: Option<f64>,
-    pub cached_input_cost_usd: Option<f64>,
-    pub cache_write_cost_usd: Option<f64>,
-    pub output_cost_usd: Option<f64>,
-    pub total_cost_usd: Option<f64>,
-    pub short_baseline_cost_usd: Option<f64>,
-    pub long_context_uplift_usd: Option<f64>,
-    pub created_at: i64,
-}
-
 #[derive(Debug, Clone)]
 pub struct RequestLogTodaySummary {
     pub input_tokens: i64,
@@ -611,6 +593,33 @@ pub struct GatewayReasoningGuardEvent {
     pub total_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
     pub estimated_cost_usd: Option<f64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequestPricingSnapshot {
+    pub request_log_id: i64,
+    pub billing_mode: String,
+    pub context_band: String,
+    pub long_context_threshold_tokens: Option<i64>,
+    pub long_context_threshold_inclusive: Option<bool>,
+    pub matched_rule_id: Option<String>,
+    pub matched_pattern: Option<String>,
+    pub price_source: Option<String>,
+    pub match_quality: Option<String>,
+    pub price_status: String,
+    pub cost_source: Option<String>,
+    pub provider_cost_usd_ticks: Option<i64>,
+    pub provider_cost_usd: Option<f64>,
+    pub local_estimated_cost_usd: Option<f64>,
+    pub pricing_variance_usd: Option<f64>,
+    pub plain_input_cost_usd: Option<f64>,
+    pub cached_input_cost_usd: Option<f64>,
+    pub cache_write_cost_usd: Option<f64>,
+    pub output_cost_usd: Option<f64>,
+    pub total_cost_usd: Option<f64>,
+    pub short_baseline_cost_usd: Option<f64>,
+    pub long_context_uplift_usd: Option<f64>,
     pub created_at: i64,
 }
 
@@ -1166,6 +1175,8 @@ pub struct AggregateApiListSummary {
     pub auth_params_json: Option<String>,
     pub action: Option<String>,
     pub model_override: Option<String>,
+    pub cost_multiplier: f64,
+    pub daily_spend_limit_usd: Option<f64>,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1491,7 +1502,7 @@ impl Storage {
         // 中文注释：并发写入时给 SQLite 一点等待时间，避免瞬时 lock 导致请求直接失败。
         conn.busy_timeout(Duration::from_millis(3000))?;
         // 中文注释：复杂筛选/聚合的临时 B-tree 优先走内存，减少报表查询落盘开销。
-        conn.execute_batch("PRAGMA temp_store=MEMORY;")?;
+        conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA foreign_keys=ON;")?;
         Ok(())
     }
 
@@ -1574,11 +1585,6 @@ impl Storage {
             "004_api_key_model",
             include_str!("../../migrations/004_api_key_model.sql"),
             |s| s.ensure_api_key_model_column(),
-        )?;
-        self.apply_sql_or_compat_migration(
-            "114_request_pricing_snapshots",
-            include_str!("../../migrations/114_request_pricing_snapshots.sql"),
-            |s| s.ensure_request_pricing_snapshots_table(),
         )?;
         self.apply_sql_or_compat_migration(
             "005_request_logs",
@@ -1784,7 +1790,9 @@ impl Storage {
             include_str!("../../migrations/048_drop_model_options_cache.sql"),
         )?;
         self.apply_model_catalog_string_items_migration()?;
-        self.ensure_model_catalog_models_table()?;
+        if !self.has_migration("112_model_catalog_v2")? {
+            self.ensure_model_catalog_models_table()?;
+        }
         self.apply_sql_migration(
             "050_api_key_profiles_drop_azure_protocol",
             include_str!("../../migrations/050_api_key_profiles_drop_azure_protocol.sql"),
@@ -1817,6 +1825,8 @@ impl Storage {
                 s.ensure_aggregate_api_balance_secrets_table()
             },
         )?;
+        self.ensure_aggregate_apis_table()?;
+        self.ensure_aggregate_api_balance_secrets_table()?;
         self.apply_sql_or_compat_migration(
             "055_model_price_rules",
             include_str!("../../migrations/055_model_price_rules.sql"),
@@ -1855,36 +1865,6 @@ impl Storage {
         self.apply_compat_migration("062_observability_storage_compaction", |s| {
             s.compact_observability_storage_for_existing_databases()
         })?;
-        self.apply_sql_or_compat_migration(
-            "063_aggregate_api_cost_multiplier",
-            include_str!("../../migrations/063_aggregate_api_cost_multiplier.sql"),
-            |s| s.ensure_aggregate_apis_table(),
-        )?;
-        self.apply_sql_or_compat_migration(
-            "064_request_token_stats_aggregate_api",
-            include_str!("../../migrations/064_request_token_stats_aggregate_api.sql"),
-            |s| s.ensure_request_token_stats_table(),
-        )?;
-        self.apply_sql_or_compat_migration(
-            "065_aggregate_api_daily_spend_limit",
-            include_str!("../../migrations/065_aggregate_api_daily_spend_limit.sql"),
-            |s| s.ensure_aggregate_apis_table(),
-        )?;
-        self.apply_sql_or_compat_migration(
-            "066_request_logs_session_id",
-            include_str!("../../migrations/066_request_logs_session_id.sql"),
-            |s| s.ensure_request_log_session_id_column(),
-        )?;
-        self.apply_sql_or_compat_migration(
-            "067_request_logs_conversation_anchor",
-            include_str!("../../migrations/067_request_logs_conversation_anchor.sql"),
-            |s| s.ensure_request_log_conversation_anchor_column(),
-        )?;
-        self.apply_sql_or_compat_migration(
-            "068_request_token_daily_rollups",
-            include_str!("../../migrations/068_request_token_daily_rollups.sql"),
-            |s| s.ensure_request_token_daily_rollups_table(),
-        )?;
         self.apply_compat_migration("063_account_subscriptions_account_plan_type", |s| {
             s.ensure_account_subscriptions_table()
         })?;
@@ -2104,39 +2084,30 @@ impl Storage {
             "111_model_source_platform_slug_lookup_indexes",
             include_str!("../../migrations/111_model_source_platform_slug_lookup_indexes.sql"),
         )?;
+        self.apply_model_catalog_v2_migration()?;
+        self.apply_model_billing_v2_hardening_migration()?;
+        self.apply_gpt56_pricing_migration()?;
+        self.apply_model_catalog_codex_metadata_migration()?;
         self.apply_sql_or_compat_migration(
-            "112_gateway_reasoning_guard_events",
-            include_str!("../../migrations/112_gateway_reasoning_guard_events.sql"),
-            |s| s.ensure_gateway_reasoning_guard_events_table(),
+            "116_request_logs_visibility",
+            include_str!("../../migrations/116_request_logs_visibility.sql"),
+            |s| s.ensure_request_log_visibility_column(),
         )?;
-        self.apply_sql_or_compat_migration(
-            "113_model_price_rules_cache_write_tokens",
-            include_str!("../../migrations/113_model_price_rules_cache_write_tokens.sql"),
-            |s| {
-                s.ensure_model_price_rules_table()?;
-                s.ensure_request_token_stats_table()
-            },
-        )?;
-        self.apply_sql_or_compat_migration(
-            "115_grok_4_5_billing",
-            include_str!("../../migrations/115_grok_4_5_billing.sql"),
-            |s| {
-                s.ensure_model_price_rules_table()?;
-                s.ensure_request_pricing_snapshots_table()
-            },
-        )?;
-        self.apply_sql_or_compat_migration(
-            "116_gateway_capability_routing",
-            include_str!("../../migrations/116_gateway_capability_routing.sql"),
-            |s| s.ensure_gateway_capability_tables(),
+        // The custom branch used colliding 113-116 migration numbers.  Close the
+        // old schemas before the post-main bridge so its data repairs are valid
+        // whether those historical SQL migrations were recorded or not.
+        self.ensure_model_price_rules_table()?;
+        self.ensure_request_token_stats_table()?;
+        self.ensure_request_pricing_snapshots_table()?;
+        self.apply_sql_migration(
+            "117_custom_feature_bridge",
+            include_str!("../../migrations/117_custom_feature_bridge.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
-        self.ensure_aggregate_api_supplier_model_tables()?;
         self.ensure_aggregate_api_secrets_table()?;
         self.ensure_aggregate_api_balance_secrets_table()?;
         self.ensure_api_key_quota_limits_table()?;
-        self.ensure_model_price_rules_table()?;
         self.ensure_request_token_stats_table()?;
         self.ensure_request_log_request_type_and_service_tier_columns()?;
         self.ensure_request_log_effective_service_tier_column()?;
@@ -2145,17 +2116,15 @@ impl Storage {
         self.ensure_request_log_route_strategy_columns()?;
         self.ensure_request_log_first_response_column()?;
         self.ensure_request_log_route_detail_columns()?;
-        self.ensure_request_log_session_id_column()?;
-        self.ensure_request_log_conversation_anchor_column()?;
-        self.ensure_model_catalog_models_table()?;
+        self.ensure_request_log_visibility_column()?;
+        self.ensure_request_log_session_context_columns()?;
+        self.ensure_request_pricing_snapshots_table()?;
+        self.ensure_gateway_reasoning_guard_events_table()?;
+        self.ensure_gateway_capability_tables()?;
         self.ensure_account_subscriptions_table()?;
         self.ensure_quota_pool_tables()?;
         self.ensure_account_manager_tables()?;
-        self.ensure_model_source_tables()?;
-        self.ensure_aggregate_api_supplier_model_tables()?;
-        self.ensure_model_group_tables()?;
-        self.ensure_request_token_daily_rollups_table()?;
-        self.ensure_gateway_reasoning_guard_events_table()?;
+        self.seed_missing_builtin_models_v2()?;
         Ok(())
     }
 
@@ -2173,10 +2142,6 @@ impl Storage {
             touched = touched.saturating_add(self.rollup_request_token_stats_before(cutoff)?);
         }
         touched = touched.saturating_add(self.prune_request_logs_by_retention(now)?);
-        touched = touched.saturating_add(self.prune_expired_gateway_capability_observations(now)?);
-        touched = touched.saturating_add(
-            self.prune_gateway_upstream_attempt_events_by_retention(now)?,
-        );
         touched = touched.saturating_add(
             self.prune_usage_snapshots_all_accounts(usage::usage_snapshots_retain_per_account())?,
         );

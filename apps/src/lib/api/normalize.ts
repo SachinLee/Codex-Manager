@@ -8,16 +8,14 @@ import {
   AggregateApi,
   AggregateApiBalanceRefreshResult,
   AggregateApiBalanceSnapshot,
+  AggregateApiCreateResult,
   AggregateApiCapabilityDiagnosticsResult,
   AggregateApiCapabilityProbeResult,
   AggregateApiCapabilityStatus,
-  AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
   AggregateApiSecretResult,
-  AggregateApiSupplierModel,
-  AggregateApiSupplierModelImportResult,
   AggregateApiTestResult,
   ApiKey,
   ApiKeyCreateResult,
@@ -30,11 +28,6 @@ import {
   EnvOverrideCatalogItem,
   InstalledPluginSummary,
   LoginStartResult,
-  ManagedModelCatalog,
-  ManagedModelInfo,
-  ManagedModelRouting,
-  ManagedModelSourceMapping,
-  ManagedModelSourceModel,
   ModelCatalog,
   ModelInfo,
   ModelReasoningLevel,
@@ -46,12 +39,11 @@ import {
   PluginTaskSummary,
   RequestLog,
   RequestLogFilterSummary,
-  RequestLogModelUsageStat,
   RequestLogListResult,
   RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
-  GatewayPolicyActionSummary,
   RouteEvidenceSummary,
+  GatewayPolicyActionSummary,
   StartupSnapshot,
   UsageAggregateSummary,
 } from "@/types";
@@ -394,11 +386,23 @@ function normalizeStartupAccountSummary(payload: unknown) {
  */
 export function normalizeTodaySummary(payload: unknown): RequestLogTodaySummary {
   const source = asObject(payload);
-  const inputTokens = asInteger(source.inputTokens, 0, 0);
-  const cachedInputTokens = asInteger(source.cachedInputTokens, 0, 0);
-  const cacheWriteInputTokens = asInteger(source.cacheWriteInputTokens, 0, 0);
-  const outputTokens = asInteger(source.outputTokens, 0, 0);
-  const reasoningOutputTokens = asInteger(source.reasoningOutputTokens, 0, 0);
+  const inputTokens = asInteger(source.inputTokens ?? source.input_tokens, 0, 0);
+  const cachedInputTokens = asInteger(
+    source.cachedInputTokens ?? source.cached_input_tokens,
+    0,
+    0
+  );
+  const cacheWriteInputTokens = asInteger(
+    source.cacheWriteInputTokens ?? source.cache_write_input_tokens,
+    0,
+    0
+  );
+  const outputTokens = asInteger(source.outputTokens ?? source.output_tokens, 0, 0);
+  const reasoningOutputTokens = asInteger(
+    source.reasoningOutputTokens ?? source.reasoning_output_tokens,
+    0,
+    0
+  );
   return {
     inputTokens,
     cachedInputTokens,
@@ -419,84 +423,92 @@ function normalizeDailyUsageBase(source: Record<string, unknown>) {
   const cachedInputTokens = asInteger(
     source.cachedInputTokens ?? source.cached_input_tokens,
     0,
-    0,
+    0
   );
   const cacheWriteInputTokens = asInteger(
     source.cacheWriteInputTokens ?? source.cache_write_input_tokens,
     0,
-    0,
-  );
-  const billableInputTokens = asInteger(
-    source.billableInputTokens ?? source.billable_input_tokens,
-    Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens),
-    0,
+    0
   );
   return {
     requestCount: asInteger(source.requestCount ?? source.request_count, 0, 0),
     inputTokens,
     cachedInputTokens,
     cacheWriteInputTokens,
-    billableInputTokens,
+    billableInputTokens: asInteger(
+      source.billableInputTokens ?? source.billable_input_tokens,
+      Math.max(0, inputTokens - cachedInputTokens - cacheWriteInputTokens),
+      0
+    ),
     outputTokens: asInteger(source.outputTokens ?? source.output_tokens, 0, 0),
     totalTokens: asInteger(source.totalTokens ?? source.total_tokens, 0, 0),
     reasoningOutputTokens: asInteger(
       source.reasoningOutputTokens ?? source.reasoning_output_tokens,
       0,
-      0,
+      0
     ),
     estimatedCostUsd: Math.max(
       0,
-      toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0,
+      toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0
     ),
     cacheHitRate: Math.min(
       1,
       Math.max(
         0,
         toNullableNumber(source.cacheHitRate ?? source.cache_hit_rate) ??
-          (inputTokens > 0 ? cachedInputTokens / inputTokens : 0),
-      ),
+          (inputTokens > 0 ? cachedInputTokens / inputTokens : 0)
+      )
     ),
   };
 }
 
-export function normalizeAccountDailyUsageStats(
-  payload: unknown,
-): AccountDailyUsageStat[] {
+export function normalizeAccountDailyUsageStats(payload: unknown): AccountDailyUsageStat[] {
   const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return items.reduce<AccountDailyUsageStat[]>((result, item) => {
+  return asArray(source.items ?? payload).reduce<AccountDailyUsageStat[]>((result, item) => {
     const record = asObject(item);
     const accountId = asString(record.accountId ?? record.account_id);
-    if (!accountId) return result;
-    result.push({
-      accountId,
-      ...normalizeDailyUsageBase(record),
-    });
+    if (accountId) result.push({ accountId, ...normalizeDailyUsageBase(record) });
     return result;
   }, []);
 }
 
 export function normalizeAggregateApiDailyUsageStats(
-  payload: unknown,
+  payload: unknown
 ): AggregateApiDailyUsageStat[] {
   const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return items.reduce<AggregateApiDailyUsageStat[]>((result, item) => {
+  return asArray(source.items ?? payload).reduce<AggregateApiDailyUsageStat[]>((result, item) => {
     const record = asObject(item);
-    const aggregateApiId = asString(
-      record.aggregateApiId ?? record.aggregate_api_id,
-    );
+    const aggregateApiId = asString(record.aggregateApiId ?? record.aggregate_api_id);
     if (!aggregateApiId) return result;
+    const base = normalizeDailyUsageBase(record);
     result.push({
       aggregateApiId,
       aggregateApiSupplierName:
-        asString(
-          record.aggregateApiSupplierName ?? record.aggregate_api_supplier_name,
-        ) || null,
-      aggregateApiUrl:
-        asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
-      ...normalizeDailyUsageBase(record),
-      ...normalizeAggregateApiBillableUsage(record),
+        asString(record.aggregateApiSupplierName ?? record.aggregate_api_supplier_name) || null,
+      aggregateApiUrl: asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
+      ...base,
+      guardRetryTotalTokens: asInteger(
+        record.guardRetryTotalTokens ?? record.guard_retry_total_tokens,
+        0,
+        0
+      ),
+      guardRetryEstimatedCostUsd: Math.max(
+        0,
+        toNullableNumber(
+          record.guardRetryEstimatedCostUsd ?? record.guard_retry_estimated_cost_usd
+        ) ?? 0
+      ),
+      billableTotalTokens: asInteger(
+        record.billableTotalTokens ?? record.billable_total_tokens,
+        base.totalTokens,
+        0
+      ),
+      billableEstimatedCostUsd: Math.max(
+        0,
+        toNullableNumber(
+          record.billableEstimatedCostUsd ?? record.billable_estimated_cost_usd
+        ) ?? base.estimatedCostUsd
+      ),
     });
     return result;
   }, []);
@@ -560,7 +572,6 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
     ),
     note: asString(source.note) || null,
     tags: asStringArray(source.tags),
-    modelSlugs: asStringArray(source.modelSlugs ?? source.model_slugs),
     quotaCapacityPrimaryWindowTokens: toNullableNumber(
       source.quotaCapacityPrimaryWindowTokens ??
         source.quota_capacity_primary_window_tokens
@@ -779,19 +790,6 @@ function normalizeModelInfo(payload: unknown): ModelInfo | null {
   };
 }
 
-export function normalizeManagedModelInfo(payload: unknown): ManagedModelInfo | null {
-  const model = normalizeModelInfo(payload);
-  if (!model) return null;
-  const source = asObject(payload);
-  return {
-    ...model,
-    sourceKind: asString(source.source_kind ?? source.sourceKind) || "remote",
-    userEdited: asBoolean(source.user_edited ?? source.userEdited, false),
-    sortIndex: asInteger(source.sort_index ?? source.sortIndex, 0, -1),
-    updatedAt: asInteger(source.updated_at ?? source.updatedAt, 0, 0),
-  };
-}
-
 /**
  * 函数 `normalizeModelCatalog`
  *
@@ -813,73 +811,6 @@ export function normalizeModelCatalog(payload: unknown): ModelCatalog {
     models: items
       .map((item) => normalizeModelInfo(item))
       .filter((item): item is ModelInfo => Boolean(item)),
-  };
-}
-
-export function normalizeManagedModelCatalog(payload: unknown): ManagedModelCatalog {
-  const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return {
-    ...source,
-    items: items
-      .map((item) => normalizeManagedModelInfo(item))
-      .filter((item): item is ManagedModelInfo => Boolean(item)),
-  };
-}
-
-function normalizeManagedModelSourceModel(payload: unknown): ManagedModelSourceModel | null {
-  const source = asObject(payload);
-  const sourceKind = asString(source.sourceKind ?? source.source_kind);
-  const sourceId = asString(source.sourceId ?? source.source_id);
-  const upstreamModel = asString(source.upstreamModel ?? source.upstream_model);
-  if (!sourceKind || !sourceId || !upstreamModel) return null;
-  return {
-    sourceKind,
-    sourceId,
-    upstreamModel,
-    displayName: asString(source.displayName ?? source.display_name) || null,
-    status: asString(source.status) || "available",
-    discoveryKind: asString(source.discoveryKind ?? source.discovery_kind) || "synced",
-    lastSyncedAt: toNullableNumber(source.lastSyncedAt ?? source.last_synced_at),
-    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
-    updatedAt: asInteger(source.updatedAt ?? source.updated_at, 0, 0),
-  };
-}
-
-function normalizeManagedModelSourceMapping(payload: unknown): ManagedModelSourceMapping | null {
-  const source = asObject(payload);
-  const id = asString(source.id);
-  const platformModelSlug = asString(
-    source.platformModelSlug ?? source.platform_model_slug,
-  );
-  const sourceKind = asString(source.sourceKind ?? source.source_kind);
-  const sourceId = asString(source.sourceId ?? source.source_id);
-  const upstreamModel = asString(source.upstreamModel ?? source.upstream_model);
-  if (!id || !platformModelSlug || !sourceKind || !sourceId || !upstreamModel) return null;
-  return {
-    id,
-    platformModelSlug,
-    sourceKind,
-    sourceId,
-    upstreamModel,
-    enabled: asBoolean(source.enabled, true),
-    priority: asInteger(source.priority, 0, -100000),
-    weight: asInteger(source.weight, 1, 1),
-    billingModelSlug: asString(source.billingModelSlug ?? source.billing_model_slug) || null,
-    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
-    updatedAt: asInteger(source.updatedAt ?? source.updated_at, 0, 0),
-  };
-}
-
-export function normalizeManagedModelRouting(payload: unknown): ManagedModelRouting {
-  const source = asObject(payload);
-  return {
-    sourceModels: asArray(source.sourceModels ?? source.source_models)
-      .map((item) => normalizeManagedModelSourceModel(item))
-      .filter((item): item is ManagedModelSourceModel => Boolean(item)),
-    mappings: asArray(source.mappings)
-      .map((item) => normalizeManagedModelSourceMapping(item))
-      .filter((item): item is ManagedModelSourceMapping => Boolean(item)),
   };
 }
 
@@ -1066,7 +997,7 @@ export function normalizeAggregateApiList(payload: unknown): AggregateApi[] {
 }
 
 export function normalizeAggregateApiRuntimeStatus(
-  payload: unknown,
+  payload: unknown
 ): AggregateApiRuntimeStatus | null {
   const source = asObject(payload);
   const aggregateApiId = asString(source.aggregateApiId ?? source.aggregate_api_id);
@@ -1077,30 +1008,68 @@ export function normalizeAggregateApiRuntimeStatus(
     consecutiveFailures: asInteger(
       source.consecutiveFailures ?? source.consecutive_failures,
       0,
-      0,
+      0
     ),
     failureThreshold: Math.max(
       1,
-      asInteger(source.failureThreshold ?? source.failure_threshold, 5, 1),
+      asInteger(source.failureThreshold ?? source.failure_threshold, 5, 1)
     ),
     cooldownUntil: toNullableNumber(source.cooldownUntil ?? source.cooldown_until),
-    remainingSecs: Math.max(
-      0,
-      asInteger(source.remainingSecs ?? source.remaining_secs, 0, 0),
-    ),
+    remainingSecs: asInteger(source.remainingSecs ?? source.remaining_secs, 0, 0),
     lastFailureAt: toNullableNumber(source.lastFailureAt ?? source.last_failure_at),
     reason: asString(source.reason) || null,
   };
 }
 
 export function normalizeAggregateApiRuntimeStatusList(
-  payload: unknown,
+  payload: unknown
 ): AggregateApiRuntimeStatus[] {
   const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return items
-    .map((item) => normalizeAggregateApiRuntimeStatus(item))
+  return asArray(source.items ?? payload)
+    .map(normalizeAggregateApiRuntimeStatus)
     .filter((item): item is AggregateApiRuntimeStatus => Boolean(item));
+}
+
+function normalizeAggregateApiCapabilityStatus(
+  value: unknown
+): AggregateApiCapabilityStatus {
+  const status = asString(value);
+  return status === "supported" || status === "unsupported" || status === "not_tested"
+    ? status
+    : "unknown";
+}
+
+export function normalizeAggregateApiCapabilityDiagnosticsResult(
+  payload: unknown
+): AggregateApiCapabilityDiagnosticsResult {
+  const source = asObject(payload);
+  return {
+    id: asString(source.id),
+    providerType: asString(source.providerType ?? source.provider_type),
+    diagnosedAt: asInteger(source.diagnosedAt ?? source.diagnosed_at, 0, 0),
+    latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
+    nonMutating: asBoolean(source.nonMutating ?? source.non_mutating, true),
+    liveSmoke: asBoolean(source.liveSmoke ?? source.live_smoke, false),
+    probes: asArray(source.probes).reduce<AggregateApiCapabilityProbeResult[]>(
+      (probes, item) => {
+        const probe = asObject(item);
+        const name = asString(probe.name);
+        if (!name) return probes;
+        probes.push({
+          name,
+          status: normalizeAggregateApiCapabilityStatus(probe.status),
+          reason: asString(probe.reason),
+          httpStatus: toNullableNumber(probe.httpStatus ?? probe.http_status),
+          risk: asString(probe.risk) || null,
+          recommendedMode:
+            asString(probe.recommendedMode ?? probe.recommended_mode) || null,
+          latencyMs: asInteger(probe.latencyMs ?? probe.latency_ms, 0, 0),
+        });
+        return probes;
+      },
+      []
+    ),
+  };
 }
 
 /**
@@ -1160,58 +1129,6 @@ export function normalizeAggregateApiTestResult(payload: unknown): AggregateApiT
   };
 }
 
-function normalizeAggregateApiCapabilityStatus(
-  value: unknown,
-): AggregateApiCapabilityStatus {
-  const status = asString(value);
-  if (
-    status === "supported" ||
-    status === "unsupported" ||
-    status === "unknown" ||
-    status === "not_tested"
-  ) {
-    return status;
-  }
-  return "unknown";
-}
-
-function normalizeAggregateApiCapabilityProbe(
-  payload: unknown,
-): AggregateApiCapabilityProbeResult | null {
-  const source = asObject(payload);
-  const name = asString(source.name);
-  if (!name) return null;
-  return {
-    name,
-    status: normalizeAggregateApiCapabilityStatus(source.status),
-    reason: asString(source.reason),
-    httpStatus: toNullableNumber(source.httpStatus ?? source.http_status),
-    risk: asString(source.risk) || null,
-    recommendedMode:
-      asString(source.recommendedMode ?? source.recommended_mode) || null,
-    latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
-  };
-}
-
-export function normalizeAggregateApiCapabilityDiagnosticsResult(
-  payload: unknown,
-): AggregateApiCapabilityDiagnosticsResult {
-  const source = asObject(payload);
-  return {
-    id: asString(source.id),
-    providerType: asString(source.providerType ?? source.provider_type),
-    diagnosedAt: asInteger(source.diagnosedAt ?? source.diagnosed_at, 0, 0),
-    latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
-    nonMutating: asBoolean(source.nonMutating ?? source.non_mutating, true),
-    liveSmoke: asBoolean(source.liveSmoke ?? source.live_smoke, false),
-    probes: asArray(source.probes)
-      .map((item) => normalizeAggregateApiCapabilityProbe(item))
-      .filter(
-        (item): item is AggregateApiCapabilityProbeResult => Boolean(item),
-      ),
-  };
-}
-
 export function normalizeAggregateApiBalanceSnapshot(
   payload: unknown
 ): AggregateApiBalanceSnapshot | null {
@@ -1247,47 +1164,6 @@ export function normalizeAggregateApiBalanceRefreshResult(
     message: asString(source.message) || null,
     queriedAt: asInteger(source.queriedAt ?? source.queried_at, 0, 0),
     latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
-  };
-}
-
-export function normalizeAggregateApiSupplierModel(
-  payload: unknown
-): AggregateApiSupplierModel | null {
-  const source = asObject(payload);
-  const supplierKey = asString(source.supplierKey ?? source.supplier_key);
-  const providerType = asString(source.providerType ?? source.provider_type);
-  const upstreamModel = asString(source.upstreamModel ?? source.upstream_model);
-  if (!supplierKey || !providerType || !upstreamModel) return null;
-  return {
-    supplierKey,
-    providerType,
-    upstreamModel,
-    displayName: asString(source.displayName ?? source.display_name) || null,
-    status: asString(source.status) || "available",
-    createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
-    updatedAt: asInteger(source.updatedAt ?? source.updated_at, 0, 0),
-  };
-}
-
-export function normalizeAggregateApiSupplierModelList(
-  payload: unknown
-): AggregateApiSupplierModel[] {
-  const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return items
-    .map((item) => normalizeAggregateApiSupplierModel(item))
-    .filter((item): item is AggregateApiSupplierModel => Boolean(item));
-}
-
-export function normalizeAggregateApiSupplierModelImportResult(
-  payload: unknown
-): AggregateApiSupplierModelImportResult {
-  const source = asObject(payload);
-  return {
-    imported: asInteger(source.imported, 0, 0),
-    items: asArray(source.items)
-      .map((item) => normalizeManagedModelSourceModel(item))
-      .filter((item): item is ManagedModelSourceModel => Boolean(item)),
   };
 }
 
@@ -1650,6 +1526,19 @@ export function normalizeLoginStartResult(payload: unknown): LoginStartResult {
   };
 }
 
+/**
+ * 函数 `normalizeRequestLog`
+ *
+ * 作者: gaohongshun
+ *
+ * 时间: 2026-04-02
+ *
+ * # 参数
+ * - item: 参数 item
+ *
+ * # 返回
+ * 返回函数执行结果
+ */
 function normalizeRouteEvidenceSummary(payload: unknown): RouteEvidenceSummary | null {
   const source = asObject(payload);
   const kind = asString(source.kind);
@@ -1663,15 +1552,13 @@ function normalizeRouteEvidenceSummary(payload: unknown): RouteEvidenceSummary |
     confidence: asString(source.confidence) || "unknown",
     reason,
     statusCode: toNullableNumber(source.statusCode ?? source.status_code),
-    retryAfterSecs: toNullableNumber(
-      source.retryAfterSecs ?? source.retry_after_secs,
-    ),
+    retryAfterSecs: toNullableNumber(source.retryAfterSecs ?? source.retry_after_secs),
     observedAt: asInteger(source.observedAt ?? source.observed_at, 0, 0),
   };
 }
 
 function normalizeGatewayPolicyActionSummary(
-  payload: unknown,
+  payload: unknown
 ): GatewayPolicyActionSummary | null {
   const source = asObject(payload);
   const id = asString(source.id);
@@ -1686,29 +1573,13 @@ function normalizeGatewayPolicyActionSummary(
     reason: asString(source.reason),
     createdAt: asInteger(source.createdAt ?? source.created_at, 0, 0),
     expiresAt: asInteger(source.expiresAt ?? source.expires_at, 0, 0),
-    remainingSecs: Math.max(
-      0,
-      asInteger(source.remainingSecs ?? source.remaining_secs, 0, 0),
-    ),
+    remainingSecs: asInteger(source.remainingSecs ?? source.remaining_secs, 0, 0),
     sourceEvidence: asArray(source.sourceEvidence ?? source.source_evidence)
-      .map((entry) => normalizeRouteEvidenceSummary(entry))
+      .map(normalizeRouteEvidenceSummary)
       .filter((entry): entry is RouteEvidenceSummary => Boolean(entry)),
   };
 }
 
-/**
- * 函数 `normalizeRequestLog`
- *
- * 作者: gaohongshun
- *
- * 时间: 2026-04-02
- *
- * # 参数
- * - item: 参数 item
- *
- * # 返回
- * 返回函数执行结果
- */
 export function normalizeRequestLog(item: unknown): RequestLog | null {
   const source = asObject(item);
   const createdAt = toNullableNumber(source.createdAt ?? source.created_at);
@@ -1742,9 +1613,7 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     id,
     traceId,
     sessionId: asString(source.sessionId ?? source.session_id),
-    conversationAnchor: asString(
-      source.conversationAnchor ?? source.conversation_anchor
-    ),
+    conversationAnchor: asString(source.conversationAnchor ?? source.conversation_anchor),
     keyId,
     accountId,
     initialAccountId: asString(source.initialAccountId ?? source.initial_account_id),
@@ -1768,10 +1637,10 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     routeStrategy: asString(source.routeStrategy ?? source.route_strategy),
     routeSource: asString(source.routeSource ?? source.route_source),
     routeEvidence: asArray(source.routeEvidence ?? source.route_evidence)
-      .map((entry) => normalizeRouteEvidenceSummary(entry))
+      .map(normalizeRouteEvidenceSummary)
       .filter((entry): entry is RouteEvidenceSummary => Boolean(entry)),
     policyActions: asArray(source.policyActions ?? source.policy_actions)
-      .map((entry) => normalizeGatewayPolicyActionSummary(entry))
+      .map(normalizeGatewayPolicyActionSummary)
       .filter((entry): entry is GatewayPolicyActionSummary => Boolean(entry)),
     path: requestPath,
     clientModel: asString(source.clientModel ?? source.client_model),
@@ -1827,10 +1696,10 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     pricingBillingMode:
       asString(source.pricingBillingMode ?? source.pricing_billing_mode) || null,
     longContextThresholdTokens: toNullableNumber(
-      source.longContextThresholdTokens ?? source.long_context_threshold_tokens,
+      source.longContextThresholdTokens ?? source.long_context_threshold_tokens
     ),
     longContextThresholdInclusive: toNullableBoolean(
-      source.longContextThresholdInclusive ?? source.long_context_threshold_inclusive,
+      source.longContextThresholdInclusive ?? source.long_context_threshold_inclusive
     ),
     pricingMatchedRuleId:
       asString(source.pricingMatchedRuleId ?? source.pricing_matched_rule_id) || null,
@@ -1844,76 +1713,59 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
       asString(source.pricingCostSource ?? source.pricing_cost_source) || null,
     providerCostUsd: toNullableNumber(source.providerCostUsd ?? source.provider_cost_usd),
     localEstimatedCostUsd: toNullableNumber(
-      source.localEstimatedCostUsd ?? source.local_estimated_cost_usd,
+      source.localEstimatedCostUsd ?? source.local_estimated_cost_usd
     ),
     pricingVarianceUsd: toNullableNumber(
-      source.pricingVarianceUsd ?? source.pricing_variance_usd,
+      source.pricingVarianceUsd ?? source.pricing_variance_usd
     ),
     plainInputCostUsd: toNullableNumber(
-      source.plainInputCostUsd ?? source.plain_input_cost_usd,
+      source.plainInputCostUsd ?? source.plain_input_cost_usd
     ),
     cachedInputCostUsd: toNullableNumber(
-      source.cachedInputCostUsd ?? source.cached_input_cost_usd,
+      source.cachedInputCostUsd ?? source.cached_input_cost_usd
     ),
     cacheWriteCostUsd: toNullableNumber(
-      source.cacheWriteCostUsd ?? source.cache_write_cost_usd,
+      source.cacheWriteCostUsd ?? source.cache_write_cost_usd
     ),
     outputCostUsd: toNullableNumber(source.outputCostUsd ?? source.output_cost_usd),
     shortBaselineCostUsd: toNullableNumber(
-      source.shortBaselineCostUsd ?? source.short_baseline_cost_usd,
+      source.shortBaselineCostUsd ?? source.short_baseline_cost_usd
     ),
     longContextUpliftUsd: toNullableNumber(
-      source.longContextUpliftUsd ?? source.long_context_uplift_usd,
+      source.longContextUpliftUsd ?? source.long_context_uplift_usd
     ),
-    guardEventCount: Math.max(
+    guardEventCount: asInteger(source.guardEventCount ?? source.guard_event_count, 0, 0),
+    guardInternalRetryCount: asInteger(
+      source.guardInternalRetryCount ?? source.guard_internal_retry_count,
       0,
-      asInteger(source.guardEventCount ?? source.guard_event_count, 0, 0),
+      0
     ),
-    guardInternalRetryCount: Math.max(
+    guardBlockCount: asInteger(source.guardBlockCount ?? source.guard_block_count, 0, 0),
+    guardRecoveredCount: asInteger(
+      source.guardRecoveredCount ?? source.guard_recovered_count,
       0,
-      asInteger(
-        source.guardInternalRetryCount ?? source.guard_internal_retry_count,
-        0,
-        0,
-      ),
+      0
     ),
-    guardBlockCount: Math.max(
+    guardRetryTotalTokens: asInteger(
+      source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
       0,
-      asInteger(source.guardBlockCount ?? source.guard_block_count, 0, 0),
+      0
     ),
-    guardRecoveredCount: Math.max(
+    guardRetryEstimatedCostUsd: Math.max(
       0,
-      asInteger(
-        source.guardRecoveredCount ?? source.guard_recovered_count,
-        0,
-        0,
-      ),
-    ),
-    guardRetryTotalTokens: Math.max(
-      0,
-      asInteger(
-        source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
-        0,
-        0,
-      ),
-    ),
-    guardRetryEstimatedCostUsd:
       toNullableNumber(
-        source.guardRetryEstimatedCostUsd ??
-          source.guard_retry_estimated_cost_usd,
-      ) ?? 0,
-    guardLastAction:
-      asString(source.guardLastAction ?? source.guard_last_action) || null,
-    guardLastTargetToken:
-      toNullableNumber(
-        source.guardLastTargetToken ?? source.guard_last_target_token,
-      ) ?? null,
+        source.guardRetryEstimatedCostUsd ?? source.guard_retry_estimated_cost_usd
+      ) ?? 0
+    ),
+    guardLastAction: asString(source.guardLastAction ?? source.guard_last_action) || null,
+    guardLastTargetToken: toNullableNumber(
+      source.guardLastTargetToken ?? source.guard_last_target_token
+    ),
     billableTotalTokens: toNullableNumber(
-      source.billableTotalTokens ?? source.billable_total_tokens,
+      source.billableTotalTokens ?? source.billable_total_tokens
     ),
     billableEstimatedCostUsd: toNullableNumber(
-      source.billableEstimatedCostUsd ??
-        source.billable_estimated_cost_usd,
+      source.billableEstimatedCostUsd ?? source.billable_estimated_cost_usd
     ),
     durationMs,
     firstResponseMs,
@@ -2004,56 +1856,117 @@ export function normalizeRequestLogFilterSummary(
     guardRetryTotalTokens: asInteger(
       source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
       0,
-      0,
+      0
     ),
     guardRetryEstimatedCostUsd: Math.max(
       0,
       toNullableNumber(
-        source.guardRetryEstimatedCostUsd ??
-          source.guard_retry_estimated_cost_usd,
-      ) ?? 0,
+        source.guardRetryEstimatedCostUsd ?? source.guard_retry_estimated_cost_usd
+      ) ?? 0
     ),
-    longContextCount: asInteger(source.longContextCount, 0, 0),
-    longContextCostUsd: Math.max(0, toNullableNumber(source.longContextCostUsd) ?? 0),
-    longContextUpliftUsd: Math.max(0, toNullableNumber(source.longContextUpliftUsd) ?? 0),
-    legacyCandidateCount: asInteger(source.legacyCandidateCount, 0, 0),
-    modelStats: asArray(source.modelStats ?? source.model_stats).map((item) =>
-      normalizeRequestLogModelUsageStat(item),
+    longContextCount: asInteger(source.longContextCount ?? source.long_context_count, 0, 0),
+    longContextCostUsd: Math.max(
+      0,
+      toNullableNumber(source.longContextCostUsd ?? source.long_context_cost_usd) ?? 0
     ),
+    longContextUpliftUsd: Math.max(
+      0,
+      toNullableNumber(source.longContextUpliftUsd ?? source.long_context_uplift_usd) ?? 0
+    ),
+    legacyCandidateCount: asInteger(
+      source.legacyCandidateCount ?? source.legacy_candidate_count,
+      0,
+      0
+    ),
+    modelStats: asArray(source.modelStats ?? source.model_stats).map((item) => {
+      const stat = asObject(item);
+      return {
+        model: asString(stat.model, "(unknown)") || "(unknown)",
+        requestCount: asInteger(stat.requestCount ?? stat.request_count, 0, 0),
+        successCount: asInteger(stat.successCount ?? stat.success_count, 0, 0),
+        errorCount: asInteger(stat.errorCount ?? stat.error_count, 0, 0),
+        totalTokens: asInteger(stat.totalTokens ?? stat.total_tokens, 0, 0),
+        estimatedCostUsd: Math.max(
+          0,
+          toNullableNumber(stat.estimatedCostUsd ?? stat.estimated_cost_usd) ?? 0
+        ),
+        inputTokens: asInteger(stat.inputTokens ?? stat.input_tokens, 0, 0),
+        cachedInputTokens: asInteger(
+          stat.cachedInputTokens ?? stat.cached_input_tokens,
+          0,
+          0
+        ),
+        outputTokens: asInteger(stat.outputTokens ?? stat.output_tokens, 0, 0),
+        reasoningOutputTokens: asInteger(
+          stat.reasoningOutputTokens ?? stat.reasoning_output_tokens,
+          0,
+          0
+        ),
+      };
+    }),
     modelStatsTruncated: asBoolean(
       source.modelStatsTruncated ?? source.model_stats_truncated,
-      false,
+      false
     ),
   };
 }
 
-function normalizeRequestLogModelUsageStat(
-  payload: unknown,
-): RequestLogModelUsageStat {
+export function normalizeAggregateApiReasoningGuardStats(
+  payload: unknown
+): AggregateApiReasoningGuardStat[] {
   const source = asObject(payload);
-  return {
-    model: asString(source.model, "(unknown)") || "(unknown)",
-    requestCount: asInteger(source.requestCount ?? source.request_count, 0, 0),
-    successCount: asInteger(source.successCount ?? source.success_count, 0, 0),
-    errorCount: asInteger(source.errorCount ?? source.error_count, 0, 0),
-    totalTokens: asInteger(source.totalTokens ?? source.total_tokens, 0, 0),
-    estimatedCostUsd: Math.max(
-      0,
-      toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0,
-    ),
-    inputTokens: asInteger(source.inputTokens ?? source.input_tokens, 0, 0),
-    cachedInputTokens: asInteger(
-      source.cachedInputTokens ?? source.cached_input_tokens,
-      0,
-      0,
-    ),
-    outputTokens: asInteger(source.outputTokens ?? source.output_tokens, 0, 0),
-    reasoningOutputTokens: asInteger(
-      source.reasoningOutputTokens ?? source.reasoning_output_tokens,
-      0,
-      0,
-    ),
-  };
+  const statNumber = (value: unknown) => Math.max(0, toNullableNumber(value) ?? 0);
+  const ratio = (value: unknown) => Math.min(1, statNumber(value));
+  return asArray(source.items ?? payload).reduce<AggregateApiReasoningGuardStat[]>(
+    (result, item) => {
+      const record = asObject(item);
+      const aggregateApiId = asString(record.aggregateApiId ?? record.aggregate_api_id);
+      if (!aggregateApiId) return result;
+      result.push({
+        aggregateApiId,
+        aggregateApiSupplierName:
+          asString(record.aggregateApiSupplierName ?? record.aggregate_api_supplier_name) || null,
+        aggregateApiUrl: asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
+        totalRequestCount: statNumber(record.totalRequestCount ?? record.total_request_count),
+        eventCount: statNumber(record.eventCount ?? record.event_count),
+        affectedRequestCount: statNumber(
+          record.affectedRequestCount ?? record.affected_request_count
+        ),
+        matchRate: ratio(record.matchRate ?? record.match_rate),
+        internalRetryCount: statNumber(record.internalRetryCount ?? record.internal_retry_count),
+        internalRetryRequestCount: statNumber(
+          record.internalRetryRequestCount ?? record.internal_retry_request_count
+        ),
+        retryRecoveryCount: statNumber(record.retryRecoveryCount ?? record.retry_recovery_count),
+        retryRecoveryRate: ratio(record.retryRecoveryRate ?? record.retry_recovery_rate),
+        blockCount: statNumber(record.blockCount ?? record.block_count),
+        blockedRequestCount: statNumber(
+          record.blockedRequestCount ?? record.blocked_request_count
+        ),
+        blockRate: ratio(record.blockRate ?? record.block_rate),
+        observeOnlyCount: statNumber(record.observeOnlyCount ?? record.observe_only_count),
+        bypassAfterConsecutiveCount: statNumber(
+          record.bypassAfterConsecutiveCount ?? record.bypass_after_consecutive_count
+        ),
+        guardInputTokens: statNumber(record.guardInputTokens ?? record.guard_input_tokens),
+        guardCachedInputTokens: statNumber(
+          record.guardCachedInputTokens ?? record.guard_cached_input_tokens
+        ),
+        guardOutputTokens: statNumber(record.guardOutputTokens ?? record.guard_output_tokens),
+        guardTotalTokens: statNumber(record.guardTotalTokens ?? record.guard_total_tokens),
+        guardReasoningOutputTokens: statNumber(
+          record.guardReasoningOutputTokens ?? record.guard_reasoning_output_tokens
+        ),
+        guardEstimatedCostUsd: statNumber(
+          record.guardEstimatedCostUsd ?? record.guard_estimated_cost_usd
+        ),
+        lastTargetToken: toNullableNumber(record.lastTargetToken ?? record.last_target_token),
+        lastEventAt: toNullableNumber(record.lastEventAt ?? record.last_event_at),
+      });
+      return result;
+    },
+    []
+  );
 }
 
 /**
@@ -2179,199 +2092,6 @@ export function normalizeQuotaGuard(payload: unknown): QuotaGuardSettings {
   };
 }
 
-function normalizeAggregateApiBillableUsage(source: Record<string, unknown>) {
-  const totalTokens = asInteger(source.totalTokens ?? source.total_tokens, 0, 0);
-  const estimatedCostUsd = Math.max(
-    0,
-    toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0,
-  );
-  return {
-    guardRetryTotalTokens: asInteger(
-      source.guardRetryTotalTokens ?? source.guard_retry_total_tokens,
-      0,
-      0,
-    ),
-    guardRetryEstimatedCostUsd: Math.max(
-      0,
-      toNullableNumber(
-        source.guardRetryEstimatedCostUsd ??
-          source.guard_retry_estimated_cost_usd,
-      ) ?? 0,
-    ),
-    billableTotalTokens: asInteger(
-      source.billableTotalTokens ?? source.billable_total_tokens,
-      totalTokens,
-      0,
-    ),
-    billableEstimatedCostUsd: Math.max(
-      0,
-      toNullableNumber(
-        source.billableEstimatedCostUsd ??
-          source.billable_estimated_cost_usd,
-      ) ?? estimatedCostUsd,
-    ),
-  };
-}
-
-export function normalizeAggregateApiReasoningGuardStats(
-  payload: unknown,
-): AggregateApiReasoningGuardStat[] {
-  const source = asObject(payload);
-  const items = asArray(source.items ?? payload);
-  return items.reduce<AggregateApiReasoningGuardStat[]>((result, item) => {
-    const record = asObject(item);
-    const aggregateApiId = asString(
-      record.aggregateApiId ?? record.aggregate_api_id,
-    );
-    if (!aggregateApiId) return result;
-    const statNumber = (value: unknown) => toNullableNumber(value) ?? 0;
-    result.push({
-      aggregateApiId,
-      aggregateApiSupplierName:
-        asString(
-          record.aggregateApiSupplierName ?? record.aggregate_api_supplier_name,
-        ) || null,
-      aggregateApiUrl:
-        asString(record.aggregateApiUrl ?? record.aggregate_api_url) || null,
-      totalRequestCount: Math.max(
-        0,
-        statNumber(record.totalRequestCount ?? record.total_request_count),
-      ),
-      eventCount: Math.max(0, statNumber(record.eventCount ?? record.event_count)),
-      affectedRequestCount: Math.max(
-        0,
-        statNumber(record.affectedRequestCount ?? record.affected_request_count),
-      ),
-      matchRate: Math.min(
-        1,
-        Math.max(0, statNumber(record.matchRate ?? record.match_rate)),
-      ),
-      internalRetryCount: Math.max(
-        0,
-        statNumber(record.internalRetryCount ?? record.internal_retry_count),
-      ),
-      internalRetryRequestCount: Math.max(
-        0,
-        statNumber(
-          record.internalRetryRequestCount ??
-            record.internal_retry_request_count,
-        ),
-      ),
-      retryRecoveryCount: Math.max(
-        0,
-        statNumber(record.retryRecoveryCount ?? record.retry_recovery_count),
-      ),
-      retryRecoveryRate: Math.min(
-        1,
-        Math.max(
-          0,
-          statNumber(record.retryRecoveryRate ?? record.retry_recovery_rate),
-        ),
-      ),
-      blockCount: Math.max(0, statNumber(record.blockCount ?? record.block_count)),
-      blockedRequestCount: Math.max(
-        0,
-        statNumber(record.blockedRequestCount ?? record.blocked_request_count),
-      ),
-      blockRate: Math.min(
-        1,
-        Math.max(0, statNumber(record.blockRate ?? record.block_rate)),
-      ),
-      observeOnlyCount: Math.max(
-        0,
-        statNumber(record.observeOnlyCount ?? record.observe_only_count),
-      ),
-      bypassAfterConsecutiveCount: Math.max(
-        0,
-        statNumber(
-          record.bypassAfterConsecutiveCount ??
-            record.bypass_after_consecutive_count,
-        ),
-      ),
-      guardInputTokens: Math.max(
-        0,
-        statNumber(record.guardInputTokens ?? record.guard_input_tokens),
-      ),
-      guardCachedInputTokens: Math.max(
-        0,
-        statNumber(
-          record.guardCachedInputTokens ?? record.guard_cached_input_tokens,
-        ),
-      ),
-      guardOutputTokens: Math.max(
-        0,
-        statNumber(record.guardOutputTokens ?? record.guard_output_tokens),
-      ),
-      guardTotalTokens: Math.max(
-        0,
-        statNumber(record.guardTotalTokens ?? record.guard_total_tokens),
-      ),
-      guardReasoningOutputTokens: Math.max(
-        0,
-        statNumber(
-          record.guardReasoningOutputTokens ??
-            record.guard_reasoning_output_tokens,
-        ),
-      ),
-      guardEstimatedCostUsd: Math.max(
-        0,
-        statNumber(
-          record.guardEstimatedCostUsd ?? record.guard_estimated_cost_usd,
-        ),
-      ),
-      lastTargetToken:
-        toNullableNumber(record.lastTargetToken ?? record.last_target_token) ??
-        null,
-      lastEventAt:
-        toNullableNumber(record.lastEventAt ?? record.last_event_at) ?? null,
-    });
-    return result;
-  }, []);
-}
-
-function normalizeReasoningGuardTargets(payload: unknown): number[] {
-  const rawItems =
-    typeof payload === "string"
-      ? payload.split(/[\s,;]+/)
-      : asArray(payload);
-  const values: number[] = [];
-  for (const item of rawItems) {
-    const value = asInteger(item, 0, 1);
-    if (value > 0 && !values.includes(value)) {
-      values.push(value);
-    }
-  }
-  return values.length > 0 ? values : [516, 1034, 1552];
-}
-
-function normalizeReasoningGuardMatchMode(payload: unknown): string {
-  const normalized = asString(payload).toLowerCase();
-  if (
-    normalized === "formula518nminus2" ||
-    normalized === "formula_518n_minus_2"
-  ) {
-    return "formula518nMinus2";
-  }
-  return "targets";
-}
-
-function normalizeReasoningGuardStreamAction(payload: unknown): string {
-  const normalized = asString(payload).toLowerCase();
-  if (
-    normalized === "continuationrecovery" ||
-    normalized === "continuation_recovery" ||
-    normalized === "continuation-recovery"
-  ) {
-    return "continuationRecovery";
-  }
-  return "strictRetry";
-}
-
-function normalizeReasoningGuardContinuationMarkerText(payload: unknown): string {
-  const value = asString(payload).trim();
-  return value || "Continue thinking...";
-}
-
 export function normalizeRuntimeTimeZone(payload: unknown): RuntimeTimeZone {
   const source = asObject(payload);
   return {
@@ -2418,6 +2138,8 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
   const source = asObject(payload);
   return {
     updateAutoCheck: asBoolean(source.updateAutoCheck, true),
+    autoStartEnabled: asBoolean(source.autoStartEnabled, false),
+    autoStartSupported: asBoolean(source.autoStartSupported, false),
     closeToTrayOnClose: asBoolean(source.closeToTrayOnClose, false),
     closeToTraySupported: asBoolean(source.closeToTraySupported, false),
     lowTransparency: asBoolean(source.lowTransparency, false),
@@ -2453,51 +2175,14 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     freeAccountMaxModelOptions: asArray(source.freeAccountMaxModelOptions).map((item) =>
       asString(item)
     ),
-    modelCatalogAutoRemoteFetch: asBoolean(source.modelCatalogAutoRemoteFetch, true),
     modelForwardRules: asString(source.modelForwardRules ?? source.model_forward_rules),
     compactModelForwardRules: asString(
       source.compactModelForwardRules ?? source.compact_model_forward_rules
     ),
-    autoCompactEnabled: asBoolean(
-      source.autoCompactEnabled ?? source.auto_compact_enabled,
-      false
-    ),
     accountMaxInflight: asInteger(source.accountMaxInflight, 1, 0),
-    reasoningGuardEnabled: asBoolean(source.reasoningGuardEnabled, true),
-    reasoningGuardMatchMode: normalizeReasoningGuardMatchMode(
-      source.reasoningGuardMatchMode ?? source.reasoning_guard_match_mode
-    ),
-    reasoningGuardStreamAction: normalizeReasoningGuardStreamAction(
-      source.reasoningGuardStreamAction ?? source.reasoning_guard_stream_action
-    ),
-    reasoningGuardContinuationMarkerText:
-      normalizeReasoningGuardContinuationMarkerText(
-        source.reasoningGuardContinuationMarkerText ??
-          source.reasoning_guard_continuation_marker_text
-      ),
-    reasoningGuardTargets: normalizeReasoningGuardTargets(
-      source.reasoningGuardTargets ?? source.reasoning_guard_targets
-    ),
-    reasoningGuardInterceptStreaming: asBoolean(
-      source.reasoningGuardInterceptStreaming ??
-        source.reasoning_guard_intercept_streaming,
+    threadAwareAccountDistributionEnabled: asBoolean(
+      source.threadAwareAccountDistributionEnabled,
       true
-    ),
-    reasoningGuardInterceptNonStreaming: asBoolean(
-      source.reasoningGuardInterceptNonStreaming ??
-        source.reasoning_guard_intercept_non_streaming,
-      true
-    ),
-    reasoningGuardRetryAttempts: asInteger(
-      source.reasoningGuardRetryAttempts ??
-        source.reasoning_guard_retry_attempts,
-      3,
-      0
-    ),
-    reasoningGuardBypassAfterConsecutive: asInteger(
-      source.reasoningGuardBypassAfterConsecutive,
-      0,
-      0
     ),
     quotaGuard: normalizeQuotaGuard(source.quotaGuard ?? source.quota_guard),
     gatewayOriginator:
@@ -2524,6 +2209,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       DEFAULT_AUTHOR_SERVER_RECOMMENDATIONS
     ),
     upstreamProxyUrl: asString(source.upstreamProxyUrl),
+    upstreamProxyBypassHosts: asString(source.upstreamProxyBypassHosts),
     upstreamStreamTimeoutMs: asInteger(source.upstreamStreamTimeoutMs, 300_000, 0),
     upstreamTotalTimeoutMs: asInteger(source.upstreamTotalTimeoutMs, 0, 0),
     sseKeepaliveIntervalMs: asInteger(source.sseKeepaliveIntervalMs, 15_000, 1),

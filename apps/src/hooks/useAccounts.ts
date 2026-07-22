@@ -772,7 +772,6 @@ export function useAccounts() {
       note,
       tags,
       sort,
-      modelSlugs,
       quotaCapacityPrimaryWindowTokens,
       quotaCapacitySecondaryWindowTokens,
     }: {
@@ -781,7 +780,6 @@ export function useAccounts() {
       note?: string | null;
       tags?: string[] | string | null;
       sort?: number | null;
-      modelSlugs?: string[] | null;
       quotaCapacityPrimaryWindowTokens?: number | null;
       quotaCapacitySecondaryWindowTokens?: number | null;
     }) =>
@@ -790,16 +788,14 @@ export function useAccounts() {
         note,
         tags,
         sort,
-        modelSlugs,
         quotaCapacityPrimaryWindowTokens,
         quotaCapacitySecondaryWindowTokens,
       }),
     onSuccess: async (_result, variables) => {
-      const touchesQuotaOrModels =
-        variables.modelSlugs !== undefined ||
+      const touchesQuota =
         variables.quotaCapacityPrimaryWindowTokens !== undefined ||
         variables.quotaCapacitySecondaryWindowTokens !== undefined;
-      if (touchesQuotaOrModels) {
+      if (touchesQuota) {
         await invalidateAccountData();
       } else {
         await invalidateAccountListData();
@@ -1069,7 +1065,6 @@ export function useAccounts() {
         note?: string | null;
         tags?: string[] | string | null;
         sort?: number | null;
-        modelSlugs?: string[] | null;
         quotaCapacityPrimaryWindowTokens?: number | null;
         quotaCapacitySecondaryWindowTokens?: number | null;
       }

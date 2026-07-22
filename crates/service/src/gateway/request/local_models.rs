@@ -1,5 +1,4 @@
 use codexmanager_core::rpc::types::{ModelInfo, ModelsResponse};
-const MODEL_CACHE_SCOPE_DEFAULT: &str = "default";
 
 #[derive(serde::Serialize)]
 struct CompatibleModelsResponse<'a> {
@@ -100,7 +99,7 @@ fn models_etag_header(models: &ModelsResponse) -> Result<Option<tiny_http::Heade
 fn read_cached_models_response(
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<ModelsResponse, String> {
-    crate::apikey_models::read_model_options_from_storage(storage)
+    crate::models_v2::models_response_with_storage(storage)
 }
 
 /// 函数 `maybe_respond_local_models`
@@ -161,45 +160,7 @@ pub(super) fn maybe_respond_local_models(
         }
     };
 
-    let models = if !cached.is_empty() {
-        cached
-    } else {
-        match super::fetch_models_for_picker() {
-            Ok(fetched) if !fetched.is_empty() => {
-                let merged = crate::apikey_models::merge_models_response(cached.clone(), fetched);
-                if let Err(err) =
-                    crate::apikey_models::save_model_options_with_storage(storage, &merged)
-                {
-                    log::warn!(
-                        "event=gateway_model_catalog_upsert_failed scope={} err={}",
-                        MODEL_CACHE_SCOPE_DEFAULT,
-                        err
-                    );
-                }
-                merged
-            }
-            Ok(_) => {
-                let message = crate::gateway::bilingual_error(
-                    "模型刷新后返回空目录",
-                    "models refresh returned empty catalog",
-                );
-                super::local_response::respond_local_terminal_error(
-                    request, &context, 503, message,
-                )?;
-                return Ok(None);
-            }
-            Err(err) => {
-                let message = crate::gateway::bilingual_error(
-                    "模型刷新失败",
-                    format!("models refresh failed: {err}"),
-                );
-                super::local_response::respond_local_terminal_error(
-                    request, &context, 503, message,
-                )?;
-                return Ok(None);
-            }
-        }
-    };
+    let models = cached;
 
     let (output_models, include_implicit_models) = filter_models_for_key(storage, key_id, models)?;
     let output_models = apply_auto_compact_policy(&output_models, super::auto_compact_enabled());

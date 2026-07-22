@@ -987,9 +987,10 @@ fn account_summary_storage_snapshot_loads_related_rows_for_requested_accounts() 
     assert_eq!(snapshot.metadata[0].note.as_deref(), Some("note"));
     assert_eq!(snapshot.subscriptions.len(), 1);
     assert_eq!(snapshot.subscriptions[0].plan_type.as_deref(), Some("plus"));
-    assert_eq!(snapshot.model_assignments.len(), 1);
-    assert_eq!(snapshot.model_assignments[0].source_kind, "openai_account");
-    assert_eq!(snapshot.model_assignments[0].model_slug, "gpt-visible");
+    assert!(
+        snapshot.model_assignments.is_empty(),
+        "account runtime must not consume legacy model assignments"
+    );
     assert_eq!(snapshot.quota_overrides.len(), 1);
     assert_eq!(snapshot.quota_overrides[0].primary_window_tokens, Some(100));
 
@@ -2474,8 +2475,8 @@ fn delete_accounts_removes_accounts_and_dependent_rows_in_one_call() {
         ] {
             assert_eq!(
                 model_source_account_row_count(&storage, table, deleted_account_id),
-                0,
-                "{table} should not keep account source rows for deleted account"
+                1,
+                "{table} is legacy read-only data and must remain untouched"
             );
         }
     }

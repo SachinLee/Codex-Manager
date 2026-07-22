@@ -26,7 +26,7 @@ export function ServiceListenCard({
   };
 }) {
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardHeader>
         <div className="flex items-center gap-2">
           <Globe className="h-4 w-4 text-primary" />
@@ -125,7 +125,7 @@ export function AccessControlCard({
   }
 
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardHeader>
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-primary" />

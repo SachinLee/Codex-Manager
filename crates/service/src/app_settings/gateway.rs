@@ -25,28 +25,18 @@ struct CodexNpmLatestResponse {
 }
 
 use super::{
-    get_persisted_app_setting, normalize_optional_text, parse_bool_with_default,
-    save_persisted_app_setting, save_persisted_bool_setting,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY,
-    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    normalize_optional_text, save_persisted_app_setting, save_persisted_bool_setting,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
-    APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
-    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
-    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
+    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
-    APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
-    APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
+    APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
 };
 
@@ -144,10 +134,12 @@ pub fn set_gateway_route_strategy(strategy: &str) -> Result<String, String> {
 }
 
 pub fn set_gateway_capability_routing_mode(mode: &str) -> Result<String, String> {
-    let applied = gateway::set_capability_routing_mode(mode)?.as_str().to_string();
+    let applied = gateway::set_capability_routing_mode(mode)?
+        .as_str()
+        .to_string();
     save_persisted_app_setting(
         APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
-        Some(&applied),
+        Some(applied.as_str()),
     )?;
     Ok(applied)
 }
@@ -243,30 +235,6 @@ pub fn current_gateway_compact_model_forward_rules() -> String {
     gateway::current_compact_model_forward_rules()
 }
 
-pub(crate) fn set_gateway_auto_compact_enabled(enabled: bool) -> Result<bool, String> {
-    let applied = gateway::set_auto_compact_enabled(enabled);
-    save_persisted_bool_setting(APP_SETTING_GATEWAY_AUTO_COMPACT_ENABLED_KEY, applied)?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_auto_compact_enabled() -> bool {
-    gateway::auto_compact_enabled()
-}
-
-pub fn set_gateway_model_catalog_auto_remote_fetch(enabled: bool) -> Result<bool, String> {
-    save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
-        enabled,
-    )?;
-    Ok(enabled)
-}
-
-pub fn current_gateway_model_catalog_auto_remote_fetch() -> bool {
-    get_persisted_app_setting(APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY)
-        .map(|value| parse_bool_with_default(&value, true))
-        .unwrap_or(true)
-}
-
 /// 函数 `set_gateway_account_max_inflight`
 ///
 /// 作者: gaohongshun
@@ -302,134 +270,19 @@ pub fn current_gateway_account_max_inflight() -> usize {
     gateway::account_max_inflight_limit()
 }
 
-pub(crate) fn set_gateway_reasoning_guard_enabled(enabled: bool) -> Result<bool, String> {
-    let applied = gateway::set_reasoning_guard_enabled(enabled);
-    save_persisted_bool_setting(APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY, applied)?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_enabled() -> bool {
-    gateway::reasoning_guard_enabled()
-}
-
-fn serialize_reasoning_guard_targets(values: &[i64]) -> String {
-    values
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-pub(crate) fn set_gateway_reasoning_guard_targets(values: &[i64]) -> Result<Vec<i64>, String> {
-    let applied = gateway::set_reasoning_guard_targets(values);
-    let raw = serialize_reasoning_guard_targets(&applied);
-    save_persisted_app_setting(APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY, Some(&raw))?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_targets() -> Vec<i64> {
-    gateway::current_reasoning_guard_targets()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_match_mode(raw: &str) -> Result<String, String> {
-    let applied = gateway::set_reasoning_guard_match_mode(raw);
-    let value = applied.to_string();
-    save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
-        Some(value.as_str()),
-    )?;
-    Ok(value)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_match_mode() -> String {
-    gateway::current_reasoning_guard_match_mode().to_string()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_stream_action(raw: &str) -> Result<String, String> {
-    let applied = gateway::set_reasoning_guard_stream_action(raw);
-    let value = applied.to_string();
-    save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
-        Some(value.as_str()),
-    )?;
-    Ok(value)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_stream_action() -> String {
-    gateway::current_reasoning_guard_stream_action().to_string()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_continuation_marker_text(
-    raw: &str,
-) -> Result<String, String> {
-    let applied = gateway::set_reasoning_guard_continuation_marker_text(raw);
-    save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
-        Some(applied.as_str()),
-    )?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_continuation_marker_text() -> String {
-    gateway::current_reasoning_guard_continuation_marker_text()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_intercept_streaming(
+pub fn set_gateway_thread_aware_account_distribution_enabled(
     enabled: bool,
 ) -> Result<bool, String> {
-    let applied = gateway::set_reasoning_guard_intercept_streaming(enabled);
+    let applied = gateway::set_thread_aware_account_distribution_enabled(enabled);
     save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
+        APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
         applied,
     )?;
     Ok(applied)
 }
 
-pub(crate) fn current_gateway_reasoning_guard_intercept_streaming() -> bool {
-    gateway::reasoning_guard_intercept_streaming()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_intercept_non_streaming(
-    enabled: bool,
-) -> Result<bool, String> {
-    let applied = gateway::set_reasoning_guard_intercept_non_streaming(enabled);
-    save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
-        applied,
-    )?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_intercept_non_streaming() -> bool {
-    gateway::reasoning_guard_intercept_non_streaming()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_retry_attempts(attempts: usize) -> Result<usize, String> {
-    let applied = gateway::set_reasoning_guard_retry_attempts(attempts);
-    save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
-        Some(&applied.to_string()),
-    )?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_retry_attempts() -> usize {
-    gateway::reasoning_guard_retry_attempts()
-}
-
-pub(crate) fn set_gateway_reasoning_guard_bypass_after_consecutive(
-    threshold: usize,
-) -> Result<usize, String> {
-    let applied = gateway::set_reasoning_guard_bypass_after_consecutive(threshold);
-    save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
-        Some(&applied.to_string()),
-    )?;
-    Ok(applied)
-}
-
-pub(crate) fn current_gateway_reasoning_guard_bypass_after_consecutive() -> usize {
-    gateway::reasoning_guard_bypass_after_consecutive()
+pub fn current_gateway_thread_aware_account_distribution_enabled() -> bool {
+    gateway::thread_aware_account_distribution_enabled()
 }
 
 pub(crate) fn set_gateway_quota_guard(
@@ -701,6 +554,23 @@ pub fn set_gateway_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<
     save_persisted_app_setting(
         APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
         applied.as_deref(),
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_upstream_proxy_bypass_hosts() -> String {
+    gateway::current_upstream_proxy_bypass_hosts()
+}
+
+pub fn set_gateway_upstream_proxy_bypass_hosts(raw: Option<&str>) -> Result<String, String> {
+    let applied = gateway::set_upstream_proxy_bypass_hosts(raw);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
+        if applied.is_empty() {
+            None
+        } else {
+            Some(applied.as_str())
+        },
     )?;
     Ok(applied)
 }

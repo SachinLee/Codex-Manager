@@ -241,7 +241,7 @@ function PartnerTableRow({
 
 function EmptyAuthorContent({ translate }: { translate: (message: string) => string }) {
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardContent className="py-12 text-center">
         <p className="text-sm text-muted-foreground">{translate("暂无内容")}</p>
       </CardContent>
@@ -333,7 +333,7 @@ export default function AuthorPage() {
       </div>
 
       <Tabs defaultValue="sponsor">
-        <TabsList className="glass-card flex h-11 w-full justify-start overflow-x-auto rounded-xl p-1 no-scrollbar lg:w-fit">
+        <TabsList className="glass-card mission-panel flex h-11 w-full justify-start overflow-x-auto rounded-xl p-1 no-scrollbar lg:w-fit">
           <TabsTrigger value="sponsor" className="gap-2 px-5 shrink-0">
             {t("赞助 / 推荐")}
           </TabsTrigger>
@@ -346,7 +346,7 @@ export default function AuthorPage() {
           {!hasAuthorContent ? <EmptyAuthorContent translate={t} /> : null}
 
           {visibleSponsors.length > 0 ? (
-            <Card className="glass-card shadow-sm">
+            <Card className="glass-card mission-panel shadow-sm">
               <CardHeader className="gap-3">
                 <div className="flex items-center gap-2">
                   <HeartHandshake className="h-4 w-4 text-primary" />
@@ -368,7 +368,7 @@ export default function AuthorPage() {
           ) : null}
 
           {visibleServerRecommendations.length > 0 ? (
-            <Card className="glass-card shadow-sm">
+            <Card className="glass-card mission-panel shadow-sm">
               <CardHeader className="gap-3">
                 <div className="flex items-center gap-2">
                   <Server className="h-4 w-4 text-primary" />
@@ -403,7 +403,7 @@ export default function AuthorPage() {
             </h3>
           </div>
 
-          <Card className="glass-card shadow-sm">
+          <Card className="glass-card mission-panel shadow-sm">
             <CardHeader className="gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
@@ -439,7 +439,7 @@ export default function AuthorPage() {
             </CardContent>
           </Card>
 
-          <Card className="glass-card shadow-sm">
+          <Card className="glass-card mission-panel shadow-sm">
             <CardHeader className="gap-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">

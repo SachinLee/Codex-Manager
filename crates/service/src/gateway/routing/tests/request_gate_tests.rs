@@ -1,6 +1,6 @@
 use super::*;
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
 
 /// 函数 `same_scope_reuses_same_lock_instance`
 ///
@@ -120,21 +120,25 @@ fn acquire_waits_until_previous_guard_released() {
         .expect("lock should not be poisoned")
         .expect("first guard");
     let waiter = lock.clone();
+    let (waiter_observed_hold, main) = mpsc::channel();
 
     let handle = thread::spawn(move || {
-        let started_at = Instant::now();
+        assert!(
+            waiter
+                .try_acquire()
+                .expect("lock should not be poisoned")
+                .is_none(),
+            "waiter must observe the existing guard before waiting"
+        );
+        waiter_observed_hold
+            .send(())
+            .expect("notify main thread that the lock is held");
         let guard = waiter.acquire().expect("waiter acquires after release");
-        let waited = started_at.elapsed();
         drop(guard);
-        waited
     });
 
-    thread::sleep(Duration::from_millis(60));
+    main.recv().expect("waiter observed the current guard");
     drop(first_guard);
 
-    let waited = handle.join().expect("join waiter thread");
-    assert!(
-        waited >= Duration::from_millis(40),
-        "expected waiter to block, actual wait: {waited:?}"
-    );
+    handle.join().expect("join waiter thread");
 }

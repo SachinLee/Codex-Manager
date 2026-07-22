@@ -337,9 +337,9 @@ fn extract_status_code_from_message(message: &str) -> i64 {
 
 fn resolve_warmup_model_slug(storage: &Storage) -> String {
     storage
-        .find_first_api_available_model_catalog_slug("default")
+        .list_api_models_v2()
         .ok()
-        .flatten()
+        .and_then(|models| models.into_iter().next().map(|model| model.slug))
         .filter(|slug| !slug.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string())
 }

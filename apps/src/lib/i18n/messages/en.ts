@@ -107,6 +107,7 @@ export const EN_MESSAGES: MessageCatalog = {
   "5小时剩余": "5-hour remaining",
   "7天剩余": "7-day remaining",
   剩余额度: "Remaining quota",
+  暂无重置时间: "No reset time",
   暂无可识别的活跃账号: "No identifiable active account",
   正在等待服务连接: "Waiting for service connection",
   智能推荐: "Smart recommendations",
@@ -115,6 +116,14 @@ export const EN_MESSAGES: MessageCatalog = {
   "5小时优先账号": "5-hour priority account",
   "7天优先账号": "7-day priority account",
   "当前没有可推荐的可用账号。": "No recommended available accounts right now.",
+  线程感知账号分配: "Thread-aware account distribution",
+  "开启后未绑定的新线程会优先选择当前承载线程更少的可用账号，已有线程仍保持账号粘性。":
+    "When enabled, unbound new threads prefer available accounts with fewer assigned threads while existing threads stay sticky.",
+  "代理 Bypass 域名": "Proxy bypass hosts",
+  留空表示不绕过代理: "Leave empty to bypass nothing",
+  "一行一个或用逗号分隔；命中的上游域名会绕过全局代理直连。支持精确域名和":
+    "One per line or comma-separated. Matching upstream hosts bypass the global proxy. Supports exact hosts and",
+  "通配。": "wildcards.",
   免责声明: "Disclaimer",
   详情: "Details",
   我知道了: "Got it",
@@ -127,6 +136,9 @@ export const EN_MESSAGES: MessageCatalog = {
   控制应用启动和窗口行为: "Control startup and window behavior.",
   自动检查更新: "Check updates automatically",
   启动时自动检测新版本: "Check for new versions on startup.",
+  开机自动启动: "Launch at startup",
+  系统登录后自动启动桌面端并保持网关可用:
+    "Launch the desktop app after system sign-in and keep the gateway available.",
   关闭时最小化到托盘: "Minimize to tray on close",
   点击关闭按钮不会直接退出程序:
     "Closing the window won't exit the app immediately.",
@@ -429,10 +441,6 @@ export const EN_MESSAGES: MessageCatalog = {
   "已导出到本地 Codex 缓存": "Exported to local Codex cache",
   "Codex 缓存已下载，请保存到 `~/.codex/models_cache.json`":
     "Codex cache downloaded. Please save it to `~/.codex/models_cache.json`.",
-  "保存后会自动同步到 `~/.codex/models_cache.json`；如需让 `/model` 立即看到最新模型与说明，仍需重启正在运行中的 Codex 会话。桌面端可直接点击上方导出按钮替换本地缓存；浏览器模式则会下载同名 `models_cache.json`，再手动放入 `~/.codex/`。":
-    "After saving, the cache is automatically synced to `~/.codex/models_cache.json`. To make `/model` pick up the latest models and descriptions immediately, you still need to restart the running Codex session. On desktop, use the export button above to replace the local cache directly; in browser mode, a `models_cache.json` file will be downloaded and you can place it into `~/.codex/` manually.",
-  "保存后会自动同步到 `~/.codex/models_cache.json`；如需让 `/model` 立即看到最新模型与说明，仍需重启正在运行中的 Codex 会话。Web 端可通过上方导出按钮下载同名 `models_cache.json`，再手动放入本地 `~/.codex/`；桌面端继续由本地自动同步。":
-    "After saving, the cache is automatically synced to `~/.codex/models_cache.json`. To make `/model` pick up the latest models and descriptions immediately, you still need to restart the running Codex session. On the web, use the export button above to download a `models_cache.json` file and place it into the local `~/.codex/` folder manually; desktop continues to sync locally automatically.",
   当前环境不支持浏览器导出:
     "The current runtime does not support browser export",
   "当前环境不支持导出 Codex 缓存":
@@ -630,7 +638,6 @@ export const EN_MESSAGES: MessageCatalog = {
   选择策略: "Choose a strategy",
   "顺序优先 (Ordered)": "Ordered priority (Ordered)",
   "均衡轮询 (Balanced)": "Balanced rotation (Balanced)",
-  "Free 账号使用模型": "Free-account model cap",
   模型转发规则: "Model forwarding rules",
   后台任务线程: "Background task workers",
   用量轮询线程: "Usage polling worker",
@@ -696,8 +703,11 @@ export const EN_MESSAGES: MessageCatalog = {
   "中 (medium)": "Medium (medium)",
   "高 (high)": "High (high)",
   "极高 (xhigh)": "Very high (xhigh)",
+  "最大 (max)": "Maximum (max)",
   "会覆盖请求里的 reasoning effort。":
     "Overrides the reasoning effort inside the request.",
+  "会覆盖请求里的 reasoning effort。Ultra 由 Codex 客户端负责编排，网关覆盖最多设置为 max。":
+    "Overrides the request reasoning effort. Ultra is orchestrated by the Codex client; gateway overrides are limited to max.",
   "Fast 会映射为上游 priority；未设置时跟随请求。":
     "Fast maps to upstream priority; otherwise it follows the request.",
   平台密钥已生成: "API key generated",
@@ -975,14 +985,11 @@ export const EN_MESSAGES: MessageCatalog = {
   源模型: "Source model",
   目标模型: "Target model",
   新增规则: "Add rule",
-  压缩模型转发规则: "Compact model forwarding rules",
   "例如：spark*": "e.g. spark*",
   "例如：gpt-5.4": "e.g. gpt-5.4",
   "例如：gpt-5.4-openai-compact": "e.g. gpt-5.4-openai-compact",
   "左边匹配请求模型，右边填写转发目标；支持":
     "Match the request model on the left and enter the forwarding target on the right. Supports",
-  "仅对 /v1/responses/compact 生效；命中后会在 compact 请求里优先改写模型。":
-    "Applies only to /v1/responses/compact. When matched, the model is rewritten first for compact requests.",
   "通配。平台 Key 没有强绑模型时，会先按这里把请求模型改写，再进入账号路由。":
     "Wildcard. When the platform key doesn't force a model, the request model is rewritten here before account routing.",
   "通配兼容 (Codex / Claude Code / Gemini CLI)":
@@ -1063,8 +1070,6 @@ export const EN_MESSAGES: MessageCatalog = {
   账号已禁用: "Account disabled",
   账号已启用: "Account enabled",
   账号已删除: "Account deleted",
-  "确定要删除选中的 {count} 个模型吗？如果后续执行远端刷新，远端模型可能会再次并入本地目录。":
-    "Delete the selected {count} models? A later remote refresh may merge remote models back into the local catalog.",
   "批量删除完成：成功{success}个，失败{failed}个":
     "Bulk delete finished: {success} succeeded, {failed} failed",
   账号用量已刷新: "Account usage refreshed",
@@ -1131,8 +1136,6 @@ export const EN_MESSAGES: MessageCatalog = {
     "Minimum threads reserved for normal HTTP requests to avoid being too idle.",
   普通请求自动并发: "Normal request auto concurrency",
   普通请求最低保底: "Normal request minimum",
-  "设为“跟随请求”时，不会额外改写 free / 7天单窗口账号的模型；只有你选了具体模型后，命中这些账号时才会统一改写为该模型。":
-    'When set to "Follow request", the model for free/7-day single-window accounts won\'t be rewritten; only when you choose a specific model will those accounts be rewritten to it.',
   适合小规模或低峰值场景: "Suitable for small scale or low peaks",
   "顺序优先：按账号候选顺序优先尝试，默认只会在头部小窗口内按健康度做轻微换头；均衡轮询：按“平台密钥 + 模型”维度严格轮询可用账号，默认不做健康度换头。":
     "Ordered: try accounts in order, with slight health-based head swapping in the top small window; Balanced: strictly round-robin available accounts by “API key + model”, no health swapping by default.",
@@ -1566,28 +1569,13 @@ export const EN_MESSAGES: MessageCatalog = {
   原始路径: "Original path",
   模型目录: "Model catalog",
   模型管理: "Model management",
-  "这里维护本地结构化模型目录。默认绑定模型会优先展示 supportedInApi=true 的模型，而 Codex CLI 仍会拿到完整目录。":
-    "Maintain the local structured model catalog here. Default model binding prefers models with supportedInApi=true, while Codex CLI still receives the full catalog.",
-  "完整目录会同步到 Codex CLI": "The full catalog syncs to Codex CLI",
   "默认绑定优先展示 API 可用模型":
     "Default bindings prioritize models available through the API",
-  远端刷新可与本地覆写共存: "Remote refresh can coexist with local overrides",
   模型目录明细: "Catalog details",
-  "按 slug、显示名称或描述快速定位，并结合来源与覆写状态查看当前目录。":
-    "Quickly locate entries by slug, display name, or description, and review the current catalog together with source and override status.",
-  远端并入: "Merge remote",
-  清理远端旧模型: "Prune stale remote models",
-  远端旧模型已清理: "Stale remote models pruned",
-  清理远端旧模型失败: "Failed to prune stale remote models",
-  "远端旧模型已清理，但同步 Codex 模型缓存失败":
-    "Stale remote models were pruned, but syncing the Codex model cache failed",
-  "仅删除未本地覆写且不再出现在远端目录中的远端模型，不会删除自定义模型。":
-    "Only deletes remote models that have no local override and no longer appear in the remote catalog. Custom models are not deleted.",
   新增自定义模型: "Add custom model",
   模型总数: "Total models",
   "API 可用": "API available",
   自定义模型: "Custom models",
-  本地覆写: "Local overrides",
   当前筛选: "Current filter",
   "共 {count} 条": "{count} items",
   "搜索 slug、显示名称或描述": "Search slug, display name, or description",
@@ -1599,12 +1587,10 @@ export const EN_MESSAGES: MessageCatalog = {
     "The service is disconnected, so the model catalog cannot be loaded right now.",
   "没有匹配的模型。你可以调整筛选条件，或直接新增一个自定义模型。":
     "No models match the current filters. Adjust the filters or add a custom model directly.",
-  远端: "Remote",
   可见性: "Visibility",
   推理等级: "Reasoning level",
   更新时间: "Updated at",
   未填写描述: "No description provided",
-  已覆写: "Overridden",
   隐藏: "Hidden",
   未配置: "Not configured",
   未同步: "Not synced",
@@ -1612,8 +1598,6 @@ export const EN_MESSAGES: MessageCatalog = {
   编辑模型: "Edit model",
   删除模型: "Delete model",
   "删除中...": "Deleting...",
-  "确定要删除模型 {slug} 吗？如果后续执行远端刷新，远端模型可能会再次并入本地目录。":
-    "Delete model {slug}? If you run a remote refresh later, the remote model may be merged back into the local catalog.",
   "会影响运行时配置；修改后请观察请求链路是否稳定。":
     "This affects runtime configuration. After changing it, monitor whether the request path remains stable.",
   "上游 Originator": "Upstream Originator",
@@ -1668,8 +1652,8 @@ export const EN_MESSAGES: MessageCatalog = {
   "Cron 表达式需要 5 段，或带秒的 6 段":
     "Cron expressions must have 5 fields, or 6 fields when including seconds",
   额度保护: "Quota protection",
-  "低于保留百分比的账号会从网关路由和远端模型刷新候选中跳过。":
-    "Accounts below the reserved percentage are skipped by gateway routing and remote model refresh candidate selection.",
+  "低于保留百分比的账号会从网关路由候选中跳过。":
+    "Accounts below the reserved percentage are skipped by gateway routing.",
   "5 小时窗口保留 (%)": "5-hour window reserve (%)",
   "周窗口保留 (%)": "Weekly window reserve (%)",
   全部低额度时兜底: "Fallback when all quotas are low",
@@ -1693,4 +1677,6 @@ export const EN_MESSAGES: MessageCatalog = {
   未分配: "Unassigned",
   按我的平台密钥累计: "Accumulated by my platform keys",
   归属成员: "Owner member",
+  本月: "This month", 标题: "Title", "标题：": "Title:", 待移动: "To move", "调试端口：": "Debug port:", 个会话: "sessions", "个会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。": "sessions and their local data. You can undo within 30 days with a backup token.", "个已归档会话及其本地数据。": "archived sessions and their local data.", 归档: "Archive", 还有: "And", 会话管理: "Session management", 即将删除: "About to delete", 即将删除全部: "About to delete all", "即将删除以下会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。": "The following sessions and their local data will be deleted. You can undo within 30 days with a backup token.", "近 3 个月": "Last 3 months", "路径：": "Path:", 没有匹配当前筛选条件的会话: "No sessions match the current filters", 没有匹配的项目目录: "No matching project directories", 目标目录: "Target directory", "普通启动 Codex 并使用 Codex-Manager 会话管理；注入模式仅作为旧增强能力保留": "Launch Codex normally and manage sessions with Codex-Manager; injection mode is retained only as a legacy enhancement.", 确认批量删除会话: "Confirm bulk session deletion", 确认删除会话: "Confirm session deletion", 确认删除已归档会话: "Confirm archived session deletion", 日期范围: "Date range", 删除选中: "Delete selected", 删除已归档: "Delete archived", 上月: "Last month", 所属项目: "Project", "所属项目：": "Project:", 探测路径: "Detect path", 停止: "Stop", "同步 Provider": "Sync Provider", 未归档: "Unarchived", 无标题: "Untitled", 项目目录: "Project directories", 选择会话: "Select session", "选择目标工作目录，确认后会更新 Codex 会话所属项目。": "Select a target working directory. Confirming updates the Codex session project.", 移动选中: "Move selected", "暂无会话数据（需先启动 Codex）": "No session data (start Codex first)", 暂无可用目标目录: "No target directories available", 指定月份: "Specific month", 至: "to", "Codex 启动状态": "Codex launch status", "Codex App 桥接": "Codex App bridge",
+  "备份失败，未执行删除": "Backup failed; deletion was not performed", 撤销: "Undo", "次请求": "Requests", 待处理: "Pending", "当前 Codex 会话结构不支持移动": "The current Codex session structure does not support moving", 登录态: "Sign-in state", 低: "Low", 高: "High", 工作目录: "Working directory", 归档状态: "Archive status", 缓存写入: "Cache writes", "会话 ID": "Session ID", "会话不存在或已被删除": "Session does not exist or was deleted", "会话更新时间结束日期": "Session update end date", "会话更新时间开始日期": "Session update start date", "会话已删除": "Session deleted", "会话已移动": "Session moved", "会话已在目标目录中": "Session is already in the target directory", 计费输入: "Billable input", 加载中: "Loading", 检查中: "Checking", 今日使用: "Today's usage", 今日无请求: "No requests today", 就绪: "Ready", "累计 Token": "Total tokens", 路由锚点: "Routing anchor", 内部重试: "Internal retry", 配置桥接: "Configure bridge", "配置中...": "Configuring...", 普通启动: "Normal launch", 启动并注入: "Launch and inject", 启用手机远控: "Enable mobile remote control", "启用中...": "Enabling...", 请选择目标目录: "Select a target directory", 全部会话: "All sessions", 确认移动: "Confirm move", 三: "Wed", 删除会话: "Delete session", 手机控制: "Mobile control", "手机远程控制已启用": "Mobile remote control enabled", "手机远程控制已是启用状态": "Mobile remote control is already enabled", 输出: "Output", 搜索会话标题或路径: "Search session title or path", 搜索目录: "Search directories", 推理输出: "Reasoning output", 未记录会话ID: "No session ID recorded", 未记录会话ID_: "No session ID recorded", "未记录会话 ID": "No session ID recorded", 未命名目录: "Unnamed directory", 未匹配会话: "Unmatched session", 未运行: "Not running", "未在本地 Codex 会话列表中找到匹配标题": "No matching title found in local Codex sessions", 未注入: "Not injected", 无标题会话: "Untitled session", 无项目: "No project", 五: "Fri", 悬停格子查看当日Token: "Hover a cell to view daily tokens", "悬停格子查看当日 Token": "Hover a cell to view daily tokens", 选择当前筛选会话: "Select filtered sessions", 选择会话更新时间月份: "Select session update month", 选中会话已在目标目录中: "Selected sessions are already in the target directory", 一: "Mon", 移动会话: "Move session", "移动中...": "Moving...", 已归档: "Archived", 已注入: "Injected", "有请求日志后会自动生成全年活动热力图。": "A full-year activity heatmap is generated after request logs exist.", 远程连接: "Remote connection", 运行中: "Running", "暂无 Token 活动": "No token activity", 展开: "Expand", "这是 Reasoning Guard 被网关保护转换成的 502，不是真实上游 502。": "This 502 was produced by the gateway Reasoning Guard, not by the upstream.", "注入中...": "Injecting...", 桌面授权: "Desktop authorization", 阻断: "Blocked", "最近 token": "Latest tokens", "最近动作": "Latest action", "App 确认": "App confirmation", "Codex 启动器": "Codex Launcher", "Codex 启动器已启动，正在注入增强功能...": "Codex launcher started; injecting enhancements...", "Codex 已启动": "Codex started", "Codex 注入器已停止": "Codex injector stopped", "Codex App 桥接配置已写入": "Codex App bridge configuration saved", "Guard 事件": "Guard events", "Token 活动": "Token activity", "Token 活动读取失败": "Failed to load token activity", "Live Smoke": "Live Smoke",
 };

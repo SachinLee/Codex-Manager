@@ -38,7 +38,7 @@ export function ShellTabs() {
             <div
               key={path}
               className={cn(
-                "group flex items-center rounded-full border px-3 py-1.5 text-sm transition-colors duration-200",
+                "group flex items-center rounded-md border px-3 py-1.5 text-sm transition-colors duration-200",
                 isActive
                   ? "border-primary/40 bg-primary/10 text-foreground shadow-sm"
                   : "border-border/70 bg-card/60 text-muted-foreground hover:bg-accent/70 hover:text-foreground",
@@ -60,7 +60,7 @@ export function ShellTabs() {
                   size="icon-xs"
                   aria-label={t("关闭 {label}", { label })}
                   className={cn(
-                    "ml-2 rounded-full transition-colors duration-150",
+                    "ml-2 rounded-md transition-colors duration-150",
                     isActive
                       ? "text-foreground/70 hover:bg-primary/15 hover:text-foreground"
                       : "text-muted-foreground/70 hover:bg-accent hover:text-foreground",

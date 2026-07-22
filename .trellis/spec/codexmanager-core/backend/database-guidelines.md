@@ -156,6 +156,64 @@ SELECT input_tokens - cached_input_tokens + output_tokens AS total_tokens;
 SELECT input_tokens + output_tokens AS total_tokens;
 ```
 
+## Scenario: Retention-safe request-token rollups
+
+### 1. Scope / Trigger
+
+- Trigger: change a request-token migration, retention job, or a time-range usage query.
+- Applies to `request_token_stats`, `request_token_stat_hourly_rollups`, and legacy aggregate tables such as `request_token_stat_rollups` / `request_token_daily_rollups`.
+
+### 2. Signatures
+
+- Hourly identity: `(bucket_start, key_id, account_id, model, actual_source_kind, actual_source_id, owner_user_id)`.
+- Retention writer: `Storage::rollup_request_token_stats_before(cutoff_ts)`.
+- Range reads must select raw rows by `created_at` and hourly rows by `bucket_start` / `bucket_end`; unbounded lifetime summaries may additionally read legacy aggregate rollups.
+
+### 3. Contracts
+
+- Storage initialization and compatibility migration closure must create and normalize the hourly table before a retention job can insert into it.
+- Cutoffs are aligned to the hour. Only completely contained hourly buckets participate in a bounded range, preventing partial-bucket overcounting.
+- Hourly rows preserve owner and actual-source dimensions, so account, Aggregate API, model, key-model, user, and source reports cannot silently lose historical data after raw-row pruning.
+- Cache-write tokens are carried through every raw/hourly/legacy projection and normalize to `0` for pre-column rows.
+
+### 4. Validation & Error Matrix
+
+- Hourly table absent before retention -> migration/schema closure bug; do not silently skip rollup writes.
+- Range query reads only raw rows -> historical report becomes incomplete after retention.
+- Range intersects only part of an hour -> exclude that aggregate bucket rather than count a full hour outside the requested interval.
+- Legacy nullable cache-write value -> read as `0`, never fail an aggregate query.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a 90-day account report unions raw rows with complete hourly buckets and retains the correct owner/source dimensions.
+- Base: an all-time key/model report can use legacy aggregate totals after raw data was compacted.
+- Bad: using `raw_condition.replace("key_id", "h.key_id")`; aliases and temporary-table predicates must be generated explicitly for both sources.
+
+### 6. Tests Required
+
+- Create a pre-closure database fixture, run `Storage::init()`, compact an old request, and assert the hourly row exists with cache-write/source/owner values.
+- Assert account, Aggregate API, model, key-model, user, and source range queries return compacted hourly usage.
+- Cover a partial-hour boundary and a large key set using the paired raw/hourly filter helper.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+SELECT * FROM request_token_stats
+WHERE created_at >= ?1 AND created_at < ?2;
+```
+
+#### Correct
+
+```sql
+SELECT ... FROM request_token_stats
+WHERE created_at >= ?1 AND created_at < ?2
+UNION ALL
+SELECT ... FROM request_token_stat_hourly_rollups
+WHERE bucket_start >= ?1 AND bucket_end <= ?2;
+```
+
 ---
 
 ## Naming Conventions

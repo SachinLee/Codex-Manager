@@ -54,7 +54,8 @@ pub(super) struct KeyIdSqlFilter<'a> {
 pub(super) struct PairedKeyIdSqlFilter<'a> {
     first_condition: String,
     second_condition: String,
-    params: Vec<Value>,
+    first_params: Vec<Value>,
+    second_params: Vec<Value>,
     _temp_filter: Option<TempKeyIdFilter<'a>>,
 }
 
@@ -121,13 +122,11 @@ impl<'a> PairedKeyIdSqlFilter<'a> {
             else {
                 return Ok(None);
             };
-            let mut params = Vec::with_capacity(first_params.len() + second_params.len());
-            params.extend(first_params);
-            params.extend(second_params);
             return Ok(Some(Self {
                 first_condition,
                 second_condition,
-                params,
+                first_params,
+                second_params,
                 _temp_filter: None,
             }));
         }
@@ -140,7 +139,8 @@ impl<'a> PairedKeyIdSqlFilter<'a> {
         Ok(Some(Self {
             first_condition,
             second_condition,
-            params: Vec::new(),
+            first_params: Vec::new(),
+            second_params: Vec::new(),
             _temp_filter: Some(temp_filter),
         }))
     }
@@ -153,8 +153,12 @@ impl<'a> PairedKeyIdSqlFilter<'a> {
         &self.second_condition
     }
 
-    pub(super) fn params(&self) -> &[Value] {
-        &self.params
+    pub(super) fn first_params(&self) -> &[Value] {
+        &self.first_params
+    }
+
+    pub(super) fn second_params(&self) -> &[Value] {
+        &self.second_params
     }
 }
 

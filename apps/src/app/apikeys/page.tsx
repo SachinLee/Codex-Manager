@@ -18,9 +18,15 @@ import {
 import { toast } from "sonner";
 import { ApiKeyModal } from "@/components/modals/api-key-modal";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
+import {
+  MetricCard,
+  PageHeader,
+  PageWorkspace,
+  WorkPanel,
+} from "@/components/layout/page-workspace";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -148,46 +154,6 @@ function formatCompactTokenAmount(value: number | null | undefined): string {
     });
   }
   return formatCompactNumber(normalized, "0.00", 2, true);
-}
-
-/**
- * 函数 `ApiKeyStatCard`
- *
- * 作者: gaohongshun
- *
- * 时间: 2026-04-02
- *
- * # 参数
- * - params: 参数 params
- *
- * # 返回
- * 返回函数执行结果
- */
-function ApiKeyStatCard({
-  title,
-  value,
-  icon: Icon,
-  color,
-  sub,
-}: {
-  title: string;
-  value: string;
-  icon: typeof Zap;
-  color: string;
-  sub: string;
-}) {
-  return (
-    <Card className="glass-card overflow-hidden shadow-sm transition-colors">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        <Icon className={color} />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
-        <p className="mt-1 text-[10px] text-muted-foreground">{sub}</p>
-      </CardContent>
-    </Card>
-  );
 }
 
 export default function ApiKeysPage() {
@@ -554,122 +520,132 @@ export default function ApiKeysPage() {
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <PageWorkspace>
       {!isServiceReady ? (
-        <Card className="glass-card shadow-sm">
+        <Card className="glass-card mission-panel shadow-sm">
           <CardContent className="pt-6 text-sm text-muted-foreground">
             {t("服务未连接")}
           </CardContent>
         </Card>
       ) : null}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-xl font-bold tracking-tight">{t("平台密钥")}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("创建和管理网关调用所需的访问令牌")}
-          </p>
-        </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end lg:shrink-0">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="outline"
-                  className="glass-card h-10 gap-2 rounded-xl px-3 shadow-sm"
-                  render={<span />}
-                  nativeButton={false}
-                />
-              }
-              nativeButton={false}
-              disabled={!gatewayOrigin}
-              aria-label={t("复制端点")}
-            >
-              <Link2 className="h-4 w-4" />
-              <span>{t("网关端点")}</span>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="w-[min(92vw,390px)] rounded-xl border border-border/70 bg-popover/95 p-2 shadow-sm"
-            >
-                                  <DropdownMenuGroup>
-                <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase text-muted-foreground/80">
-                  {t("复制调用地址")}
-                </DropdownMenuLabel>
-                <DropdownMenuItem
-                  className="h-auto cursor-pointer items-start gap-3 rounded-lg p-3"
-                  onClick={() => void copyEndpoint(openAiEndpoint)}
-                >
-                  <Copy className="mt-0.5 h-4 w-4 text-primary" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs font-semibold">
-                      {t("复制 OpenAI / Codex 端点")}
+
+      <PageHeader
+        eyebrow={t("Gateway access")}
+        title={t("平台密钥")}
+        description={t("创建和管理网关调用所需的访问令牌")}
+        meta={
+          <>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {t("共 {count} 条", { count: apiKeys.length })}
+            </Badge>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {isAdminMode ? t("管理员视图") : t("成员视图")}
+            </Badge>
+          </>
+        }
+        actions={
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    className="glass-card mission-panel h-9 gap-2 rounded-md px-3 shadow-sm"
+                    render={<span />}
+                    nativeButton={false}
+                  />
+                }
+                nativeButton={false}
+                disabled={!gatewayOrigin}
+                aria-label={t("复制端点")}
+              >
+                <Link2 className="h-4 w-4" />
+                <span>{t("网关端点")}</span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="w-[min(92vw,390px)] rounded-xl border border-border/70 bg-popover/95 p-2 shadow-sm"
+              >
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase text-muted-foreground/80">
+                    {t("复制调用地址")}
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem
+                    className="h-auto cursor-pointer items-start gap-3 rounded-lg p-3"
+                    onClick={() => void copyEndpoint(openAiEndpoint)}
+                  >
+                    <Copy className="mt-0.5 h-4 w-4 text-primary" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-semibold">
+                        {t("复制 OpenAI / Codex 端点")}
+                      </span>
+                      <code
+                        className="mt-1 block truncate font-mono text-[11px] text-muted-foreground"
+                        title={openAiEndpoint}
+                      >
+                        {openAiEndpoint}
+                      </code>
                     </span>
-                    <code
-                      className="mt-1 block truncate font-mono text-[11px] text-muted-foreground"
-                      title={openAiEndpoint}
-                    >
-                      {openAiEndpoint}
-                    </code>
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="h-auto cursor-pointer items-start gap-3 rounded-lg p-3"
-                  onClick={() => void copyEndpoint(nativeProtocolEndpoint)}
-                >
-                  <Copy className="mt-0.5 h-4 w-4 text-primary" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs font-semibold">
-                      {t("复制 Claude Code / Gemini CLI 端点")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="h-auto cursor-pointer items-start gap-3 rounded-lg p-3"
+                    onClick={() => void copyEndpoint(nativeProtocolEndpoint)}
+                  >
+                    <Copy className="mt-0.5 h-4 w-4 text-primary" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-semibold">
+                        {t("复制 Claude Code / Gemini CLI 端点")}
+                      </span>
+                      <code
+                        className="mt-1 block truncate font-mono text-[11px] text-muted-foreground"
+                        title={nativeProtocolEndpoint}
+                      >
+                        {nativeProtocolEndpoint}
+                      </code>
                     </span>
-                    <code
-                      className="mt-1 block truncate font-mono text-[11px] text-muted-foreground"
-                      title={nativeProtocolEndpoint}
-                    >
-                      {nativeProtocolEndpoint}
-                    </code>
-                  </span>
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            className="h-10 gap-2 shadow-sm shadow-primary/20"
-            onClick={openCreateModal}
-            disabled={!isServiceReady}
-          >
-            <Plus className="h-4 w-4" /> {t("创建密钥")}
-          </Button>
-        </div>
-      </div>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              className="h-9 gap-2 shadow-sm shadow-primary/20"
+              onClick={openCreateModal}
+              disabled={!isServiceReady}
+            >
+              <Plus className="h-4 w-4" /> {t("创建密钥")}
+            </Button>
+          </>
+        }
+      />
 
       <div className="grid gap-4 md:grid-cols-2">
         {isLoading || showOverviewLoading ? (
           <>
-            <Skeleton className="h-32 w-full rounded-xl" />
-            <Skeleton className="h-32 w-full rounded-xl" />
+            <Skeleton className="h-28 w-full rounded-lg" />
+            <Skeleton className="h-28 w-full rounded-lg" />
           </>
         ) : (
           <>
-            <ApiKeyStatCard
+            <MetricCard
               title={t("总使用 Token")}
               value={formatCompactTokenAmount(usageOverview?.totalTokens || 0)}
               icon={Zap}
-              color="h-4 w-4 text-amber-500"
-              sub={isAdminMode ? t("按全部平台密钥累计") : t("按我的平台密钥累计")}
+              tone="amber"
+              detail={isAdminMode ? t("按全部平台密钥累计") : t("按我的平台密钥累计")}
             />
-            <ApiKeyStatCard
+            <MetricCard
               title={t("总费用")}
               value={formatUsd(usageOverview?.totalCostUsd || 0)}
               icon={DollarSign}
-              color="h-4 w-4 text-emerald-500"
-              sub={isAdminMode ? t("按全部平台密钥累计") : t("按我的平台密钥累计")}
+              tone="emerald"
+              detail={isAdminMode ? t("按全部平台密钥累计") : t("按我的平台密钥累计")}
             />
           </>
         )}
       </div>
 
-      <Card className="glass-card overflow-hidden py-0 shadow-sm">
+      <WorkPanel>
         <CardContent className="p-0">
           <Table className="min-w-[1160px]">
             <TableHeader>
@@ -974,7 +950,7 @@ export default function ApiKeysPage() {
             </TableBody>
           </Table>
         </CardContent>
-      </Card>
+      </WorkPanel>
 
       <ApiKeyModal
         open={apiKeyModalOpen}
@@ -1007,6 +983,6 @@ export default function ApiKeysPage() {
           deleteApiKey(deleteKeyId);
         }}
       />
-    </div>
+    </PageWorkspace>
   );
 }

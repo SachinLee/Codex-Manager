@@ -1,9 +1,10 @@
 use super::parse_bool_with_default;
 use super::{
     get_persisted_app_setting, save_persisted_app_setting, save_persisted_bool_setting,
-    APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
-    APP_SETTING_UI_APPEARANCE_PRESET_KEY, APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
-    APP_SETTING_UI_LOCALE_KEY, APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
+    APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
+    APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_UI_APPEARANCE_PRESET_KEY,
+    APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY, APP_SETTING_UI_LOCALE_KEY,
+    APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
     APP_SETTING_UPDATE_AUTO_CHECK_KEY,
 };
 
@@ -110,6 +111,17 @@ pub fn current_update_auto_check_enabled() -> bool {
 /// 返回函数执行结果
 pub fn set_update_auto_check_enabled(enabled: bool) -> Result<bool, String> {
     save_persisted_bool_setting(APP_SETTING_UPDATE_AUTO_CHECK_KEY, enabled)?;
+    Ok(enabled)
+}
+
+pub fn current_auto_start_enabled_setting() -> bool {
+    get_persisted_app_setting(APP_SETTING_AUTO_START_ENABLED_KEY)
+        .map(|value| parse_bool_with_default(&value, false))
+        .unwrap_or(false)
+}
+
+pub fn set_auto_start_enabled_setting(enabled: bool) -> Result<bool, String> {
+    save_persisted_bool_setting(APP_SETTING_AUTO_START_ENABLED_KEY, enabled)?;
     Ok(enabled)
 }
 

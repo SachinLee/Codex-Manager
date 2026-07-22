@@ -1,7 +1,8 @@
 use super::{
-    clear_storage_cache_for_tests, clear_storage_open_count_for_tests, open_storage_at_path,
-    storage_open_count_for_tests,
+    clear_storage_cache_for_tests, clear_storage_open_count_for_tests,
+    model_catalog_v2_migration_needed, open_storage_at_path, storage_open_count_for_tests,
 };
+use rusqlite::Connection;
 use std::ffi::OsString;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -51,6 +52,49 @@ fn unique_db_path(prefix: &str) -> String {
         .join(format!("{prefix}-{nonce}.db"))
         .to_string_lossy()
         .to_string()
+}
+
+#[test]
+fn pending_model_catalog_data_migration_requires_backup() {
+    let db_path = unique_db_path("codexmanager-model-billing-backup");
+    let conn = Connection::open(&db_path).expect("open database");
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version TEXT PRIMARY KEY,
+           applied_at INTEGER NOT NULL
+         );
+         INSERT INTO schema_migrations(version,applied_at)
+         VALUES('112_model_catalog_v2',1);",
+    )
+    .expect("create migration fixture");
+
+    assert!(
+        model_catalog_v2_migration_needed(std::path::Path::new(&db_path))
+            .expect("inspect pending hardening")
+    );
+
+    conn.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,2)",
+        ["113_model_billing_v2_hardening"],
+    )
+    .expect("mark hardening complete");
+
+    assert!(
+        model_catalog_v2_migration_needed(std::path::Path::new(&db_path))
+            .expect("inspect pending GPT-5.6 pricing migration")
+    );
+    conn.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,3)",
+        ["114_model_catalog_gpt56_prices"],
+    )
+    .expect("mark GPT-5.6 pricing migration complete");
+    drop(conn);
+
+    assert!(
+        !model_catalog_v2_migration_needed(std::path::Path::new(&db_path))
+            .expect("inspect completed catalog migrations")
+    );
+    let _ = std::fs::remove_file(&db_path);
 }
 
 /// 函数 `open_storage_reuses_cached_connection_in_same_thread`

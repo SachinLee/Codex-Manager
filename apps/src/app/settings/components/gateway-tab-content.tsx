@@ -1,8 +1,10 @@
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, Workflow } from "lucide-react";
 import { AppSettings } from "@/types";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -20,31 +22,16 @@ import {
 } from "@/components/ui/select";
 import { ModelForwardRulesEditor } from "@/app/settings/components/model-forward-rules-editor";
 import {
-  DEFAULT_FREE_ACCOUNT_MAX_MODEL_OPTIONS,
   EMPTY_RESIDENCY_OPTION,
   RESIDENCY_REQUIREMENT_LABELS,
   ROUTE_STRATEGY_LABELS,
   ensureModelForwardRuleRows,
-  formatFreeAccountModelLabel,
 } from "@/app/settings/settings-page-helpers";
 
 export function GatewayTabContent({
   t,
   snapshot,
   updateSettings,
-  onModelCatalogAutoRemoteFetchChange,
-  reasoningGuardInputValue,
-  setReasoningGuardDraft,
-  saveReasoningGuardBypassThreshold,
-  reasoningGuardTargetsInputValue,
-  setReasoningGuardTargetsDraft,
-  saveReasoningGuardTargets,
-  reasoningGuardRetryInputValue,
-  setReasoningGuardRetryDraft,
-  saveReasoningGuardRetryAttempts,
-  reasoningGuardContinuationMarkerInputValue,
-  setReasoningGuardContinuationMarkerDraft,
-  saveReasoningGuardContinuationMarkerText,
   quotaGuardInputValues,
   setQuotaGuardDraft,
   saveQuotaGuardField,
@@ -54,9 +41,6 @@ export function GatewayTabContent({
   modelForwardRuleRows,
   updateModelForwardRuleRows,
   commitModelForwardRulesDraft,
-  compactModelForwardRuleRows,
-  updateCompactModelForwardRuleRows,
-  commitCompactModelForwardRulesDraft,
   gatewayOriginatorInput,
   gatewayOriginatorDraft,
   setGatewayOriginatorDraft,
@@ -64,26 +48,17 @@ export function GatewayTabContent({
   upstreamProxyInput,
   upstreamProxyDraft,
   setUpstreamProxyDraft,
+  upstreamProxyBypassInput,
+  upstreamProxyBypassDraft,
+  setUpstreamProxyBypassDraft,
 }: {
   t: (value: string) => string;
   snapshot: AppSettings;
   updateSettings: {
     mutate: (patch: Partial<AppSettings>) => void;
     mutateAsync: (patch: Partial<AppSettings>) => Promise<unknown>;
+    isPending: boolean;
   };
-  onModelCatalogAutoRemoteFetchChange: (checked: boolean) => void;
-  reasoningGuardInputValue: string;
-  setReasoningGuardDraft: React.Dispatch<React.SetStateAction<string | null>>;
-  saveReasoningGuardBypassThreshold: () => void;
-  reasoningGuardTargetsInputValue: string;
-  setReasoningGuardTargetsDraft: React.Dispatch<React.SetStateAction<string | null>>;
-  saveReasoningGuardTargets: () => void;
-  reasoningGuardRetryInputValue: string;
-  setReasoningGuardRetryDraft: React.Dispatch<React.SetStateAction<string | null>>;
-  saveReasoningGuardRetryAttempts: () => void;
-  reasoningGuardContinuationMarkerInputValue: string;
-  setReasoningGuardContinuationMarkerDraft: React.Dispatch<React.SetStateAction<string | null>>;
-  saveReasoningGuardContinuationMarkerText: () => void;
   quotaGuardInputValues: {
     primaryMinRemainingPercent: string;
     secondaryMinRemainingPercent: string;
@@ -109,11 +84,6 @@ export function GatewayTabContent({
     updater: (rows: Array<{ pattern: string; target: string }>) => Array<{ pattern: string; target: string }>,
   ) => void;
   commitModelForwardRulesDraft: () => void;
-  compactModelForwardRuleRows: Array<{ pattern: string; target: string }>;
-  updateCompactModelForwardRuleRows: (
-    updater: (rows: Array<{ pattern: string; target: string }>) => Array<{ pattern: string; target: string }>,
-  ) => void;
-  commitCompactModelForwardRulesDraft: () => void;
   gatewayOriginatorInput: string;
   gatewayOriginatorDraft: string | null;
   setGatewayOriginatorDraft: React.Dispatch<React.SetStateAction<string | null>>;
@@ -121,9 +91,27 @@ export function GatewayTabContent({
   upstreamProxyInput: string;
   upstreamProxyDraft: string | null;
   setUpstreamProxyDraft: React.Dispatch<React.SetStateAction<string | null>>;
+  upstreamProxyBypassInput: string;
+  upstreamProxyBypassDraft: string | null;
+  setUpstreamProxyBypassDraft: React.Dispatch<React.SetStateAction<string | null>>;
 }) {
+  const upstreamProxyBypassSavedValue = snapshot.upstreamProxyBypassHosts || "";
+  const upstreamProxyBypassDirty =
+    upstreamProxyBypassDraft != null && upstreamProxyBypassInput !== upstreamProxyBypassSavedValue;
+  const saveUpstreamProxyBypassDraft = () => {
+    if (upstreamProxyBypassDraft == null) return;
+    if (!upstreamProxyBypassDirty) {
+      setUpstreamProxyBypassDraft(null);
+      return;
+    }
+    void updateSettings
+      .mutateAsync({ upstreamProxyBypassHosts: upstreamProxyBypassInput })
+      .then(() => setUpstreamProxyBypassDraft(null))
+      .catch(() => undefined);
+  };
+
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardHeader>
         <CardTitle className="text-base">{t("网关策略")}</CardTitle>
         <CardDescription>{t("配置账号选路和请求头处理方式")}</CardDescription>
@@ -162,228 +150,24 @@ export function GatewayTabContent({
 
         <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
-            <Label>{t("自动拉取远端模型目录")}</Label>
+            <div className="flex items-center gap-2">
+              <Workflow className="h-4 w-4 text-primary" />
+              <Label>{t("线程感知账号分配")}</Label>
+            </div>
             <p className="text-[10px] text-muted-foreground">
-              {t("开启后本地模型目录为空时会自动从远端拉取；关闭后只在点击“远端并入”时拉取。")}
+              {t("开启后未绑定的新线程会优先选择当前承载线程更少的可用账号，已有线程仍保持账号粘性。")}
             </p>
           </div>
           <Switch
-            checked={snapshot.modelCatalogAutoRemoteFetch}
+            checked={snapshot.threadAwareAccountDistributionEnabled}
             onCheckedChange={(checked) =>
-              onModelCatalogAutoRemoteFetchChange(checked)
+              updateSettings.mutate({
+                threadAwareAccountDistributionEnabled: checked,
+              })
             }
           />
         </div>
-        <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <Label>{t("自动上下文压缩")}</Label>
-            <p className="text-[10px] text-muted-foreground">
-              {t(
-                "默认关闭。开启后，Codex 客户端会根据模型目录的 auto_compact_token_limit 自动调用 compact；关闭不影响手动 compact 和普通请求。",
-              )}
-            </p>
-          </div>
-          <Switch
-            checked={snapshot.autoCompactEnabled}
-            onCheckedChange={(checked) =>
-              updateSettings.mutate({ autoCompactEnabled: checked })
-            }
-          />
-        </div>
-        <div className="grid gap-4 border-t pt-6">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-              <Label>{t("Reasoning Guard 推理保护")}</Label>
-              <p className="text-[10px] text-muted-foreground">
-                {t("命中配置的 reasoning_tokens 时先在网关内部重试，超限后返回 502；不会计入供应商失败。")}
-              </p>
-            </div>
-            <Switch
-              checked={snapshot.reasoningGuardEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings.mutate({ reasoningGuardEnabled: checked })
-              }
-            />
-          </div>
-          <div className="grid gap-4 md:grid-cols-4">
-            <div className="grid gap-2">
-              <Label>{t("命中条件来源")}</Label>
-              <Select
-                value={snapshot.reasoningGuardMatchMode || "targets"}
-                onValueChange={(value) =>
-                  updateSettings.mutate({
-                    reasoningGuardMatchMode:
-                      value === "formula518nMinus2"
-                        ? "formula518nMinus2"
-                        : "targets",
-                  })
-                }
-                disabled={!snapshot.reasoningGuardEnabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="targets">{t("手动 token 列表")}</SelectItem>
-                  <SelectItem value="formula518nMinus2">
-                    {t("518*n - 2 公式")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[10px] text-muted-foreground">
-                {t("公式会匹配 516、1034、1552、2070 等 reasoning_tokens。")}
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label>{t("目标 token 列表")}</Label>
-              <Input
-                value={reasoningGuardTargetsInputValue}
-                onChange={(event) =>
-                  setReasoningGuardTargetsDraft(event.target.value)
-                }
-                onBlur={saveReasoningGuardTargets}
-                disabled={
-                  !snapshot.reasoningGuardEnabled ||
-                  snapshot.reasoningGuardMatchMode === "formula518nMinus2"
-                }
-              />
-              <p className="text-[10px] text-muted-foreground">
-                {snapshot.reasoningGuardMatchMode === "formula518nMinus2"
-                  ? t("公式模式下保留为回退/参考列表。")
-                  : t("支持逗号、空格或分号分隔；默认 516, 1034, 1552。")}
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label>{t("内部重试次数")}</Label>
-              <Input
-                type="number"
-                min={0}
-                value={reasoningGuardRetryInputValue}
-                onChange={(event) =>
-                  setReasoningGuardRetryDraft(event.target.value)
-                }
-                onBlur={saveReasoningGuardRetryAttempts}
-                disabled={!snapshot.reasoningGuardEnabled}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                {t("0 表示命中后不重试，直接按拦截规则返回。")}
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label>{t("连续命中后放行次数")}</Label>
-              <Input
-                type="number"
-                min={0}
-                value={reasoningGuardInputValue}
-                onChange={(event) => setReasoningGuardDraft(event.target.value)}
-                onBlur={saveReasoningGuardBypassThreshold}
-                disabled={!snapshot.reasoningGuardEnabled}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                {t("0 表示一直拦截；同一来源和模型达到阈值时放行本次响应并重新计数。")}
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="grid gap-2">
-              <Label>{t("流式命中处理")}</Label>
-              <Select
-                value={snapshot.reasoningGuardStreamAction || "strictRetry"}
-                onValueChange={(value) =>
-                  updateSettings.mutate({
-                    reasoningGuardStreamAction:
-                      value === "continuationRecovery"
-                        ? "continuationRecovery"
-                        : "strictRetry",
-                  })
-                }
-                disabled={!snapshot.reasoningGuardEnabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="strictRetry">
-                    {t("严格重试 (默认)")}
-                  </SelectItem>
-                  <SelectItem value="continuationRecovery">
-                    {t("续写恢复")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[10px] text-muted-foreground">
-                {t("续写恢复仅用于 Responses 流式请求，并会携带 encrypted reasoning 继续同账号重试。")}
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label>{t("续写提示文本")}</Label>
-              <Input
-                value={reasoningGuardContinuationMarkerInputValue}
-                onChange={(event) =>
-                  setReasoningGuardContinuationMarkerDraft(event.target.value)
-                }
-                onBlur={saveReasoningGuardContinuationMarkerText}
-                disabled={
-                  !snapshot.reasoningGuardEnabled ||
-                  snapshot.reasoningGuardStreamAction !== "continuationRecovery"
-                }
-              />
-              <p className="text-[10px] text-muted-foreground">
-                {t("仅在续写恢复开启时写入下一轮 input；默认 Continue thinking...。")}
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-              <div className="space-y-1">
-                <Label>{t("拦截流式响应")}</Label>
-                <p className="text-[10px] text-muted-foreground">
-                  {t("开启后会缓存扫描流式终止 usage，命中时不泄漏已缓存 delta。")}
-                </p>
-              </div>
-              <Switch
-                checked={snapshot.reasoningGuardInterceptStreaming}
-                disabled={!snapshot.reasoningGuardEnabled}
-                onCheckedChange={(checked) => {
-                  if (
-                    !checked &&
-                    snapshot.reasoningGuardEnabled &&
-                    !snapshot.reasoningGuardInterceptNonStreaming
-                  ) {
-                    return;
-                  }
-                  updateSettings.mutate({
-                    reasoningGuardInterceptStreaming: checked,
-                  });
-                }}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-              <div className="space-y-1">
-                <Label>{t("拦截非流式响应")}</Label>
-                <p className="text-[10px] text-muted-foreground">
-                  {t("关闭后只记录命中并放行对应非流式响应。")}
-                </p>
-              </div>
-              <Switch
-                checked={snapshot.reasoningGuardInterceptNonStreaming}
-                disabled={!snapshot.reasoningGuardEnabled}
-                onCheckedChange={(checked) => {
-                  if (
-                    !checked &&
-                    snapshot.reasoningGuardEnabled &&
-                    !snapshot.reasoningGuardInterceptStreaming
-                  ) {
-                    return;
-                  }
-                  updateSettings.mutate({
-                    reasoningGuardInterceptNonStreaming: checked,
-                  });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+
         <div className="grid gap-4 border-t pt-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
@@ -392,7 +176,7 @@ export function GatewayTabContent({
                 <Label>{t("额度保护")}</Label>
               </div>
               <p className="text-[10px] text-muted-foreground">
-                {t("低于保留百分比的账号会从网关路由和远端模型刷新候选中跳过。")}
+                {t("低于保留百分比的账号会从网关路由候选中跳过。")}
               </p>
             </div>
             <Switch
@@ -467,41 +251,6 @@ export function GatewayTabContent({
         </div>
 
         <div className="grid gap-2">
-          <Label>{t("Free 账号使用模型")}</Label>
-          <Select
-            value={snapshot.freeAccountMaxModel || "auto"}
-            onValueChange={(value) =>
-              updateSettings.mutate({
-                freeAccountMaxModel: value || "auto",
-              })
-            }
-          >
-            <SelectTrigger className="w-full md:w-[300px]">
-              <SelectValue placeholder={t("选择 free 账号使用模型")}>
-                {(value) => t(formatFreeAccountModelLabel(String(value || "")))}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {(snapshot.freeAccountMaxModelOptions?.length
-                  ? snapshot.freeAccountMaxModelOptions
-                  : DEFAULT_FREE_ACCOUNT_MAX_MODEL_OPTIONS
-                ).map((model) => (
-                  <SelectItem key={model} value={model}>
-                    {t(formatFreeAccountModelLabel(model))}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <p className="text-[10px] text-muted-foreground">
-            {t(
-              "设为“跟随请求”时，不会额外改写 free / 7天单窗口账号的模型；只有你选了具体模型后，命中这些账号时才会统一改写为该模型。",
-            )}
-          </p>
-        </div>
-
-        <div className="grid gap-2">
           <Label>{t("模型转发规则")}</Label>
           <ModelForwardRulesEditor
             rows={modelForwardRuleRows}
@@ -519,26 +268,6 @@ export function GatewayTabContent({
           <p className="text-[10px] text-muted-foreground">
             {t("左边匹配请求模型，右边填写转发目标；支持")} <code>*</code>{" "}
             {t("通配。平台 Key 没有强绑模型时，会先按这里把请求模型改写，再进入账号路由。")}
-          </p>
-        </div>
-
-        <div className="grid gap-2">
-          <Label>{t("压缩模型转发规则")}</Label>
-          <ModelForwardRulesEditor
-            rows={compactModelForwardRuleRows}
-            sourcePlaceholder={t("例如：gpt-5.4")}
-            targetPlaceholder={t("例如：gpt-5.4-openai-compact")}
-            sourceLabel={t("源模型")}
-            targetLabel={t("目标模型")}
-            addButtonLabel={t("新增规则")}
-            deleteButtonLabel={t("删除条目")}
-            onRowsChange={(updater) =>
-              updateCompactModelForwardRuleRows((rows) => ensureModelForwardRuleRows(updater(rows)))
-            }
-            onCommit={commitCompactModelForwardRulesDraft}
-          />
-          <p className="text-[10px] text-muted-foreground">
-            {t("仅对 /v1/responses/compact 生效；命中后会在 compact 请求里优先改写模型。")}
           </p>
         </div>
 
@@ -621,6 +350,42 @@ export function GatewayTabContent({
             }}
           />
           <p className="text-[10px] text-muted-foreground">{t("支持 http/https/socks5，留空表示直连。")}</p>
+        </div>
+
+        <div className="grid gap-2">
+          <div className="flex max-w-2xl flex-wrap items-center justify-between gap-2">
+            <Label>{t("代理 Bypass 域名")}</Label>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={upstreamProxyBypassDraft == null}
+                onClick={() => setUpstreamProxyBypassDraft(null)}
+              >
+                {t("恢复")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!upstreamProxyBypassDirty || updateSettings.isPending}
+                onClick={saveUpstreamProxyBypassDraft}
+              >
+                {t("保存")}
+              </Button>
+            </div>
+          </div>
+          <Textarea
+            placeholder={t("留空表示不绕过代理")}
+            className="min-h-24 max-w-2xl resize-y font-mono text-sm"
+            value={upstreamProxyBypassInput}
+            onChange={(event) => setUpstreamProxyBypassDraft(event.target.value)}
+            onBlur={saveUpstreamProxyBypassDraft}
+          />
+          <p className="text-[10px] text-muted-foreground">
+            {t("一行一个或用逗号分隔；命中的上游域名会绕过全局代理直连。支持精确域名和")} <code>*.</code>
+            {t("通配。")}
+          </p>
         </div>
 
         <div className="grid gap-4 border-t pt-6 md:grid-cols-3">

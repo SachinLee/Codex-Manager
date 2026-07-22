@@ -42,7 +42,7 @@ pub(crate) fn read_quota_api_key_usage_with_storage(
     if api_key_context.api_keys.is_empty() {
         return Ok(QuotaApiKeyUsageResult { items: Vec::new() });
     }
-    let price_rules = model_pricing::load_enabled_price_rules(storage)?;
+    let catalog_prices = model_pricing::load_catalog_prices(storage)?;
     let usage_map = api_key_context
         .usage_by_key
         .iter()
@@ -58,13 +58,10 @@ pub(crate) fn read_quota_api_key_usage_with_storage(
         .map_err(|err| format!("summarize api key model usage failed: {err}"))?;
     let mut models_by_key: BTreeMap<String, Vec<QuotaApiKeyModelUsageItem>> = BTreeMap::new();
     for item in model_usage {
-        let cost = model_pricing::estimate_cost_with_rules(
-            &price_rules,
-            Some(item.model.as_str()),
+        let price = model_pricing::resolve_model_price_from_catalog(
+            &catalog_prices,
+            item.model.as_str(),
             item.input_tokens,
-            item.cached_input_tokens,
-            item.cache_write_input_tokens,
-            item.output_tokens,
         );
         models_by_key
             .entry(item.key_id)
@@ -77,8 +74,9 @@ pub(crate) fn read_quota_api_key_usage_with_storage(
                 output_tokens: item.output_tokens,
                 reasoning_output_tokens: item.reasoning_output_tokens,
                 total_tokens: item.total_tokens,
-                estimated_cost_usd: cost.cost_usd,
-                price_status: cost.price_status.to_string(),
+                estimated_cost_usd: (price.is_some() || item.estimated_cost_usd > 0.0)
+                    .then_some(item.estimated_cost_usd.max(0.0)),
+                price_status: if price.is_some() { "ok" } else { "missing" }.to_string(),
             });
     }
 

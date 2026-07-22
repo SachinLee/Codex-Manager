@@ -5,8 +5,7 @@ use crate::gateway::{
     apply_request_overrides_with_service_tier_and_prompt_cache_key_scope,
 };
 use axum::http::{HeaderMap, HeaderValue};
-use codexmanager_core::rpc::types::{ModelInfo, ModelsResponse};
-use codexmanager_core::storage::Storage;
+use codexmanager_core::storage::{ManagedModelV2Upsert, Storage};
 use serde_json::Value;
 
 const COMPACT_API_PATH_ENV: &str = "CODEXMANAGER_COMPACT_API_PATH";
@@ -442,7 +441,7 @@ fn preferred_client_prompt_cache_key_is_used_without_native_anchor() {
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_for_native_codex_clients() {
+fn preferred_client_prompt_cache_key_is_preserved_for_native_codex_clients() {
     let incoming_headers = sample_incoming_headers(
         None,
         None,
@@ -461,11 +460,11 @@ fn preferred_client_prompt_cache_key_is_ignored_for_native_codex_clients() {
         true,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("client_thread"));
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_when_conversation_anchor_exists() {
+fn preferred_client_prompt_cache_key_is_preserved_when_conversation_anchor_exists() {
     let incoming_headers = sample_incoming_headers(Some("conv_anchor"), None, None, None, None);
     let initial_request_meta = sample_request_metadata(Some("client_thread"));
     let client_request_meta = sample_request_metadata(Some("client_thread"));
@@ -478,7 +477,7 @@ fn preferred_client_prompt_cache_key_is_ignored_when_conversation_anchor_exists(
         false,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("client_thread"));
 }
 
 #[test]
@@ -500,7 +499,7 @@ fn preferred_client_prompt_cache_key_is_used_when_turn_state_is_orphaned() {
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_when_turn_state_has_session_anchor() {
+fn preferred_client_prompt_cache_key_is_preserved_when_turn_state_has_session_anchor() {
     let incoming_headers = sample_incoming_headers_with_session_id(
         None,
         Some("turn_state_anchor"),
@@ -521,11 +520,11 @@ fn preferred_client_prompt_cache_key_is_ignored_when_turn_state_has_session_anch
         false,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("client_thread"));
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_even_when_matching_native_anchor() {
+fn preferred_client_prompt_cache_key_is_preserved_when_matching_native_anchor() {
     let incoming_headers = sample_incoming_headers(Some("shared_anchor"), None, None, None, None);
     let initial_request_meta = sample_request_metadata(Some("shared_anchor"));
     let client_request_meta = sample_request_metadata(Some("shared_anchor"));
@@ -538,7 +537,7 @@ fn preferred_client_prompt_cache_key_is_ignored_even_when_matching_native_anchor
         false,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("shared_anchor"));
 }
 
 #[test]
@@ -917,12 +916,40 @@ fn aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides_with
     );
     assert_eq!(
         payload.get("service_tier").and_then(Value::as_str),
-        Some("priority")
+        Some("fast")
     );
     assert_eq!(model_for_log.as_deref(), Some("gpt-5.4"));
     assert_eq!(reasoning_for_log.as_deref(), Some("high"));
     assert_eq!(service_tier_for_log, None);
     assert_eq!(effective_service_tier_for_log.as_deref(), Some("fast"));
+}
+
+#[test]
+fn aggregate_passthrough_keeps_ultra_as_client_log_value_and_max_as_effective_value() {
+    let api_key = sample_api_key(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        None,
+        None,
+        None,
+    );
+    let body = br#"{"model":"gpt-5.6-sol","input":"hi","reasoning":{"effort":"ultra"}}"#.to_vec();
+    let client_metadata = super::super::super::request_helpers::parse_request_metadata(&body);
+    let (rewritten_body, _, reasoning_for_log, ..) =
+        apply_passthrough_request_overrides("/v1/responses", body, &api_key, None, None);
+    let payload: Value = serde_json::from_slice(&rewritten_body).expect("json body");
+    let reasoning_source = resolve_reasoning_source_for_log(
+        client_metadata.reasoning_effort.as_deref(),
+        reasoning_for_log.as_deref(),
+        api_key.reasoning_effort.as_deref(),
+    );
+
+    assert_eq!(client_metadata.reasoning_effort.as_deref(), Some("ultra"));
+    assert_eq!(reasoning_for_log.as_deref(), Some("max"));
+    assert_eq!(payload["reasoning"]["effort"], "max");
+    assert_eq!(
+        reasoning_source.as_deref(),
+        Some("client_request_normalized")
+    );
 }
 
 #[test]
@@ -980,7 +1007,7 @@ fn hybrid_passthrough_fallback_body_uses_aggregate_override_shape() {
     );
     assert_eq!(
         payload.get("service_tier").and_then(Value::as_str),
-        Some("priority")
+        Some("fast")
     );
     assert_eq!(payload.get("stream").and_then(Value::as_bool), Some(true));
 }
@@ -1439,12 +1466,7 @@ fn compact_subagent_rewrites_standard_responses_path_to_compact_path() {
 }
 
 #[test]
-fn compact_subagent_uses_compact_model_forward_rules_on_standard_responses_path() {
-    let original_rules = crate::gateway::current_compact_model_forward_rules();
-    let _ = crate::gateway::set_compact_model_forward_rules("");
-    crate::gateway::set_compact_model_forward_rules("gpt-5.4=gpt-5.4-openai-compact")
-        .expect("set compact model forward rules");
-
+fn compact_subagent_ignores_hidden_compact_model_forward_rules() {
     let headers = sample_incoming_headers_with_session_id(
         None,
         None,
@@ -1458,10 +1480,8 @@ fn compact_subagent_uses_compact_model_forward_rules_on_standard_responses_path(
     assert_eq!(
         resolve_compact_model_override_for_request("/v1/responses", &headers, Some("gpt-5.4"),)
             .as_deref(),
-        Some("gpt-5.4-openai-compact")
+        None
     );
-
-    let _ = crate::gateway::set_compact_model_forward_rules(original_rules.as_str());
 }
 
 #[test]
@@ -1584,7 +1604,7 @@ fn aggregate_passthrough_preserves_fast_service_tier_for_log_when_request_is_rew
 
     assert_eq!(
         payload.get("service_tier").and_then(Value::as_str),
-        Some("priority")
+        Some("Fast")
     );
     assert_eq!(model_for_log.as_deref(), Some("gpt-5.4"));
     assert_eq!(reasoning_for_log.as_deref(), Some("high"));
@@ -1593,7 +1613,7 @@ fn aggregate_passthrough_preserves_fast_service_tier_for_log_when_request_is_rew
 }
 
 #[test]
-fn codex_backend_passthrough_maps_fast_to_priority_but_keeps_fast_for_log() {
+fn deferred_passthrough_keeps_fast_until_codex_candidate_is_selected() {
     let mut api_key = sample_api_key(
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         Some("gpt-5.4"),
@@ -1617,7 +1637,7 @@ fn codex_backend_passthrough_maps_fast_to_priority_but_keeps_fast_for_log() {
 
     assert_eq!(
         payload.get("service_tier").and_then(Value::as_str),
-        Some("priority")
+        Some("fast")
     );
     assert_eq!(request_meta.service_tier.as_deref(), Some("fast"));
     assert_eq!(model_for_log.as_deref(), Some("gpt-5.4"));
@@ -1626,7 +1646,7 @@ fn codex_backend_passthrough_maps_fast_to_priority_but_keeps_fast_for_log() {
     assert_eq!(effective_service_tier_for_log.as_deref(), Some("fast"));
 }
 
-/// 函数 `anthropic_model_must_exist_in_cached_model_options`
+/// 函数 `anthropic_model_must_exist_in_v2_catalog`
 ///
 /// 作者: gaohongshun
 ///
@@ -1638,28 +1658,26 @@ fn codex_backend_passthrough_maps_fast_to_priority_but_keeps_fast_for_log() {
 /// # 返回
 /// 无
 #[test]
-fn anthropic_model_must_exist_in_cached_model_options() {
+fn anthropic_model_must_exist_in_v2_catalog() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
-    crate::apikey_models::save_model_options_with_storage(
-        &storage,
-        &ModelsResponse {
-            models: vec![
-                ModelInfo {
-                    slug: "claude-sonnet-4".to_string(),
-                    display_name: "claude-sonnet-4".to_string(),
-                    ..Default::default()
-                },
-                ModelInfo {
-                    slug: "gpt-5.4-mini".to_string(),
-                    display_name: "gpt-5.4-mini".to_string(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        },
-    )
-    .expect("save model catalog");
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("read template model")
+        .expect("template model");
+    model.id.clear();
+    model.slug = "claude-sonnet-4".to_string();
+    model.display_name = "claude-sonnet-4".to_string();
+    model.origin = "custom".to_string();
+    model.builtin_revision = None;
+    model.user_edited = false;
+    model.routes.clear();
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: None,
+            model,
+        })
+        .expect("save V2 model catalog");
 
     assert!(ensure_anthropic_model_is_listed(
         &storage,

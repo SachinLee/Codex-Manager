@@ -75,20 +75,19 @@ pub(crate) fn is_selected_model_capacity_error(message: &str) -> bool {
         }
         base_message = rest.trim_start();
     }
-    let normalized = base_message
+    base_message
         .trim_end_matches('.')
         .trim()
-        .to_ascii_lowercase();
-    normalized == "selected model is at capacity. please try a different model"
+        .eq_ignore_ascii_case("selected model is at capacity. please try a different model")
 }
 
 #[path = "routing/aggregate_api_cooldown.rs"]
 mod aggregate_api_cooldown;
 mod anchor_fingerprint;
 mod capability;
-mod concurrency;
 #[path = "observability/capability_attempt_events.rs"]
 mod capability_attempt_events;
+mod concurrency;
 #[path = "routing/conversation_binding.rs"]
 mod conversation_binding;
 #[path = "routing/cooldown.rs"]
@@ -97,7 +96,7 @@ mod error_response;
 #[path = "routing/failover.rs"]
 mod failover;
 #[path = "observability/http_bridge/mod.rs"]
-mod http_bridge;
+pub(crate) mod http_bridge;
 #[path = "request/incoming_headers.rs"]
 mod incoming_headers;
 #[path = "request/local_count_tokens.rs"]
@@ -109,7 +108,6 @@ mod local_response;
 mod local_validation;
 #[path = "observability/metrics.rs"]
 mod metrics;
-mod model_picker;
 #[path = "request/official_responses_http.rs"]
 mod official_responses_http;
 #[path = "auth/openai_fallback.rs"]
@@ -147,12 +145,15 @@ mod token_exchange;
 mod trace_log;
 mod upstream;
 
-pub(crate) use concurrency::current_gateway_concurrency_recommendation;
-pub(crate) use capability_attempt_events::record_gateway_capability_attempt_event;
 pub(crate) use capability::{
-    current_capability_routing_mode, resolve_capability, set_capability_routing_mode,
-    IMAGE_GENERATION_CAPABILITY,
+    apply_transform, classify_capability_error, current_capability_routing_mode,
+    parse_required_capabilities, record_runtime_capability_rejection, resolve_capability,
+    resolve_persisted_candidate_plan, set_capability_routing_mode, structural_contract_signature,
+    CandidatePlan, CandidatePlanPhase, CapabilityRoutingMode, TransformCode,
+    IMAGE_GENERATION_CAPABILITY, REQUIRED_CAPABILITIES_HEADER,
 };
+pub(crate) use capability_attempt_events::record_gateway_capability_attempt_event;
+pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
@@ -164,7 +165,7 @@ pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus,
     record_usage_refresh_outcome, GatewayCandidateSkipReason,
 };
-pub(super) use official_responses_http::normalize_official_responses_http_body;
+pub(super) use official_responses_http::normalize_official_responses_http_body_with_value;
 pub(crate) use policy_action::{
     active_policy_actions_for_target, project_request_log_route_evidence, PolicyTargetKind,
 };
@@ -173,18 +174,22 @@ use protocol_adapter::{
     adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
 };
 pub(crate) use reasoning_guard_events::record_gateway_reasoning_guard_event;
-pub(crate) use request_helpers::request_log_session_id_candidate_from_value;
+#[cfg(test)]
+pub(super) use request_helpers::parse_request_metadata;
 pub(super) use request_helpers::{
-    inspect_service_tier_for_log, inspect_service_tier_value, is_html_content_type,
-    is_upstream_challenge_response, normalize_models_path, parse_request_metadata,
-    validate_text_input_limit_for_path,
+    inspect_service_tier_value, is_html_content_type, is_upstream_challenge_response,
+    normalize_models_path, parse_request_json_value, parse_request_metadata_from_value,
+    validate_text_input_limit_for_path, validate_text_input_limit_for_value,
 };
 #[cfg(test)]
 use request_helpers::{should_drop_incoming_header, should_drop_incoming_header_for_failover};
-pub(crate) use request_log::{RequestLogTraceContext, RequestLogUsage};
+pub(crate) use request_log::{
+    estimate_input_tokens_from_body, RequestLogTraceContext, RequestLogUsage,
+};
 #[cfg(test)]
 use request_rewrite::apply_request_overrides_with_service_tier_and_prompt_cache_key;
 use request_rewrite::{
+    apply_codex_candidate_transport_rules, apply_request_overrides_for_deferred_aggregate,
     apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope,
     apply_request_overrides_with_service_tier_and_prompt_cache_key_scope, compute_upstream_url,
 };
@@ -259,9 +264,8 @@ pub(crate) fn record_http_queue_enqueue_failure() {
 #[cfg(test)]
 use cooldown::cooldown_reason_for_status;
 use cooldown::{
-    account_last_cooldown_reason, clear_account_cooldown, is_account_in_cooldown,
-    mark_account_cooldown, mark_account_cooldown_for_status, network_consecutive_failure_count,
-    reset_network_consecutive_failure, CooldownReason, BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP,
+    clear_account_cooldown, is_account_in_cooldown, mark_account_cooldown,
+    mark_account_cooldown_for_status, CooldownReason,
 };
 #[cfg(test)]
 pub(super) use failover::should_failover_after_refresh;
@@ -421,7 +425,6 @@ fn decode_base64_header_value(input: &[u8]) -> Option<Vec<u8>> {
 pub(super) use incoming_headers::IncomingHeaderSnapshot;
 use local_count_tokens::maybe_respond_local_count_tokens;
 use local_models::maybe_respond_local_models;
-pub(crate) use model_picker::fetch_models_for_picker;
 use openai_fallback::try_openai_fallback;
 pub(crate) use request_entry::handle_gateway_request;
 use request_gate::{request_gate_lock, RequestGateAcquireError};
@@ -429,14 +432,21 @@ pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
+pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
 use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
-    fresh_upstream_client_for_account, request_gate_wait_timeout, trace_body_preview_max_bytes,
-    upstream_client_for_account, upstream_stream_timeout, upstream_total_timeout,
-    DEFAULT_GATEWAY_DEBUG,
+    fresh_upstream_client_for_account, prepare_upstream_client_for_account,
+    request_gate_wait_timeout, trace_body_preview_max_bytes, upstream_client_for_account,
+    upstream_stream_timeout, upstream_total_timeout, DEFAULT_GATEWAY_DEBUG,
 };
-pub(crate) use runtime_config::{fresh_upstream_client, upstream_client};
+pub(crate) use runtime_config::{
+    prepare_upstream_client_for_aggregate_api_candidate,
+    upstream_client_for_aggregate_api_candidate,
+};
+pub(crate) use runtime_config::{
+    set_thread_aware_account_distribution_enabled, thread_aware_account_distribution_enabled,
+};
 use selection::collect_gateway_candidates;
 pub(crate) use selection::{
     collect_gateway_candidates_with_low_quota_mode, current_quota_guard_config,
@@ -867,10 +877,6 @@ pub(crate) fn resolve_forwarded_model(model: &str) -> Option<String> {
     runtime_config::resolve_forwarded_model(model)
 }
 
-pub(crate) fn resolve_compact_forwarded_model(model: &str) -> Option<String> {
-    runtime_config::resolve_compact_forwarded_model(model)
-}
-
 /// 函数 `resolve_builtin_forwarded_model`
 ///
 /// 作者: gaohongshun
@@ -931,6 +937,14 @@ pub(crate) fn current_upstream_proxy_url() -> Option<String> {
     runtime_config::upstream_proxy_url()
 }
 
+pub(crate) fn current_upstream_proxy_bypass_hosts() -> String {
+    runtime_config::upstream_proxy_bypass_hosts()
+}
+
+pub(crate) fn upstream_client_for_aggregate_url(url: &str) -> reqwest::blocking::Client {
+    runtime_config::upstream_client_for_aggregate_url(url)
+}
+
 pub(crate) fn apply_blocking_upstream_proxy(
     builder: reqwest::blocking::ClientBuilder,
     proxy_url: Option<&str>,
@@ -967,6 +981,10 @@ pub(crate) fn set_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<S
     // 中文注释：用量轮询和 token 刷新复用独立 HTTP client，代理变更后同步重建，避免继续走旧网络路径。
     crate::usage_http::reload_usage_http_client_from_env();
     Ok(applied)
+}
+
+pub(crate) fn set_upstream_proxy_bypass_hosts(raw: Option<&str>) -> String {
+    runtime_config::set_upstream_proxy_bypass_hosts(raw)
 }
 
 /// 函数 `current_upstream_stream_timeout_ms`
@@ -1192,47 +1210,14 @@ pub(crate) fn gateway_record_failover_attempt() {
     record_gateway_failover_attempt();
 }
 
-/// 函数 `gateway_is_aggregate_api_in_cooldown`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-06-18
-///
-/// # 参数
-/// - api_id: 参数 api_id
-///
-/// # 返回
-/// 无
 pub(crate) fn gateway_is_aggregate_api_in_cooldown(api_id: &str) -> bool {
     aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id)
 }
 
-/// 函数 `gateway_record_aggregate_api_failure`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-06-18
-///
-/// # 参数
-/// - api_id: 参数 api_id
-///
-/// # 返回
-/// 无
 pub(crate) fn gateway_record_aggregate_api_failure(api_id: &str) -> bool {
     aggregate_api_cooldown::record_aggregate_api_failure(api_id)
 }
 
-/// 函数 `gateway_clear_aggregate_api_cooldown`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-06-18
-///
-/// # 参数
-/// - api_id: 参数 api_id
-///
-/// # 返回
-/// 无
 pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str) {
     aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id);
 }

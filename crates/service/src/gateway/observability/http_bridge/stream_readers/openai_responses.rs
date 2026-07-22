@@ -222,66 +222,64 @@ impl OpenAIResponsesPassthroughSseReader {
     }
 
     fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
-        loop {
-            self.drain_sidecar_events();
-            match self
-                .raw_upstream
-                .recv_timeout(stream_wait_timeout(self.last_upstream_activity))
-            {
-                Ok(GatewayByteStreamItem::Chunk(bytes)) => {
-                    self.last_upstream_activity = Instant::now();
-                    mark_first_response_ms(&self.usage_collector, self.request_started_at);
-                    self.drain_sidecar_events();
-                    return Ok(bytes.to_vec());
-                }
-                Ok(GatewayByteStreamItem::Eof) => {
-                    self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        if !collector.saw_terminal {
-                            let hint = collector.upstream_error_hint.clone();
-                            collector.terminal_error.get_or_insert_with(|| {
-                                upstream_hint_or_stream_incomplete_message(hint.as_deref())
-                            });
-                        }
+        self.drain_sidecar_events();
+        match self
+            .raw_upstream
+            .recv_timeout(stream_wait_timeout(self.last_upstream_activity))
+        {
+            Ok(GatewayByteStreamItem::Chunk(bytes)) => {
+                self.last_upstream_activity = Instant::now();
+                mark_first_response_ms(&self.usage_collector, self.request_started_at);
+                self.drain_sidecar_events();
+                Ok(bytes.to_vec())
+            }
+            Ok(GatewayByteStreamItem::Eof) => {
+                self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);
+                if let Ok(mut collector) = self.usage_collector.lock() {
+                    if !collector.saw_terminal {
+                        let hint = collector.upstream_error_hint.clone();
+                        collector.terminal_error.get_or_insert_with(|| {
+                            upstream_hint_or_stream_incomplete_message(hint.as_deref())
+                        });
                     }
-                    self.finished = true;
-                    return Ok(Vec::new());
                 }
-                Ok(GatewayByteStreamItem::Error(err)) => {
-                    self.last_upstream_activity = Instant::now();
-                    self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Ok(GatewayByteStreamItem::Error(err)) => {
+                self.last_upstream_activity = Instant::now();
+                self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);
+                if let Ok(mut collector) = self.usage_collector.lock() {
+                    collector
+                        .terminal_error
+                        .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
+                }
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                self.drain_sidecar_events();
+                if stream_idle_timed_out(self.last_upstream_activity) {
                     if let Ok(mut collector) = self.usage_collector.lock() {
                         collector
                             .terminal_error
-                            .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
+                            .get_or_insert_with(stream_idle_timeout_message);
                     }
                     self.finished = true;
                     return Ok(Vec::new());
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    self.drain_sidecar_events();
-                    if stream_idle_timed_out(self.last_upstream_activity) {
-                        if let Ok(mut collector) = self.usage_collector.lock() {
-                            collector
-                                .terminal_error
-                                .get_or_insert_with(stream_idle_timeout_message);
-                        }
-                        self.finished = true;
-                        return Ok(Vec::new());
-                    }
-                    return Ok(self.keepalive_frame.bytes().to_vec());
+                Ok(self.keepalive_frame.bytes().to_vec())
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);
+                if let Ok(mut collector) = self.usage_collector.lock() {
+                    let hint = collector.upstream_error_hint.clone();
+                    collector.terminal_error.get_or_insert_with(|| {
+                        hint.unwrap_or_else(stream_reader_disconnected_message)
+                    });
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        let hint = collector.upstream_error_hint.clone();
-                        collector.terminal_error.get_or_insert_with(|| {
-                            hint.unwrap_or_else(stream_reader_disconnected_message)
-                        });
-                    }
-                    self.finished = true;
-                    return Ok(Vec::new());
-                }
+                self.finished = true;
+                Ok(Vec::new())
             }
         }
     }

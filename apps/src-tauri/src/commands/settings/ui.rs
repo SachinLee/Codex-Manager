@@ -1,8 +1,43 @@
 use crate::app_storage::apply_runtime_storage_env;
+use tauri_plugin_autostart::ManagerExt;
 
 use super::tray_state::{
     effective_close_to_tray_requested, sync_window_runtime_state_from_settings, tray_available,
 };
+
+fn sync_auto_start_runtime_state_from_settings(
+    app: &tauri::AppHandle,
+    settings: &mut serde_json::Value,
+) {
+    let result = app.autolaunch().is_enabled();
+    if let Err(err) = &result {
+        log::warn!("read autostart state failed: {}", err);
+    }
+    let Some(object) = settings.as_object_mut() else {
+        return;
+    };
+    object.insert("autoStartSupported".to_string(), result.is_ok().into());
+    object.insert(
+        "autoStartEnabled".to_string(),
+        result
+            .unwrap_or_else(|_| codexmanager_service::current_auto_start_enabled_setting())
+            .into(),
+    );
+}
+
+fn set_auto_start_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
+    if enabled {
+        manager
+            .enable()
+            .map_err(|err| format!("enable autostart failed: {err}"))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|err| format!("disable autostart failed: {err}"))?;
+    }
+    Ok(())
+}
 
 /// 函数 `app_close_to_tray_on_close_get`
 ///
@@ -71,6 +106,7 @@ pub async fn app_settings_get(app: tauri::AppHandle) -> Result<serde_json::Value
     .await
     .map_err(|err| format!("app_settings_get task failed: {err}"))??;
     sync_window_runtime_state_from_settings(&mut settings);
+    sync_auto_start_runtime_state_from_settings(&app, &mut settings);
     Ok(settings)
 }
 
@@ -92,11 +128,15 @@ pub async fn app_settings_set(
     patch: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     apply_runtime_storage_env(&app);
+    if let Some(enabled) = patch.get("autoStartEnabled").and_then(serde_json::Value::as_bool) {
+        set_auto_start_enabled(&app, enabled)?;
+    }
     let mut settings = tauri::async_runtime::spawn_blocking(move || {
         codexmanager_service::app_settings_set(Some(&patch))
     })
     .await
     .map_err(|err| format!("app_settings_set task failed: {err}"))??;
     sync_window_runtime_state_from_settings(&mut settings);
+    sync_auto_start_runtime_state_from_settings(&app, &mut settings);
     Ok(settings)
 }

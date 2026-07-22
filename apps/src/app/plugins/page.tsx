@@ -7,7 +7,6 @@ import {
   Info,
   Play,
   RefreshCw,
-  Rocket,
   X,
   Trash2,
   ToggleLeft,
@@ -55,6 +54,10 @@ import {
   PluginRunLogSummary,
   PluginTaskSummary,
 } from "@/types";
+import {
+  PageHeader,
+  PageWorkspace,
+} from "@/components/layout/page-workspace";
 
 type SelectedPluginDetail =
   | { kind: "catalog"; pluginId: string }
@@ -336,7 +339,7 @@ function PluginCard({
   t: TranslateFn;
 }) {
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardHeader className="space-y-2 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -427,7 +430,7 @@ function InstalledPluginCard({
   t: TranslateFn;
 }) {
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardHeader className="space-y-2 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -753,22 +756,24 @@ export default function PluginsPage() {
     : null;
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <Rocket className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold">{t("插件中心")}</h1>
-            <p className="text-sm text-muted-foreground">
-              {t("内置精选优先，自定义源按需补充，脚本能力继续由 Rhai 承担。")}
-            </p>
-          </div>
-        </div>
-      </div>
+    <PageWorkspace>
+      <PageHeader
+        eyebrow={t("Plugin workspace")}
+        title={t("插件中心")}
+        description={t("内置精选优先，自定义源按需补充，脚本能力继续由 Rhai 承担。")}
+        meta={
+          <>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {t("已安装")} {installedItems.length}
+            </Badge>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {t("可更新")} {updatableInstalledItems.length}
+            </Badge>
+          </>
+        }
+      />
 
-      <Card className="glass-card shadow-sm">
+      <Card className="glass-card mission-panel shadow-sm">
         <CardHeader>
           <CardTitle>{t("市场层")}</CardTitle>
           <CardDescription>
@@ -847,7 +852,7 @@ export default function PluginsPage() {
         </CardContent>
       </Card>
 
-      <Card className="glass-card shadow-sm">
+      <Card className="glass-card mission-panel shadow-sm">
         <CardHeader className="space-y-4">
           <div>
             <CardTitle>{t("插件列表")}</CardTitle>
@@ -1004,7 +1009,7 @@ export default function PluginsPage() {
       >
         <DialogContent
           showCloseButton={false}
-          className="glass-card max-h-[85vh] overflow-hidden p-0 sm:max-w-[860px] lg:max-w-[920px]"
+          className="glass-card mission-panel max-h-[85vh] overflow-hidden p-0 sm:max-w-[860px] lg:max-w-[920px]"
         >
           {selectedDetail ? (
             <div className="flex max-h-[85vh] flex-col">
@@ -1400,6 +1405,6 @@ export default function PluginsPage() {
           setPendingUninstallPlugin(null);
         }}
       />
-    </div>
+    </PageWorkspace>
   );
 }

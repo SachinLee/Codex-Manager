@@ -1,4 +1,5 @@
 use rusqlite::params;
+use std::collections::HashMap;
 
 use super::{ConversationBinding, Storage};
 
@@ -45,6 +46,14 @@ pub(super) fn delete_conversation_bindings_for_account_sql() -> &'static str {
 pub(super) fn delete_stale_conversation_bindings_sql() -> &'static str {
     "DELETE FROM conversation_bindings
      WHERE last_used_at < ?1"
+}
+
+fn active_conversation_binding_account_counts_sql() -> &'static str {
+    "SELECT account_id, COUNT(*)
+     FROM conversation_bindings
+     WHERE platform_key_hash = ?1
+       AND status = 'active'
+     GROUP BY account_id"
 }
 
 impl Storage {
@@ -245,6 +254,38 @@ impl Storage {
     ) -> rusqlite::Result<usize> {
         self.conn
             .execute(delete_stale_conversation_bindings_sql(), [older_than_ts])
+    }
+
+    /// 函数 `active_conversation_binding_account_counts`
+    ///
+    /// 作者: gaohongshun
+    ///
+    /// 时间: 2026-07-09
+    ///
+    /// # 参数
+    /// - self: 参数 self
+    /// - platform_key_hash: 参数 platform_key_hash
+    ///
+    /// # 返回
+    /// 返回函数执行结果
+    pub fn active_conversation_binding_account_counts(
+        &self,
+        platform_key_hash: &str,
+    ) -> rusqlite::Result<HashMap<String, usize>> {
+        let mut stmt = self
+            .conn
+            .prepare(active_conversation_binding_account_counts_sql())?;
+        let rows = stmt.query_map([platform_key_hash], |row| {
+            let account_id: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((account_id, usize::try_from(count).unwrap_or(usize::MAX)))
+        })?;
+        let mut counts = HashMap::new();
+        for row in rows {
+            let (account_id, count) = row?;
+            counts.insert(account_id, count);
+        }
+        Ok(counts)
     }
 }
 

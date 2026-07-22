@@ -37,6 +37,62 @@ pub async fn service_apikey_read_secret(
     rpc_call_in_background("apikey/readSecret", addr, Some(params)).await
 }
 
+#[tauri::command]
+pub async fn service_managed_model_list_v2(
+    addr: Option<String>,
+    include_hidden: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "includeHidden": include_hidden.unwrap_or(false) });
+    rpc_call_in_background("apikey/managedModelListV2", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_managed_model_get_v2(
+    addr: Option<String>,
+    slug: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "slug": slug });
+    rpc_call_in_background("apikey/managedModelGetV2", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_managed_model_upsert_v2(
+    addr: Option<String>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("apikey/managedModelUpsertV2", addr, Some(payload)).await
+}
+
+#[tauri::command]
+pub async fn service_managed_model_delete_v2(
+    addr: Option<String>,
+    slug: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "slug": slug });
+    rpc_call_in_background("apikey/managedModelDeleteV2", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_managed_model_import_preview_v2(
+    addr: Option<String>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "apikey/managedModelImportPreviewV2",
+        addr,
+        Some(payload),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_managed_model_import_commit_v2(
+    addr: Option<String>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("apikey/managedModelImportCommitV2", addr, Some(payload)).await
+}
+
 /// 函数 `service_apikey_create`
 ///
 /// 作者: gaohongshun
@@ -93,133 +149,6 @@ pub async fn service_apikey_create(
     rpc_call_in_background("apikey/create", addr, Some(params)).await
 }
 
-/// 函数 `service_apikey_models`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - addr: 参数 addr
-/// - refresh_remote: 参数 refresh_remote
-///
-/// # 返回
-/// 返回函数执行结果
-#[tauri::command]
-pub async fn service_apikey_models(
-    addr: Option<String>,
-    refresh_remote: Option<bool>,
-) -> Result<serde_json::Value, String> {
-    let params = refresh_remote.map(|value| serde_json::json!({ "refreshRemote": value }));
-    rpc_call_in_background("apikey/models", addr, params).await
-}
-
-/// 函数 `service_model_catalog_list`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-12
-///
-/// # 参数
-/// - addr: 参数 addr
-/// - refresh_remote: 参数 refresh_remote
-///
-/// # 返回
-/// 返回函数执行结果
-#[tauri::command]
-pub async fn service_model_catalog_list(
-    addr: Option<String>,
-    refresh_remote: Option<bool>,
-) -> Result<serde_json::Value, String> {
-    let params = refresh_remote.map(|value| serde_json::json!({ "refreshRemote": value }));
-    rpc_call_in_background("apikey/modelCatalogList", addr, params).await
-}
-
-/// 函数 `service_model_catalog_save`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-12
-///
-/// # 参数
-/// - addr: 参数 addr
-/// - payload: 参数 payload
-///
-/// # 返回
-/// 返回函数执行结果
-#[tauri::command]
-pub async fn service_model_catalog_save(
-    addr: Option<String>,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelCatalogSave", addr, Some(payload)).await
-}
-
-/// 函数 `service_model_catalog_delete`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-12
-///
-/// # 参数
-/// - addr: 参数 addr
-/// - slug: 参数 slug
-///
-/// # 返回
-/// 返回函数执行结果
-#[tauri::command]
-pub async fn service_model_catalog_delete(
-    addr: Option<String>,
-    slug: String,
-) -> Result<serde_json::Value, String> {
-    let params = serde_json::json!({ "slug": slug });
-    rpc_call_in_background("apikey/modelCatalogDelete", addr, Some(params)).await
-}
-
-#[tauri::command]
-pub async fn service_model_catalog_prune_stale_remote(
-    addr: Option<String>,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelCatalogPruneStaleRemote", addr, None).await
-}
-
-#[tauri::command]
-pub async fn service_model_routing(addr: Option<String>) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelRouting", addr, None).await
-}
-
-#[tauri::command]
-pub async fn service_model_source_sync(
-    addr: Option<String>,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelSourceSync", addr, Some(payload)).await
-}
-
-#[tauri::command]
-pub async fn service_model_source_model_save(
-    addr: Option<String>,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelSourceModelSave", addr, Some(payload)).await
-}
-
-#[tauri::command]
-pub async fn service_model_source_mapping_save(
-    addr: Option<String>,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelSourceMappingSave", addr, Some(payload)).await
-}
-
-#[tauri::command]
-pub async fn service_model_source_mapping_delete(
-    addr: Option<String>,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("apikey/modelSourceMappingDelete", addr, Some(payload)).await
-}
-
 /// 函数 `service_apikey_usage_stats`
 ///
 /// 作者: gaohongshun
@@ -272,10 +201,8 @@ pub async fn service_apikey_update_model(
     rotation_strategy: Option<String>,
     aggregate_api_id: Option<String>,
     account_plan_filter: Option<String>,
-    quota_limit_tokens: Option<i64>,
-    has_quota_limit_tokens: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let mut params = serde_json::json!({
+    let params = serde_json::json!({
       "id": key_id,
       "name": name,
       "modelSlug": model_slug,
@@ -288,11 +215,6 @@ pub async fn service_apikey_update_model(
       "aggregateApiId": aggregate_api_id,
       "accountPlanFilter": account_plan_filter,
     });
-    if has_quota_limit_tokens.unwrap_or(false) {
-        params["quotaLimitTokens"] = quota_limit_tokens
-            .map(serde_json::Value::from)
-            .unwrap_or(serde_json::Value::Null);
-    }
     rpc_call_in_background("apikey/updateModel", addr, Some(params)).await
 }
 
@@ -357,32 +279,4 @@ pub async fn service_apikey_enable(
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({ "id": key_id });
     rpc_call_in_background("apikey/enable", addr, Some(params)).await
-}
-
-#[tauri::command]
-pub async fn service_model_price_rules_list(
-    addr: Option<String>,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("quota/modelPriceRules/list", addr, None).await
-}
-
-#[tauri::command]
-pub async fn service_model_price_rule_read(
-    addr: Option<String>,
-    model_pattern: String,
-    billing_mode: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let params = serde_json::json!({
-        "modelPattern": model_pattern,
-        "billingMode": billing_mode,
-    });
-    rpc_call_in_background("quota/modelPriceRule/read", addr, Some(params)).await
-}
-
-#[tauri::command]
-pub async fn service_model_price_rule_upsert(
-    addr: Option<String>,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("quota/modelPriceRule/upsert", addr, Some(payload)).await
 }

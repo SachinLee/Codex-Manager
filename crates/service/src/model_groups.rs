@@ -85,17 +85,19 @@ fn user_group_entry(assignment: UserModelGroup) -> UserModelGroupEntry {
 }
 
 fn result_from_storage(storage: &Storage) -> Result<ModelGroupListResult, String> {
-    let snapshot = storage
-        .load_model_group_list_snapshot()
-        .map_err(|err| format!("load model group list failed: {err}"))?;
+    let groups = storage
+        .list_model_groups()
+        .map_err(|err| format!("list model groups failed: {err}"))?;
+    let models = storage
+        .list_model_group_models_v2()
+        .map_err(|err| format!("list model group models V2 failed: {err}"))?;
+    let user_assignments = storage
+        .list_user_model_groups()
+        .map_err(|err| format!("list user model groups failed: {err}"))?;
     Ok(ModelGroupListResult {
-        groups: snapshot.groups.into_iter().map(group_entry).collect(),
-        models: snapshot.models.into_iter().map(group_model_entry).collect(),
-        user_assignments: snapshot
-            .user_assignments
-            .into_iter()
-            .map(user_group_entry)
-            .collect(),
+        groups: groups.into_iter().map(group_entry).collect(),
+        models: models.into_iter().map(group_model_entry).collect(),
+        user_assignments: user_assignments.into_iter().map(user_group_entry).collect(),
     })
 }
 
@@ -110,9 +112,6 @@ pub(crate) fn upsert_model_group(
 ) -> Result<ModelGroupEntry, String> {
     let storage =
         storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    storage
-        .bootstrap_default_model_group()
-        .map_err(|err| format!("bootstrap default model group failed: {err}"))?;
     let id = normalize_optional_text(params.id.as_deref()).unwrap_or_else(|| generate_id("mg", 8));
     let existing = storage
         .find_model_group(id.as_str())
@@ -189,9 +188,11 @@ pub(crate) fn set_model_group_models(
         }
     }
     let platform_slugs = storage
-        .list_existing_model_catalog_slugs("default", &requested_slugs)
-        .map_err(|err| format!("list model catalog failed: {err}"))?
+        .list_managed_models_v2(true)
+        .map_err(|err| format!("list model catalog V2 failed: {err}"))?
         .into_iter()
+        .filter(|model| model.enabled && model.supported_in_api)
+        .map(|model| model.slug)
         .collect::<HashSet<_>>();
     let mut models = Vec::new();
     for (item, slug) in unique_items {
@@ -212,8 +213,8 @@ pub(crate) fn set_model_group_models(
         });
     }
     storage
-        .replace_model_group_models(group_id.as_str(), models.as_slice())
-        .map_err(|err| format!("save model group models failed: {err}"))?;
+        .replace_model_group_models_v2(group_id.as_str(), models.as_slice())
+        .map_err(|err| format!("save model group models V2 failed: {err}"))?;
     result_from_storage(&storage)
 }
 
@@ -304,7 +305,7 @@ pub(crate) fn resolve_api_key_model_group_access(
         return Err("API Key 归属用户已停用".to_string());
     }
     let access = storage
-        .resolve_model_group_access_for_user(user_id, platform_model_slug, now_ts())
+        .resolve_model_group_access_for_user_v2(user_id, platform_model_slug, now_ts())
         .map_err(|err| format!("read model group access failed: {err}"))?;
     match access {
         Some(access) => Ok(Some(access)),
@@ -333,7 +334,7 @@ pub(crate) fn allowed_model_slugs_for_api_key(
         return Ok(None);
     }
     let slugs = storage
-        .allowed_model_slugs_for_user(user_id, now_ts())
+        .allowed_model_slugs_for_user_v2(user_id, now_ts())
         .map_err(|err| format!("read allowed model groups failed: {err}"))?
         .into_iter()
         .collect::<HashSet<_>>();

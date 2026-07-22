@@ -67,6 +67,7 @@ import {
   type CodexSessionListOptions,
 } from "@/lib/api/codex-launcher";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useI18n } from "@/lib/i18n/provider";
 
 const ARCHIVE_ALL = "__all__";
 const PROJECT_ALL = "__all__";
@@ -350,6 +351,7 @@ function ProjectTreePanel({
   selectedProject: string;
   onSelect: (path: string) => void;
 }) {
+  const { t } = useI18n();
   const [treeKeyword, setTreeKeyword] = useState("");
   const normalizedKeyword = treeKeyword.trim().toLowerCase();
   const noneCount = sessions.filter((session) => !normalizeCwd(session.cwd)).length;
@@ -372,21 +374,21 @@ function ProjectTreePanel({
   }, [normalizedKeyword, projectTree]);
 
   const quickItems = [
-    { id: PROJECT_ALL, label: "全部会话", count: sessions.length, icon: Circle },
-    { id: PROJECT_NONE, label: "无项目", count: noneCount, icon: FolderOpen },
-    { id: PROJECT_ARCHIVED, label: "已归档", count: archivedCount, icon: Archive },
+    { id: PROJECT_ALL, label: t("全部会话"), count: sessions.length, icon: Circle },
+    { id: PROJECT_NONE, label: t("无项目"), count: noneCount, icon: FolderOpen },
+    { id: PROJECT_ARCHIVED, label: t("已归档"), count: archivedCount, icon: Archive },
   ];
 
   return (
     <div className="border-b border-border/60 p-3 lg:w-80 lg:border-b-0 lg:border-r">
       <div className="mb-3 flex items-center gap-2 text-sm font-medium">
         <FolderTree className="h-4 w-4 text-primary" />
-        项目目录
+        {t("项目目录")}
       </div>
       <div className="relative mb-3">
         <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="搜索目录"
+          placeholder={t("搜索目录")}
           value={treeKeyword}
           onChange={(event) => setTreeKeyword(event.target.value)}
           className="h-8 pl-8 text-sm"
@@ -416,7 +418,7 @@ function ProjectTreePanel({
       <div className="mt-3 max-h-[520px] space-y-1 overflow-y-auto pr-1">
         {visibleTree.length === 0 ? (
           <div className="py-6 text-center text-sm text-muted-foreground">
-            没有匹配的项目目录
+            {t("没有匹配的项目目录")}
           </div>
         ) : (
           visibleTree.map((node) => (
@@ -435,6 +437,7 @@ function ProjectTreePanel({
 }
 
 function LauncherStatusCard() {
+  const { t } = useI18n();
   const { data: status, isLoading } = useCodexLauncherStatus();
   const {
     data: bridgeStatus,
@@ -503,27 +506,27 @@ function LauncherStatusCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <Zap className="h-4 w-4 text-primary" />
-          Codex 启动状态
+          {t("Codex 启动状态")}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div className="flex items-center gap-2 text-muted-foreground">
             <StatusDot active={!!status?.running} />
-            {status?.running ? "运行中" : "未运行"}
+            {status?.running ? t("运行中") : t("未运行")}
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
             <StatusDot active={!!status?.running || !!status?.injected} />
-            {status?.injected ? "已注入" : status?.running ? "普通启动" : "未注入"}
+            {status?.injected ? t("已注入") : status?.running ? t("普通启动") : t("未注入")}
           </div>
           {status?.debugPort && (
             <div className="text-muted-foreground col-span-2">
-              调试端口：<span className="font-mono text-foreground">{status.debugPort}</span>
+              {t("调试端口：")}<span className="font-mono text-foreground">{status.debugPort}</span>
             </div>
           )}
           {status?.codexPath && (
             <div className="text-muted-foreground col-span-2 truncate">
-              路径：<span className="font-mono text-foreground text-xs">{status.codexPath}</span>
+              {t("路径：")}<span className="font-mono text-foreground text-xs">{status.codexPath}</span>
             </div>
           )}
         </div>
@@ -537,7 +540,7 @@ function LauncherStatusCard() {
                 disabled={plainStartMutation.isPending || injectStartMutation.isPending}
               >
                 <Rocket className="h-3.5 w-3.5 mr-1.5" />
-                {plainStartMutation.isPending ? "启动中..." : "普通启动"}
+                {plainStartMutation.isPending ? t("启动中...") : t("普通启动")}
               </Button>
               <Button
                 size="sm"
@@ -546,7 +549,7 @@ function LauncherStatusCard() {
                 disabled={plainStartMutation.isPending || injectStartMutation.isPending}
               >
                 <Zap className="h-3.5 w-3.5 mr-1.5" />
-                {injectStartMutation.isPending ? "注入中..." : "启动并注入"}
+                {injectStartMutation.isPending ? t("注入中...") : t("启动并注入")}
               </Button>
             </>
           ) : (
@@ -557,7 +560,7 @@ function LauncherStatusCard() {
               disabled={stopMutation.isPending}
             >
               <Square className="h-3.5 w-3.5 mr-1.5" />
-              停止
+              {t("停止")}
             </Button>
           )}
           <Button
@@ -573,7 +576,7 @@ function LauncherStatusCard() {
             }}
           >
             <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
-            探测路径
+            {t("探测路径")}
           </Button>
           <Button
             size="sm"
@@ -582,7 +585,7 @@ function LauncherStatusCard() {
             disabled={configuringCm}
           >
             <KeyRound className="h-3.5 w-3.5 mr-1.5" />
-            {configuringCm ? "配置中..." : "配置桥接"}
+            {configuringCm ? t("配置中...") : t("配置桥接")}
           </Button>
           <Button
             size="sm"
@@ -591,7 +594,7 @@ function LauncherStatusCard() {
             disabled={enableRemoteControlMutation.isPending}
           >
             <Smartphone className="h-3.5 w-3.5 mr-1.5" />
-            {enableRemoteControlMutation.isPending ? "启用中..." : "启用手机远控"}
+            {enableRemoteControlMutation.isPending ? t("启用中...") : t("启用手机远控")}
           </Button>
           <Button
             size="sm"
@@ -600,24 +603,24 @@ function LauncherStatusCard() {
             disabled={syncingProvider}
           >
             <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncingProvider ? "animate-spin" : ""}`} />
-            同步 Provider
+            {t("同步 Provider")}
           </Button>
         </div>
 
         <div className="rounded-md border border-border/70 bg-muted/20 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="text-sm font-medium">Codex App 桥接</div>
+            <div className="text-sm font-medium">{t("Codex App 桥接")}</div>
             <Badge variant={bridgeStatus?.issues.length ? "secondary" : "default"}>
               {bridgeLoading
-                ? "检查中"
+                ? t("检查中")
                 : bridgeStatus?.issues.length
-                  ? "待处理"
-                  : "就绪"}
+                  ? t("待处理")
+                  : t("就绪")}
             </Badge>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <BridgeStateBadge
-              label="登录态"
+              label={t("登录态")}
               active={
                 !!bridgeStatus?.authModeChatgpt &&
                 !!bridgeStatus?.hasAccessToken &&
@@ -625,21 +628,21 @@ function LauncherStatusCard() {
                 !!bridgeStatus?.hasRefreshToken
               }
             />
-            <BridgeStateBadge label="网关" active={!!bridgeStatus?.providerIsCm} />
+            <BridgeStateBadge label={t("网关")} active={!!bridgeStatus?.providerIsCm} />
             <BridgeStateBadge
-              label="远程连接"
+              label={t("远程连接")}
               active={!!bridgeStatus?.remoteConnectionsEnabled}
             />
             <BridgeStateBadge
-              label="手机控制"
+              label={t("手机控制")}
               active={!!bridgeStatus?.dbRemoteControlEnabled}
             />
             <BridgeStateBadge
-              label="桌面授权"
+              label={t("桌面授权")}
               active={!!bridgeStatus && !bridgeStatus.desktopSignInRequired}
             />
             <BridgeStateBadge
-              label="App 确认"
+              label={t("App 确认")}
               active={!!bridgeStatus?.logEnablementSeen}
               muted
             />
@@ -676,6 +679,7 @@ function BridgeStateBadge({
 }
 
 function SessionTable() {
+  const { t } = useI18n();
   const [keyword, setKeyword] = useState("");
   const [selectedProject, setSelectedProject] = useState<string>(PROJECT_ALL);
   const [archiveFilter, setArchiveFilter] = useState<string>(ARCHIVE_ALL);
@@ -720,11 +724,11 @@ function SessionTable() {
   );
   const selectedProjectLabel =
     selectedProject === PROJECT_ALL
-      ? "全部会话"
+      ? t("全部会话")
       : selectedProject === PROJECT_NONE
-        ? "无项目"
+        ? t("无项目")
         : selectedProject === PROJECT_ARCHIVED
-          ? "已归档"
+          ? t("已归档")
           : selectedProject;
 
   const filtered = useMemo(() => {
@@ -874,7 +878,7 @@ function SessionTable() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <CardTitle className="text-base flex items-center gap-2">
             <Circle className="h-4 w-4 text-primary" />
-            会话管理
+            {t("会话管理")}
             {sessions && (
               <Badge variant="secondary" className="ml-1">
                 {filtered.length}/{sessions.length}
@@ -891,7 +895,7 @@ function SessionTable() {
             <div className="relative flex-1 min-w-[180px] max-w-xs">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                placeholder="搜索会话标题或路径"
+                placeholder={t("搜索会话标题或路径")}
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
                 className="h-8 pl-8 text-sm"
@@ -902,12 +906,12 @@ function SessionTable() {
               onValueChange={(v) => setArchiveFilter(v ?? ARCHIVE_ALL)}
             >
               <SelectTrigger className="h-8 w-[120px] text-sm">
-                <SelectValue placeholder="归档状态" />
+                <SelectValue placeholder={t("归档状态")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={ARCHIVE_ALL}>全部</SelectItem>
-                <SelectItem value="active">未归档</SelectItem>
-                <SelectItem value="archived">已归档</SelectItem>
+                <SelectItem value={ARCHIVE_ALL}>{t("全部")}</SelectItem>
+                <SelectItem value="active">{t("未归档")}</SelectItem>
+                <SelectItem value="archived">{t("已归档")}</SelectItem>
               </SelectContent>
             </Select>
             <Select
@@ -916,15 +920,15 @@ function SessionTable() {
             >
               <SelectTrigger className="h-8 w-[150px] text-sm">
                 <CalendarDays className="mr-1.5 h-3.5 w-3.5" />
-                <SelectValue placeholder="更新时间" />
+                <SelectValue placeholder={t("更新时间")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={DATE_FILTER_ALL}>全部时间</SelectItem>
-                <SelectItem value={DATE_FILTER_CURRENT_MONTH}>本月</SelectItem>
-                <SelectItem value={DATE_FILTER_LAST_MONTH}>上月</SelectItem>
-                <SelectItem value={DATE_FILTER_LAST_3_MONTHS}>近 3 个月</SelectItem>
-                <SelectItem value={DATE_FILTER_CUSTOM_MONTH}>指定月份</SelectItem>
-                <SelectItem value={DATE_FILTER_CUSTOM_RANGE}>日期范围</SelectItem>
+                <SelectItem value={DATE_FILTER_ALL}>{t("全部时间")}</SelectItem>
+                <SelectItem value={DATE_FILTER_CURRENT_MONTH}>{t("本月")}</SelectItem>
+                <SelectItem value={DATE_FILTER_LAST_MONTH}>{t("上月")}</SelectItem>
+                <SelectItem value={DATE_FILTER_LAST_3_MONTHS}>{t("近 3 个月")}</SelectItem>
+                <SelectItem value={DATE_FILTER_CUSTOM_MONTH}>{t("指定月份")}</SelectItem>
+                <SelectItem value={DATE_FILTER_CUSTOM_RANGE}>{t("日期范围")}</SelectItem>
               </SelectContent>
             </Select>
             {dateFilterMode === DATE_FILTER_CUSTOM_MONTH && (
@@ -933,7 +937,7 @@ function SessionTable() {
                 value={customMonth}
                 onChange={(event) => setCustomMonth(event.target.value)}
                 className="h-8 w-[140px] text-sm"
-                aria-label="选择会话更新时间月份"
+                aria-label={t("选择会话更新时间月份")}
               />
             )}
             {dateFilterMode === DATE_FILTER_CUSTOM_RANGE && (
@@ -943,15 +947,15 @@ function SessionTable() {
                   value={customFromDate}
                   onChange={(event) => setCustomFromDate(event.target.value)}
                   className="h-8 w-[145px] text-sm"
-                  aria-label="会话更新时间开始日期"
+                  aria-label={t("会话更新时间开始日期")}
                 />
-                <span className="text-xs text-muted-foreground">至</span>
+                <span className="text-xs text-muted-foreground">{t("至")}</span>
                 <Input
                   type="date"
                   value={customToDate}
                   onChange={(event) => setCustomToDate(event.target.value)}
                   className="h-8 w-[145px] text-sm"
-                  aria-label="会话更新时间结束日期"
+                  aria-label={t("会话更新时间结束日期")}
                 />
               </>
             )}
@@ -970,7 +974,7 @@ function SessionTable() {
                   setDateFilterMode(DATE_FILTER_ALL);
                 }}
               >
-                重置
+                {t("重置")}
               </Button>
             )}
             {selectedInFiltered.length > 0 && (
@@ -983,7 +987,7 @@ function SessionTable() {
                   onClick={() => openMoveDialog(selectedInFiltered)}
                 >
                   <MoveRight className="h-3.5 w-3.5 mr-1.5" />
-                  移动选中 {selectedInFiltered.length}
+                  {t("移动选中")} {selectedInFiltered.length}
                 </Button>
                 <Button
                   size="sm"
@@ -993,7 +997,7 @@ function SessionTable() {
                   onClick={() => setPendingBulkDelete(selectedInFiltered)}
                 >
                   <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-                  删除选中 {selectedInFiltered.length}
+                  {t("删除选中")} {selectedInFiltered.length}
                 </Button>
               </>
             )}
@@ -1006,7 +1010,7 @@ function SessionTable() {
                 onClick={() => setPendingDeleteArchived(true)}
               >
                 <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-                删除已归档 {archivedCount}
+                {t("删除已归档")} {archivedCount}
               </Button>
             )}
           </div>
@@ -1015,7 +1019,7 @@ function SessionTable() {
       <CardContent className="p-0">
         {!sessions || sessions.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">
-            暂无会话数据（需先启动 Codex）
+            {t("暂无会话数据（需先启动 Codex）")}
           </p>
         ) : (
           <div className="flex flex-col lg:flex-row">
@@ -1030,13 +1034,13 @@ function SessionTable() {
                 <div className="min-w-0">
                   <div className="text-sm font-medium truncate">{selectedProjectLabel}</div>
                   <div className="text-xs text-muted-foreground">
-                    {filtered.length} 个会话
+                    {filtered.length} {t("个会话")}
                   </div>
                 </div>
               </div>
               {filtered.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-8">
-                  没有匹配当前筛选条件的会话
+                  {t("没有匹配当前筛选条件的会话")}
                 </p>
               ) : (
                 <Table>
@@ -1047,16 +1051,16 @@ function SessionTable() {
                           checked={allFilteredSelected}
                           aria-checked={someFilteredSelected ? "mixed" : allFilteredSelected}
                           onCheckedChange={(checked) => toggleFilteredSelected(checked === true)}
-                          aria-label="选择当前筛选会话"
+                          aria-label={t("选择当前筛选会话")}
                         />
                       </TableHead>
-                      <TableHead>标题</TableHead>
+                      <TableHead>{t("标题")}</TableHead>
                       {selectedProject === PROJECT_ALL && (
-                        <TableHead className="w-56">所属项目</TableHead>
+                        <TableHead className="w-56">{t("所属项目")}</TableHead>
                       )}
-                      <TableHead className="w-20 text-center">归档</TableHead>
-                      <TableHead className="w-32">更新时间</TableHead>
-                      <TableHead className="w-28 text-right">操作</TableHead>
+                      <TableHead className="w-20 text-center">{t("归档")}</TableHead>
+                      <TableHead className="w-32">{t("更新时间")}</TableHead>
+                      <TableHead className="w-28 text-right">{t("操作")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1068,11 +1072,11 @@ function SessionTable() {
                             onCheckedChange={(checked) =>
                               toggleSelected(s.sessionId, checked === true)
                             }
-                            aria-label={`选择会话 ${s.title || s.sessionId}`}
+                              aria-label={`${t("选择会话")} ${s.title || s.sessionId}`}
                           />
                         </TableCell>
                         <TableCell className="font-medium max-w-xs truncate">
-                          {s.title || <span className="text-muted-foreground italic">无标题</span>}
+                          {s.title || <span className="text-muted-foreground italic">{t("无标题")}</span>}
                         </TableCell>
                         {selectedProject === PROJECT_ALL && (
                           <TableCell
@@ -1085,7 +1089,7 @@ function SessionTable() {
                         <TableCell className="text-center">
                           {s.archived ? (
                             <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                              已归档
+                              {t("已归档")}
                             </Badge>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
@@ -1104,7 +1108,7 @@ function SessionTable() {
                               className="h-7 w-7 p-0"
                               disabled={moveMutation.isPending || moveManyMutation.isPending}
                               onClick={() => openMoveDialog([s])}
-                              title="移动会话"
+                              title={t("移动会话")}
                             >
                               <MoveRight className="h-3.5 w-3.5" />
                             </Button>
@@ -1114,7 +1118,7 @@ function SessionTable() {
                               className="h-7 w-7 p-0 text-destructive hover:text-destructive"
                               disabled={deleteMutation.isPending}
                               onClick={() => setPendingDelete(s)}
-                              title="删除会话"
+                              title={t("删除会话")}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
@@ -1138,33 +1142,33 @@ function SessionTable() {
       >
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>移动会话</DialogTitle>
+            <DialogTitle>{t("移动会话")}</DialogTitle>
             <DialogDescription>
-              选择目标工作目录，确认后会更新 Codex 会话所属项目。
+              {t("选择目标工作目录，确认后会更新 Codex 会话所属项目。")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="rounded-md border border-border/70 p-3 text-sm">
-              <div className="text-muted-foreground">待移动</div>
+              <div className="text-muted-foreground">{t("待移动")}</div>
               <div className="mt-1 font-medium">
                 {pendingMove.length === 1
                   ? pendingMove[0]?.title || pendingMove[0]?.sessionId
-                  : `${pendingMove.length} 个会话`}
+                  : `${pendingMove.length} ${t("个会话")}`}
               </div>
               {pendingMove.length === 1 && (
                 <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
-                  {pendingMove[0]?.cwd || "无项目"}
+                  {pendingMove[0]?.cwd || t("无项目")}
                 </div>
               )}
             </div>
             <div className="space-y-2">
-              <div className="text-sm font-medium">目标目录</div>
+              <div className="text-sm font-medium">{t("目标目录")}</div>
               <Select
                 value={moveTarget}
                 onValueChange={(value) => setMoveTarget(value)}
               >
                 <SelectTrigger className="h-9 w-full text-sm">
-                  <SelectValue placeholder="请选择目标目录" />
+                  <SelectValue placeholder={t("请选择目标目录")} />
                 </SelectTrigger>
                 <SelectContent>
                   {availableMoveTargets.map((target) => (
@@ -1176,7 +1180,7 @@ function SessionTable() {
               </Select>
               {availableMoveTargets.length === 0 && (
                 <div className="text-xs text-muted-foreground">
-                  暂无可用目标目录
+                  {t("暂无可用目标目录")}
                 </div>
               )}
             </div>
@@ -1187,14 +1191,14 @@ function SessionTable() {
               onClick={() => setPendingMove([])}
               disabled={moveMutation.isPending || moveManyMutation.isPending}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button
               onClick={handleConfirmMove}
               disabled={!moveTarget || moveMutation.isPending || moveManyMutation.isPending}
             >
               <MoveRight className="h-3.5 w-3.5 mr-1.5" />
-              {moveMutation.isPending || moveManyMutation.isPending ? "移动中..." : "确认移动"}
+              {moveMutation.isPending || moveManyMutation.isPending ? t("移动中...") : t("确认移动")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1208,29 +1212,29 @@ function SessionTable() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>确认删除会话</DialogTitle>
+            <DialogTitle>{t("确认删除会话")}</DialogTitle>
             <DialogDescription>
-              即将删除以下会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。
+              {t("即将删除以下会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。")}
             </DialogDescription>
           </DialogHeader>
           {pendingDelete && (
             <div className="space-y-2 text-sm">
               <div>
-                <span className="text-muted-foreground">标题：</span>
+                <span className="text-muted-foreground">{t("标题：")}</span>
                 <span className="font-medium">
-                  {pendingDelete.title || <span className="italic">无标题</span>}
+                  {pendingDelete.title || <span className="italic">{t("无标题")}</span>}
                 </span>
               </div>
               {pendingDelete.cwd && (
                 <div className="break-all">
-                  <span className="text-muted-foreground">所属项目：</span>
+                  <span className="text-muted-foreground">{t("所属项目：")}</span>
                   <span className="font-mono text-xs">{pendingDelete.cwd}</span>
                 </div>
               )}
               {pendingDelete.archived && (
                 <div>
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                    已归档
+                    {t("已归档")}
                   </Badge>
                 </div>
               )}
@@ -1242,7 +1246,7 @@ function SessionTable() {
               onClick={() => setPendingDelete(null)}
               disabled={deleteMutation.isPending}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button
               variant="destructive"
@@ -1250,7 +1254,7 @@ function SessionTable() {
               disabled={deleteMutation.isPending}
             >
               <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-              {deleteMutation.isPending ? "删除中..." : "确认删除"}
+              {deleteMutation.isPending ? t("删除中...") : t("确认删除")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1264,20 +1268,20 @@ function SessionTable() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>确认批量删除会话</DialogTitle>
+            <DialogTitle>{t("确认批量删除会话")}</DialogTitle>
             <DialogDescription>
-              即将删除 {pendingBulkDelete.length} 个会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。
+              {t("即将删除")} {pendingBulkDelete.length} {t("个会话及其本地数据，删除后可在 30 天内通过备份令牌撤销。")}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-48 space-y-2 overflow-y-auto text-sm">
             {pendingBulkDelete.slice(0, 12).map((session) => (
               <div key={session.sessionId} className="truncate">
-                {session.title || <span className="text-muted-foreground italic">无标题</span>}
+                {session.title || <span className="text-muted-foreground italic">{t("无标题")}</span>}
               </div>
             ))}
             {pendingBulkDelete.length > 12 && (
               <div className="text-xs text-muted-foreground">
-                还有 {pendingBulkDelete.length - 12} 个会话
+                {t("还有")} {pendingBulkDelete.length - 12} {t("个会话")}
               </div>
             )}
           </div>
@@ -1287,7 +1291,7 @@ function SessionTable() {
               onClick={() => setPendingBulkDelete([])}
               disabled={deleteManyMutation.isPending}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button
               variant="destructive"
@@ -1295,7 +1299,7 @@ function SessionTable() {
               disabled={deleteManyMutation.isPending}
             >
               <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-              {deleteManyMutation.isPending ? "删除中..." : "确认删除"}
+              {deleteManyMutation.isPending ? t("删除中...") : t("确认删除")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1307,9 +1311,9 @@ function SessionTable() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>确认删除已归档会话</DialogTitle>
+            <DialogTitle>{t("确认删除已归档会话")}</DialogTitle>
             <DialogDescription>
-              即将删除全部 {archivedCount} 个已归档会话及其本地数据。
+              {t("即将删除全部")} {archivedCount} {t("个已归档会话及其本地数据。")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1318,7 +1322,7 @@ function SessionTable() {
               onClick={() => setPendingDeleteArchived(false)}
               disabled={deleteAllArchivedMutation.isPending}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button
               variant="destructive"
@@ -1326,7 +1330,7 @@ function SessionTable() {
               disabled={deleteAllArchivedMutation.isPending}
             >
               <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-              {deleteAllArchivedMutation.isPending ? "删除中..." : "确认删除"}
+              {deleteAllArchivedMutation.isPending ? t("删除中...") : t("确认删除")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1336,12 +1340,13 @@ function SessionTable() {
 }
 
 export default function CodexLauncherPage() {
+  const { t } = useI18n();
   return (
     <div className="space-y-4 p-4">
       <div>
-        <h1 className="text-xl font-semibold">Codex 启动器</h1>
+        <h1 className="text-xl font-semibold">{t("Codex 启动器")}</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          普通启动 Codex 并使用 Codex-Manager 会话管理；注入模式仅作为旧增强能力保留
+          {t("普通启动 Codex 并使用 Codex-Manager 会话管理；注入模式仅作为旧增强能力保留")}
         </p>
       </div>
 

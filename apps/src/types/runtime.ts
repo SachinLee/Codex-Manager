@@ -8,6 +8,7 @@ export interface RuntimeCapabilities {
   authorContentUrl?: string | null;
   canManageService: boolean;
   canSelfUpdate: boolean;
+  canAutoStart: boolean;
   canCloseToTray: boolean;
   canOpenLocalDir: boolean;
   canUseBrowserFileImport: boolean;

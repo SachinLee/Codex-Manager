@@ -1,7 +1,8 @@
 use codexmanager_core::storage::{
     now_ts, Account, AggregateApi, ApiKey, ApiKeyOwner, AppUser, AppWalletLedgerEntry, Event,
-    ModelGroup, ModelSourceMapping, ModelSourceModel, RequestLog, RequestTokenStat, Storage, Token,
-    UsageSnapshotRecord, UserModelGroup,
+    ManagedModelV2Upsert, ModelCatalogModelRecord, ModelGroup, ModelRouteV2, ModelSourceMapping,
+    ModelSourceModel, RequestLog, RequestTokenStat, Storage, Token, UsageSnapshotRecord,
+    UserModelGroup,
 };
 
 /// 函数 `storage_can_insert_account_and_token`
@@ -167,6 +168,163 @@ fn storage_can_upsert_and_resolve_model_source_mappings() {
         enabled[0].billing_model_slug.as_deref(),
         Some("gpt-billing")
     );
+    assert!(storage
+        .available_source_model_exists("openai_account", "acc-routing-1", "gpt-upstream")
+        .expect("available source model exists"));
+    assert!(!storage
+        .available_source_model_exists("openai_account", "acc-routing-1", "gpt-missing")
+        .expect("missing source model does not exist"));
+    storage
+        .upsert_model_source_model(&ModelSourceModel {
+            source_kind: "openai_account".to_string(),
+            source_id: "acc-routing-1".to_string(),
+            upstream_model: "gpt-disabled".to_string(),
+            display_name: Some("GPT Disabled".to_string()),
+            status: "disabled".to_string(),
+            discovery_kind: "manual".to_string(),
+            last_synced_at: None,
+            extra_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert disabled source model");
+    let available_source_models = storage
+        .list_available_model_source_models_for_source("openai_account", "acc-routing-1")
+        .expect("list available source models");
+    assert_eq!(available_source_models.len(), 1);
+    assert_eq!(available_source_models[0].upstream_model, "gpt-upstream");
+
+    storage
+        .upsert_model_source_mapping(&ModelSourceMapping {
+            id: "map-routing-aggregate".to_string(),
+            platform_model_slug: "gpt-platform".to_string(),
+            source_kind: "aggregate_api".to_string(),
+            source_id: "agg-routing-1".to_string(),
+            upstream_model: "gpt-upstream".to_string(),
+            enabled: true,
+            priority: 5,
+            weight: 1,
+            billing_model_slug: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert aggregate mapping");
+    storage
+        .upsert_model_source_mapping(&ModelSourceMapping {
+            id: "map-routing-disabled".to_string(),
+            platform_model_slug: "gpt-platform".to_string(),
+            source_kind: "openai_account".to_string(),
+            source_id: "acc-routing-disabled".to_string(),
+            upstream_model: "gpt-disabled".to_string(),
+            enabled: false,
+            priority: 10,
+            weight: 10,
+            billing_model_slug: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert disabled mapping");
+
+    let account_enabled = storage
+        .list_enabled_model_source_mappings_for_platform_and_kind("gpt-platform", "openai_account")
+        .expect("list enabled account mappings");
+    assert_eq!(account_enabled.len(), 1);
+    assert_eq!(account_enabled[0].source_id, "acc-routing-1");
+    assert_eq!(
+        storage
+            .list_enabled_model_source_mapping_source_ids_for_platform_and_kind(
+                "gpt-platform",
+                "openai_account"
+            )
+            .expect("list enabled account mapping source ids"),
+        vec!["acc-routing-1".to_string()]
+    );
+    assert_eq!(
+        storage
+            .list_model_source_mapping_source_ids_for_kind("openai_account")
+            .expect("list account mapping source ids"),
+        vec![
+            "acc-routing-1".to_string(),
+            "acc-routing-disabled".to_string()
+        ]
+    );
+    assert_eq!(
+        storage
+            .list_model_source_mapping_platform_slugs_for_source("openai_account", "acc-routing-1")
+            .expect("list account mapping platform slugs"),
+        vec!["gpt-platform".to_string()]
+    );
+    assert_eq!(
+        storage
+            .list_enabled_model_source_mapping_platform_slugs_for_kind("aggregate_api")
+            .expect("list aggregate mapping platform slugs"),
+        vec!["gpt-platform".to_string()]
+    );
+    assert_eq!(
+        storage
+            .list_enabled_model_source_mapping_platform_slugs()
+            .expect("list enabled mapping platform slugs"),
+        vec!["gpt-platform".to_string()]
+    );
+    assert_eq!(
+        storage
+            .list_enabled_model_source_mapping_platform_slugs_for_platforms(&[
+                "missing-platform".to_string(),
+                "gpt-platform".to_string(),
+                "gpt-platform".to_string(),
+            ])
+            .expect("list enabled mapping platform slugs for candidates"),
+        vec!["gpt-platform".to_string()]
+    );
+    assert_eq!(
+        storage
+            .list_model_source_model_upstream_models_for_upstream_models(&[
+                "gpt-upstream".to_string(),
+                "missing-upstream".to_string(),
+                "gpt-upstream".to_string(),
+            ])
+            .expect("list source model upstream slugs for candidates"),
+        vec!["gpt-upstream".to_string()]
+    );
+    assert!(storage
+        .has_enabled_model_source_mapping_for_platform_and_kind("gpt-platform", "aggregate_api")
+        .expect("check aggregate mapping"));
+    assert!(storage
+        .has_enabled_model_source_mapping_for_platform("gpt-platform")
+        .expect("check any enabled mapping"));
+    assert!(storage
+        .has_enabled_model_source_mapping_for_platform_matching_kinds(
+            "gpt-platform",
+            &["openai_account"]
+        )
+        .expect("check matching account mapping"));
+    assert!(storage
+        .has_enabled_model_source_mapping_for_platform_matching_kinds(
+            "gpt-platform",
+            &["aggregate_api"]
+        )
+        .expect("check matching aggregate mapping"));
+    assert!(storage
+        .has_enabled_model_source_mapping_for_platform_outside_kinds(
+            "gpt-platform",
+            &["openai_account"]
+        )
+        .expect("check outside account mapping"));
+    assert!(!storage
+        .has_enabled_model_source_mapping_for_platform_outside_kinds(
+            "gpt-platform",
+            &["openai_account", "aggregate_api"]
+        )
+        .expect("check no outside known mapping"));
+    assert!(!storage
+        .has_enabled_model_source_mapping_for_platform_and_kind("missing-platform", "aggregate_api")
+        .expect("check missing mapping"));
+    assert!(!storage
+        .has_enabled_model_source_mapping_for_platform("missing-platform")
+        .expect("check missing any mapping"));
+    assert!(!storage
+        .has_enabled_model_source_mapping_for_platform(" ")
+        .expect("check empty platform mapping"));
 
     let account_mapping = storage
         .find_enabled_model_source_mapping("gpt-platform", "openai_account", "acc-routing-1")
@@ -181,6 +339,79 @@ fn storage_can_upsert_and_resolve_model_source_mappings() {
         .find_enabled_model_source_mapping("gpt-platform", "openai_account", "acc-routing-1")
         .expect("find deleted mapping")
         .is_none());
+}
+
+fn model_catalog_record(slug: &str) -> ModelCatalogModelRecord {
+    ModelCatalogModelRecord {
+        scope: "default".to_string(),
+        slug: slug.to_string(),
+        display_name: slug.to_string(),
+        source_kind: "remote".to_string(),
+        user_edited: false,
+        description: None,
+        default_reasoning_level: None,
+        shell_type: None,
+        visibility: Some("list".to_string()),
+        supported_in_api: Some(true),
+        priority: Some(0),
+        availability_nux_json: None,
+        upgrade_json: None,
+        base_instructions: None,
+        model_messages_json: None,
+        supports_reasoning_summaries: None,
+        default_reasoning_summary: None,
+        support_verbosity: None,
+        default_verbosity_json: None,
+        apply_patch_tool_type: None,
+        web_search_tool_type: None,
+        truncation_mode: None,
+        truncation_limit: None,
+        truncation_extra_json: None,
+        supports_parallel_tool_calls: None,
+        supports_image_detail_original: None,
+        context_window: None,
+        auto_compact_token_limit: None,
+        effective_context_window_percent: None,
+        minimal_client_version_json: None,
+        supports_search_tool: None,
+        extra_json: "{}".to_string(),
+        sort_index: 0,
+        updated_at: now_ts(),
+    }
+}
+
+#[test]
+fn storage_lists_remote_unedited_catalog_models_for_candidate_slugs() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let mut edited_remote = model_catalog_record("remote-edited");
+    edited_remote.user_edited = true;
+    let mut custom = model_catalog_record("custom-local");
+    custom.source_kind = "custom".to_string();
+    storage
+        .upsert_model_catalog_models(&[
+            model_catalog_record("remote-keep"),
+            model_catalog_record("remote-other"),
+            edited_remote,
+            custom,
+        ])
+        .expect("upsert catalog rows");
+
+    let rows = storage
+        .list_remote_unedited_model_catalog_models_for_slugs(
+            "default",
+            &[
+                "remote-keep".to_string(),
+                "remote-keep".to_string(),
+                "remote-edited".to_string(),
+                "custom-local".to_string(),
+                "missing".to_string(),
+            ],
+        )
+        .expect("list candidate remote catalog rows");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].slug, "remote-keep");
 }
 
 #[test]
@@ -282,7 +513,171 @@ fn upsert_discovered_source_models_prunes_stale_discovered_routes() {
 }
 
 #[test]
-fn delete_account_removes_openai_model_source_routes() {
+fn delete_aggregate_api_removes_aggregate_model_source_routes() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let now = now_ts();
+
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: "agg-routing-delete".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            supplier_name: Some("delete aggregate route".to_string()),
+            sort: 0,
+            url: "https://agg-routing-delete.example/v1".to_string(),
+            auth_type: "bearer".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        })
+        .expect("insert aggregate api");
+    storage
+        .upsert_model_source_model(&ModelSourceModel {
+            source_kind: "aggregate_api".to_string(),
+            source_id: "agg-routing-delete".to_string(),
+            upstream_model: "gpt-platform".to_string(),
+            display_name: Some("GPT Platform".to_string()),
+            status: "available".to_string(),
+            discovery_kind: "synced".to_string(),
+            last_synced_at: Some(now),
+            extra_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert aggregate source model");
+    storage
+        .upsert_model_source_mapping(&ModelSourceMapping {
+            id: "map-agg-routing-delete".to_string(),
+            platform_model_slug: "gpt-platform".to_string(),
+            source_kind: "aggregate_api".to_string(),
+            source_id: "agg-routing-delete".to_string(),
+            upstream_model: "gpt-platform".to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+            billing_model_slug: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert aggregate mapping");
+    storage
+        .upsert_model_source_mapping_preference(
+            "aggregate_api",
+            "agg-routing-delete",
+            "gpt-platform",
+            "disabled",
+        )
+        .expect("upsert aggregate preference");
+    storage
+        .upsert_model_source_model(&ModelSourceModel {
+            source_kind: "openai_account".to_string(),
+            source_id: "agg-routing-delete".to_string(),
+            upstream_model: "gpt-platform".to_string(),
+            display_name: Some("Account GPT Platform".to_string()),
+            status: "available".to_string(),
+            discovery_kind: "synced".to_string(),
+            last_synced_at: Some(now),
+            extra_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert non-aggregate source model");
+    let mut managed_model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("get managed model")
+        .expect("seeded managed model");
+    managed_model.routes = vec![
+        ModelRouteV2 {
+            id: String::new(),
+            source_kind: "aggregate_api".to_string(),
+            source_id: "agg-routing-delete".to_string(),
+            upstream_model: "gpt-platform".to_string(),
+            enabled: true,
+            priority: 10,
+            weight: 1,
+        },
+        ModelRouteV2 {
+            id: String::new(),
+            source_kind: "account_pool".to_string(),
+            source_id: "default".to_string(),
+            upstream_model: "gpt-5.4-mini".to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+        },
+    ];
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: None,
+            model: managed_model,
+        })
+        .expect("upsert managed model routes");
+
+    storage
+        .delete_aggregate_api("agg-routing-delete")
+        .expect("delete aggregate api");
+
+    assert!(storage
+        .find_aggregate_api_by_id("agg-routing-delete")
+        .expect("find deleted aggregate api")
+        .is_none());
+    assert_eq!(
+        storage
+            .list_model_source_models(Some("aggregate_api"), Some("agg-routing-delete"))
+            .expect("list aggregate source models")
+            .len(),
+        1,
+        "legacy model source rows are read-only during V2 cutover"
+    );
+    assert_eq!(
+        storage
+            .list_model_source_mappings(Some("gpt-platform"))
+            .expect("list mappings")
+            .len(),
+        1,
+        "legacy model mappings are read-only during V2 cutover"
+    );
+    assert_eq!(
+        storage
+            .list_model_source_mapping_preferences("aggregate_api", "agg-routing-delete")
+            .expect("list aggregate preferences")
+            .len(),
+        1,
+        "legacy model preferences are read-only during V2 cutover"
+    );
+    let managed_model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("get managed model after aggregate deletion")
+        .expect("managed model remains");
+    assert_eq!(managed_model.routes.len(), 1);
+    assert_eq!(managed_model.routes[0].source_kind, "account_pool");
+    assert_eq!(
+        storage
+            .list_model_source_models(Some("openai_account"), Some("agg-routing-delete"))
+            .expect("list non-aggregate source models")
+            .len(),
+        1
+    );
+}
+#[test]
+fn delete_account_preserves_legacy_model_source_routes() {
     let mut storage = Storage::open_in_memory().expect("open in memory");
     storage.init().expect("init schema");
     let now = now_ts();
@@ -334,14 +729,22 @@ fn delete_account_removes_openai_model_source_routes() {
         .delete_account("acc-routing-delete")
         .expect("delete account");
 
-    assert!(storage
-        .list_model_source_models(Some("openai_account"), Some("acc-routing-delete"))
-        .expect("list source models")
-        .is_empty());
-    assert!(storage
-        .list_model_source_mappings(Some("gpt-platform"))
-        .expect("list mappings")
-        .is_empty());
+    assert_eq!(
+        storage
+            .list_model_source_models(Some("openai_account"), Some("acc-routing-delete"))
+            .expect("list source models")
+            .len(),
+        1,
+        "legacy model source rows are read-only during V2 cutover"
+    );
+    assert_eq!(
+        storage
+            .list_model_source_mappings(Some("gpt-platform"))
+            .expect("list mappings")
+            .len(),
+        1,
+        "legacy model mappings are read-only during V2 cutover"
+    );
 }
 
 /// 函数 `token_upsert_keeps_refresh_schedule_columns`
@@ -541,6 +944,7 @@ fn tokens_due_for_refresh_include_other_unavailable_accounts_but_skip_deactivate
         account_ids,
         vec![
             "acc-active-refresh".to_string(),
+            "acc-region-blocked-refresh".to_string(),
             "acc-unavailable-refresh".to_string()
         ]
     );
@@ -1038,7 +1442,6 @@ fn request_logs_support_prefixed_query_filters() {
     storage
         .insert_request_log(&RequestLog {
             trace_id: Some("trc-alpha-extra".to_string()),
-            session_id: Some("session-alpha-extra".to_string()),
             key_id: Some("key-alpha-extra".to_string()),
             account_id: Some("acc-1".to_string()),
             initial_account_id: Some("acc-1".to_string()),
@@ -1072,7 +1475,6 @@ fn request_logs_support_prefixed_query_filters() {
     storage
         .insert_request_log(&RequestLog {
             trace_id: Some("trc-alpha".to_string()),
-            session_id: Some("session-alpha".to_string()),
             key_id: Some("key-alpha".to_string()),
             account_id: Some("acc-1".to_string()),
             initial_account_id: Some("acc-1".to_string()),
@@ -1105,7 +1507,6 @@ fn request_logs_support_prefixed_query_filters() {
     storage
         .insert_request_log(&RequestLog {
             trace_id: Some("trc-beta".to_string()),
-            session_id: Some("session-beta".to_string()),
             key_id: Some("key-beta".to_string()),
             account_id: Some("acc-2".to_string()),
             initial_account_id: Some("acc-2".to_string()),
@@ -1163,15 +1564,6 @@ fn request_logs_support_prefixed_query_filters() {
         .expect("filter by trace id");
     assert_eq!(trace_filtered.len(), 1);
     assert_eq!(trace_filtered[0].trace_id.as_deref(), Some("trc-alpha"));
-
-    let session_filtered = storage
-        .list_request_logs(Some("session:=session-alpha"), 100)
-        .expect("filter by session id");
-    assert_eq!(session_filtered.len(), 1);
-    assert_eq!(
-        session_filtered[0].session_id.as_deref(),
-        Some("session-alpha")
-    );
 
     let original_path_filtered = storage
         .list_request_logs(Some("original:=/v1/chat/completions"), 100)
@@ -1287,7 +1679,7 @@ fn request_log_today_summary_reads_from_token_stats_table() {
             reasoning_output_tokens: Some(9),
             estimated_cost_usd: Some(0.33),
             created_at,
-            ..Default::default()
+            ..RequestTokenStat::default()
         })
         .expect("insert token stat");
 
@@ -1361,7 +1753,7 @@ fn insert_request_log_with_token_stat_writes_both_tables_in_one_call() {
                 reasoning_output_tokens: Some(1),
                 estimated_cost_usd: Some(0.01),
                 created_at,
-                ..Default::default()
+                ..RequestTokenStat::default()
             },
         )
         .expect("insert request log with token stat");
@@ -1763,6 +2155,40 @@ fn delete_app_user_removes_model_group_assignments() {
         .is_empty());
 }
 
+#[test]
+fn app_user_exists_helpers_read_minimal_user_state() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let now = now_ts();
+
+    storage
+        .insert_app_user(&AppUser {
+            id: "exists-user".to_string(),
+            username: "ExistsUser".to_string(),
+            display_name: Some("Exists User".to_string()),
+            password_hash: "hash".to_string(),
+            role: "member".to_string(),
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_login_at: None,
+        })
+        .expect("insert user");
+
+    assert!(storage
+        .app_user_exists("exists-user")
+        .expect("app user exists"));
+    assert!(!storage
+        .app_user_exists("missing-user")
+        .expect("missing app user exists"));
+    assert!(storage
+        .app_username_exists("existsuser")
+        .expect("app username exists"));
+    assert!(!storage
+        .app_username_exists("missinguser")
+        .expect("missing app username exists"));
+}
+
 /// 函数 `clear_request_logs_keeps_token_stats_for_usage_summary`
 ///
 /// 作者: gaohongshun
@@ -1775,7 +2201,7 @@ fn delete_app_user_removes_model_group_assignments() {
 /// # 返回
 /// 无
 #[test]
-fn clear_request_logs_rolls_token_stats_into_long_term_totals() {
+fn clear_request_logs_keeps_token_stats_for_usage_summary() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage.init().expect("init schema");
     let created_at = now_ts();
@@ -1823,7 +2249,7 @@ fn clear_request_logs_rolls_token_stats_into_long_term_totals() {
             reasoning_output_tokens: Some(5),
             estimated_cost_usd: Some(0.12),
             created_at,
-            ..Default::default()
+            ..RequestTokenStat::default()
         })
         .expect("insert token stat");
 
@@ -1832,14 +2258,15 @@ fn clear_request_logs_rolls_token_stats_into_long_term_totals() {
     let logs = storage.list_request_logs(None, 100).expect("list logs");
     assert!(logs.is_empty(), "request logs should be cleared");
 
+    let hour_start = created_at - created_at.rem_euclid(3_600);
     let summary = storage
-        .summarize_request_logs_between(created_at - 1, created_at + 1)
+        .summarize_request_logs_between(hour_start, hour_start + 3_600)
         .expect("summarize");
-    assert_eq!(summary.input_tokens, 0);
-    assert_eq!(summary.cached_input_tokens, 0);
-    assert_eq!(summary.output_tokens, 0);
-    assert_eq!(summary.reasoning_output_tokens, 0);
-    assert_eq!(summary.estimated_cost_usd, 0.0);
+    assert_eq!(summary.input_tokens, 100);
+    assert_eq!(summary.cached_input_tokens, 30);
+    assert_eq!(summary.output_tokens, 20);
+    assert_eq!(summary.reasoning_output_tokens, 5);
+    assert!(summary.estimated_cost_usd > 0.11);
 
     let usage_by_key = storage
         .summarize_request_token_stats_by_key()
@@ -1848,6 +2275,22 @@ fn clear_request_logs_rolls_token_stats_into_long_term_totals() {
     assert_eq!(usage_by_key[0].key_id, "key-clear");
     assert_eq!(usage_by_key[0].total_tokens, 120);
     assert!(usage_by_key[0].estimated_cost_usd > 0.11);
+
+    let deleted_after_clear = storage
+        .rollup_all_request_token_stats()
+        .expect("roll up after clear");
+    assert_eq!(deleted_after_clear, 0);
+
+    let daily_usage = storage
+        .summarize_request_token_stats_daily(hour_start, hour_start + 3_600, 86_400)
+        .expect("summarize daily token stats");
+    assert_eq!(daily_usage.len(), 1);
+    assert_eq!(daily_usage[0].usage.total_tokens, 120);
+    assert_eq!(daily_usage[0].usage.input_tokens, 100);
+    assert_eq!(daily_usage[0].usage.output_tokens, 20);
+    assert_eq!(daily_usage[0].usage.request_count, 1);
+    assert_eq!(daily_usage[0].usage.success_count, 1);
+    assert_eq!(daily_usage[0].usage.error_count, 0);
 }
 
 /// 函数 `request_token_stats_can_summarize_total_tokens_by_key`
@@ -1922,7 +2365,7 @@ fn request_token_stats_can_summarize_total_tokens_by_key() {
                 reasoning_output_tokens: Some(0),
                 estimated_cost_usd,
                 created_at,
-                ..Default::default()
+                ..RequestTokenStat::default()
             })
             .expect("insert token stat");
     }
@@ -2001,6 +2444,64 @@ fn usage_snapshots_can_prune_history_per_account() {
         .usage_snapshot_count_for_account("acc-prune-2")
         .expect("count untouched");
     assert_eq!(untouched, 1);
+
+    for offset in 0..3 {
+        storage
+            .insert_usage_snapshot(&UsageSnapshotRecord {
+                account_id: "acc-prune-all-1".to_string(),
+                used_percent: Some(40.0 + offset as f64),
+                window_minutes: Some(300),
+                resets_at: None,
+                secondary_used_percent: None,
+                secondary_window_minutes: None,
+                secondary_resets_at: None,
+                credits_json: None,
+                captured_at: now + offset,
+            })
+            .expect("insert acc-prune-all-1 snapshot");
+        storage
+            .insert_usage_snapshot(&UsageSnapshotRecord {
+                account_id: "acc-prune-all-2".to_string(),
+                used_percent: Some(50.0 + offset as f64),
+                window_minutes: Some(300),
+                resets_at: None,
+                secondary_used_percent: None,
+                secondary_window_minutes: None,
+                secondary_resets_at: None,
+                credits_json: None,
+                captured_at: now + offset,
+            })
+            .expect("insert acc-prune-all-2 snapshot");
+    }
+
+    let deleted = storage
+        .prune_usage_snapshots_all_accounts(1)
+        .expect("prune all snapshots");
+    assert_eq!(deleted, 5);
+    assert_eq!(
+        storage
+            .usage_snapshot_count_for_account("acc-prune-1")
+            .expect("count acc-prune-1"),
+        1
+    );
+    assert_eq!(
+        storage
+            .usage_snapshot_count_for_account("acc-prune-2")
+            .expect("count acc-prune-2"),
+        1
+    );
+    assert_eq!(
+        storage
+            .usage_snapshot_count_for_account("acc-prune-all-1")
+            .expect("count acc-prune-all-1"),
+        1
+    );
+    assert_eq!(
+        storage
+            .usage_snapshot_count_for_account("acc-prune-all-2")
+            .expect("count acc-prune-all-2"),
+        1
+    );
 }
 
 /// 函数 `storage_api_keys_include_profile_fields`
@@ -2174,7 +2675,7 @@ fn storage_can_roundtrip_api_key_quota_limit_and_usage() {
         storage
             .api_key_total_token_usage("key-quota-1")
             .expect("read usage"),
-        1150
+        1250
     );
 
     storage
@@ -2184,7 +2685,7 @@ fn storage_can_roundtrip_api_key_quota_limit_and_usage() {
         storage
             .api_key_total_token_usage("key-quota-1")
             .expect("read rolled usage"),
-        1150
+        1250
     );
 
     storage

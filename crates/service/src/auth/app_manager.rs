@@ -19,7 +19,6 @@ pub const WEB_AUTH_MODE_NONE: &str = "none";
 pub const WEB_AUTH_MODE_PASSWORD: &str = "password";
 pub const WEB_AUTH_MODE_ACCOUNTS: &str = "accounts";
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
-const CREDIT_MICROS_PER_USD: f64 = 1_000_000.0;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -749,6 +748,14 @@ pub fn set_api_key_owner(
 }
 
 pub fn wallet_precheck_for_api_key(storage: &Storage, key_id: &str) -> Result<(), String> {
+    wallet_precheck_for_api_key_rate(storage, key_id, None)
+}
+
+pub(crate) fn wallet_precheck_for_api_key_rate(
+    storage: &Storage,
+    key_id: &str,
+    rate_multiplier_millis: Option<i64>,
+) -> Result<(), String> {
     if !distribution_enabled_for_storage(storage) {
         return Ok(());
     }
@@ -769,236 +776,140 @@ pub fn wallet_precheck_for_api_key(storage: &Storage, key_id: &str) -> Result<()
     if wallet.status != "active" {
         return Err("归属钱包已停用".to_string());
     }
+    if rate_multiplier_millis.is_some_and(|value| value == 0) {
+        return Ok(());
+    }
     if wallet.balance_credit_micros <= wallet.frozen_credit_micros {
         return Err("归属钱包余额不足".to_string());
     }
     Ok(())
 }
 
-pub fn wallet_charge_for_request(
+#[allow(clippy::too_many_arguments)]
+pub fn record_request_charge_v2(
     storage: &Storage,
     key_id: Option<&str>,
     request_log_id: i64,
-    estimated_cost_usd: f64,
-    model: Option<&str>,
+    model: &str,
     service_tier: Option<&str>,
+    usage_source: &str,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
     raw_usage_json: Option<String>,
-) -> Result<Option<AppWalletLedgerEntry>, String> {
-    if !distribution_enabled_for_storage(storage) {
-        return Ok(None);
+    charge_wallet: bool,
+    aggregate_multiplier_millis: Option<i64>,
+    base_cost_override_microusd: Option<i64>,
+) -> Result<codexmanager_core::storage::ChargeSnapshotV2, String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("model_slug_required".to_string());
     }
-    let Some(key_id) = key_id.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
     let now = now_ts();
-    let Some(owner) = storage
-        .find_api_key_owner(key_id)
-        .map_err(|err| format!("read api key owner failed: {err}"))?
-    else {
-        return Ok(None);
-    };
-    let (owner_kind, owner_id) = owner_identity(&owner)?;
-    if owner_kind == "user" {
-        let _ = ensure_user_can_own_wallet(storage, owner_id)?;
+    let mut wallet_id = None;
+    let mut api_key_id = None;
+    let mut billing_rule = None;
+    let mut model_group_access = None;
+    let aggregate_multiplier_millis = aggregate_multiplier_millis.unwrap_or(1_000);
+    if aggregate_multiplier_millis <= 0 {
+        return Err("aggregate_multiplier_millis must be greater than 0".to_string());
     }
-    let wallet = storage
-        .find_wallet_by_owner(owner_kind, owner_id)
-        .map_err(|err| format!("read app wallet failed: {err}"))?
-        .ok_or_else(|| "归属钱包不存在".to_string())?;
-    let model_group_access = match model.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(platform_model) => {
-            crate::resolve_api_key_model_group_access(storage, key_id, platform_model)?
-        }
-        None => None,
-    };
-    let billing_rule = if model_group_access.is_some() {
-        None
-    } else {
-        resolve_billing_rule_for_request(storage, key_id, &owner, model, service_tier, now)?
-    };
-    let multiplier_millis = model_group_access
-        .as_ref()
-        .map(|access| access.rate_multiplier_millis.max(0))
-        .or_else(|| {
-            billing_rule
-                .as_ref()
-                .map(|rule| rule.multiplier_millis.max(0))
-        })
-        .unwrap_or(1_000);
-    let base_cost_usd = model_group_base_cost_usd(
-        storage,
-        model_group_access.as_ref(),
-        estimated_cost_usd,
-        raw_usage_json.as_deref(),
-    );
-    if base_cost_usd <= 0.0 {
-        return Ok(None);
-    }
-    let charged_cost_usd = base_cost_usd * multiplier_millis as f64 / 1_000.0;
-    let charge = (charged_cost_usd * CREDIT_MICROS_PER_USD).round() as i64;
-    if charge <= 0 {
-        return Ok(None);
-    }
-    let ledger = AppWalletLedgerEntry {
-        id: generate_id("wl", 8),
-        wallet_id: wallet.id,
-        entry_kind: "request_charge".to_string(),
-        amount_credit_micros: -charge,
-        balance_after_credit_micros: 0,
-        request_log_id: Some(request_log_id),
-        api_key_id: Some(key_id.to_string()),
-        pricing_rule_id: billing_rule.as_ref().map(|rule| rule.id.clone()),
-        raw_usage_json: usage_json_with_billing(
-            raw_usage_json,
-            estimated_cost_usd,
-            base_cost_usd,
-            charged_cost_usd,
-            multiplier_millis,
-            billing_rule.as_ref(),
-            model_group_access.as_ref(),
-        ),
-        note: billing_rule
-            .as_ref()
-            .map(|rule| format!("billing_rule={}", rule.name)),
-        created_by_user_id: None,
-        created_at: now,
-    };
-    let entry = storage
-        .adjust_wallet_balance(&ledger)
-        .map_err(|err| format!("charge wallet failed: {err}"))?;
-    Ok(Some(entry))
-}
-
-fn model_group_base_cost_usd(
-    storage: &Storage,
-    model_group_access: Option<&codexmanager_core::storage::ModelGroupAccess>,
-    estimated_cost_usd: f64,
-    raw_usage_json: Option<&str>,
-) -> f64 {
-    model_group_access
-        .and_then(|access| access.billing_model_slug.as_deref())
-        .and_then(|billing_model| {
-            estimate_billing_model_cost_usd(storage, billing_model, raw_usage_json)
-        })
-        .unwrap_or(estimated_cost_usd)
-        .max(0.0)
-}
-
-fn estimate_billing_model_cost_usd(
-    storage: &Storage,
-    billing_model: &str,
-    raw_usage_json: Option<&str>,
-) -> Option<f64> {
-    let usage = raw_usage_json.and_then(|raw| serde_json::from_str::<Value>(raw).ok())?;
-    let input_tokens = extract_usage_token(
-        &usage,
-        &["inputTokens", "input_tokens", "prompt_tokens"],
-        &[&["usage", "input_tokens"], &["usage", "prompt_tokens"]],
-    );
-    let cached_input_tokens = extract_usage_token(
-        &usage,
-        &[
-            "cachedInputTokens",
-            "cached_input_tokens",
-            "cache_read_input_tokens",
-        ],
-        &[
-            &["input_tokens_details", "cached_tokens"],
-            &["prompt_tokens_details", "cached_tokens"],
-            &["usage", "input_tokens_details", "cached_tokens"],
-            &["usage", "prompt_tokens_details", "cached_tokens"],
-            &["usage", "cache_read_input_tokens"],
-        ],
-    );
-    let cache_write_input_tokens = extract_usage_token(
-        &usage,
-        &[
-            "cacheWriteInputTokens",
-            "cache_write_input_tokens",
-            "cache_write_tokens",
-        ],
-        &[
-            &["input_tokens_details", "cache_write_tokens"],
-            &["prompt_tokens_details", "cache_write_tokens"],
-            &["usage", "input_tokens_details", "cache_write_tokens"],
-            &["usage", "prompt_tokens_details", "cache_write_tokens"],
-            &["usage", "cache_write_input_tokens"],
-        ],
-    );
-    let output_tokens = extract_usage_token(
-        &usage,
-        &["outputTokens", "output_tokens", "completion_tokens"],
-        &[&["usage", "output_tokens"], &["usage", "completion_tokens"]],
-    );
-    if input_tokens.is_none()
-        && cached_input_tokens.is_none()
-        && cache_write_input_tokens.is_none()
-        && output_tokens.is_none()
-    {
-        return None;
-    }
-    let service_tier = [
-        "effectiveServiceTier",
-        "effective_service_tier",
-        "serviceTier",
-        "service_tier",
-    ]
-    .iter()
-    .find_map(|key| usage.get(*key).and_then(Value::as_str))
-    .or_else(|| value_at_path(&usage, &["usage", "service_tier"]).and_then(Value::as_str));
-    let cost = crate::quota::model_pricing::estimate_cost_usd_for_log_with_tier(
-        storage,
-        Some(billing_model),
-        service_tier,
-        input_tokens,
-        cached_input_tokens,
-        cache_write_input_tokens,
-        output_tokens,
-    );
-    if cost > 0.0 {
-        Some(cost)
-    } else {
-        None
-    }
-}
-
-fn extract_usage_token(value: &Value, keys: &[&str], nested_paths: &[&[&str]]) -> Option<i64> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(value_as_i64))
-        .or_else(|| {
-            nested_paths
-                .iter()
-                .find_map(|path| value_at_path(value, path).and_then(value_as_i64))
-        })
-        .map(|value| value.max(0))
-}
-
-fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    let mut cursor = value;
-    for key in path {
-        cursor = cursor.get(*key)?;
-    }
-    Some(cursor)
-}
-
-fn value_as_i64(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-        .or_else(|| {
-            value.as_f64().and_then(|value| {
-                if value.is_finite() && value >= 0.0 {
-                    Some(value.round() as i64)
-                } else {
-                    None
+    let mut billing_multiplier_millis = 1_000;
+    if charge_wallet && distribution_enabled_for_storage(storage) {
+        if let Some(key_id) = key_id.map(str::trim).filter(|value| !value.is_empty()) {
+            if let Some(owner) = storage
+                .find_api_key_owner(key_id)
+                .map_err(|err| format!("read api key owner failed: {err}"))?
+            {
+                let (owner_kind, owner_id) = owner_identity(&owner)?;
+                if owner_kind == "user" {
+                    let _ = ensure_user_can_own_wallet(storage, owner_id)?;
                 }
-            })
+                let wallet = storage
+                    .find_wallet_by_owner(owner_kind, owner_id)
+                    .map_err(|err| format!("read app wallet failed: {err}"))?
+                    .ok_or_else(|| "归属钱包不存在".to_string())?;
+                if wallet.status != "active" {
+                    return Err("归属钱包已停用".to_string());
+                }
+                model_group_access =
+                    crate::resolve_api_key_model_group_access(storage, key_id, model)?;
+                billing_rule = if model_group_access.is_some() {
+                    None
+                } else {
+                    resolve_billing_rule_for_request(
+                        storage,
+                        key_id,
+                        &owner,
+                        Some(model),
+                        service_tier,
+                        now,
+                    )?
+                };
+                billing_multiplier_millis = model_group_access
+                    .as_ref()
+                    .map(|access| access.rate_multiplier_millis.max(0))
+                    .or_else(|| {
+                        billing_rule
+                            .as_ref()
+                            .map(|rule| rule.multiplier_millis.max(0))
+                    })
+                    .unwrap_or(1_000);
+                wallet_id = Some(wallet.id);
+                api_key_id = Some(key_id.to_string());
+            }
+        }
+    }
+    let multiplier_millis =
+        combine_rate_multiplier_millis(billing_multiplier_millis, aggregate_multiplier_millis)?;
+    let raw_usage_json = usage_json_with_billing_context(
+        raw_usage_json,
+        billing_rule.as_ref(),
+        model_group_access.as_ref(),
+        multiplier_millis,
+        aggregate_multiplier_millis,
+    );
+    storage
+        .record_charge_snapshot_v2(&codexmanager_core::storage::ChargeSnapshotInputV2 {
+            request_log_id,
+            model_slug: model.to_string(),
+            usage_source: usage_source.to_string(),
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            rate_multiplier_millis: multiplier_millis,
+            wallet_id,
+            api_key_id,
+            pricing_rule_id: billing_rule.as_ref().map(|rule| rule.id.clone()),
+            raw_usage_json,
+            ledger_note: billing_rule
+                .as_ref()
+                .map(|rule| format!("billing_rule={}", rule.name))
+                .or_else(|| {
+                    model_group_access
+                        .as_ref()
+                        .map(|access| format!("model_group={}", access.group_id))
+                }),
+            base_cost_override_microusd,
         })
-        .or_else(|| {
-            value
-                .as_str()
-                .and_then(|value| value.trim().parse::<i64>().ok())
-        })
+        .map_err(|err| format!("record model catalog V2 charge failed: {err}"))
+}
+
+fn combine_rate_multiplier_millis(
+    billing_multiplier_millis: i64,
+    aggregate_multiplier_millis: i64,
+) -> Result<i64, String> {
+    if billing_multiplier_millis < 0 || aggregate_multiplier_millis <= 0 {
+        return Err("billing multipliers must be positive".to_string());
+    }
+    let product = i128::from(billing_multiplier_millis)
+        .checked_mul(i128::from(aggregate_multiplier_millis))
+        .ok_or_else(|| "billing multiplier overflow".to_string())?;
+    let rounded = product
+        .checked_add(999)
+        .ok_or_else(|| "billing multiplier overflow".to_string())?
+        / 1_000;
+    i64::try_from(rounded).map_err(|_| "billing multiplier overflow".to_string())
 }
 
 fn resolve_billing_rule_for_request(
@@ -1102,14 +1013,12 @@ fn billing_rule_scope_score(rule: &BillingRule) -> i64 {
     .count() as i64
 }
 
-fn usage_json_with_billing(
+fn usage_json_with_billing_context(
     raw_usage_json: Option<String>,
-    platform_estimated_cost_usd: f64,
-    base_cost_usd: f64,
-    charged_cost_usd: f64,
-    multiplier_millis: i64,
     billing_rule: Option<&BillingRule>,
     model_group_access: Option<&codexmanager_core::storage::ModelGroupAccess>,
+    multiplier_millis: i64,
+    aggregate_multiplier_millis: i64,
 ) -> Option<String> {
     let mut value = raw_usage_json
         .as_deref()
@@ -1120,20 +1029,12 @@ fn usage_json_with_billing(
     }
     if let Some(object) = value.as_object_mut() {
         object.insert(
-            "platformEstimatedCostUsd".to_string(),
-            serde_json::json!(platform_estimated_cost_usd.max(0.0)),
-        );
-        object.insert(
-            "baseEstimatedCostUsd".to_string(),
-            serde_json::json!(base_cost_usd.max(0.0)),
-        );
-        object.insert(
-            "chargedCostUsd".to_string(),
-            serde_json::json!(charged_cost_usd.max(0.0)),
-        );
-        object.insert(
             "billingMultiplierMillis".to_string(),
             serde_json::json!(multiplier_millis.max(0)),
+        );
+        object.insert(
+            "aggregateApiMultiplierMillis".to_string(),
+            serde_json::json!(aggregate_multiplier_millis.max(0)),
         );
         if let Some(rule) = billing_rule {
             object.insert("billingRuleId".to_string(), serde_json::json!(rule.id));
@@ -1152,12 +1053,6 @@ fn usage_json_with_billing(
                 "platformModelSlug".to_string(),
                 serde_json::json!(access.platform_model_slug),
             );
-            if let Some(billing_model_slug) = access.billing_model_slug.as_deref() {
-                object.insert(
-                    "billingModelSlug".to_string(),
-                    serde_json::json!(billing_model_slug),
-                );
-            }
         }
     }
     serde_json::to_string(&value).ok()

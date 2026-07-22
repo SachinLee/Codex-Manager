@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 #[test]
 fn anthropic_messages_are_rewritten_to_responses() {
-    let body = br#"{"model":"claude-3-7-sonnet","system":"be helpful","messages":[{"role":"user","content":"hi"}],"stream":true}"#.to_vec();
+    let body = br#"{"model":"claude-3-7-sonnet","system":"  be helpful\n","messages":[{"role":"user","content":"  hi\n"}],"stream":true}"#.to_vec();
 
     let adapted = adapt_request_for_protocol(PROTOCOL_ANTHROPIC_NATIVE, "/v1/messages", body)
         .expect("adapt anthropic request");
@@ -24,9 +24,10 @@ fn anthropic_messages_are_rewritten_to_responses() {
     assert_eq!(payload["instructions"], "");
     assert_eq!(payload["input"][0]["type"], "message");
     assert_eq!(payload["input"][0]["role"], "developer");
-    assert_eq!(payload["input"][0]["content"][0]["text"], "be helpful");
+    assert_eq!(payload["input"][0]["content"][0]["text"], "  be helpful\n");
     assert_eq!(payload["input"][1]["type"], "message");
     assert_eq!(payload["input"][1]["role"], "user");
+    assert_eq!(payload["input"][1]["content"][0]["text"], "  hi\n");
     assert_eq!(payload["stream"], true);
     assert_eq!(payload["reasoning"]["effort"], "medium");
     assert_eq!(payload["include"][0], "reasoning.encrypted_content");
@@ -68,8 +69,32 @@ fn anthropic_mid_conversation_system_messages_map_to_developer() {
 }
 
 #[test]
+fn anthropic_billing_prefix_system_text_is_not_silently_dropped() {
+    let body = serde_json::json!({
+        "model": "claude-sonnet",
+        "system": "  x-anthropic-billing-header: client supplied\n",
+        "messages": [{ "role": "user", "content": "hi" }]
+    });
+
+    let adapted = adapt_request_for_protocol(
+        PROTOCOL_ANTHROPIC_NATIVE,
+        "/v1/messages",
+        serde_json::to_vec(&body).expect("body"),
+    )
+    .expect("adapt anthropic request");
+
+    let payload: serde_json::Value =
+        serde_json::from_slice(&adapted.body).expect("parse adapted body");
+    assert_eq!(payload["input"][0]["role"], "developer");
+    assert_eq!(
+        payload["input"][0]["content"][0]["text"],
+        "  x-anthropic-billing-header: client supplied\n"
+    );
+}
+
+#[test]
 fn gemini_generate_content_is_rewritten_to_responses() {
-    let body = br#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#.to_vec();
+    let body = br#"{"systemInstruction":{"parts":[{"text":"  stay literal\n"}]},"contents":[{"role":"user","parts":[{"text":"  hi\n"}]}]}"#.to_vec();
 
     let adapted = adapt_request_for_protocol(
         PROTOCOL_GEMINI_NATIVE,
@@ -86,7 +111,14 @@ fn gemini_generate_content_is_rewritten_to_responses() {
     assert_eq!(payload["model"], "gemini-2.5-pro");
     assert_eq!(payload["instructions"], "");
     assert_eq!(payload["input"][0]["type"], "message");
-    assert_eq!(payload["input"][0]["role"], "user");
+    assert_eq!(payload["input"][0]["role"], "developer");
+    assert_eq!(
+        payload["input"][0]["content"][0]["text"],
+        "  stay literal\n"
+    );
+    assert_eq!(payload["input"][1]["type"], "message");
+    assert_eq!(payload["input"][1]["role"], "user");
+    assert_eq!(payload["input"][1]["content"][0]["text"], "  hi\n");
     assert_eq!(payload["reasoning"]["effort"], "medium");
     assert_eq!(payload["include"][0], "reasoning.encrypted_content");
     assert_eq!(payload["parallel_tool_calls"], true);

@@ -128,6 +128,7 @@ struct PendingWsRequestLog {
     service_tier_source: Option<String>,
     started_at: Instant,
     first_response_ms: Option<i64>,
+    estimated_input_tokens: i64,
 }
 
 struct WsSessionError {
@@ -725,7 +726,7 @@ fn rewrite_client_frame(
         .and_then(|value| value.get("effort"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let reasoning_source = resolve_ws_override_source_for_log(
+    let reasoning_source = resolve_ws_reasoning_source_for_log(
         client_reasoning_for_log.as_deref(),
         reasoning_effort.as_deref(),
         context.api_key.reasoning_effort.as_deref(),
@@ -802,6 +803,21 @@ fn resolve_ws_override_source_for_log(
         (Some(_), None) => Some("client_request".to_string()),
         (None, None) => Some("unset".to_string()),
     }
+}
+
+fn resolve_ws_reasoning_source_for_log(
+    client_value: Option<&str>,
+    effective_value: Option<&str>,
+    api_key_profile_value: Option<&str>,
+) -> Option<String> {
+    if api_key_profile_value
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        && crate::reasoning_effort::is_ultra_to_max_normalization(client_value, effective_value)
+    {
+        return Some("client_request_normalized".to_string());
+    }
+    resolve_ws_override_source_for_log(client_value, effective_value, api_key_profile_value)
 }
 
 fn merge_metadata_value(mapped: &mut HashMap<String, String>, client_metadata: Option<Value>) {
@@ -1525,6 +1541,9 @@ fn begin_ws_request_log(
         service_tier_source: prepared.service_tier_source.clone(),
         started_at: Instant::now(),
         first_response_ms: None,
+        estimated_input_tokens: crate::gateway::estimate_input_tokens_from_body(
+            prepared.text.as_bytes(),
+        ),
     }
 }
 
@@ -1557,29 +1576,13 @@ fn finalize_ws_request_log(
     if usage.first_response_ms.is_none() {
         usage.first_response_ms = pending.first_response_ms;
     }
-    let prompt_cache_session_id =
-        context
-            .prompt_cache_key
-            .as_deref()
-            .and_then(|prompt_cache_key| {
-                crate::gateway::request_log_session_id_candidate_from_value(
-                    &serde_json::json!({ "prompt_cache_key": prompt_cache_key }),
-                )
-            });
+    if usage.estimated_input_tokens.is_none() {
+        usage.estimated_input_tokens = Some(pending.estimated_input_tokens);
+    }
     crate::gateway::write_request_log(
         &storage,
         crate::gateway::RequestLogTraceContext {
             trace_id: Some(pending.trace_id.as_str()),
-            session_id: context
-                .incoming_headers
-                .session_id()
-                .or(context.incoming_headers.parent_thread_id())
-                .or(prompt_cache_session_id.as_deref()),
-            conversation_anchor: context
-                .incoming_headers
-                .conversation_id()
-                .or(context.prompt_cache_key.as_deref())
-                .or(context.incoming_headers.session_id()),
             original_path: Some(RESPONSES_ENDPOINT),
             adapted_path: Some(RESPONSES_ENDPOINT),
             request_type: Some("ws"),
@@ -1943,15 +1946,10 @@ fn parse_ws_usage(value: &Value) -> crate::gateway::RequestLogUsage {
                     .and_then(|map| map.get("reasoning_output_tokens"))
                     .and_then(Value::as_i64)
             }),
-        provider_cost_usd_ticks: usage
-            .and_then(|map| map.get("cost_in_usd_ticks"))
-            .and_then(Value::as_i64)
-            .filter(|value| *value >= 0),
-        provider_cost_nano_usd: usage
-            .and_then(|map| map.get("cost_in_nano_usd"))
-            .and_then(Value::as_i64)
-            .filter(|value| *value >= 0),
+        provider_cost_usd_ticks: None,
+        provider_cost_nano_usd: None,
         first_response_ms: None,
+        estimated_input_tokens: None,
     }
 }
 

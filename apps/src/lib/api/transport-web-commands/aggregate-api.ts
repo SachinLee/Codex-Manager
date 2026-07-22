@@ -1,5 +1,4 @@
 import type { WebCommandDescriptor } from "./shared";
-import { asRecord } from "./shared";
 
 export function createAggregateApiWebCommands(): Record<string, WebCommandDescriptor> {
   return {
@@ -19,9 +18,5 @@ export function createAggregateApiWebCommands(): Record<string, WebCommandDescri
     service_aggregate_api_capabilities_list_recent_attempts: { rpcMethod: "aggregateApi/capabilities/listRecentAttempts" },
     service_aggregate_api_capabilities_set_mode: { rpcMethod: "aggregateApi/capabilities/setMode" },
     service_aggregate_api_refresh_balance: { rpcMethod: "aggregateApi/refreshBalance" },
-    service_aggregate_api_supplier_models_list: { rpcMethod: "aggregateApi/supplierModels/list" },
-    service_aggregate_api_supplier_model_save: { rpcMethod: "aggregateApi/supplierModels/save", mapParams: (params) => asRecord(asRecord(params)?.payload) ?? {} },
-    service_aggregate_api_supplier_model_delete: { rpcMethod: "aggregateApi/supplierModels/delete" },
-    service_aggregate_api_supplier_models_import: { rpcMethod: "aggregateApi/sourceModels/importSupplier" },
   };
 }

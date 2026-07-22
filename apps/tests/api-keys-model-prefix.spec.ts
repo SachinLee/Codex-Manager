@@ -126,6 +126,16 @@ async function mockApiKeyRpc(
       });
       return;
     }
+    if (method === "accountManager/session/current") {
+      await ok({
+        mode: "none",
+        currentUser: null,
+        role: "system_admin",
+        permissions: ["system:admin"],
+        distributionEnabled: false,
+      });
+      return;
+    }
     if (method === "gateway/concurrencyRecommendation/get") {
       await ok({
         usageRefreshWorkers: 4,
@@ -141,18 +151,53 @@ async function mockApiKeyRpc(
       await ok({ items: apiKeys });
       return;
     }
-    if (method === "apikey/models") {
+    if (method === "apikey/managedModelListV2") {
       await ok({
-        models: [
+        items: [
           {
+            id: "builtin:gpt-5.3-codex",
             slug: "gpt-5.3-codex",
-            display_name: "GPT-5.3 Codex",
+            displayName: "GPT-5.3 Codex",
             description: "Latest frontier agentic coding model.",
-            supported_in_api: true,
+            provider: "openai",
+            family: "gpt-5",
+            category: "codex",
+            tags: ["reasoning", "coding"],
+            origin: "builtin",
+            enabled: true,
+            supportedInApi: true,
             visibility: "list",
-            input_modalities: ["text", "image"],
+            sortOrder: 0,
+            contextWindow: 400000,
+            maxContextWindow: 400000,
+            defaultReasoningEffort: "medium",
+            capabilities: { inputModalities: ["text", "image"] },
+            instructionsMode: "fallback",
+            instructionsText: null,
+            builtinRevision: 1,
+            userEdited: false,
+            price: {
+              priceStatus: "official",
+              priceSource: "e2e-fixture",
+              inputMicrousdPer1m: 1250000,
+              cachedInputMicrousdPer1m: 125000,
+              outputMicrousdPer1m: 10000000,
+            },
+            priceTiers: [],
+            routes: [],
+            permissionGroupIds: [],
+            createdAt: 1770000000,
+            updatedAt: 1770000000,
           },
         ],
+        stats: {
+          total: 1,
+          enabled: 1,
+          builtin: 1,
+          custom: 0,
+          priceMissing: 0,
+          missingRoute: 1,
+        },
       });
       return;
     }

@@ -2,13 +2,11 @@ use super::openai::{
     apply_openai_stream_meta_defaults, extract_openai_completed_output_text, OpenAIStreamMeta,
 };
 use super::{
-    collect_non_stream_json_from_sse_bytes, inspect_sse_frame, parse_sse_frame_json,
-    merge_usage, parse_usage_from_json, parse_usage_from_sse_frame, usage_has_signal,
-    AnthropicSseReader,
+    collect_non_stream_json_from_sse_bytes, inspect_sse_frame, merge_usage, parse_sse_frame_json,
+    parse_usage_from_json, parse_usage_from_sse_frame, usage_has_signal, AnthropicSseReader,
     ChatCompletionsFromResponsesSseReader, GeminiSseReader, ImagesFromResponsesSseReader,
     ImagesResponseFormat, OpenAIResponsesPassthroughSseReader, PassthroughSseCollector,
-    PassthroughSseProtocol, PassthroughSseUsageReader, SseKeepAliveFrame,
-    UpstreamResponseUsage,
+    PassthroughSseProtocol, PassthroughSseUsageReader, SseKeepAliveFrame, UpstreamResponseUsage,
 };
 use crate::gateway::GeminiStreamOutputMode;
 use serde_json::json;
@@ -65,6 +63,30 @@ impl Drop for EnvGuard {
         } else {
             std::env::remove_var(self.key);
         }
+    }
+}
+
+struct SseKeepaliveIntervalGuard {
+    env_guard: Option<EnvGuard>,
+}
+
+impl SseKeepaliveIntervalGuard {
+    fn set(interval_ms: u64) -> Self {
+        let env_guard = EnvGuard::set(
+            "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS",
+            interval_ms.to_string().as_str(),
+        );
+        super::reload_from_env();
+        Self {
+            env_guard: Some(env_guard),
+        }
+    }
+}
+
+impl Drop for SseKeepaliveIntervalGuard {
+    fn drop(&mut self) {
+        drop(self.env_guard.take());
+        super::reload_from_env();
     }
 }
 
@@ -1682,8 +1704,7 @@ fn gemini_cli_sse_reader_emits_raw_gemini_chunks() {
 #[test]
 fn gemini_cli_sse_reader_does_not_emit_comment_keepalive_frames() {
     let _guard = crate::test_env_guard();
-    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "5");
-    super::reload_from_env();
+    let _keepalive_guard = SseKeepaliveIntervalGuard::set(5);
 
     let (upstream, server) = open_streaming_mock_http_response(
         "text/event-stream",
@@ -2119,8 +2140,7 @@ fn gemini_raw_reader_emits_plain_json_error_for_incomplete_stream() {
 #[test]
 fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
     let _guard = crate::test_env_guard();
-    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "15");
-    super::reload_from_env();
+    let _keepalive_guard = SseKeepaliveIntervalGuard::set(15);
 
     let (upstream, server) = open_streaming_mock_http_response(
         "text/event-stream",
@@ -2145,8 +2165,6 @@ fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
         .read_to_string(&mut mapped)
         .expect("read passthrough sse");
     server.join().expect("join streaming mock upstream");
-    super::reload_from_env();
-
     assert!(mapped.contains("\"type\":\"codexmanager.keepalive\""));
     assert!(mapped.contains("\"type\":\"response.created\""));
     assert!(mapped.contains("data: [DONE]"));
@@ -2155,8 +2173,7 @@ fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
 #[test]
 fn passthrough_sse_reader_waits_for_first_upstream_frame_before_keepalive() {
     let _guard = crate::test_env_guard();
-    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "5");
-    super::reload_from_env();
+    let _keepalive_guard = SseKeepaliveIntervalGuard::set(5);
 
     let (upstream, server) = open_streaming_mock_http_response(
         "text/event-stream",
@@ -2181,8 +2198,6 @@ fn passthrough_sse_reader_waits_for_first_upstream_frame_before_keepalive() {
         .read_to_string(&mut mapped)
         .expect("read passthrough sse without initial keepalive");
     server.join().expect("join delayed first-frame upstream");
-    super::reload_from_env();
-
     assert!(!mapped.contains("\"type\":\"codexmanager.keepalive\""));
     assert!(mapped.contains("\"type\":\"response.created\""));
     assert!(mapped.contains("data: [DONE]"));
@@ -2191,8 +2206,7 @@ fn passthrough_sse_reader_waits_for_first_upstream_frame_before_keepalive() {
 #[test]
 fn openai_responses_passthrough_reader_emits_keepalive_during_silent_gap() {
     let _guard = crate::test_env_guard();
-    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "15");
-    super::reload_from_env();
+    let _keepalive_guard = SseKeepaliveIntervalGuard::set(1_000);
 
     let (upstream, server) = open_streaming_mock_http_response(
         "text/event-stream",
@@ -2216,15 +2230,20 @@ fn openai_responses_passthrough_reader_emits_keepalive_during_silent_gap() {
         SseKeepAliveFrame::OpenAIResponses,
         std::time::Instant::now(),
     );
-    let mut mapped = String::new();
+    let mut first_chunk = [0_u8; 4096];
+    let first_chunk_len = reader
+        .read(&mut first_chunk)
+        .expect("read first openai responses event");
+    let mut mapped = String::from_utf8(first_chunk[..first_chunk_len].to_vec())
+        .expect("first openai responses event utf8");
+    assert!(mapped.contains("event: response.created"));
+    super::set_sse_keepalive_interval_ms(15).expect("shorten keepalive interval after first event");
     reader
         .read_to_string(&mut mapped)
         .expect("read openai responses passthrough sse");
     server
         .join()
         .expect("join openai responses keepalive upstream");
-    super::reload_from_env();
-
     let collector = usage_collector
         .lock()
         .expect("lock usage collector")
@@ -2253,8 +2272,7 @@ fn openai_responses_passthrough_reader_emits_keepalive_during_silent_gap() {
 #[test]
 fn openai_responses_passthrough_reader_emits_keepalive_before_delayed_first_frame() {
     let _guard = crate::test_env_guard();
-    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "10");
-    super::reload_from_env();
+    let _keepalive_guard = SseKeepaliveIntervalGuard::set(10);
 
     let (upstream, server) = open_streaming_mock_http_response(
         "text/event-stream",
@@ -2262,7 +2280,7 @@ fn openai_responses_passthrough_reader_emits_keepalive_before_delayed_first_fram
             (
                 "event: response.created\n\
                  data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_delayed_first\"}}\n\n",
-                60,
+                500,
             ),
             (
                 "event: response.completed\n\
@@ -2283,8 +2301,6 @@ fn openai_responses_passthrough_reader_emits_keepalive_before_delayed_first_fram
         .read_to_string(&mut mapped)
         .expect("read delayed first openai responses stream");
     server.join().expect("join delayed first-frame upstream");
-    super::reload_from_env();
-
     let keepalive_at = mapped
         .find("\"type\":\"codexmanager.keepalive\"")
         .expect("keepalive position");

@@ -290,7 +290,7 @@ pub async fn service_rpc_token() -> Result<String, String> {
     Ok(codexmanager_service::rpc_auth_token().to_string())
 }
 
-/// 函数 `service_sync_codex_models_cache`
+/// 函数 `service_export_codex_models_cache`
 ///
 /// 作者: gaohongshun
 ///
@@ -306,7 +306,7 @@ pub async fn service_rpc_token() -> Result<String, String> {
 /// # 返回
 /// 返回函数执行结果
 #[tauri::command]
-pub async fn service_sync_codex_models_cache(
+pub async fn service_export_codex_models_cache(
     user_agent: String,
     models: Vec<serde_json::Value>,
     codex_home: Option<String>,
@@ -327,7 +327,7 @@ pub async fn service_sync_codex_models_cache(
         }))
     })
     .await
-    .map_err(|err| format!("service_sync_codex_models_cache task failed: {err}"))?
+    .map_err(|err| format!("service_export_codex_models_cache task failed: {err}"))?
 }
 
 #[cfg(test)]

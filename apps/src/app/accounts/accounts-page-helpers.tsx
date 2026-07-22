@@ -128,7 +128,6 @@ export interface AccountEditorState {
   currentTags: string;
   currentNote: string;
   currentSort: number;
-  currentModelSlugs: string;
   currentQuotaPrimaryWindowTokens: number | null;
   currentQuotaSecondaryWindowTokens: number | null;
 }

@@ -20,6 +20,7 @@ import {
 import { appClient } from "@/lib/api/app-client";
 import { useI18n } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
+import { formatTsFromSeconds, getUsageDisplayBuckets } from "@/lib/utils/usage";
 
 const TRAY_PREVIEW_REQUEST_LOG_LIMIT = 24;
 
@@ -33,6 +34,8 @@ interface MetricTileProps {
 interface QuotaLineProps {
   label: string;
   value: number | null | undefined;
+  resetsAt?: number | null | undefined;
+  emptyResetText: string;
   tone: "green" | "blue";
 }
 
@@ -52,7 +55,7 @@ function MetricTile({ label, value, icon: Icon, tone }: MetricTileProps) {
   );
 }
 
-function QuotaLine({ label, value, tone }: QuotaLineProps) {
+function QuotaLine({ label, value, resetsAt, emptyResetText, tone }: QuotaLineProps) {
   const normalized = value == null ? 0 : Math.max(0, Math.min(100, Math.round(value)));
   const barTone = tone === "green" ? "bg-emerald-500" : "bg-blue-500";
 
@@ -67,6 +70,9 @@ function QuotaLine({ label, value, tone }: QuotaLineProps) {
       <div className="h-1.5 overflow-hidden rounded-full bg-muted/60">
         <div className={cn("h-full rounded-full", barTone)} style={{ width: `${normalized}%` }} />
       </div>
+      <p className="truncate text-[10px] text-muted-foreground">
+        {formatTsFromSeconds(resetsAt, emptyResetText)}
+      </p>
     </div>
   );
 }
@@ -83,6 +89,9 @@ export default function TrayPreviewPage() {
   } = useDashboardStats({
     forceActive: true,
     requestLogLimit: TRAY_PREVIEW_REQUEST_LOG_LIMIT,
+    includeApiModels: false,
+    includeApiKeys: false,
+    includeAccountDetails: false,
   });
 
   const openMainWindow = async () => {
@@ -90,6 +99,7 @@ export default function TrayPreviewPage() {
   };
 
   const statusText = isServiceReady ? t("本地服务已连接") : t("等待本地服务");
+  const usageBuckets = getUsageDisplayBuckets(currentAccount?.usage);
 
   return (
     <div className="h-screen overflow-hidden bg-transparent font-sans text-foreground">
@@ -184,11 +194,15 @@ export default function TrayPreviewPage() {
                   <QuotaLine
                     label={t("5小时剩余")}
                     value={currentAccount?.primaryRemainPercent ?? stats.poolRemain?.primary}
+                    resetsAt={usageBuckets.primaryResetsAt}
+                    emptyResetText={t("暂无重置时间")}
                     tone="green"
                   />
                   <QuotaLine
                     label={t("7天剩余")}
                     value={currentAccount?.secondaryRemainPercent ?? stats.poolRemain?.secondary}
+                    resetsAt={usageBuckets.secondaryResetsAt}
+                    emptyResetText={t("暂无重置时间")}
                     tone="blue"
                   />
                 </div>

@@ -58,10 +58,9 @@ fn delete_accounts_dedupes_ids_and_reports_missing_accounts() {
     let _lock = test_env_guard();
     let dir = new_test_dir("delete-many-accounts");
     let db_path = dir.join("codexmanager.db");
-    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     storage
         .insert_account(&account("acc-delete", 1))
         .expect("insert delete target");

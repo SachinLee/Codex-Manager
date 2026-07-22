@@ -1,11 +1,16 @@
 use codexmanager_core::storage::Storage;
 use rand::RngCore;
+use rusqlite::backup::Backup;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_STORAGE_MAX_CONNECTIONS: usize = 32;
 const DEFAULT_STORAGE_MAX_IDLE_CONNECTIONS: usize = 16;
@@ -15,6 +20,26 @@ const ENV_STORAGE_MAX_IDLE_CONNECTIONS: &str = "CODEXMANAGER_STORAGE_MAX_IDLE_CO
 const ENV_STORAGE_ACQUIRE_TIMEOUT_MS: &str = "CODEXMANAGER_STORAGE_ACQUIRE_TIMEOUT_MS";
 
 static INITIALIZED_STORAGE_PATHS: OnceLock<Mutex<HashMap<String, ()>>> = OnceLock::new();
+
+const MODEL_CATALOG_V2_MIGRATION: &str = "112_model_catalog_v2";
+const MODEL_BILLING_V2_HARDENING_MIGRATION: &str = "113_model_billing_v2_hardening";
+const MODEL_CATALOG_GPT56_PRICES_MIGRATION: &str = "114_model_catalog_gpt56_prices";
+
+struct ModelCatalogMigrationLock {
+    path: PathBuf,
+    file: File,
+}
+
+impl Drop for ModelCatalogMigrationLock {
+    fn drop(&mut self) {
+        if let Err(err) = self.file.unlock() {
+            log::warn!(
+                "unlock model catalog migration lock failed: {} ({err})",
+                self.path.display()
+            );
+        }
+    }
+}
 
 #[derive(Default)]
 struct StorageBucket {
@@ -489,6 +514,201 @@ fn return_storage_to_pool(path: String, storage: Storage) {
     pool.available.notify_one();
 }
 
+fn acquire_model_catalog_migration_lock(
+    db_path: &Path,
+) -> Result<ModelCatalogMigrationLock, String> {
+    let lock_path = PathBuf::from(format!("{}.model-catalog-v2.lock", db_path.display()));
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "create model catalog migration lock directory failed ({}): {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|err| {
+            format!(
+                "open model catalog migration lock failed ({}): {err}",
+                lock_path.display()
+            )
+        })?;
+    file.try_lock().map_err(|err| {
+        format!(
+            "model catalog migration lock is held by another process ({}): {err}",
+            lock_path.display()
+        )
+    })?;
+    file.set_len(0)
+        .map_err(|err| format!("truncate model catalog migration lock failed: {err}"))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|err| format!("seek model catalog migration lock failed: {err}"))?;
+    writeln!(
+        file,
+        "pid={} started_at={}",
+        std::process::id(),
+        unix_timestamp()
+    )
+    .map_err(|err| format!("write model catalog migration lock failed: {err}"))?;
+    file.sync_all()
+        .map_err(|err| format!("sync model catalog migration lock failed: {err}"))?;
+    Ok(ModelCatalogMigrationLock {
+        path: lock_path,
+        file,
+    })
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .map_err(|err| format!("inspect sqlite schema failed: {err}"))
+}
+
+fn model_catalog_v2_migration_needed(db_path: &Path) -> Result<bool, String> {
+    if !db_path.exists() || db_path.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
+        return Ok(true);
+    }
+    let conn = Connection::open(db_path)
+        .map_err(|err| format!("open database for migration inspection failed: {err}"))?;
+    if !sqlite_table_exists(&conn, "schema_migrations")? {
+        return Ok(true);
+    }
+    for version in [
+        MODEL_CATALOG_V2_MIGRATION,
+        MODEL_BILLING_V2_HARDENING_MIGRATION,
+        MODEL_CATALOG_GPT56_PRICES_MIGRATION,
+    ] {
+        let applied = conn
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version=?1 LIMIT 1",
+                [version],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|err| format!("read migration marker failed: {err}"))?
+            .is_some();
+        if !applied {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn preflight_model_catalog_v2(db_path: &Path) -> Result<(), String> {
+    if !db_path.exists() || db_path.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
+        return Ok(());
+    }
+    let conn = Connection::open(db_path)
+        .map_err(|err| format!("open database for model catalog preflight failed: {err}"))?;
+    if sqlite_table_exists(&conn, "model_catalog_models")? {
+        let duplicates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                   SELECT lower(trim(slug)) FROM model_catalog_models
+                   WHERE trim(slug)<>'' GROUP BY lower(trim(slug)) HAVING COUNT(*)>1
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("preflight duplicate model slugs failed: {err}"))?;
+        if duplicates > 0 {
+            return Err(format!(
+                "model catalog V2 preflight failed: {duplicates} duplicate case-insensitive slugs"
+            ));
+        }
+    }
+    if sqlite_table_exists(&conn, "model_price_rules")? {
+        let negative_prices: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_price_rules WHERE
+                   COALESCE(input_price_per_1m,0)<0 OR
+                   COALESCE(cached_input_price_per_1m,0)<0 OR
+                   COALESCE(output_price_per_1m,0)<0 OR
+                   COALESCE(long_context_input_price_per_1m,0)<0 OR
+                   COALESCE(long_context_cached_input_price_per_1m,0)<0 OR
+                   COALESCE(long_context_output_price_per_1m,0)<0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("preflight model prices failed: {err}"))?;
+        if negative_prices > 0 {
+            return Err(format!(
+                "model catalog V2 preflight failed: {negative_prices} negative price rows"
+            ));
+        }
+    }
+    if sqlite_table_exists(&conn, "model_source_mappings")?
+        && sqlite_table_exists(&conn, "model_catalog_models")?
+    {
+        let orphan_routes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_source_mappings r
+                 LEFT JOIN model_catalog_models m
+                   ON m.scope='default' AND m.slug=r.platform_model_slug
+                 WHERE r.enabled=1 AND m.slug IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("preflight model routes failed: {err}"))?;
+        if orphan_routes > 0 {
+            log::warn!(
+                "model catalog V2 preflight will skip {} orphan legacy routes",
+                orphan_routes
+            );
+        }
+    }
+    Ok(())
+}
+
+fn backup_model_catalog_database(db_path: &Path) -> Result<Option<PathBuf>, String> {
+    if !db_path.exists() || db_path.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    let backup_path = PathBuf::from(format!(
+        "{}.model-catalog-v2.{}.bak",
+        db_path.display(),
+        unix_timestamp()
+    ));
+    let source = Connection::open(db_path)
+        .map_err(|err| format!("open model catalog backup source failed: {err}"))?;
+    let mut target = Connection::open(&backup_path)
+        .map_err(|err| format!("open model catalog backup target failed: {err}"))?;
+    let backup = Backup::new(&source, &mut target)
+        .map_err(|err| format!("create model catalog online backup failed: {err}"))?;
+    backup
+        .run_to_completion(64, Duration::from_millis(25), None)
+        .map_err(|err| format!("write model catalog online backup failed: {err}"))?;
+    Ok(Some(backup_path))
+}
+
+fn restore_model_catalog_database(db_path: &Path, backup_path: &Path) -> Result<(), String> {
+    let source = Connection::open(backup_path)
+        .map_err(|err| format!("open model catalog restore source failed: {err}"))?;
+    let mut target = Connection::open(db_path)
+        .map_err(|err| format!("open model catalog restore target failed: {err}"))?;
+    let backup = Backup::new(&source, &mut target)
+        .map_err(|err| format!("create model catalog restore backup failed: {err}"))?;
+    backup
+        .run_to_completion(64, Duration::from_millis(25), None)
+        .map_err(|err| format!("restore model catalog database failed: {err}"))
+}
+
 /// 函数 `initialize_storage`
 ///
 /// 作者: gaohongshun
@@ -512,14 +732,37 @@ pub(crate) fn initialize_storage() -> Result<(), String> {
             return Ok(());
         }
     }
-    if !Path::new(&path).exists() {
+    let db_path = Path::new(&path);
+    if !db_path.exists() {
         log::warn!("storage path missing: {}", path);
     }
+    let migration_needed = model_catalog_v2_migration_needed(db_path)?;
+    let migration_lock = migration_needed
+        .then(|| acquire_model_catalog_migration_lock(db_path))
+        .transpose()?;
+    let backup_path = if migration_needed {
+        preflight_model_catalog_v2(db_path)?;
+        backup_model_catalog_database(db_path)?
+    } else {
+        None
+    };
     let storage =
         Storage::open(&path).map_err(|err| format!("open storage failed: {} ({})", path, err))?;
-    storage
+    let initialization = storage
         .init()
-        .map_err(|err| format!("storage init failed: {} ({})", path, err))?;
+        .and_then(|_| storage.smoke_check_model_catalog_v2());
+    if let Err(err) = initialization {
+        drop(storage);
+        if let Some(backup_path) = backup_path.as_deref() {
+            restore_model_catalog_database(db_path, backup_path).map_err(|restore_err| {
+                format!(
+                    "storage init failed: {path} ({err}); backup restore also failed: {restore_err}"
+                )
+            })?;
+        }
+        return Err(format!("storage init failed: {path} ({err})"));
+    }
+    drop(migration_lock);
     crate::lock_utils::lock_recover(initialized_storage_paths(), "initialized_storage_paths")
         .insert(path, ());
     Ok(())

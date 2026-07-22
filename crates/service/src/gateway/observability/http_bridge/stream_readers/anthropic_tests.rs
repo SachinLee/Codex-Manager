@@ -32,6 +32,7 @@ impl Read for PausingReader {
 
 #[test]
 fn metadata_only_upstream_frame_records_first_response_before_keepalive() {
+    let _guard = crate::test_env_guard();
     let previous = super::super::current_sse_keepalive_interval_ms();
     super::super::set_sse_keepalive_interval_ms(1).expect("set keepalive interval");
     let upstream = concat!(

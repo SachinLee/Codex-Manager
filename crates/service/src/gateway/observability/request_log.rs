@@ -1,6 +1,11 @@
 use codexmanager_core::storage::{
-    now_ts, RequestLog, RequestPricingSnapshot, RequestTokenStat, Storage,
+    now_ts, ChargeSnapshotV2, RequestLog, RequestPricingSnapshot, RequestTokenStat, Storage,
 };
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+const API_KEY_LAST_USED_TOUCH_MIN_INTERVAL_SECS: i64 = 60;
+static API_KEY_LAST_USED_TOUCH_CACHE: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RequestLogUsage {
@@ -13,6 +18,16 @@ pub(crate) struct RequestLogUsage {
     pub provider_cost_usd_ticks: Option<i64>,
     pub provider_cost_nano_usd: Option<i64>,
     pub first_response_ms: Option<i64>,
+    pub estimated_input_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedChargeUsage {
+    usage_source: &'static str,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,7 +55,8 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub upstream_model: Option<&'a str>,
     pub actual_source_kind: Option<&'a str>,
     pub actual_source_id: Option<&'a str>,
-    pub cost_multiplier: Option<f64>,
+    /// Aggregate API 价格倍率只在最终 charge snapshot 中应用一次。
+    pub aggregate_api_cost_multiplier: Option<f64>,
 }
 
 /// 函数 `normalize_token`
@@ -56,6 +72,134 @@ pub(crate) struct RequestLogTraceContext<'a> {
 /// 返回函数执行结果
 fn normalize_token(value: Option<i64>) -> Option<i64> {
     value.map(|v| v.max(0))
+}
+
+fn aggregate_multiplier_millis(value: Option<f64>) -> Option<i64> {
+    let value = value?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let scaled = (value * 1_000.0).round();
+    if !scaled.is_finite() || scaled < 1.0 || scaled > i64::MAX as f64 {
+        return None;
+    }
+    Some(scaled as i64)
+}
+
+fn provider_cost_base_microusd(usage: RequestLogUsage) -> Option<i64> {
+    if let Some(ticks) = usage.provider_cost_usd_ticks.filter(|value| *value >= 0) {
+        return ticks.checked_add(9_999).map(|value| value / 10_000);
+    }
+    usage
+        .provider_cost_nano_usd
+        .filter(|value| *value >= 0)
+        .and_then(|nano_usd| nano_usd.checked_add(999).map(|value| value / 1_000))
+}
+
+fn provider_cost_usd(usage: RequestLogUsage) -> Option<f64> {
+    usage
+        .provider_cost_usd_ticks
+        .filter(|value| *value >= 0)
+        .map(|ticks| ticks as f64 / 10_000_000_000.0)
+        .or_else(|| {
+            usage
+                .provider_cost_nano_usd
+                .filter(|value| *value >= 0)
+                .map(|nano_usd| nano_usd as f64 / 1_000_000_000.0)
+        })
+}
+
+fn persist_request_pricing_snapshot(
+    storage: &Storage,
+    request_log_id: i64,
+    model: &str,
+    usage: RequestLogUsage,
+    charge: &ChargeSnapshotV2,
+    created_at: i64,
+) -> Result<(), String> {
+    let local_estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
+        storage,
+        Some(model),
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.cache_write_input_tokens,
+        usage.output_tokens,
+    );
+    let local_estimated_cost_usd =
+        (local_estimated_cost_usd > 0.0).then_some(local_estimated_cost_usd);
+    let provider_cost_usd = provider_cost_usd(usage);
+    let cost_source = if provider_cost_usd.is_some() {
+        Some("provider_reported".to_string())
+    } else if local_estimated_cost_usd.is_some() {
+        Some("local_estimate".to_string())
+    } else {
+        None
+    };
+    let pricing_variance_usd = provider_cost_usd
+        .zip(local_estimated_cost_usd)
+        .map(|(provider, local)| provider - local);
+    storage
+        .insert_request_pricing_snapshot(&RequestPricingSnapshot {
+            request_log_id,
+            billing_mode: "model_catalog_v2".to_string(),
+            context_band: "catalog_v2".to_string(),
+            price_source: Some("model_catalog_v2".to_string()),
+            match_quality: Some("exact".to_string()),
+            price_status: "ok".to_string(),
+            cost_source,
+            provider_cost_usd_ticks: usage.provider_cost_usd_ticks.filter(|value| *value >= 0),
+            provider_cost_usd,
+            local_estimated_cost_usd,
+            pricing_variance_usd,
+            total_cost_usd: Some(charge.charged_cost_microusd as f64 / 1_000_000.0),
+            created_at,
+            ..RequestPricingSnapshot::default()
+        })
+        .map_err(|err| format!("persist request pricing snapshot failed: {err}"))
+}
+
+pub(crate) fn estimate_input_tokens_from_body(body: &[u8]) -> i64 {
+    let char_count = String::from_utf8_lossy(body).chars().count();
+    let estimate = char_count / 4 + usize::from(char_count % 4 != 0);
+    i64::try_from(estimate.max(1)).unwrap_or(i64::MAX)
+}
+
+fn resolve_charge_usage(usage: RequestLogUsage) -> ResolvedChargeUsage {
+    let has_actual_usage = usage.input_tokens.is_some()
+        || usage.cached_input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.total_tokens.is_some();
+    if !has_actual_usage {
+        let input_tokens = usage.estimated_input_tokens.unwrap_or(1).max(1);
+        return ResolvedChargeUsage {
+            usage_source: "estimated",
+            input_tokens,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: input_tokens,
+        };
+    }
+    let output_tokens = usage.output_tokens.unwrap_or(0).max(0);
+    let cached_input_tokens = usage.cached_input_tokens.unwrap_or(0).max(0);
+    let input_tokens = usage
+        .input_tokens
+        .map(|value| value.max(0))
+        .or_else(|| {
+            usage
+                .total_tokens
+                .map(|total| total.max(0).saturating_sub(output_tokens))
+        })
+        .unwrap_or(cached_input_tokens);
+    ResolvedChargeUsage {
+        usage_source: "actual",
+        input_tokens,
+        cached_input_tokens: cached_input_tokens.min(input_tokens),
+        output_tokens,
+        total_tokens: usage
+            .total_tokens
+            .map(|value| value.max(0))
+            .unwrap_or_else(|| input_tokens.saturating_add(output_tokens)),
+    }
 }
 
 /// 函数 `normalize_duration_ms`
@@ -85,9 +229,10 @@ fn normalize_duration_ms(value: Option<u128>) -> Option<i64> {
 /// # 返回
 /// 返回函数执行结果
 fn is_inference_path(path: &str) -> bool {
+    let path = path.split_once('?').map(|(path, _)| path).unwrap_or(path);
     path.starts_with("/v1/responses")
         || path.starts_with("/v1/chat/completions")
-        || path.starts_with("/v1/messages")
+        || (path.starts_with("/v1/messages") && !path.starts_with("/v1/messages/count_tokens"))
 }
 
 fn normalize_log_text(value: Option<&str>) -> Option<String> {
@@ -141,11 +286,24 @@ fn resolve_value_source<'a>(
     }
 }
 
+fn resolve_reasoning_value_source<'a>(
+    client_value: Option<&'a str>,
+    effective_value: Option<&'a str>,
+    explicit_source: Option<&'a str>,
+) -> Option<&'a str> {
+    if explicit_source.map(str::trim).is_none_or(str::is_empty)
+        && crate::reasoning_effort::is_ultra_to_max_normalization(client_value, effective_value)
+    {
+        return Some("client_request_normalized");
+    }
+    resolve_value_source(client_value, effective_value, explicit_source)
+}
+
 fn resolve_route_details(
-    storage: &Storage,
+    _storage: &Storage,
     trace_context: &RequestLogTraceContext<'_>,
     account_id: Option<&str>,
-    model: Option<&str>,
+    _model: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>) {
     let actual_source_kind = normalize_log_text(trace_context.actual_source_kind).or_else(|| {
         account_id
@@ -154,16 +312,7 @@ fn resolve_route_details(
     });
     let actual_source_id = normalize_log_text(trace_context.actual_source_id)
         .or_else(|| normalize_log_text(account_id));
-    let upstream_model = normalize_log_text(trace_context.upstream_model).or_else(|| {
-        let platform_model = model.map(str::trim).filter(|value| !value.is_empty())?;
-        let source_kind = actual_source_kind.as_deref()?;
-        let source_id = actual_source_id.as_deref()?;
-        storage
-            .find_enabled_model_source_mapping(platform_model, source_kind, source_id)
-            .ok()
-            .flatten()
-            .map(|mapping| mapping.upstream_model)
-    });
+    let upstream_model = normalize_log_text(trace_context.upstream_model);
     (upstream_model, actual_source_kind, actual_source_id)
 }
 
@@ -282,18 +431,37 @@ pub(crate) fn write_request_log_with_attempts(
         .attempted_aggregate_api_ids
         .filter(|items| !items.is_empty())
         .and_then(|items| serde_json::to_string(items).ok());
-    let input_tokens = normalize_token(usage.input_tokens);
-    let input_total = input_tokens.unwrap_or(0);
-    let cached_input_tokens =
-        normalize_token(usage.cached_input_tokens).map(|tokens| tokens.min(input_total));
-    let cache_write_input_tokens = normalize_token(usage.cache_write_input_tokens)
-        .map(|tokens| tokens.min(input_total.saturating_sub(cached_input_tokens.unwrap_or(0))));
-    let output_tokens = normalize_token(usage.output_tokens);
-    let total_tokens = normalize_token(usage.total_tokens);
+    let raw_input_tokens = normalize_token(usage.input_tokens);
+    let raw_cached_input_tokens = normalize_token(usage.cached_input_tokens);
+    let raw_cache_write_input_tokens = normalize_token(usage.cache_write_input_tokens);
+    let raw_output_tokens = normalize_token(usage.output_tokens);
+    let raw_total_tokens = normalize_token(usage.total_tokens);
+    let charge_usage = resolve_charge_usage(usage);
+    let inference_path = is_inference_path(request_path);
+    let use_charge_usage =
+        inference_path && (charge_usage.usage_source == "actual" || upstream_url.is_some());
+    let input_tokens = use_charge_usage
+        .then_some(charge_usage.input_tokens)
+        .or(raw_input_tokens);
+    let cached_input_tokens = use_charge_usage
+        .then_some(charge_usage.cached_input_tokens)
+        .or(raw_cached_input_tokens);
+    let cache_write_input_tokens = raw_cache_write_input_tokens;
+    let output_tokens = use_charge_usage
+        .then_some(charge_usage.output_tokens)
+        .or(raw_output_tokens);
+    let total_tokens = use_charge_usage
+        .then_some(charge_usage.total_tokens)
+        .or(raw_total_tokens);
     let reasoning_output_tokens = normalize_token(usage.reasoning_output_tokens);
     let duration_ms = normalize_duration_ms(duration_ms);
     let first_response_ms = usage.first_response_ms.map(|value| value.max(0));
     let created_at = now_ts();
+    let request_type = trace_context
+        .request_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http");
     let service_tier = trace_context
         .service_tier
         .map(str::trim)
@@ -302,48 +470,6 @@ pub(crate) fn write_request_log_with_attempts(
         .effective_service_tier
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let billing_service_tier = effective_service_tier.or(service_tier);
-    let cost_multiplier = trace_context
-        .cost_multiplier
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(1.0);
-    let mut pricing = crate::quota::model_pricing::estimate_cost_for_log_with_usage_and_tier(
-        storage,
-        model,
-        billing_service_tier,
-        input_tokens,
-        cached_input_tokens,
-        cache_write_input_tokens,
-        output_tokens,
-        total_tokens,
-        reasoning_output_tokens,
-    );
-    let provider_cost = usage
-        .provider_cost_usd_ticks
-        .filter(|value| *value >= 0)
-        .map(|value| (Some(value), value as f64 / 10_000_000_000.0))
-        .or_else(|| {
-            usage
-                .provider_cost_nano_usd
-                .filter(|value| *value >= 0)
-                .map(|value| (None, value as f64 / 1_000_000_000.0))
-        });
-    if let Some((provider_cost_usd_ticks, provider_cost_usd)) = provider_cost {
-        pricing.provider_cost_usd_ticks = provider_cost_usd_ticks;
-        pricing.provider_cost_usd = Some(provider_cost_usd);
-        pricing.pricing_variance_usd = pricing
-            .local_estimated_cost_usd
-            .map(|local_cost| provider_cost_usd - local_cost);
-        pricing.cost_usd = Some(provider_cost_usd);
-        pricing.cost_source = Some("provider_reported");
-    }
-    let pricing = pricing.multiplied(cost_multiplier);
-    let estimated_cost_usd = pricing.cost_usd.unwrap_or(0.0);
-    let request_type = trace_context
-        .request_type
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("http");
     let service_tier_source = resolve_service_tier_source(
         service_tier,
         effective_service_tier,
@@ -358,17 +484,13 @@ pub(crate) fn write_request_log_with_attempts(
         .client_reasoning_effort
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let reasoning_source = resolve_value_source(
+    let reasoning_source = resolve_reasoning_value_source(
         client_reasoning_effort,
         reasoning_effort,
         trace_context.reasoning_source,
     );
     let (upstream_model, actual_source_kind, actual_source_id) =
         resolve_route_details(storage, &trace_context, account_id, model);
-    let token_stat_aggregate_api_id = actual_source_id
-        .as_deref()
-        .filter(|_| actual_source_kind.as_deref() == Some("aggregate_api"))
-        .map(str::to_string);
     super::trace_log::log_failed_request(super::trace_log::FailedRequestLog {
         ts: created_at,
         trace_id: trace_context.trace_id,
@@ -390,36 +512,23 @@ pub(crate) fn write_request_log_with_attempts(
     let success = status_code
         .map(|status| (200..300).contains(&status))
         .unwrap_or(false);
-    let input_zero_or_missing = input_tokens.unwrap_or(0) == 0;
-    let cached_zero_or_missing = cached_input_tokens.unwrap_or(0) == 0;
-    let cache_write_zero_or_missing = cache_write_input_tokens.unwrap_or(0) == 0;
-    let output_zero_or_missing = output_tokens.unwrap_or(0) == 0;
-    let total_zero_or_missing = total_tokens.unwrap_or(0) == 0;
-    let reasoning_zero_or_missing = reasoning_output_tokens.unwrap_or(0) == 0;
-    if success
-        && is_inference_path(request_path)
-        && input_zero_or_missing
-        && cached_zero_or_missing
-        && cache_write_zero_or_missing
-        && output_zero_or_missing
-        && total_zero_or_missing
-        && reasoning_zero_or_missing
-    {
+    if inference_path && upstream_url.is_some() && charge_usage.usage_source == "estimated" {
         log::warn!(
-            "event=gateway_token_usage_missing path={} status={} account_id={} key_id={} model={}",
+            "event=gateway_token_usage_estimated path={} status={} account_id={} key_id={} model={} input_tokens={}",
             request_path,
             status_code.unwrap_or(0),
             account_id.unwrap_or("-"),
             key_id.unwrap_or("-"),
             model.unwrap_or("-"),
+            charge_usage.input_tokens,
         );
     }
     // 记录请求最终结果（而非内部重试明细），保证 UI 一次请求只展示一条记录。
     let (request_log_id, token_stat_error) = match storage.insert_request_log_with_token_stat(
         &RequestLog {
             trace_id: trace_context.trace_id.map(|v| v.to_string()),
-            session_id: trace_context.session_id.map(|v| v.to_string()),
-            conversation_anchor: trace_context.conversation_anchor.map(|v| v.to_string()),
+            session_id: trace_context.session_id.map(str::to_string),
+            conversation_anchor: trace_context.conversation_anchor.map(str::to_string),
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
             initial_account_id: initial_account_id.map(str::to_string),
@@ -474,7 +583,10 @@ pub(crate) fn write_request_log_with_attempts(
             request_log_id: 0,
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
-            aggregate_api_id: token_stat_aggregate_api_id,
+            aggregate_api_id: actual_source_id
+                .as_deref()
+                .filter(|_| actual_source_kind.as_deref() == Some("aggregate_api"))
+                .map(str::to_string),
             aggregate_api_supplier_name: trace_context
                 .aggregate_api_supplier_name
                 .map(str::to_string),
@@ -488,7 +600,7 @@ pub(crate) fn write_request_log_with_attempts(
             output_tokens,
             total_tokens,
             reasoning_output_tokens,
-            estimated_cost_usd: Some(estimated_cost_usd),
+            estimated_cost_usd: None,
             created_at,
         },
     ) {
@@ -522,77 +634,73 @@ pub(crate) fn write_request_log_with_attempts(
         );
     }
 
-    let snapshot = RequestPricingSnapshot {
-        request_log_id,
-        billing_mode: pricing
-            .billing_mode
-            .unwrap_or_else(|| {
-                crate::quota::model_pricing::normalize_billing_mode_for_service_tier(
-                    billing_service_tier,
-                )
-            })
-            .to_string(),
-        context_band: pricing.context_band.to_string(),
-        long_context_threshold_tokens: pricing.long_context_threshold_tokens,
-        long_context_threshold_inclusive: Some(pricing.long_context_threshold_inclusive),
-        matched_rule_id: pricing.matched_rule_id.clone(),
-        matched_pattern: pricing.matched_pattern.clone(),
-        price_source: pricing.price_source.clone(),
-        match_quality: pricing.match_quality.map(str::to_string),
-        price_status: pricing.price_status.to_string(),
-        cost_source: pricing.cost_source.map(str::to_string),
-        provider_cost_usd_ticks: pricing.provider_cost_usd_ticks,
-        provider_cost_usd: pricing.provider_cost_usd,
-        local_estimated_cost_usd: pricing.local_estimated_cost_usd,
-        pricing_variance_usd: pricing.pricing_variance_usd,
-        plain_input_cost_usd: pricing.plain_input_cost_usd,
-        cached_input_cost_usd: pricing.cached_input_cost_usd,
-        cache_write_cost_usd: pricing.cache_write_cost_usd,
-        output_cost_usd: pricing.output_cost_usd,
-        total_cost_usd: pricing.cost_usd,
-        short_baseline_cost_usd: pricing.short_baseline_cost_usd,
-        long_context_uplift_usd: pricing.long_context_uplift_usd,
-        created_at,
-    };
-    if let Err(err) = storage.insert_request_pricing_snapshot(&snapshot) {
-        let err_text = err.to_string();
-        super::metrics::record_db_error(err_text.as_str());
-        log::warn!(
-            "event=gateway_request_pricing_snapshot_insert_failed path={} request_log_id={} err={}",
-            request_path,
-            request_log_id,
-            err_text
-        );
+    if success {
+        touch_api_key_last_used_after_success(storage, key_id, created_at);
     }
 
-    if success {
-        let raw_usage_json = serde_json::to_string(&serde_json::json!({
-            "model": model,
-            "inputTokens": input_tokens,
-            "cachedInputTokens": cached_input_tokens,
-            "cacheWriteInputTokens": cache_write_input_tokens,
-            "outputTokens": output_tokens,
-            "totalTokens": total_tokens,
-            "reasoningOutputTokens": reasoning_output_tokens,
-            "estimatedCostUsd": estimated_cost_usd,
-            "effectiveServiceTier": billing_service_tier,
-        }))
-        .ok();
-        if let Err(err) = crate::wallet_charge_for_request(
-            storage,
-            key_id,
-            request_log_id,
-            estimated_cost_usd,
-            model,
-            effective_service_tier.or(service_tier),
-            raw_usage_json,
-        ) {
-            log::warn!(
-                "event=app_wallet_charge_failed key_id={} request_log_id={} estimated_cost_usd={} err={}",
-                key_id.unwrap_or("-"),
+    if inference_path && upstream_url.is_some() {
+        if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+            let raw_usage_json = serde_json::to_string(&serde_json::json!({
+                "model": model,
+                "usageSource": charge_usage.usage_source,
+                "inputTokens": charge_usage.input_tokens,
+                "cachedInputTokens": charge_usage.cached_input_tokens,
+                "cacheWriteInputTokens": cache_write_input_tokens,
+                "outputTokens": charge_usage.output_tokens,
+                "totalTokens": charge_usage.total_tokens,
+                "reasoningOutputTokens": reasoning_output_tokens,
+                "providerCostUsdTicks": usage.provider_cost_usd_ticks,
+                "providerCostNanoUsd": usage.provider_cost_nano_usd,
+            }))
+            .ok();
+            let charge_wallet = success || status_code == Some(499);
+            let aggregate_multiplier_millis =
+                aggregate_multiplier_millis(trace_context.aggregate_api_cost_multiplier);
+            let base_cost_override_microusd = provider_cost_base_microusd(usage);
+            match crate::auth::app_manager::record_request_charge_v2(
+                storage,
+                key_id,
                 request_log_id,
-                estimated_cost_usd,
-                err
+                model,
+                effective_service_tier.or(service_tier),
+                charge_usage.usage_source,
+                charge_usage.input_tokens,
+                charge_usage.cached_input_tokens,
+                charge_usage.output_tokens,
+                raw_usage_json,
+                charge_wallet,
+                aggregate_multiplier_millis,
+                base_cost_override_microusd,
+            ) {
+                Ok(charge) => {
+                    if let Err(err) = persist_request_pricing_snapshot(
+                        storage,
+                        request_log_id,
+                        model,
+                        usage,
+                        &charge,
+                        created_at,
+                    ) {
+                        log::warn!(
+                            "event=request_pricing_snapshot_failed request_log_id={} err={}",
+                            request_log_id,
+                            err
+                        );
+                    }
+                }
+                Err(err) => log::warn!(
+                    "event=model_catalog_v2_charge_failed key_id={} request_log_id={} usage_source={} charge_wallet={} err={}",
+                    key_id.unwrap_or("-"),
+                    request_log_id,
+                    charge_usage.usage_source,
+                    charge_wallet,
+                    err
+                ),
+            }
+        } else {
+            log::warn!(
+                "event=model_catalog_v2_charge_skipped request_log_id={} reason=model_missing",
+                request_log_id
             );
         }
     }
@@ -606,6 +714,35 @@ pub(crate) fn write_request_log_with_attempts(
             err_text
         );
     }
+}
+
+fn touch_api_key_last_used_after_success(storage: &Storage, key_id: Option<&str>, now: i64) {
+    let Some(key_id) = key_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if !should_touch_api_key_last_used(key_id, now) {
+        return;
+    }
+    if let Err(err) = storage.update_api_key_last_used_at_by_id(key_id, now) {
+        log::warn!(
+            "event=api_key_last_used_touch_failed key_id={} err={}",
+            key_id,
+            err
+        );
+    }
+}
+
+fn should_touch_api_key_last_used(key_id: &str, now: i64) -> bool {
+    let cache = API_KEY_LAST_USED_TOUCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut cache) = cache.lock() else {
+        return true;
+    };
+    let previous = cache.get(key_id).copied().unwrap_or(0);
+    if now.saturating_sub(previous) < API_KEY_LAST_USED_TOUCH_MIN_INTERVAL_SECS {
+        return false;
+    }
+    cache.insert(key_id.to_string(), now);
+    true
 }
 
 #[cfg(test)]

@@ -14,7 +14,11 @@ import type { AppSettings } from "@/types";
 
 type GeneralBasicsSnapshot = Pick<
   AppSettings,
-  "closeToTrayOnClose" | "closeToTraySupported" | "lowTransparency"
+  | "autoStartEnabled"
+  | "autoStartSupported"
+  | "closeToTrayOnClose"
+  | "closeToTraySupported"
+  | "lowTransparency"
 >;
 
 export function GeneralBasicsCard({
@@ -35,6 +39,7 @@ export function GeneralBasicsCard({
   canDownloadUpdate,
   updateActionBusyLabel,
   snapshot,
+  canAutoStart,
   canCloseToTray,
   updateSettings,
 }: {
@@ -55,11 +60,12 @@ export function GeneralBasicsCard({
   canDownloadUpdate: boolean;
   updateActionBusyLabel: string;
   snapshot: GeneralBasicsSnapshot;
+  canAutoStart: boolean;
   canCloseToTray: boolean;
   updateSettings: { mutate: (patch: Partial<AppSettings>) => void };
 }) {
   return (
-    <Card className="glass-card shadow-sm">
+    <Card className="glass-card mission-panel shadow-sm">
       <CardHeader>
         <div className="flex items-center gap-2">
           <AppWindow className="h-4 w-4 text-primary" />
@@ -119,6 +125,17 @@ export function GeneralBasicsCard({
             </Button>
           </CardContent>
         </Card>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label>{t("开机自动启动")}</Label>
+            <p className="text-xs text-muted-foreground">{t("系统登录后自动启动桌面端并保持网关可用")}</p>
+          </div>
+          <Switch
+            checked={snapshot.autoStartEnabled}
+            disabled={!canAutoStart || !snapshot.autoStartSupported}
+            onCheckedChange={(value) => updateSettings.mutate({ autoStartEnabled: value })}
+          />
+        </div>
         <div className="flex items-center justify-between">
           <div className="space-y-0.5">
             <Label>{t("关闭时最小化到托盘")}</Label>

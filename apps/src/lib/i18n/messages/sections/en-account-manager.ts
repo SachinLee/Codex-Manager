@@ -3,6 +3,7 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_ACCOUNT_MANAGER_MESSAGES: MessageCatalog = {
+  "Access control": "Access control",
   "Key 消耗明细": "Key usage details",
   "Token 消耗曲线": "Token usage trend",
   不修改则留空: "Leave blank to keep unchanged",
@@ -22,6 +23,7 @@ export const EN_ACCOUNT_MANAGER_MESSAGES: MessageCatalog = {
   可用额度: "Available credit",
   可用额度已更新: "Available credit updated",
   可选: "Optional",
+  "共 {count} 个账号": "{count} accounts",
   "填写后会替换该账号的登录密码，至少 8 位。":
     "If filled, this replaces the login password for this account. Use at least 8 characters.",
   已开启: "Enabled",

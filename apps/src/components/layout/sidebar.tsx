@@ -59,18 +59,26 @@ type SidebarNavItem = {
   icon: LucideIcon;
 };
 
+type RenderedSidebarSection = {
+  id: string;
+  label: string;
+  items: SidebarNavItem[];
+};
+
 const NavItem = memo(({
   item,
   isActive,
   isSidebarOpen,
   onNavigate,
   itemName,
+  index,
 }: {
   item: SidebarNavItem,
   isActive: boolean,
   isSidebarOpen: boolean,
   onNavigate: (href: string, event: MouseEvent<HTMLAnchorElement>) => void,
   itemName: string,
+  index: number,
 }) => (
   <a
     href={buildStaticRouteUrl(item.href)}
@@ -79,13 +87,30 @@ const NavItem = memo(({
     aria-label={itemName}
     title={itemName}
     className={cn(
-      "flex items-center gap-3 rounded-lg px-3 py-2 transition-all duration-200 hover:bg-accent hover:text-accent-foreground",
+      "group/nav relative flex min-h-10 items-center gap-3 overflow-hidden rounded-md border border-transparent px-3 py-2 text-[13px] transition-colors duration-200 hover:border-primary/20 hover:bg-primary/5 hover:text-primary",
       !isSidebarOpen && "justify-center px-0",
-      isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground"
+      isActive
+        ? "border-primary/25 bg-primary/10 text-primary shadow-[inset_3px_0_0_rgb(var(--primary-rgb)/0.8),0_10px_22px_-20px_rgb(var(--primary-rgb)/0.34)]"
+        : "text-muted-foreground",
     )}
   >
-    <item.icon className="h-4 w-4 shrink-0" />
-    {isSidebarOpen && <span className="text-sm truncate">{itemName}</span>}
+    {isActive ? (
+      <>
+        <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-primary" />
+        <span className="absolute inset-x-3 top-0 h-px bg-gradient-to-r from-primary/35 via-primary/10 to-transparent" />
+      </>
+    ) : null}
+    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/35">
+      <item.icon className="h-3.5 w-3.5" />
+    </div>
+    {isSidebarOpen && (
+      <>
+        <span className="truncate font-medium">{itemName}</span>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
+          {String(index + 1).padStart(2, "0")}
+        </span>
+      </>
+    )}
   </a>
 ));
 
@@ -107,13 +132,11 @@ NavItem.displayName = "NavItem";
 export function Sidebar() {
   const { t } = useI18n();
   const [logoFailed, setLogoFailed] = useState(false);
-  const {
-    isSidebarOpen,
-    toggleSidebar,
-    openCodexCliGuide,
-    currentShellPath,
-    navigateShellPath,
-  } = useAppStore();
+  const isSidebarOpen = useAppStore((state) => state.isSidebarOpen);
+  const currentShellPath = useAppStore((state) => state.currentShellPath);
+  const toggleSidebar = useAppStore((state) => state.toggleSidebar);
+  const openCodexCliGuide = useAppStore((state) => state.openCodexCliGuide);
+  const navigateShellPath = useAppStore((state) => state.navigateShellPath);
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
@@ -149,34 +172,48 @@ export function Sidebar() {
   );
 
   const renderedItems = useMemo(() => {
-    const sections = getAllowedTopLevelRouteSections(routeAccess);
+    const sections: RenderedSidebarSection[] = getAllowedTopLevelRouteSections(
+      routeAccess,
+    ).map((section) => ({
+      id: section.id,
+      label: section.label,
+      items: section.routes.flatMap((route) => {
+        const item = NAV_ITEM_BY_PATH.get(route.path);
+        if (!item) return [];
+        return [{ href: route.path, icon: item.icon }];
+      }),
+    }));
+    const itemIndexes = new Map(
+      sections
+        .flatMap((section) => section.items)
+        .map((item, index) => [item.href, index] as const),
+    );
+
     return sections.map((section, sectionIndex) => (
       <div
         key={section.id}
         className={cn(
           "space-y-1",
-          sectionIndex > 0 && "mt-3 border-t border-border/50 pt-3",
+          sectionIndex > 0 && "mt-4 border-t border-border/70 pt-4",
         )}
       >
         {isSidebarOpen ? (
-          <div className="px-3 pb-1 text-[11px] font-semibold uppercase text-muted-foreground/70">
+          <div className="animate-in px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70 fade-in slide-in-from-left-1 duration-200 motion-reduce:animate-none">
             {t(section.label)}
           </div>
         ) : null}
         <div className="grid gap-1">
-          {section.routes.map((route) => {
-            const item = NAV_ITEM_BY_PATH.get(route.path);
-            if (!item) return null;
-            const navItem = { href: route.path, icon: item.icon };
-            const itemName = t(getTopLevelRouteLabel(route.path, routeAccess));
+          {section.items.map((item) => {
+            const itemName = t(getTopLevelRouteLabel(item.href, routeAccess));
             return (
               <NavItem
-                key={route.path}
-                item={navItem}
+                key={item.href}
+                item={item}
                 itemName={itemName}
-                isActive={route.path === currentShellPath}
+                isActive={item.href === currentShellPath}
                 isSidebarOpen={isSidebarOpen}
                 onNavigate={handleNavigate}
+                index={itemIndexes.get(item.href) ?? 0}
               />
             );
           })}
@@ -187,15 +224,26 @@ export function Sidebar() {
 
   return (
     <div
+      data-slot="app-sidebar"
       className={cn(
-        "relative z-20 flex shrink-0 flex-col glass-sidebar transition-[width] duration-300 ease-in-out",
-        isSidebarOpen ? "w-56" : "w-16"
+        "relative z-20 flex shrink-0 flex-col glass-sidebar",
+        isSidebarOpen ? "w-60" : "w-16"
       )}
     >
       <div
+        aria-hidden="true"
+        data-slot="app-sidebar-motion-edge"
         className={cn(
-          "flex h-16 items-center border-b shrink-0",
-          isSidebarOpen ? "px-4" : "px-2"
+          "pointer-events-none absolute inset-y-0 left-0 z-20 w-px bg-gradient-to-b from-transparent via-primary/55 to-transparent transition-transform duration-200 ease-out will-change-transform motion-reduce:transition-none",
+          isSidebarOpen
+            ? "translate-x-[calc(15rem-1px)]"
+            : "translate-x-[calc(4rem-1px)]",
+        )}
+      />
+      <div
+        className={cn(
+          "flex h-[76px] items-center border-b border-border/70 shrink-0",
+          isSidebarOpen ? "px-3" : "px-2"
         )}
       >
         <Button
@@ -205,11 +253,11 @@ export function Sidebar() {
           title={brandTitle}
           aria-label={brandTitle}
           className={cn(
-            "flex h-auto w-full items-center gap-2 overflow-hidden rounded-xl px-2 py-1.5 transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
+            "flex h-auto w-full items-center gap-2 overflow-hidden rounded-md border border-border/70 bg-background/65 px-2 py-2 transition-colors duration-200 hover:border-primary/25 hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
             isSidebarOpen ? "text-left" : "justify-center"
           )}
         >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary text-primary-foreground">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-primary/20 bg-white text-primary shadow-sm">
             {logoFailed ? (
               <span className="text-sm font-bold">CM</span>
             ) : (
@@ -222,25 +270,27 @@ export function Sidebar() {
             )}
           </div>
           {isSidebarOpen && (
-            <div className="flex flex-col overflow-hidden animate-in fade-in duration-300">
-              <span className="text-sm font-bold truncate">CodexManager</span>
-              <span className="text-xs text-muted-foreground truncate opacity-70">{t("账号池 · 用量管理")}</span>
+            <div className="flex flex-col overflow-hidden animate-in fade-in slide-in-from-left-1 duration-200 motion-reduce:animate-none">
+              <span className="truncate text-sm font-semibold text-foreground">CodexManager</span>
+              <span className="truncate font-mono text-[10px] uppercase text-primary/70">
+                Admin Console
+              </span>
             </div>
           )}
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-4">
+      <div className="flex-1 overflow-y-auto py-4 no-scrollbar">
         <nav className="px-2">
           {renderedItems}
         </nav>
       </div>
 
-      <div className="border-t p-2 shrink-0">
+      <div className="border-t border-border/70 p-2 shrink-0">
         <Button
           variant="ghost"
           size="icon"
-          className="w-full justify-start gap-3 px-3 h-10"
+          className="h-9 w-full justify-start gap-3 rounded-md border border-transparent px-3 text-muted-foreground hover:border-primary/20 hover:text-primary"
           title={toggleTitle}
           aria-label={toggleTitle}
           onClick={toggleSidebar}

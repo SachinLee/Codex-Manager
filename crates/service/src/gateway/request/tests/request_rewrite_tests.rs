@@ -1,5 +1,6 @@
 use super::{
-    apply_request_overrides, apply_request_overrides_with_forced_prompt_cache_key,
+    apply_request_overrides, apply_request_overrides_for_deferred_aggregate,
+    apply_request_overrides_with_forced_prompt_cache_key,
     apply_request_overrides_with_prompt_cache_key, apply_request_overrides_with_service_tier,
     apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope,
     apply_request_overrides_with_service_tier_and_prompt_cache_key_scope, compute_upstream_url,
@@ -236,7 +237,7 @@ fn chat_completions_uses_reasoning_effort_and_drops_non_official_keys() {
 fn chat_completions_accepts_responses_style_payload() {
     let body = json!({
         "model": "gpt-4.1",
-        "instructions": "act as reviewer",
+        "instructions": "  act as reviewer\n",
         "input": [
             {
                 "type": "message",
@@ -259,6 +260,14 @@ fn chat_completions_accepts_responses_style_payload() {
     let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
     assert!(value.get("instructions").is_none());
     assert!(value.get("input").is_none());
+    assert_eq!(
+        value
+            .get("messages")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("content"))
+            .and_then(serde_json::Value::as_str),
+        Some("  act as reviewer\n")
+    );
     assert_eq!(
         value
             .get("messages")
@@ -288,6 +297,29 @@ fn chat_completions_accepts_responses_style_payload() {
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+}
+
+#[test]
+fn chat_completions_preserves_responses_system_role_and_text() {
+    let body = json!({
+        "model": "gpt-4.1",
+        "input": [{
+            "type": "message",
+            "role": "system",
+            "content": "  client system\n"
+        }]
+    });
+    let out = apply_request_overrides(
+        "/v1/chat/completions",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        None,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["messages"][0]["role"], "system");
+    assert_eq!(value["messages"][0]["content"], "  client system\n");
 }
 
 /// 函数 `chat_completions_normalizes_responses_function_tools`
@@ -391,6 +423,44 @@ fn responses_overrides_model_and_reasoning_effort() {
         .is_some_and(|value| !value.trim().is_empty()));
 }
 
+#[test]
+fn responses_maps_client_ultra_to_upstream_max_without_an_api_key_override() {
+    let body = json!({
+        "model": "gpt-5.6-sol",
+        "reasoning": { "effort": "ultra" },
+        "input": "handle a complex task"
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        None,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["reasoning"]["effort"], "max");
+}
+
+#[test]
+fn chat_completions_maps_client_ultra_to_upstream_max() {
+    let body = json!({
+        "model": "gpt-5.6-terra",
+        "messages": [{ "role": "user", "content": "handle a complex task" }],
+        "reasoning_effort": "ultra"
+    });
+    let out = apply_request_overrides(
+        "/v1/chat/completions",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        None,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["reasoning_effort"], "max");
+}
+
 /// 函数 `responses_input_string_normalized_to_list`
 ///
 /// 作者: gaohongshun
@@ -466,7 +536,7 @@ fn responses_stream_and_store_are_forced_for_codex_backend() {
 }
 
 #[test]
-fn responses_default_path_preserves_native_codex_body_shape() {
+fn responses_default_path_only_adds_required_codex_instructions() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.3-codex",
@@ -495,9 +565,40 @@ fn responses_default_path_preserves_native_codex_body_shape() {
         value.get("store").and_then(serde_json::Value::as_bool),
         Some(true)
     );
-    assert!(value.get("instructions").is_none());
+    assert_eq!(
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("Follow the user's instructions.")
+    );
     assert!(value.get("tool_choice").is_none());
     assert!(value.get("parallel_tool_calls").is_none());
+    assert!(value.get("include").is_none());
+}
+
+#[test]
+fn responses_deferred_aggregate_skips_candidate_specific_codex_rules() {
+    let _guard = crate::test_env_guard();
+    let body = json!({
+        "model": "platform-model",
+        "input": "hello",
+        "stream": false
+    });
+    let out = apply_request_overrides_for_deferred_aggregate(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        Some("candidate-model"),
+        None,
+        None,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["model"], "candidate-model");
+    assert_eq!(value["input"], "hello");
+    assert_eq!(value["stream"], false);
+    assert!(value.get("instructions").is_none());
+    assert!(value.get("store").is_none());
+    assert!(value.get("tool_choice").is_none());
     assert!(value.get("include").is_none());
 }
 
@@ -689,7 +790,7 @@ fn responses_default_path_skips_request_rewrite_layer_prompt_cache_inference() {
 }
 
 #[test]
-fn responses_compat_scope_disabled_preserves_native_codex_body_shape() {
+fn responses_compat_scope_disabled_only_adds_required_codex_instructions() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.3-codex",
@@ -722,7 +823,12 @@ fn responses_compat_scope_disabled_preserves_native_codex_body_shape() {
         value.get("store").and_then(serde_json::Value::as_bool),
         Some(true)
     );
-    assert!(value.get("instructions").is_none());
+    assert_eq!(
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("Follow the user's instructions.")
+    );
     assert!(value.get("prompt_cache_key").is_none());
     assert!(value.get("stream_passthrough").is_none());
 }
@@ -827,7 +933,7 @@ fn responses_compat_scope_enabled_defaults_omitted_stream_to_upstream_sse() {
 }
 
 #[test]
-fn responses_forced_prompt_cache_scope_disabled_does_not_apply_compat_body_rewrite() {
+fn responses_disabled_compat_scope_only_applies_required_codex_instructions() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.3-codex",
@@ -861,7 +967,12 @@ fn responses_forced_prompt_cache_scope_disabled_does_not_apply_compat_body_rewri
             .and_then(serde_json::Value::as_str),
         Some("thread_123")
     );
-    assert!(value.get("instructions").is_none());
+    assert_eq!(
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("Follow the user's instructions.")
+    );
     assert!(value.get("tool_choice").is_none());
     assert!(value.get("include").is_none());
 }
@@ -874,7 +985,7 @@ fn responses_codex_backend_hoists_leading_developer_message_to_instructions() {
         "input": [
             {
                 "role": "developer",
-                "content": "You are OpenCode"
+                "content": "  You are OpenCode\n"
             },
             {
                 "role": "user",
@@ -897,7 +1008,7 @@ fn responses_codex_backend_hoists_leading_developer_message_to_instructions() {
         value
             .get("instructions")
             .and_then(serde_json::Value::as_str),
-        Some("You are OpenCode")
+        Some("  You are OpenCode\n")
     );
     let input = value
         .get("input")
@@ -991,7 +1102,7 @@ fn responses_codex_backend_preserves_existing_instructions() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.4",
-        "instructions": "Keep me",
+        "instructions": "  Keep me exactly\n",
         "input": [
             {
                 "role": "developer",
@@ -1017,7 +1128,7 @@ fn responses_codex_backend_preserves_existing_instructions() {
         value
             .get("instructions")
             .and_then(serde_json::Value::as_str),
-        Some("Keep me")
+        Some("  Keep me exactly\n")
     );
     let input = value
         .get("input")
@@ -1031,7 +1142,7 @@ fn responses_codex_backend_preserves_existing_instructions() {
 }
 
 #[test]
-fn responses_codex_backend_adds_default_instructions_when_missing() {
+fn responses_codex_backend_adds_minimal_instructions_when_missing() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.4",
@@ -1045,32 +1156,38 @@ fn responses_codex_backend_adds_default_instructions_when_missing() {
         Some("https://chatgpt.com/backend-api/codex"),
     );
     let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
-    assert!(value
-        .get("instructions")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty()));
+    assert_eq!(
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("Follow the user's instructions.")
+    );
 }
 
 #[test]
-fn responses_codex_backend_replaces_empty_instructions() {
+fn responses_codex_backend_replaces_null_or_blank_instructions_with_minimal_fallback() {
     let _guard = crate::test_env_guard();
-    let body = json!({
-        "model": "gpt-5.4",
-        "instructions": "",
-        "input": "hello"
-    });
-    let out = apply_codex_compat_request_overrides(
-        "/v1/responses",
-        serde_json::to_vec(&body).expect("serialize request body"),
-        None,
-        None,
-        Some("https://chatgpt.com/backend-api/codex"),
-    );
-    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
-    assert!(value
-        .get("instructions")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty()));
+    for instructions in [serde_json::Value::Null, json!(""), json!("  \n\t")] {
+        let body = json!({
+            "model": "gpt-5.4",
+            "instructions": instructions,
+            "input": "hello"
+        });
+        let out = apply_codex_compat_request_overrides(
+            "/v1/responses",
+            serde_json::to_vec(&body).expect("serialize request body"),
+            None,
+            None,
+            Some("https://chatgpt.com/backend-api/codex"),
+        );
+        let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+        assert_eq!(
+            value
+                .get("instructions")
+                .and_then(serde_json::Value::as_str),
+            Some("Follow the user's instructions.")
+        );
+    }
 }
 
 /// 函数 `responses_infers_prompt_cache_key_from_conversation_id_for_codex_backend`
@@ -2350,12 +2467,39 @@ fn responses_platform_key_bound_spark_model_keeps_original_slug() {
 }
 
 #[test]
-fn responses_compact_applies_compact_model_forward_rules() {
+fn responses_apply_global_model_forward_rules_for_plain_openai_base() {
     let _guard = crate::test_env_guard();
-    let original_rules = crate::gateway::current_compact_model_forward_rules();
-    let _ = crate::gateway::set_compact_model_forward_rules("");
-    crate::gateway::set_compact_model_forward_rules("gpt-5.4=gpt-5.4-openai-compact")
-        .expect("set compact model forward rules");
+    let original_rules = crate::gateway::current_model_forward_rules();
+    crate::gateway::set_model_forward_rules("spark*=gpt-5.4-mini")
+        .expect("set model forward rules");
+
+    let body = json!({
+        "model": "spark",
+        "input": "hello"
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://api.openai.com/v1"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(
+        value.get("model").and_then(serde_json::Value::as_str),
+        Some("gpt-5.4-mini")
+    );
+
+    let _ = crate::gateway::set_model_forward_rules(original_rules.as_str());
+}
+
+#[test]
+fn responses_compact_uses_global_model_forward_rules() {
+    let _guard = crate::test_env_guard();
+    let original_rules = crate::gateway::current_model_forward_rules();
+    crate::gateway::set_model_forward_rules("gpt-5.4=gpt-5.4-openai-compact")
+        .expect("set model forward rules");
 
     let body = json!({
         "model": "gpt-5.4",
@@ -2375,7 +2519,7 @@ fn responses_compact_applies_compact_model_forward_rules() {
         Some("gpt-5.4-openai-compact")
     );
 
-    let _ = crate::gateway::set_compact_model_forward_rules(original_rules.as_str());
+    let _ = crate::gateway::set_model_forward_rules(original_rules.as_str());
 }
 
 #[test]

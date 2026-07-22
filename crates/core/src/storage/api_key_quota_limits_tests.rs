@@ -12,7 +12,7 @@ fn collect_query_plan_details(storage: &Storage, sql: &str) -> Vec<String> {
 }
 
 #[test]
-fn api_key_total_usage_filters_each_stats_table_by_key_id() {
+fn api_key_total_usage_uses_raw_and_lifetime_rollups_only() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
     let sql = format!(
@@ -31,10 +31,10 @@ fn api_key_total_usage_filters_each_stats_table_by_key_id() {
         "expected raw stats key lookup index search in plan, got {details:?}"
     );
     assert!(
-        details
+        !details
             .iter()
-            .any(|detail| detail.contains("idx_request_token_stat_hourly_rollups_key_bucket")),
-        "expected hourly rollup key lookup index in plan, got {details:?}"
+            .any(|detail| { detail.contains("request_token_stat_hourly_rollups") }),
+        "lifetime usage must not also read hourly rollups, got {details:?}"
     );
     assert!(
         details
@@ -64,11 +64,10 @@ fn api_key_remaining_quota_usage_scopes_stats_to_limited_keys() {
         "expected limited-key raw usage lookup by key index, got {details:?}"
     );
     assert!(
-        details.iter().any(|detail| {
-            detail.contains("search h")
-                && detail.contains("idx_request_token_stat_hourly_rollups_key_bucket")
-        }),
-        "expected limited-key hourly usage lookup by key index, got {details:?}"
+        !details
+            .iter()
+            .any(|detail| detail.contains("request_token_stat_hourly_rollups")),
+        "limited-key lifetime usage must not also read hourly rollups, got {details:?}"
     );
     assert!(
         details.iter().any(|detail| {
@@ -98,12 +97,18 @@ fn api_key_quota_overview_stats_reads_key_and_usage_tables_directly() {
             .any(|detail| detail.contains("sqlite_autoindex_api_key_quota_limits_1")),
         "expected quota overview to join quota limits by primary key, got {details:?}"
     );
-    for alias in ["scan s", "scan h", "scan r"] {
+    for alias in ["scan s", "scan r"] {
         assert!(
             details.iter().any(|detail| detail.contains(alias)),
             "expected quota overview to aggregate token usage source {alias}, got {details:?}"
         );
     }
+    assert!(
+        !details
+            .iter()
+            .any(|detail| detail.contains("request_token_stat_hourly_rollups")),
+        "quota overview must not double count hourly and lifetime rollups, got {details:?}"
+    );
 }
 
 #[test]

@@ -59,7 +59,7 @@ function PagePanelFallback({ title }: { title: string }) {
     <div
       className={cn(
         "fixed inset-y-0 right-0 z-40 overflow-hidden bg-background/70",
-        isSidebarOpen ? "left-56" : "left-16",
+        isSidebarOpen ? "left-60" : "left-16",
       )}
     >
       <div className="relative flex h-full w-full items-start justify-center px-8 pt-[31vh]">
@@ -121,7 +121,11 @@ export function PageKeepAliveViewport({
   );
   const pruneShellTabs = useAppStore((state) => state.pruneShellTabs);
   const { isDesktopRuntime } = useRuntimeCapabilities();
-  const { data: session, isLoading: isSessionLoading } = useAppSession();
+  const {
+    data: session,
+    isLoading: isSessionLoading,
+    isSessionQueryEnabled,
+  } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
   const routeAccess = useMemo(
     () => ({ role, mode: session?.mode ?? null }),
@@ -148,10 +152,21 @@ export function PageKeepAliveViewport({
   }, [currentShellPath, routeAccess, t]);
 
   useEffect(() => {
-    if (isSessionLoading) return;
+    if (
+      !isDesktopRuntime &&
+      (!isSessionQueryEnabled || isSessionLoading)
+    ) {
+      return;
+    }
     const allowedPaths = getAllowedTopLevelRoutes(routeAccess).map((route) => route.path);
     pruneShellTabs(allowedPaths, getFirstAllowedTopLevelRoutePath(routeAccess));
-  }, [isSessionLoading, pruneShellTabs, routeAccess]);
+  }, [
+    isDesktopRuntime,
+    isSessionLoading,
+    isSessionQueryEnabled,
+    pruneShellTabs,
+    routeAccess,
+  ]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

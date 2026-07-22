@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_RUNTIME_UI_MESSAGES: MessageCatalog = {
+  "Plugin workspace": "Plugin workspace",
   打开: "Open",
   后刷新: " until refresh",
   本地服务已连接: "Local service connected",

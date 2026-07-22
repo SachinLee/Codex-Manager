@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { AlertCircle, Play, RefreshCw } from "lucide-react";
+import { AlertCircle, Cpu, Play, RefreshCw } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store/useAppStore";
@@ -111,16 +111,14 @@ export function startupAppSettingsTimeoutMs(runtimeMode?: string | null): number
  * 返回函数执行结果
  */
 export function AppBootstrap({ children }: { children: React.ReactNode }) {
-  const {
-    setServiceStatus,
-    setAppSettings,
-    setRuntimeCapabilities,
-    closeCodexCliGuide,
-    serviceStatus,
-    appSettings,
-    isCodexCliGuideOpen,
-    runtimeCapabilities,
-  } = useAppStore();
+  const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const appSettings = useAppStore((state) => state.appSettings);
+  const runtimeCapabilities = useAppStore((state) => state.runtimeCapabilities);
+  const isCodexCliGuideOpen = useAppStore((state) => state.isCodexCliGuideOpen);
+  const setServiceStatus = useAppStore((state) => state.setServiceStatus);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
+  const setRuntimeCapabilities = useAppStore((state) => state.setRuntimeCapabilities);
+  const closeCodexCliGuide = useAppStore((state) => state.closeCodexCliGuide);
   const { setTheme } = useTheme();
   const { t } = useI18n();
   const pathname = usePathname();
@@ -531,13 +529,19 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
       />
 
       {!isTrayPreview && (showLoading || showError) && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background">
-          <div className="flex w-full max-w-md flex-col items-center gap-6 rounded-xl glass-card p-10 shadow-sm animate-in fade-in zoom-in duration-500">
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/92 px-4">
+          <div className="mission-panel flex w-full max-w-md flex-col items-center gap-6 rounded-lg glass-card p-10 shadow-sm animate-in fade-in zoom-in duration-500">
             {showLoading ? (
               <>
-                <div className="h-14 w-14 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                <div className="relative flex h-16 w-16 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary shadow-sm">
+                  <span className="absolute inset-2 rounded-md border border-primary/15 bg-background/35" />
+                  <span className="absolute inset-x-3 bottom-3 h-1 overflow-hidden rounded-full bg-primary/15">
+                    <span className="block h-full w-2/3 rounded-full bg-primary/55 animate-pulse" />
+                  </span>
+                  <Cpu className="relative z-10 h-6 w-6" />
+                </div>
                 <div className="flex flex-col items-center gap-2">
-                  <h2 className="text-2xl font-bold tracking-tight">{t("正在准备环境")}</h2>
+                  <h2 className="font-mono text-2xl font-bold tracking-tight">{t("正在准备环境")}</h2>
                   <p className="px-4 text-center text-sm text-muted-foreground">
                     {t("正在同步本地配置，请稍候...")}
                   </p>
@@ -545,11 +549,11 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
               </>
             ) : (
               <>
-                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
+                <div className="flex h-16 w-16 items-center justify-center rounded-md border border-destructive/35 bg-destructive/10">
                   <AlertCircle className="h-8 w-8 text-destructive" />
                 </div>
                 <div className="flex flex-col items-center gap-2 text-center">
-                  <h2 className="text-xl font-bold tracking-tight text-destructive">
+                  <h2 className="font-mono text-xl font-bold tracking-tight text-destructive">
                     {isUnsupportedWebRuntime
                       ? t("当前 Web 运行方式不受支持")
                       : t("无法同步核心服务状态")}
@@ -561,12 +565,12 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
                       )}
                     </p>
                   ) : null}
-                  <p className="max-h-32 overflow-y-auto break-all rounded-lg bg-muted/50 p-3 font-mono text-[10px] text-muted-foreground">
+                  <p className="max-h-32 overflow-y-auto break-all rounded-md border border-border/60 bg-background/60 p-3 font-mono text-[10px] text-muted-foreground">
                     {error}
                   </p>
                 </div>
                 {showPortRecovery ? (
-                  <div className="w-full rounded-xl border border-border/70 bg-muted/30 p-3">
+                  <div className="mission-panel w-full rounded-lg border border-border/70 bg-muted/30 p-3">
                     <div className="mb-2 text-left text-sm font-medium">
                       {t("端口被占用，换一个端口重新启动")}
                     </div>

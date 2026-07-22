@@ -613,7 +613,10 @@ async fn async_main() {
 fn main() {
     codexmanager_service::portable::bootstrap_current_process();
     codexmanager_service::init_logging();
-    let _ = codexmanager_service::initialize_storage_if_needed();
+    if let Err(err) = codexmanager_service::initialize_storage_if_needed() {
+        eprintln!("database migration failed; refusing to start web service: {err}");
+        std::process::exit(1);
+    }
     codexmanager_service::sync_runtime_settings_from_storage();
 
     let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");

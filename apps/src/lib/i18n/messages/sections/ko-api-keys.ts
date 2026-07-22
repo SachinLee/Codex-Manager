@@ -1,11 +1,14 @@
 import type { MessageCatalog } from "../types";
 
 export const KO_API_KEYS_MESSAGES: MessageCatalog = {
+  "Gateway access": "게이트웨이 접근",
   项目: "프로젝트",
   "Token / 金额": "Token / 금액",
   已花费: "사용됨",
   不限额: "무제한",
   已达上限: "상한 도달",
+  管理员视图: "관리자 보기",
+  成员视图: "멤버 보기",
   "请选择平台 Key 归属成员": "platform key의 소속 구성원을 선택하세요",
   账号组筛选: "계정 그룹 필터",
   "额度分发开启时，平台 Key 必须归属到一个成员钱包。":

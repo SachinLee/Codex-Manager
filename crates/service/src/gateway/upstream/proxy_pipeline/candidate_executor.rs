@@ -1,13 +1,12 @@
 use bytes::Bytes;
-use codexmanager_core::storage::{Account, Storage, Token};
+use codexmanager_core::storage::{Account, Storage, Token, UsageSnapshotRecord};
+use std::collections::HashMap;
 use std::time::Instant;
 use tiny_http::Request;
 
 use super::super::attempt_flow::transport::UpstreamRequestContext;
 use super::super::executor::CandidateUpstreamDecision;
-use super::super::support::candidates::{
-    account_model_override, allow_openai_fallback_for_account, free_account_model_override,
-};
+use super::super::support::candidates::allow_openai_fallback_for_account_with_snapshot;
 use super::super::support::deadline;
 use super::candidate_attempt::{
     run_candidate_attempt, CandidateAttemptParams, CandidateAttemptTrace,
@@ -50,10 +49,35 @@ fn should_forward_thread_anchor_as_prompt_cache_key(protocol_type: &str) -> bool
     protocol_type != crate::apikey_profile::PROTOCOL_GEMINI_NATIVE
 }
 
+fn usage_snapshots_for_candidate_plans(
+    storage: &Storage,
+    candidates: &[(Account, Token)],
+) -> HashMap<String, UsageSnapshotRecord> {
+    let account_ids = candidates
+        .iter()
+        .filter(|(_, token)| crate::account_plan::resolve_token_account_plan(token).is_none())
+        .map(|(account, _)| account.id.clone())
+        .collect::<Vec<_>>();
+    if account_ids.is_empty() {
+        return HashMap::new();
+    }
+
+    match storage.latest_usage_snapshots_for_accounts(&account_ids) {
+        Ok(snapshots) => snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.account_id.clone(), snapshot))
+            .collect(),
+        Err(err) => {
+            log::warn!("gateway candidate usage snapshot prefetch failed: {err}");
+            HashMap::new()
+        }
+    }
+}
+
 pub(in super::super) enum CandidateExecutionResult {
     Handled,
     Exhausted {
-        request: Request,
+        request: Box<Request>,
         attempted_account_ids: Vec<String>,
         skipped_cooldown: usize,
         skipped_inflight: usize,
@@ -94,6 +118,26 @@ fn record_failover_attempt(
     super::super::super::record_gateway_failover_attempt();
     *last_attempt_url = attempt_trace.last_attempt_url.take();
     *last_attempt_error = attempt_trace.last_attempt_error.take();
+}
+
+fn prepare_next_account_candidate_client(
+    ordered_account_ids: &[String],
+    candidate_idx: usize,
+    trace_id: &str,
+) {
+    let Some(next_account_id) = ordered_account_ids.get(candidate_idx + 1) else {
+        return;
+    };
+    if let Err(err) =
+        super::super::super::prepare_upstream_client_for_account(next_account_id.as_str())
+    {
+        log::warn!(
+            "event=gateway_account_candidate_client_prepare_failed trace_id={} account_id={} err={}",
+            trace_id,
+            next_account_id,
+            err
+        );
+    }
 }
 
 fn is_challenge_failover_error(error: Option<&str>) -> bool {
@@ -210,11 +254,30 @@ pub(in super::super) fn execute_candidate_sequence(
     let mut last_attempt_url = None;
     let mut last_attempt_error = None;
     let mut force_strip_session_affinity_after_challenge = false;
+    let account_model_override = model_for_log
+        .and_then(|model| storage.get_enabled_model_v2(model).ok().flatten())
+        .and_then(|model| {
+            model
+                .routes
+                .into_iter()
+                .filter(|route| {
+                    route.enabled
+                        && route.source_kind == "account_pool"
+                        && route.source_id == "default"
+                })
+                .max_by_key(|route| route.priority)
+                .map(|route| route.upstream_model)
+        });
+    let usage_snapshots = usage_snapshots_for_candidate_plans(storage, &candidates);
+    let ordered_account_ids = candidates
+        .iter()
+        .map(|(account, _)| account.id.clone())
+        .collect::<Vec<_>>();
     'candidates: for (idx, (account, mut token)) in candidates.into_iter().enumerate() {
         if deadline::is_expired(request_deadline) {
             let request = request
                 .take()
-                .expect("request should be available before timeout response");
+                .ok_or_else(|| "request already consumed before timeout response".to_string())?;
             respond_total_timeout(
                 request,
                 context,
@@ -226,12 +289,6 @@ pub(in super::super) fn execute_candidate_sequence(
             return Ok(CandidateExecutionResult::Handled);
         }
 
-        // 是否是绑定账号（首位候选且会话绑定已命中），用于冷却跳过及网络重试决策
-        let is_bound_account = idx == 0
-            && setup
-                .conversation_routing
-                .as_ref()
-                .is_some_and(|r| r.binding_selected);
         let strip_session_affinity = force_strip_session_affinity_after_challenge
             || state.strip_session_affinity(&account, idx, setup.anthropic_has_thread_anchor);
         let attempt_thread = super::super::super::conversation_binding::resolve_attempt_thread(
@@ -247,11 +304,13 @@ pub(in super::super) fn execute_candidate_sequence(
                 )
             })
             .unwrap_or_else(|| incoming_headers.clone());
-        let attempt_model_override = account_model_override(storage, model_for_log, &account)
-            .or_else(|| free_account_model_override(storage, &account, &token));
-        let attempt_allow_openai_fallback =
-            allow_openai_fallback && allow_openai_fallback_for_account(storage, &account, &token);
-        let attempt_model_for_log = attempt_model_override.as_deref().or(model_for_log);
+        let attempt_model_override = account_model_override.as_deref();
+        let attempt_allow_openai_fallback = allow_openai_fallback
+            && allow_openai_fallback_for_account_with_snapshot(
+                &token,
+                usage_snapshots.get(account.id.as_str()),
+            );
+        let attempt_model_for_log = attempt_model_override.or(model_for_log);
         let attempt_prompt_cache_key =
             if should_forward_thread_anchor_as_prompt_cache_key(context.protocol_type()) {
                 attempt_thread
@@ -265,15 +324,14 @@ pub(in super::super) fn execute_candidate_sequence(
             body,
             strip_session_affinity,
             setup,
-            attempt_model_override.as_deref(),
+            attempt_model_override,
             attempt_prompt_cache_key,
         );
         let mut reasoning_guard_retry_budget_remaining =
             super::super::super::reasoning_guard_retry_attempts();
         let mut capacity_retry_budget_remaining = MAX_UPSTREAM_CAPACITY_RETRIES;
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
-        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, is_bound_account)
-        {
+        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx, false) {
             context.log_candidate_skip(&account.id, idx, skip_reason);
             match skip_reason {
                 super::super::support::candidates::CandidateSkipReason::Cooldown => {
@@ -285,6 +343,7 @@ pub(in super::super) fn execute_candidate_sequence(
             }
             continue;
         }
+        prepare_next_account_candidate_client(ordered_account_ids.as_slice(), idx, trace_id);
         attempted_account_ids.push(account.id.clone());
 
         let request_ref = request
@@ -318,7 +377,7 @@ pub(in super::super) fn execute_candidate_sequence(
 
         let mut inflight_guard = Some(super::super::super::acquire_account_inflight(&account.id));
         let mut attempt_trace = CandidateAttemptTrace::default();
-        let first_decision = run_candidate_attempt(CandidateAttemptParams {
+        let decision = run_candidate_attempt(CandidateAttemptParams {
             storage,
             method,
             request_ctx,
@@ -338,79 +397,6 @@ pub(in super::super) fn execute_candidate_sequence(
             setup,
             trace: &mut attempt_trace,
         });
-
-        // 对 bound 账号的网络错误，在切换账号前原地重试，以保留会话上下文。
-        // 'resolve 块：成功时 break 出新 decision，重试耗尽时 continue 外层循环。
-        const MAX_BOUND_NETWORK_RETRIES: u32 = 2;
-        let decision = 'resolve: {
-            if let CandidateUpstreamDecision::Failover = &first_decision {
-                let is_network_failover = is_bound_account
-                    && super::super::super::account_last_cooldown_reason(&account.id)
-                        == Some(super::super::super::CooldownReason::Network);
-                if is_network_failover {
-                    for retry in 0..MAX_BOUND_NETWORK_RETRIES {
-                        let can_wait =
-                            super::super::support::backoff::sleep_with_exponential_jitter(
-                                std::time::Duration::from_millis(300),
-                                std::time::Duration::from_secs(2),
-                                retry,
-                                request_deadline,
-                            );
-                        if !can_wait || deadline::is_expired(request_deadline) {
-                            break;
-                        }
-                        super::super::super::clear_account_cooldown(&account.id);
-                        let request_ref = request
-                            .as_ref()
-                            .ok_or_else(|| "request already consumed".to_string())?;
-                        let retry_ctx = UpstreamRequestContext::from_request(
-                            request_ref,
-                            context.protocol_type(),
-                        );
-                        let mut retry_trace = CandidateAttemptTrace::default();
-                        let retry_decision = run_candidate_attempt(CandidateAttemptParams {
-                            storage,
-                            method,
-                            request_ctx: retry_ctx,
-                            incoming_headers: &attempt_headers,
-                            body: &body_for_attempt,
-                            upstream_is_stream,
-                            path,
-                            request_deadline,
-                            account: &account,
-                            token: &mut token,
-                            strip_session_affinity,
-                            debug,
-                            allow_openai_fallback: attempt_allow_openai_fallback,
-                            disable_challenge_stateless_retry,
-                            has_more_candidates: context.has_more_candidates(idx),
-                            context,
-                            setup,
-                            trace: &mut retry_trace,
-                        });
-                        attempt_trace = retry_trace;
-                        match retry_decision {
-                            CandidateUpstreamDecision::Failover => {
-                                // 本次重试仍是网络错误，继续下一轮
-                            }
-                            other => {
-                                // 重试成功，重置网络连续失败计数
-                                super::super::super::reset_network_consecutive_failure(&account.id);
-                                break 'resolve other;
-                            }
-                        }
-                    }
-                    // 所有重试耗尽，正常 failover 到下一候选
-                    record_failover_attempt(
-                        &mut attempt_trace,
-                        &mut last_attempt_url,
-                        &mut last_attempt_error,
-                    );
-                    continue 'candidates;
-                }
-            }
-            first_decision
-        };
 
         match decision {
             CandidateUpstreamDecision::Failover => {
@@ -454,11 +440,11 @@ pub(in super::super) fn execute_candidate_sequence(
                     }
                     continue;
                 }
-                let response_request = request
-                    .take()
-                    .expect("request should be available before terminal response");
+                let request = request.take().ok_or_else(|| {
+                    "request already consumed before terminal response".to_string()
+                })?;
                 return respond_terminal_attempt(
-                    response_request,
+                    request,
                     context,
                     &account.id,
                     attempt_trace.last_attempt_url.as_deref(),
@@ -479,7 +465,7 @@ pub(in super::super) fn execute_candidate_sequence(
                         path,
                         body,
                         setup,
-                        attempt_model_override.as_deref(),
+                        attempt_model_override,
                         attempt_prompt_cache_key,
                     );
                     let retry_decision = run_candidate_attempt(CandidateAttemptParams {
@@ -519,20 +505,10 @@ pub(in super::super) fn execute_candidate_sequence(
                             status_code,
                             message,
                         } => {
-                            if should_failover_terminal_gateway_error(
-                                context,
-                                &account.id,
-                                context.has_more_candidates(idx),
-                                &message,
-                                &mut attempt_trace,
-                                &mut last_attempt_url,
-                                &mut last_attempt_error,
-                            ) {
-                                continue;
-                            }
-                            let request = request
-                                .take()
-                                .expect("request should be available before terminal response");
+                            let request = request.take().ok_or_else(|| {
+                                "request already consumed before retry terminal response"
+                                    .to_string()
+                            })?;
                             return respond_terminal_attempt(
                                 request,
                                 context,
@@ -549,12 +525,12 @@ pub(in super::super) fn execute_candidate_sequence(
                     }
                 }
                 'finalize_response: loop {
-                    let response_request = request
-                        .take()
-                        .expect("request should be available before terminal response");
-                    let guard = inflight_guard
-                        .take()
-                        .expect("inflight guard should be available before terminal response");
+                    let response_request = request.take().ok_or_else(|| {
+                        "request already consumed before upstream response".to_string()
+                    })?;
+                    let guard = inflight_guard.take().ok_or_else(|| {
+                        "inflight guard already consumed before upstream response".to_string()
+                    })?;
                     let response_status = resp.status().as_u16();
                     match finalize_upstream_response(
                         response_request,
@@ -627,12 +603,6 @@ pub(in super::super) fn execute_candidate_sequence(
                                     super::super::super::record_gateway_reasoning_guard_internal_retry(
                                         client_is_stream,
                                     );
-                                    log::warn!(
-                                        "event=gateway_reasoning_guard_internal_retry trace_id={} account_id={} remaining={}",
-                                        trace_id,
-                                        account.id,
-                                        reasoning_guard_retry_budget_remaining
-                                    );
                                 }
                                 RetrySameCandidateReason::UpstreamCapacity => {
                                     if capacity_retry_budget_remaining == 0 {
@@ -646,18 +616,13 @@ pub(in super::super) fn execute_candidate_sequence(
                                     capacity_retry_budget_remaining =
                                         capacity_retry_budget_remaining.saturating_sub(1);
                                     super::super::super::record_gateway_upstream_capacity_internal_retry();
-                                    log::warn!(
-                                        "event=gateway_upstream_capacity_internal_retry trace_id={} account_id={} remaining={}",
-                                        trace_id,
-                                        account.id,
-                                        capacity_retry_budget_remaining
-                                    );
                                 }
                             }
+
                             if deadline::is_expired(request_deadline) {
-                                let request = request
-                                    .take()
-                                    .expect("request should be available before timeout response");
+                                let request = request.take().ok_or_else(|| {
+                                    "request already consumed before timeout response".to_string()
+                                })?;
                                 respond_total_timeout(
                                     request,
                                     context,
@@ -668,9 +633,10 @@ pub(in super::super) fn execute_candidate_sequence(
                                 )?;
                                 return Ok(CandidateExecutionResult::Handled);
                             }
-                            let request_ref = request
-                                .as_ref()
-                                .ok_or_else(|| "request already consumed".to_string())?;
+
+                            let request_ref = request.as_ref().ok_or_else(|| {
+                                "request already consumed before retry attempt".to_string()
+                            })?;
                             let retry_ctx = UpstreamRequestContext::from_request(
                                 request_ref,
                                 context.protocol_type(),
@@ -728,9 +694,10 @@ pub(in super::super) fn execute_candidate_sequence(
                                     ) {
                                         continue 'candidates;
                                     }
-                                    let request = request.take().expect(
-                                        "request should be available before terminal response",
-                                    );
+                                    let request = request.take().ok_or_else(|| {
+                                        "request already consumed before retry terminal response"
+                                            .to_string()
+                                    })?;
                                     return respond_terminal_attempt(
                                         request,
                                         context,
@@ -753,8 +720,10 @@ pub(in super::super) fn execute_candidate_sequence(
     }
 
     Ok(CandidateExecutionResult::Exhausted {
-        request: request
-            .expect("request should still exist when no candidate handled the response"),
+        request: Box::new(
+            request
+                .ok_or_else(|| "request already consumed after candidate exhaustion".to_string())?,
+        ),
         attempted_account_ids,
         skipped_cooldown,
         skipped_inflight,
@@ -764,35 +733,5 @@ pub(in super::super) fn execute_candidate_sequence(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{is_challenge_failover_error, should_forward_thread_anchor_as_prompt_cache_key};
-
-    #[test]
-    fn gemini_native_does_not_forward_thread_anchor_as_prompt_cache_key() {
-        assert!(!should_forward_thread_anchor_as_prompt_cache_key(
-            crate::apikey_profile::PROTOCOL_GEMINI_NATIVE
-        ));
-    }
-
-    #[test]
-    fn non_gemini_protocols_keep_thread_anchor_forwarding() {
-        assert!(should_forward_thread_anchor_as_prompt_cache_key(
-            crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE
-        ));
-        assert!(should_forward_thread_anchor_as_prompt_cache_key(
-            crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
-        ));
-    }
-
-    #[test]
-    fn challenge_failover_error_detection_matches_cloudflare_markers() {
-        assert!(is_challenge_failover_error(Some(
-            "upstream challenge blocked"
-        )));
-        assert!(is_challenge_failover_error(Some(
-            "Cloudflare 安全验证页 [cf_ray=abc]"
-        )));
-        assert!(!is_challenge_failover_error(Some("upstream rate-limited")));
-        assert!(!is_challenge_failover_error(None));
-    }
-}
+#[path = "candidate_executor_tests.rs"]
+mod tests;

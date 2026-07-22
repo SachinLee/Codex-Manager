@@ -439,8 +439,8 @@ fn responses_input_to_anthropic_messages(
                 responses_input_item_to_anthropic(item, system_parts, messages)?;
             }
         }
-        Some(Value::Object(_)) => {
-            responses_input_item_to_anthropic(input.unwrap(), system_parts, messages)?;
+        Some(item @ Value::Object(_)) => {
+            responses_input_item_to_anthropic(item, system_parts, messages)?;
         }
         Some(_) | None => {}
     }
@@ -539,7 +539,7 @@ fn responses_message_content_to_anthropic(content: Option<&Value>) -> Result<Vec
             }
             Ok(out)
         }
-        Some(Value::Object(_)) => Ok(responses_content_part_to_anthropic(content.unwrap())?
+        Some(part @ Value::Object(_)) => Ok(responses_content_part_to_anthropic(part)?
             .map(|part| vec![part])
             .unwrap_or_default()),
         Some(other) => Ok(vec![anthropic_text_block(other.to_string().as_str())]),
@@ -771,7 +771,7 @@ fn anthropic_messages_to_input(
         let response_role = anthropic_message_role_to_responses(role);
         match message.get("content") {
             Some(Value::String(text)) => {
-                if let Some(text) = normalize_text(text) {
+                if let Some(text) = non_empty_text_verbatim(text) {
                     out.push(responses_message(
                         response_role,
                         json!([{ "type": "input_text", "text": text }]),
@@ -854,7 +854,7 @@ fn anthropic_message_content_to_responses(
     tool_name_restore_map: &mut ToolNameRestoreMap,
 ) -> Result<Option<Value>, String> {
     match content {
-        Some(Value::String(text)) => Ok(normalize_text(text).map(|text| {
+        Some(Value::String(text)) => Ok(non_empty_text_verbatim(text).map(|text| {
             Value::Array(vec![json!({
                 "type": text_content_type_for_role(role),
                 "text": text,
@@ -921,7 +921,7 @@ fn anthropic_content_block_to_responses(
         "text" | "input_text" => block
             .get("text")
             .and_then(Value::as_str)
-            .and_then(normalize_text)
+            .and_then(non_empty_text_verbatim)
             .map(|text| {
                 json!({
                     "type": text_content_type_for_role(role),
@@ -1179,7 +1179,7 @@ fn gemini_part_to_text(value: &Value) -> Option<String> {
     let part = value.as_object()?;
     part.get("text")
         .and_then(Value::as_str)
-        .and_then(normalize_text)
+        .and_then(non_empty_text_verbatim)
 }
 
 fn gemini_part_to_responses(
@@ -1193,7 +1193,7 @@ fn gemini_part_to_responses(
     if let Some(text) = part
         .get("text")
         .and_then(Value::as_str)
-        .and_then(normalize_text)
+        .and_then(non_empty_text_verbatim)
     {
         if part.get("thought").and_then(Value::as_bool) == Some(true) {
             let mut reasoning = Map::new();
@@ -1411,12 +1411,12 @@ fn normalize_text(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+fn non_empty_text_verbatim(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_string())
+}
+
 fn normalize_system_text(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() || value.starts_with("x-anthropic-billing-header: ") {
-        return None;
-    }
-    Some(value.to_string())
+    non_empty_text_verbatim(value)
 }
 
 fn text_content_type_for_role(role: &str) -> &'static str {

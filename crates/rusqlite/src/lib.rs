@@ -279,6 +279,7 @@ pub struct Rows<'stmt> {
 }
 
 impl Rows<'_> {
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<&Row<'_>>> {
         if self.index >= self.rows.len() {
             return Ok(None);
@@ -811,7 +812,11 @@ impl TransactionStatement<'_, '_> {
 
 pub mod backup {
     use super::{Connection, Result};
-    use std::fs;
+    use libsqlite3_sys::{
+        sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_remaining, sqlite3_backup_step,
+        sqlite3_errmsg, SQLITE_BUSY, SQLITE_DONE, SQLITE_LOCKED, SQLITE_OK,
+    };
+    use std::ffi::CStr;
     use std::time::Duration;
 
     pub struct Backup<'a, 'b> {
@@ -826,25 +831,123 @@ pub mod backup {
 
         pub fn run_to_completion(
             &self,
-            _pages_per_step: i32,
-            _sleep: Duration,
-            _progress: Option<fn(i32)>,
+            pages_per_step: i32,
+            sleep: Duration,
+            progress: Option<fn(i32)>,
         ) -> Result<()> {
-            let Some(source_path) = self.source.path() else {
-                return Err(super::Error::SqliteFailure(
-                    (),
-                    Some("source sqlite connection has no backing file".to_string()),
-                ));
-            };
-            let Some(target_path) = self.target.path() else {
-                return Err(super::Error::SqliteFailure(
-                    (),
-                    Some("target sqlite connection has no backing file".to_string()),
-                ));
-            };
-            self.source.execute_batch("PRAGMA wal_checkpoint(FULL);")?;
-            fs::copy(source_path, target_path)?;
-            Ok(())
+            let pages_per_step = pages_per_step.max(1);
+            self.source.block_on(async {
+                let mut source_connection = self.source.pool.acquire().await?;
+                let mut target_connection = self.target.pool.acquire().await?;
+                let mut source_handle = source_connection.lock_handle().await?;
+                let mut target_handle = target_connection.lock_handle().await?;
+                let source_ptr = source_handle.as_raw_handle().as_ptr();
+                let target_ptr = target_handle.as_raw_handle().as_ptr();
+                let main = b"main\0".as_ptr().cast();
+                let backup = unsafe { sqlite3_backup_init(target_ptr, main, source_ptr, main) };
+                if backup.is_null() {
+                    let message = unsafe { CStr::from_ptr(sqlite3_errmsg(target_ptr)) }
+                        .to_string_lossy()
+                        .into_owned();
+                    return Err(super::Error::SqliteFailure((), Some(message)));
+                }
+                let result = loop {
+                    let code = unsafe { sqlite3_backup_step(backup, pages_per_step) };
+                    if let Some(progress) = progress {
+                        progress(unsafe { sqlite3_backup_remaining(backup) });
+                    }
+                    match code {
+                        SQLITE_DONE => break Ok(()),
+                        SQLITE_OK => continue,
+                        SQLITE_BUSY | SQLITE_LOCKED => {
+                            if !sleep.is_zero() {
+                                std::thread::sleep(sleep);
+                            }
+                        }
+                        _ => {
+                            let message = unsafe { CStr::from_ptr(sqlite3_errmsg(target_ptr)) }
+                                .to_string_lossy()
+                                .into_owned();
+                            break Err(super::Error::SqliteFailure((), Some(message)));
+                        }
+                    }
+                };
+                let finish_code = unsafe { sqlite3_backup_finish(backup) };
+                if let Err(err) = result {
+                    return Err(err);
+                }
+                if finish_code != SQLITE_OK {
+                    let message = unsafe { CStr::from_ptr(sqlite3_errmsg(target_ptr)) }
+                        .to_string_lossy()
+                        .into_owned();
+                    return Err(super::Error::SqliteFailure((), Some(message)));
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        fn path(label: &str) -> std::path::PathBuf {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            std::env::temp_dir().join(format!(
+                "codexmanager-rusqlite-backup-{label}-{}-{nonce}.db",
+                std::process::id()
+            ))
+        }
+
+        #[test]
+        fn online_backup_captures_wal_state_and_replaces_target() {
+            let source_path = path("source");
+            let target_path = path("target");
+            let source = Connection::open(&source_path).expect("open source");
+            source
+                .execute_batch(
+                    "PRAGMA journal_mode=WAL;
+                     CREATE TABLE sample(id INTEGER PRIMARY KEY,value TEXT NOT NULL);
+                     INSERT INTO sample(value) VALUES('from-wal');",
+                )
+                .expect("write source");
+            let mut target = Connection::open(&target_path).expect("open target");
+            target
+                .execute_batch("CREATE TABLE stale(value TEXT); INSERT INTO stale VALUES('old');")
+                .expect("write stale target");
+            Backup::new(&source, &mut target)
+                .expect("create backup")
+                .run_to_completion(1, Duration::from_millis(1), None)
+                .expect("run online backup");
+            let value: String = target
+                .query_row("SELECT value FROM sample", [], |row| row.get(0))
+                .expect("read backed up row");
+            assert_eq!(value, "from-wal");
+            let stale_exists: i64 = target
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='stale'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("inspect target schema");
+            assert_eq!(stale_exists, 0);
+            drop(target);
+            drop(source);
+            for path in [
+                source_path.clone(),
+                source_path.with_extension("db-wal"),
+                source_path.with_extension("db-shm"),
+                target_path.clone(),
+                target_path.with_extension("db-wal"),
+                target_path.with_extension("db-shm"),
+            ] {
+                let _ = fs::remove_file(path);
+            }
         }
     }
 }

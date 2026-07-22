@@ -109,12 +109,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         validated.model_for_log.as_deref(),
         validated.reasoning_for_log.as_deref(),
         validated.request_log_session_id.as_deref(),
-        validated
-            .route_conversation_id
-            .as_deref()
-            .or(validated.local_conversation_id.as_deref())
-            .or(validated.incoming_headers.conversation_id())
-            .or(validated.incoming_headers.session_id()),
+        validated.local_conversation_id.as_deref(),
         &validated.storage,
     )? {
         Some(request) => request,
@@ -128,21 +123,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
     let request_method_for_count_tokens = validated.request_method.clone();
     let model_for_count_tokens = validated.model_for_log.clone();
     let reasoning_for_count_tokens = validated.reasoning_for_log.clone();
-    let session_id_for_count_tokens = validated.request_log_session_id.clone();
-    let conversation_anchor_for_count_tokens = validated
-        .route_conversation_id
-        .clone()
-        .or(validated.local_conversation_id.clone())
-        .or_else(|| {
-            validated
-                .incoming_headers
-                .conversation_id()
-                .map(str::to_string)
-        })
-        .or_else(|| validated.incoming_headers.session_id().map(str::to_string));
-    let request = if validated.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API
-        || validated.rotation_strategy == crate::apikey_profile::ROTATION_HYBRID
-    {
+    let request = if validated.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API {
         request
     } else {
         match super::maybe_respond_local_count_tokens(
@@ -157,8 +138,8 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
             validated.passthrough_body.as_ref(),
             model_for_count_tokens.as_deref(),
             reasoning_for_count_tokens.as_deref(),
-            session_id_for_count_tokens.as_deref(),
-            conversation_anchor_for_count_tokens.as_deref(),
+            validated.request_log_session_id.as_deref(),
+            validated.local_conversation_id.as_deref(),
             &validated.storage,
         )? {
             Some(request) => request,

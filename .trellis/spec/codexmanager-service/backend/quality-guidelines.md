@@ -325,3 +325,73 @@ state.entries.remove(api_id);
 state.entries.remove(api_id);
 clear_system_policy_action(PolicyTargetKind::AggregateApi, api_id);
 ```
+
+## Scenario: Gateway integration fixtures after Model Catalog V2
+
+### 1. Scope / Trigger
+
+- Trigger: changing a Gateway integration test that routes a model through an
+  account pool or Aggregate API.
+- Applies to `crates/service/tests/gateway_logs/**` and any test fixture that
+  combines legacy source mappings with runtime request execution.
+
+### 2. Signatures
+
+- V2 account route: `ModelRouteV2 { source_kind: "account_pool", source_id:
+  "default", upstream_model, .. }`.
+- V2 Aggregate API route: `ModelRouteV2 { source_kind: "aggregate_api",
+  source_id: aggregate_api_id, upstream_model, .. }`.
+- Test helpers: `seed_model_catalog_models` and `seed_model_catalog_route`.
+
+### 3. Contracts
+
+- The Gateway resolves runtime candidates and upstream model overrides only
+  from Model Catalog V2.
+- `openai_account` remains a legacy storage/migration representation and is
+  not a valid `model_routes.source_kind`; account-pool runtime routes always
+  use `account_pool/default`.
+- Legacy `ModelSourceMapping` records may remain in a fixture only when the
+  assertion explicitly covers compatibility. They must not be the sole route
+  required for a mocked upstream request to occur.
+
+### 4. Validation & Error Matrix
+
+- A route with `source_kind = "openai_account"` -> reject as an invalid V2
+  model route.
+- A fixture with only a legacy mapping -> the test does not represent the
+  production V2 runtime and must seed the matching V2 route.
+- An Aggregate API fixture without a V2 route for its id -> candidate is
+  unavailable, even if a legacy mapping exists.
+
+### 5. Good / Base / Bad Cases
+
+- Good: an account fixture seeds `account_pool/default` and separately keeps a
+  legacy mapping to assert that the client model is not overridden.
+- Base: a test only exercises migration compatibility and never invokes the
+  Gateway; it may use legacy records without a V2 route.
+- Bad: adding an `openai_account` V2 route merely to make an integration test
+  pass.
+
+### 6. Tests Required
+
+- Gateway tests that send a request must assert the mocked upstream receives
+  it after seeding the appropriate V2 route.
+- Aggregate API tests must seed each configured candidate id in the V2 model
+  catalog when failover order is part of the assertion.
+- Keep at least one compatibility test proving legacy mappings do not control
+  the Model Catalog V2 runtime path.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+seed_model_catalog_route(storage, model, "openai_account", account_id, upstream, 0);
+```
+
+#### Correct
+
+```rust
+seed_model_catalog_models(storage, &[model]); // seeds account_pool/default
+// Add ModelSourceMapping separately only for legacy compatibility assertions.
+```

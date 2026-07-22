@@ -1,4 +1,4 @@
-use codexmanager_core::storage::{Account, ConversationBinding, Token};
+use codexmanager_core::storage::{Account, ConversationBinding, Storage, Token};
 
 use super::super::super::IncomingHeaderSnapshot;
 use crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE;
@@ -32,6 +32,7 @@ pub(in super::super) struct UpstreamRequestSetup {
 /// # 返回
 /// 返回函数执行结果
 pub(in super::super) fn prepare_request_setup(
+    storage: &Storage,
     path: &str,
     protocol_type: &str,
     has_prompt_cache_key: bool,
@@ -61,6 +62,20 @@ pub(in super::super) fn prepare_request_setup(
             candidates,
             route_conversation_source,
         );
+    let account_binding_counts = if super::super::super::thread_aware_account_distribution_enabled()
+        && conversation_routing.as_ref().is_some_and(|routing| {
+            routing.existing_binding.is_none() && routing.source.allows_initial_binding_create()
+        }) {
+        match storage.active_conversation_binding_account_counts(platform_key_hash) {
+            Ok(counts) => Some(counts),
+            Err(err) => {
+                log::warn!("load conversation binding account counts failed: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let anthropic_has_thread_anchor = protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && (has_prompt_cache_key || conversation_routing.is_some());
     let rotation_plan = super::super::super::conversation_binding::apply_candidate_rotation(
@@ -68,6 +83,7 @@ pub(in super::super) fn prepare_request_setup(
         conversation_routing.as_ref(),
         key_id,
         model_for_log,
+        account_binding_counts.as_ref(),
     );
     let candidate_order = candidates
         .iter()

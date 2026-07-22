@@ -3,30 +3,27 @@ import {
   normalizeAccountList,
   normalizeAccountDailyUsageStats,
   normalizeAggregateApiBalanceRefreshResult,
-  normalizeAggregateApiCapabilityDiagnosticsResult,
   normalizeAggregateApiCreateResult,
+  normalizeAggregateApiCapabilityDiagnosticsResult,
   normalizeAggregateApiDailyUsageStats,
   normalizeAggregateApiReasoningGuardStats,
-  normalizeAggregateApiRuntimeStatus,
-  normalizeAggregateApiRuntimeStatusList,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
-  normalizeAggregateApiSupplierModel,
-  normalizeAggregateApiSupplierModelImportResult,
-  normalizeAggregateApiSupplierModelList,
   normalizeAggregateApiTestResult,
+  normalizeAggregateApiRuntimeStatus,
+  normalizeAggregateApiRuntimeStatusList,
   normalizeApiKeyCreateResult,
   normalizeApiKeyList,
   normalizeApiKeyUsageStats,
   normalizeLoginStartResult,
-  normalizeManagedModelCatalog,
-  normalizeManagedModelInfo,
-  normalizeManagedModelRouting,
-  normalizeModelCatalog,
   normalizeUsageAggregateSummary,
   normalizeUsageList,
   normalizeUsageSnapshot,
 } from "./normalize";
+import {
+  normalizeAggregateApiCapabilities,
+  normalizeAggregateApiCapabilityAttempts,
+} from "./aggregate-capabilities";
 import {
   readChatgptAuthTokensRefreshAllResult,
   readChatgptAuthTokensRefreshResult,
@@ -46,31 +43,22 @@ import {
   readApiKeySecret,
   readDeleteUnavailableFreeResult,
 } from "./account-maintenance";
-import { serializeManagedModelForRpc } from "./model-catalog";
 import { unwrapUsageSnapshotPayload } from "./usage-response";
-import {
-  normalizeAggregateApiCapabilities,
-  normalizeAggregateApiCapabilityAttempts,
-} from "./aggregate-capabilities";
 import {
   AccountListResult,
   AccountDailyUsageStat,
   AccountUsage,
   AggregateApi,
   AggregateApiBalanceRefreshResult,
+  AggregateApiCreateResult,
+  AggregateApiSecretResult,
+  AggregateApiTestResult,
   AggregateApiCapabilityDiagnosticsResult,
   AggregateApiCapabilitiesResult,
   AggregateApiCapabilityAttempt,
-  CapabilityRoutingMode,
-  GatewayCapabilityOverrideState,
-  AggregateApiCreateResult,
   AggregateApiDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
-  AggregateApiSecretResult,
-  AggregateApiSupplierModel,
-  AggregateApiSupplierModelImportResult,
-  AggregateApiTestResult,
   ApiKey,
   ApiKeyCreateResult,
   ApiKeyUsageStat,
@@ -79,14 +67,9 @@ import {
   CurrentAccessTokenAccountReadResult,
   LoginStatusResult,
   LoginStartResult,
-  ManagedModelCatalog,
-  ManagedModelInfo,
-  ManagedModelRouting,
-  ManagedModelSourceMapping,
-  ManagedModelSourceModel,
-  ModelCatalog,
-  ModelInfo,
   UsageAggregateSummary,
+  CapabilityRoutingMode,
+  GatewayCapabilityOverrideState,
 } from "../../types";
 
 export interface AccountExportPayload {
@@ -123,7 +106,6 @@ interface AccountUpdatePayload {
   label?: string | null;
   note?: string | null;
   tags?: string[] | string | null;
-  modelSlugs?: string[] | null;
   quotaCapacityPrimaryWindowTokens?: number | null;
   quotaCapacitySecondaryWindowTokens?: number | null;
 }
@@ -152,89 +134,6 @@ interface ApiKeyPayload {
   customKey?: string | null;
 }
 
-export interface ManagedModelPayload {
-  previousSlug?: string | null;
-  sourceKind?: string | null;
-  userEdited?: boolean | null;
-  sortIndex?: number | null;
-  model: ManagedModelInfo | ModelInfo;
-}
-
-export interface ManagedModelSourceSyncPayload {
-  sourceKind: string;
-  sourceId?: string | null;
-}
-
-export interface ManagedModelSourceModelPayload {
-  sourceKind: string;
-  sourceId: string;
-  upstreamModel: string;
-  displayName?: string | null;
-}
-
-export interface ManagedModelSourceMappingPayload {
-  id?: string | null;
-  platformModelSlug: string;
-  sourceKind: string;
-  sourceId: string;
-  upstreamModel: string;
-  enabled?: boolean | null;
-  priority?: number | null;
-  weight?: number | null;
-  billingModelSlug?: string | null;
-}
-
-export interface ModelPriceRuleEntry {
-  id: string;
-  provider: string;
-  modelPattern: string;
-  matchType: string;
-  billingMode: string;
-  inputPricePer1m: number | null;
-  cachedInputPricePer1m: number | null;
-  cacheWritePricePer1m: number | null;
-  outputPricePer1m: number | null;
-  longContextThresholdTokens: number | null;
-  longContextThresholdInclusive: boolean;
-  longContextInputPricePer1m: number | null;
-  longContextCachedInputPricePer1m: number | null;
-  longContextCacheWritePricePer1m: number | null;
-  longContextOutputPricePer1m: number | null;
-  enabled: boolean;
-  priority: number;
-  source: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface ModelPriceRuleUpsertPayload {
-  id?: string | null;
-  provider?: string | null;
-  modelPattern: string;
-  matchType?: string | null;
-  billingMode?: string | null;
-  inputPricePer1m?: number | null;
-  cachedInputPricePer1m?: number | null;
-  cacheWritePricePer1m?: number | null;
-  outputPricePer1m?: number | null;
-  longContextThresholdTokens?: number | null;
-  longContextThresholdInclusive?: boolean | null;
-  longContextInputPricePer1m?: number | null;
-  longContextCachedInputPricePer1m?: number | null;
-  longContextCacheWritePricePer1m?: number | null;
-  longContextOutputPricePer1m?: number | null;
-  enabled?: boolean | null;
-  priority?: number | null;
-}
-
-export interface AggregateApiSupplierModelPayload {
-  supplierKey: string;
-  providerType: string;
-  upstreamModel: string;
-  displayName?: string | null;
-  status?: string | null;
-}
-
 interface AggregateApiPayload {
   providerType?: string | null;
   supplierName?: string | null;
@@ -259,7 +158,6 @@ interface AggregateApiPayload {
   balanceQueryAccessToken?: string | null;
   balanceQueryUserId?: string | null;
   balanceQueryConfigJson?: string | null;
-  modelSlugs?: string[] | null;
 }
 
 const MAX_IMPORT_RPC_BODY_BYTES = 4 * 1024 * 1024;
@@ -481,11 +379,6 @@ export const accountClient = {
               .filter(Boolean)
               .join(",")
           : params.tags ?? null,
-        modelSlugs: Array.isArray(params.modelSlugs)
-          ? params.modelSlugs
-              .map((item) => String(item || "").trim())
-              .filter(Boolean)
-          : null,
         quotaCapacityPrimaryWindowTokens:
           typeof params.quotaCapacityPrimaryWindowTokens === "number"
             ? params.quotaCapacityPrimaryWindowTokens
@@ -670,16 +563,14 @@ export const accountClient = {
   async listAggregateApiRuntimeStatuses(): Promise<AggregateApiRuntimeStatus[]> {
     const result = await invoke<unknown>(
       "service_aggregate_api_runtime_status_list",
-      withAddr(),
+      withAddr()
     );
     return normalizeAggregateApiRuntimeStatusList(result);
   },
-  async resetAggregateApiRuntimeStatus(
-    apiId: string,
-  ): Promise<AggregateApiRuntimeStatus> {
+  async resetAggregateApiRuntimeStatus(apiId: string): Promise<AggregateApiRuntimeStatus> {
     const result = await invoke<unknown>(
       "service_aggregate_api_runtime_status_reset",
-      withAddr({ id: apiId }),
+      withAddr({ id: apiId })
     );
     const status = normalizeAggregateApiRuntimeStatus(result);
     if (!status) throw new Error("Aggregate API runtime status reset returned no result");
@@ -734,7 +625,6 @@ export const accountClient = {
           typeof params.balanceQueryConfigJson === "string"
             ? params.balanceQueryConfigJson
             : null,
-        modelSlugs: Array.isArray(params.modelSlugs) ? params.modelSlugs : null,
       })
     );
     return normalizeAggregateApiCreateResult(result);
@@ -774,7 +664,7 @@ export const accountClient = {
         clearDailySpendLimitUsd:
           typeof params.clearDailySpendLimitUsd === "boolean"
             ? params.clearDailySpendLimitUsd
-            : null,
+            : undefined,
         username: params.username || null,
         password: params.password || null,
         balanceQueryEnabled:
@@ -795,7 +685,6 @@ export const accountClient = {
           typeof params.balanceQueryConfigJson === "string"
             ? params.balanceQueryConfigJson
             : null,
-        modelSlugs: Array.isArray(params.modelSlugs) ? params.modelSlugs : null,
       })
     ),
   deleteAggregateApi: (apiId: string) =>
@@ -816,18 +705,18 @@ export const accountClient = {
   },
   async diagnoseAggregateApiCapabilities(
     apiId: string,
-    options?: { liveSmoke?: boolean },
+    options?: { liveSmoke?: boolean }
   ): Promise<AggregateApiCapabilityDiagnosticsResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_diagnose_capabilities",
-      withAddr({ id: apiId, liveSmoke: options?.liveSmoke ?? false }),
+      withAddr({ id: apiId, liveSmoke: options?.liveSmoke ?? false })
     );
     return normalizeAggregateApiCapabilityDiagnosticsResult(result);
   },
   async getAggregateApiCapabilities(apiId: string): Promise<AggregateApiCapabilitiesResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_capabilities_get",
-      withAddr({ id: apiId }),
+      withAddr({ id: apiId })
     );
     return normalizeAggregateApiCapabilities(result);
   },
@@ -846,7 +735,7 @@ export const accountClient = {
         protocol: params.protocol,
         capabilityKey: params.capabilityKey,
         state: params.state,
-      }),
+      })
     );
     return normalizeAggregateApiCapabilities(result);
   },
@@ -858,12 +747,7 @@ export const accountClient = {
   }): Promise<AggregateApiCapabilitiesResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_capabilities_reset_override",
-      withAddr({
-        id: params.apiId,
-        upstreamModelPattern: params.upstreamModelPattern,
-        protocol: params.protocol,
-        capabilityKey: params.capabilityKey,
-      }),
+      withAddr({ id: params.apiId, ...params })
     );
     return normalizeAggregateApiCapabilities(result);
   },
@@ -875,34 +759,30 @@ export const accountClient = {
   }): Promise<AggregateApiCapabilitiesResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_capabilities_clear_observation",
-      withAddr({
-        id: params.apiId,
-        upstreamModelPattern: params.upstreamModelPattern,
-        protocol: params.protocol,
-        capabilityKey: params.capabilityKey,
-      }),
+      withAddr({ id: params.apiId, ...params })
     );
     return normalizeAggregateApiCapabilities(result);
   },
   async listAggregateApiCapabilityAttempts(
     apiId: string,
-    limit = 20,
+    limit = 20
   ): Promise<AggregateApiCapabilityAttempt[]> {
     const result = await invoke<unknown>(
       "service_aggregate_api_capabilities_list_recent_attempts",
-      withAddr({ id: apiId, limit }),
+      withAddr({ id: apiId, limit })
     );
     return normalizeAggregateApiCapabilityAttempts(result);
   },
   async setAggregateApiCapabilityRoutingMode(
-    routingMode: CapabilityRoutingMode,
+    routingMode: CapabilityRoutingMode
   ): Promise<CapabilityRoutingMode> {
-    const result = await invoke<unknown>(
+    const result = await invoke<{ routingMode?: unknown }>(
       "service_aggregate_api_capabilities_set_mode",
-      withAddr({ routingMode }),
+      withAddr({ routingMode })
     );
-    const value = (result as { routingMode?: unknown })?.routingMode;
-    return value === "off" || value === "observe" ? value : "enforce";
+    return result.routingMode === "off" || result.routingMode === "observe"
+      ? result.routingMode
+      : "enforce";
   },
   async listAggregateApiDailyUsageStats(params?: {
     dayStartTs?: number;
@@ -931,59 +811,6 @@ export const accountClient = {
     );
     return normalizeAggregateApiBalanceRefreshResult(result);
   },
-  async listAggregateApiSupplierModels(params?: {
-    supplierKey?: string | null;
-    providerType?: string | null;
-  }): Promise<AggregateApiSupplierModel[]> {
-    const result = await invoke<unknown>(
-      "service_aggregate_api_supplier_models_list",
-      withAddr({
-        supplierKey: params?.supplierKey || null,
-        providerType: params?.providerType || null,
-      })
-    );
-    return normalizeAggregateApiSupplierModelList(result);
-  },
-  async saveAggregateApiSupplierModel(
-    params: AggregateApiSupplierModelPayload,
-  ): Promise<AggregateApiSupplierModel> {
-    const result = await invoke<unknown>(
-      "service_aggregate_api_supplier_model_save",
-      withAddr({ payload: params }),
-    );
-    const item = normalizeAggregateApiSupplierModel(result);
-    if (!item) throw new Error("供应商模型保存结果为空");
-    return item;
-  },
-  deleteAggregateApiSupplierModel: (params: {
-    supplierKey: string;
-    providerType: string;
-    upstreamModel: string;
-  }) =>
-    invoke(
-      "service_aggregate_api_supplier_model_delete",
-      withAddr({
-        supplierKey: params.supplierKey,
-        providerType: params.providerType,
-        upstreamModel: params.upstreamModel,
-      }),
-    ),
-  async importAggregateApiSupplierModels(params: {
-    apiId: string;
-    supplierKey?: string | null;
-    providerType?: string | null;
-  }): Promise<AggregateApiSupplierModelImportResult> {
-    const result = await invoke<unknown>(
-      "service_aggregate_api_supplier_models_import",
-      withAddr({
-        apiId: params.apiId,
-        supplierKey: params.supplierKey || null,
-        providerType: params.providerType || null,
-      }),
-    );
-    return normalizeAggregateApiSupplierModelImportResult(result);
-  },
-
   async listApiKeys(): Promise<ApiKey[]> {
     const result = await invoke<unknown>("service_apikey_list", withAddr());
     return normalizeApiKeyList(result);
@@ -1031,120 +858,12 @@ export const accountClient = {
     if ("quotaLimitTokens" in params) {
       payload.quotaLimitTokens = params.quotaLimitTokens ?? null;
     }
-    payload.hasQuotaLimitTokens = "quotaLimitTokens" in params;
     return invoke("service_apikey_update_model", withAddr(payload));
   },
   disableApiKey: (keyId: string) =>
     invoke("service_apikey_disable", withAddr({ keyId })),
   enableApiKey: (keyId: string) =>
     invoke("service_apikey_enable", withAddr({ keyId })),
-  async listModels(refreshRemote?: boolean): Promise<ModelCatalog> {
-    const result = await invoke<unknown>(
-      "service_apikey_models",
-      withAddr({ refreshRemote })
-    );
-    return normalizeModelCatalog(result);
-  },
-  async listManagedModels(refreshRemote?: boolean): Promise<ManagedModelCatalog> {
-    const result = await invoke<unknown>(
-      "service_model_catalog_list",
-      withAddr({ refreshRemote })
-    );
-    return normalizeManagedModelCatalog(result);
-  },
-  async listManagedModelRouting(): Promise<ManagedModelRouting> {
-    const result = await invoke<unknown>("service_model_routing", withAddr());
-    return normalizeManagedModelRouting(result);
-  },
-  async syncManagedModelSourceModels(
-    params: ManagedModelSourceSyncPayload,
-  ): Promise<ManagedModelRouting> {
-    const result = await invoke<unknown>(
-      "service_model_source_sync",
-      withAddr({ payload: params }),
-    );
-    return normalizeManagedModelRouting(result);
-  },
-  async saveManagedModelSourceModel(
-    params: ManagedModelSourceModelPayload,
-  ): Promise<ManagedModelSourceModel> {
-    const result = await invoke<unknown>(
-      "service_model_source_model_save",
-      withAddr({ payload: params }),
-    );
-    const routing = normalizeManagedModelRouting({ sourceModels: [result], mappings: [] });
-    const item = routing.sourceModels[0];
-    if (!item) throw new Error("来源模型保存结果为空");
-    return item;
-  },
-  async saveManagedModelSourceMapping(
-    params: ManagedModelSourceMappingPayload,
-  ): Promise<ManagedModelSourceMapping> {
-    const result = await invoke<unknown>(
-      "service_model_source_mapping_save",
-      withAddr({ payload: params }),
-    );
-    const routing = normalizeManagedModelRouting({ sourceModels: [], mappings: [result] });
-    const item = routing.mappings[0];
-    if (!item) throw new Error("模型映射保存结果为空");
-    return item;
-  },
-  deleteManagedModelSourceMapping: (params: {
-    id: string;
-    sourceKind: string;
-    sourceId: string;
-    upstreamModel: string;
-  }) =>
-    invoke("service_model_source_mapping_delete", withAddr({ payload: params })),
-  async saveManagedModel(params: ManagedModelPayload): Promise<ManagedModelInfo> {
-    const payload = {
-      previousSlug: params.previousSlug || null,
-      sourceKind: params.sourceKind || null,
-      userEdited:
-        typeof params.userEdited === "boolean" ? params.userEdited : null,
-      sortIndex: typeof params.sortIndex === "number" ? params.sortIndex : null,
-      ...serializeManagedModelForRpc(params.model),
-    };
-    const result = await invoke<unknown>(
-      "service_model_catalog_save",
-      withAddr({ payload })
-    );
-    const normalized = normalizeManagedModelInfo(result);
-    if (!normalized) {
-      throw new Error("模型保存结果为空");
-    }
-    return normalized;
-  },
-  deleteManagedModel: (slug: string) =>
-    invoke("service_model_catalog_delete", withAddr({ slug })),
-  listModelPriceRules: async () => {
-    const result = await invoke<{ items: ModelPriceRuleEntry[] }>(
-      "service_model_price_rules_list",
-      withAddr(),
-    );
-    return result.items;
-  },
-  readModelPriceRule: async (modelPattern: string, billingMode?: string | null) => {
-    const result = await invoke<ModelPriceRuleEntry | null>(
-      "service_model_price_rule_read",
-      withAddr({ modelPattern, billingMode }),
-    );
-    return result;
-  },
-  upsertModelPriceRule: async (payload: ModelPriceRuleUpsertPayload) => {
-    const result = await invoke<ModelPriceRuleEntry>(
-      "service_model_price_rule_upsert",
-      withAddr({ payload }),
-    );
-    return result;
-  },
-  async pruneStaleRemoteManagedModels(): Promise<ManagedModelCatalog> {
-    const result = await invoke<unknown>(
-      "service_model_catalog_prune_stale_remote",
-      withAddr()
-    );
-    return normalizeManagedModelCatalog(result);
-  },
   async readApiKeySecret(keyId: string): Promise<string> {
     const result = await invoke<unknown>(
       "service_apikey_read_secret",

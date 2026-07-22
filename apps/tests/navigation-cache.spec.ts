@@ -128,7 +128,7 @@ test.beforeEach(async ({ page }) => {
 
 test("revisiting visited routes stays responsive after idle time", async ({ page }) => {
   const aggregateHeader = page
-    .getByRole("columnheader", { name: "供应商 / URL" })
+    .getByRole("columnheader", { name: "模型路由" })
     .last();
   const settingsSectionTitle = page.getByText("基础设置", { exact: true }).last();
 

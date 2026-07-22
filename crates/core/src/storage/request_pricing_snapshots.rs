@@ -90,7 +90,11 @@ impl Storage {
              JOIN request_logs r ON r.id = p.request_log_id
              WHERE r.trace_id IN ({placeholders})"
         );
-        let params = trace_ids.iter().cloned().map(Value::Text).collect::<Vec<_>>();
+        let params = trace_ids
+            .iter()
+            .cloned()
+            .map(Value::Text)
+            .collect::<Vec<_>>();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
             Ok((
@@ -174,11 +178,7 @@ impl Storage {
             "local_estimated_cost_usd",
             "REAL",
         )?;
-        self.ensure_column(
-            "request_pricing_snapshots",
-            "pricing_variance_usd",
-            "REAL",
-        )?;
+        self.ensure_column("request_pricing_snapshots", "pricing_variance_usd", "REAL")?;
         Ok(())
     }
 }

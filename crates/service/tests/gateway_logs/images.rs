@@ -69,6 +69,11 @@ fn aggregate_api_body_too_large_does_not_retry_or_failover() {
         storage
             .upsert_aggregate_api_secret(id, "upstream-secret")
             .expect("insert aggregate secret");
+        // The runtime resolves aggregate candidates from model catalog V2.
+        // Keep the fixture aligned with that production-only routing source;
+        // the legacy source records below continue to cover their own storage
+        // compatibility behavior.
+        seed_model_catalog_route(&storage, "gpt-5.5", "aggregate_api", id, "gpt-5.5", sort);
         storage
             .upsert_model_source_model(&ModelSourceModel {
                 source_kind: "aggregate_api".to_string(),
@@ -214,6 +219,14 @@ fn aggregate_api_optional_image_capability_retries_once_without_the_tool() {
     storage
         .upsert_aggregate_api_secret(aggregate_id, "upstream-secret")
         .expect("insert aggregate secret");
+    seed_model_catalog_route(
+        &storage,
+        "grok-4.5",
+        "aggregate_api",
+        aggregate_id,
+        "grok-4.5",
+        0,
+    );
     storage
         .upsert_model_source_model(&ModelSourceModel {
             source_kind: "aggregate_api".to_string(),
@@ -296,10 +309,10 @@ fn aggregate_api_optional_image_capability_retries_once_without_the_tool() {
         .recv_timeout(Duration::from_secs(3))
         .expect("receive downgraded retry");
     upstream_join.join().expect("join mock upstream");
-    let first_body: serde_json::Value = serde_json::from_slice(&decode_upstream_request_body(&first))
-        .expect("native body json");
-    let second_body: serde_json::Value = serde_json::from_slice(&decode_upstream_request_body(&second))
-        .expect("retry body json");
+    let first_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&first)).expect("native body json");
+    let second_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&second)).expect("retry body json");
     assert_eq!(first_body["tools"][0]["type"], "image_generation");
     assert_eq!(second_body["tools"].as_array().map(Vec::len), Some(0));
 
@@ -359,7 +372,8 @@ fn gateway_images_generation_wraps_codex_sse_as_openai_images_json() {
 
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.4-mini", "gpt-5.4"]);
+    let _rules_guard = GatewayModelForwardRulesResetGuard::reset();
+    seed_model_catalog_models(&storage, &["gpt-5.4-mini", "gpt-5.4", "gpt-image-2"]);
     let now = now_ts();
     storage
         .insert_account(&Account {
@@ -487,6 +501,7 @@ fn native_codex_responses_auto_injects_image_generation_tool() {
 
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
+    let _rules_guard = GatewayModelForwardRulesResetGuard::reset();
     seed_model_catalog_models(&storage, &["gpt-5.4-mini", "gpt-5.4"]);
     let now = now_ts();
     storage
@@ -626,6 +641,7 @@ fn native_codex_image_generation_responses_request_passthroughs_tool_and_sse() {
 
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
+    let _rules_guard = GatewayModelForwardRulesResetGuard::reset();
     seed_model_catalog_models(&storage, &["gpt-5.4-mini", "gpt-5.4"]);
     let now = now_ts();
     storage

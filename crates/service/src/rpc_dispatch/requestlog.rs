@@ -2,12 +2,12 @@ use codexmanager_core::rpc::types::{
     DailyUsageStatsParams, JsonRpcRequest, JsonRpcResponse, RequestLogListParams,
 };
 
-use crate::RpcActor;
 use crate::{
     requestlog_account_daily_usage, requestlog_aggregate_api_daily_usage,
     requestlog_aggregate_api_reasoning_guard, requestlog_clear, requestlog_list,
     requestlog_summary, requestlog_today_summary,
 };
+use crate::{storage_helpers, RpcActor};
 
 fn actor_key_ids(actor: &RpcActor) -> Result<Vec<String>, String> {
     if actor.is_admin() {
@@ -48,6 +48,38 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 } else {
                     let key_ids = actor_key_ids(actor)?;
                     requestlog_list::read_request_log_page_for_key_ids(params, &key_ids)
+                }
+            }))
+        }
+        "requestlog/list_with_summary" => {
+            let params = req
+                .params
+                .clone()
+                .map(serde_json::from_value::<RequestLogListParams>)
+                .transpose()
+                .map(|params| params.unwrap_or_default())
+                .map(RequestLogListParams::normalized)
+                .map_err(|err| format!("invalid requestlog/list_with_summary params: {err}"));
+            super::value_or_error(params.and_then(|params| {
+                let storage = storage_helpers::open_storage()
+                    .ok_or_else(|| "open storage failed".to_string())?;
+                if actor.is_admin() {
+                    let page = requestlog_list::read_request_log_page_with_storage(&storage, params.clone())?;
+                    let summary = requestlog_summary::read_request_log_filter_summary_with_storage(
+                        &storage, params,
+                    )?;
+                    Ok(requestlog_list::request_log_list_with_summary_result(page, summary))
+                } else {
+                    let key_ids = actor_key_ids(actor)?;
+                    let page = requestlog_list::read_request_log_page_for_key_ids_with_storage(
+                        &storage,
+                        params.clone(),
+                        &key_ids,
+                    )?;
+                    let summary = requestlog_summary::read_request_log_filter_summary_for_key_ids_with_storage(
+                        &storage, params, &key_ids,
+                    )?;
+                    Ok(requestlog_list::request_log_list_with_summary_result(page, summary))
                 }
             }))
         }

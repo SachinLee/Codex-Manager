@@ -3,6 +3,7 @@
 import type { MessageCatalog } from "../types";
 
 export const KO_ACCOUNT_MANAGER_MESSAGES: MessageCatalog = {
+  "Access control": "접근 제어",
   "Key 消耗明细": "Key 사용 내역",
   "Token 消耗曲线": "토큰 사용 추이",
   不修改则留空: "변경하지 않으려면 비워 두세요",
@@ -22,6 +23,7 @@ export const KO_ACCOUNT_MANAGER_MESSAGES: MessageCatalog = {
   可用额度: "사용 가능 한도",
   可用额度已更新: "사용 가능 한도가 업데이트되었습니다",
   可选: "선택 사항",
+  "共 {count} 个账号": "계정 {count}개",
   "填写后会替换该账号的登录密码，至少 8 位。":
     "입력하면 이 계정의 로그인 비밀번호가 교체됩니다. 최소 8자 이상이어야 합니다.",
   已开启: "켜짐",

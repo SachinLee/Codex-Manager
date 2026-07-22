@@ -7,11 +7,28 @@
 <p align="center">本地桌面端 + 服务进程的 Codex 账号管理器+网关转发</p>
 
 <p align="center">
-  <a href="docs/en/README.md">English</a>|
-  <a href="docs/ru/README.md">Русский</a>|
-  <a href="docs/ko/README.md">한국어</a>|
-  <a href="https://github.com/qxcnm/Codex-Manager">GitHub 主仓库</a>|
-  <a href="https://qxnm.top">官网</a>|
+  <a href="docs/en/README.md">English</a>
+  ·
+  <a href="docs/ru/README.md">Русский</a>
+  ·
+  <a href="docs/ko/README.md">한국어</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/qxcnm/Codex-Manager">
+    <img alt="GitHub 仓库" src="https://img.shields.io/badge/GitHub-%E4%BB%93%E5%BA%93-181717?logo=github&logoColor=white" />
+  </a>
+  <a href="https://atomgit.com/qxnm/Codex-Manager">
+    <img alt="AtomGit 仓库" src="https://img.shields.io/badge/AtomGit-%E4%BB%93%E5%BA%93-DA203E" />
+  </a>
+  <a href="https://gitee.com/hongshungao/Codex-Manager">
+    <img alt="Gitee 仓库" src="https://img.shields.io/badge/Gitee-%E4%BB%93%E5%BA%93-C71D23?logo=gitee&logoColor=C71D23" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://qxnm.top">官网</a>
+  ·
   <a href="#赞助商">赞助商</a>
 </p>
 
@@ -63,16 +80,6 @@
   </tr>
   <tr>
     <td align="center" valign="middle" width="180">
-      <a href="https://apikey.fun/register?aff=Codex-Manager">
-        <img src="assets/images/sponsors/APIKey.Fun.png" alt="APIKEY.FUN" width="120" />
-      </a>
-    </td>
-    <td valign="top">
-      感谢 <strong>APIKEY.FUN</strong> 赞助本项目！APIKEY.FUN 是一家专业的企业级 AI 中转站，致力于为企业和个人开发者提供稳定、高效、低成本的 AI 模型 API 接入服务。平台支持 Claude、OpenAI、Gemini 等主流热门模型，价格低至官方原价的 7%。通过本项目<a href="https://apikey.fun/register?aff=Codex-Manager">专属链接</a>注册，还可享受最高 <strong>充值永久 95 折</strong> 专属优惠。
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="middle" width="180">
       <a href="https://gzxsy.vip/register?aff=eapz">
         <img src="assets/images/sponsors/xingsiyan.jpg" alt="星思研中转站" width="120" />
       </a>
@@ -105,9 +112,9 @@
 
 <a href="https://www.star-history.com/?repos=qxcnm%2FCodex-Manager&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=qxcnm/Codex-Manager&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=qxcnm/Codex-Manager&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=qxcnm/Codex-Manager&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="assets/images/star-history-dark.png" />
+   <source media="(prefers-color-scheme: light)" srcset="assets/images/star-history-light.png" />
+   <img alt="Codex Manager Star History Chart" src="assets/images/star-history-light.png" />
  </picture>
 </a>
 
@@ -120,6 +127,7 @@
 | 配置端口、代理、数据库、Web 密码、环境变量 | [环境变量与运行配置](docs/zh-CN/report/环境变量与运行配置说明.md) |
 | 排查账号不命中、导入失败、挑战拦截、请求异常 | [FAQ 与账号命中规则](docs/zh-CN/report/FAQ与账号命中规则.md) |
 | 排查后台任务账号跳过、禁用与停用原因 | [后台任务账号跳过说明](docs/zh-CN/report/后台任务账号跳过说明.md) |
+| 管理模型、价格、路由、instructions policy 与本地缓存导出 | [模型目录 V2 管理与计费说明](docs/zh-CN/report/模型目录V2管理与计费说明.md) |
 | 插件中心最小接入、快速对接 | [插件中心最小接入说明](docs/zh-CN/report/插件中心最小接入说明.md) |
 | 对接插件中心、查看接口清单、市场模式与 Rhai 接口 | [插件中心对接与接口清单](docs/zh-CN/report/插件中心对接与接口清单.md) |
 | 系统全部可对接内部接口 | [系统内部接口总表](docs/zh-CN/report/系统内部接口总表.md) |
@@ -131,8 +139,8 @@
 - 用量展示：支持标准 5 小时 + 7 日窗口、仅 7 日单窗口账号，以及 Code Review / Spark 等官方附加额度窗口；刷新后会统一展示各额度的剩余百分比与重置时间
 - 授权登录：浏览器授权 + 手动回调解析
 - 平台 Key：随机生成或自定义固定 Key、禁用、删除、模型绑定、推理等级、服务等级（跟随请求 / Fast / Flex）
-- 模型管理：维护结构化模型目录、远端并入、自定义模型、`visibility` / `supportedInApi` 管理，以及桌面端 Codex 缓存同步 / Web 端缓存导出
-- 聚合 API：管理第三方最小转发上游，支持创建、编辑、测试连通性、供应商名称、顺序优先级，以及按 Codex / Claude 分类展示
+- 模型管理：模型目录 V2 是唯一运行时真相源；支持 builtin/custom、整数三价与长上下文阶梯价、账号池/聚合 API route、instructions policy、本地 JSON preview/commit，以及桌面/Web 主动导出 Codex 缓存
+- 聚合 API：管理第三方最小转发上游，支持创建、编辑、余额和基于已配置 V2 route 的连通性测试；不会请求供应商 `/models` 或维护供应商模型池
 - 插件中心：路由为 `/plugins/`，支持内置精选、企业私有、自定义源三种市场模式，并提供插件清单、任务、日志与 Rhai 对接接口
 - 设置页：支持“系统推导”按钮、单账号并发上限、上游代理、请求总超时、流式空闲超时、SSE 保活间隔，以及更保守的高并发退化策略；实验性上游 WebSocket 可通过 `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM=1` 开启，默认关闭
 - 系统内部接口总表：列出当前桌面端与服务端所有可对接命令、RPC 方法、以及插件内建函数
@@ -176,7 +184,7 @@
 ### 桌面端
 - 账号管理：集中导入、导出、刷新账号与用量，支持低配额 / 封禁筛选与重置时间展示
 - 平台 Key：按模型、推理等级、服务等级绑定平台 Key，并查看调用日志
-- 模型管理：桌面端修改后会自动同步本地 `~/.codex/models_cache.json`
+- 模型管理：桌面端和 Web 端都只在点击“导出到本地 Codex 缓存”后写入或下载 `models_cache.json`；保存、读取和启动不会自动改写缓存
 - 插件中心：`/plugins/` 路由，内置精选 / 企业私有 / 自定义源市场切换，插件安装、启停、任务、日志、Rhai 对接
 - 设置页：统一管理端口、监听地址、代理、请求超时、SSE 保活、主题、自动更新、后台行为
 
@@ -191,6 +199,7 @@
 - 架构说明：[ARCHITECTURE.md](docs/zh-CN/ARCHITECTURE.md)
 - 测试基线：[TESTING.md](docs/zh-CN/TESTING.md)
 - 安全说明：[SECURITY.md](docs/zh-CN/SECURITY.md)
+- 模型目录 V2：[模型目录 V2 管理与计费说明](docs/zh-CN/report/模型目录V2管理与计费说明.md)
 - 文档索引：[docs/zh-CN/README.md](docs/zh-CN/README.md)
 
 ## 专题页面

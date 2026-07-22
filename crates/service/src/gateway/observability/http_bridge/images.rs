@@ -239,7 +239,7 @@ pub(super) fn build_images_api_response(
     out
 }
 
-pub(super) fn hosted_image_generation_semantic_error(response: &Value) -> Option<&'static str> {
+pub(crate) fn hosted_image_generation_semantic_error(response: &Value) -> Option<&'static str> {
     if collect_image_generation_results(response).is_empty() {
         Some(IMAGE_GENERATION_MISSING_RESULT_MESSAGE)
     } else {

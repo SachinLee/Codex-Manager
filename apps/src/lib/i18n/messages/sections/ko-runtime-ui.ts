@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../types";
 
 export const KO_RUNTIME_UI_MESSAGES: MessageCatalog = {
+  "Plugin workspace": "플러그인 작업 공간",
   打开: "열기",
   后刷新: " 후 새로고침",
   本地服务已连接: "로컬 서비스 연결됨",

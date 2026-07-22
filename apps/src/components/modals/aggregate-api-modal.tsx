@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Clipboard, Database, Info, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -77,12 +77,6 @@ const parseBalanceCustomConfig = (
 const stringConfigValue = (value: unknown, fallback = "") =>
   typeof value === "string" ? value : fallback;
 
-const parseModelSlugs = (value: string) =>
-  value
-    .split(/[,，\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
 const normalizeBalanceCustomAuth = (value: unknown): BalanceCustomAuth =>
   value === "balance_bearer" || value === "none"
     ? value
@@ -140,7 +134,6 @@ export function AggregateApiModal({
   const [actionCustomEnabled, setActionCustomEnabled] = useState(false);
   const [action, setAction] = useState("");
   const [modelOverride, setModelOverride] = useState("");
-  const [modelWhitelist, setModelWhitelist] = useState("");
   const [costMultiplier, setCostMultiplier] = useState("1");
   const [dailySpendLimitUsd, setDailySpendLimitUsd] = useState("");
   const [balanceQueryEnabled, setBalanceQueryEnabled] = useState(false);
@@ -167,11 +160,19 @@ export function AggregateApiModal({
   const [key, setKey] = useState("");
   const [generatedKey, setGeneratedKey] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const unavailableMessage = canAccessManagementRpc
     ? t("服务未连接，聚合 API 暂不可编辑；连接恢复后可继续操作。")
     : t("当前运行环境暂不支持聚合 API 管理。");
+
+  useEffect(() => {
+    if (!open) return;
+    window.requestAnimationFrame(() => {
+      bodyScrollRef.current?.scrollTo({ top: 0 });
+    });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -227,10 +228,9 @@ export function AggregateApiModal({
     setAction(nextAction);
     setActionCustomEnabled(aggregateApi?.action !== null && aggregateApi?.action !== undefined);
     setModelOverride(aggregateApi?.modelOverride || "");
-    setModelWhitelist((aggregateApi?.modelSlugs || []).join(", "));
     setCostMultiplier(String(aggregateApi?.costMultiplier || 1));
     setDailySpendLimitUsd(
-      aggregateApi?.dailySpendLimitUsd ? String(aggregateApi.dailySpendLimitUsd) : "",
+      aggregateApi?.dailySpendLimitUsd ? String(aggregateApi.dailySpendLimitUsd) : ""
     );
     setBalanceQueryEnabled(Boolean(aggregateApi?.balanceQueryEnabled));
     const nextBalanceQueryTemplate =
@@ -339,22 +339,6 @@ export function AggregateApiModal({
         return;
       }
     }
-    const parsedCostMultiplier = Number(costMultiplier.trim() || "1");
-    if (!Number.isFinite(parsedCostMultiplier) || parsedCostMultiplier <= 0) {
-      toast.error(t("成本倍率必须大于 0"));
-      return;
-    }
-    const trimmedDailySpendLimit = dailySpendLimitUsd.trim();
-    const parsedDailySpendLimit = trimmedDailySpendLimit
-      ? Number(trimmedDailySpendLimit)
-      : null;
-    if (
-      parsedDailySpendLimit != null &&
-      (!Number.isFinite(parsedDailySpendLimit) || parsedDailySpendLimit <= 0)
-    ) {
-      toast.error(t("每日费用上限必须大于 0"));
-      return;
-    }
 
     const authParams =
       authCustomEnabled && authType === "apikey"
@@ -389,6 +373,22 @@ export function AggregateApiModal({
           return;
         }
       }
+    }
+    const parsedCostMultiplier = Number(costMultiplier.trim() || "1");
+    if (!Number.isFinite(parsedCostMultiplier) || parsedCostMultiplier <= 0) {
+      toast.error(t("成本倍率必须大于 0"));
+      return;
+    }
+    const trimmedDailySpendLimit = dailySpendLimitUsd.trim();
+    const parsedDailySpendLimit = trimmedDailySpendLimit
+      ? Number(trimmedDailySpendLimit)
+      : null;
+    if (
+      parsedDailySpendLimit != null &&
+      (!Number.isFinite(parsedDailySpendLimit) || parsedDailySpendLimit <= 0)
+    ) {
+      toast.error(t("每日费用上限必须大于 0"));
+      return;
     }
     let balanceQueryConfigJson: string | null = null;
     if (balanceQueryTemplate === "custom") {
@@ -432,7 +432,6 @@ export function AggregateApiModal({
     }
     setIsLoading(true);
     try {
-      const modelSlugs = parseModelSlugs(modelWhitelist);
       if (aggregateApi?.id) {
         await accountClient.updateAggregateApi(aggregateApi.id, {
           providerType,
@@ -457,7 +456,6 @@ export function AggregateApiModal({
           balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
           balanceQueryUserId: balanceQueryUserId.trim(),
           balanceQueryConfigJson,
-          modelSlugs,
         });
         toast.success(t("聚合 API 已更新"));
         await Promise.all([
@@ -492,7 +490,6 @@ export function AggregateApiModal({
         balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
         balanceQueryUserId: balanceQueryUserId.trim(),
         balanceQueryConfigJson,
-        modelSlugs,
       });
       setGeneratedKey(result.key);
       toast.success(t("聚合 API 已创建"));
@@ -536,9 +533,23 @@ export function AggregateApiModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-card w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] overflow-hidden p-0 sm:max-w-[92vw] md:max-w-[640px] lg:max-w-[720px] xl:max-w-[760px]">
-        <div className="flex max-h-[92vh] flex-col">
-          <div className="border-b border-border/50 px-5 pt-5 pb-3">
+      <DialogContent
+        className="glass-card flex flex-col gap-0 overflow-hidden p-0"
+        style={{
+          height: "calc(100dvh - 6rem)",
+          left: "max(1rem, calc((100dvw - 760px) / 2))",
+          marginTop: 0,
+          maxHeight: "none",
+          maxWidth: "min(calc(100dvw - 2rem), 760px)",
+          position: "fixed",
+          top: "3rem",
+          transform: "none",
+          translate: "0 0",
+          width: "min(calc(100dvw - 2rem), 760px)",
+        }}
+      >
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="shrink-0 border-b border-border/50 px-5 pt-5 pb-3">
             <DialogHeader>
               <div className="mb-2 flex items-center gap-3">
                 <div className="rounded-full bg-primary/10 p-2">
@@ -554,7 +565,7 @@ export function AggregateApiModal({
             </DialogHeader>
           </div>
 
-          <div className="overflow-y-auto px-5 py-3">
+          <div ref={bodyScrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
             <div className="grid gap-4">
               {!isServiceReady ? (
                 <Alert>
@@ -665,83 +676,6 @@ export function AggregateApiModal({
                   disabled={!isServiceReady}
                   onChange={(event) => setUrl(event.target.value)}
                 />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="aggregate-api-model-override">
-                  {t("上游模型覆盖")}
-                </Label>
-                <Input
-                  id="aggregate-api-model-override"
-                  placeholder={
-                    providerType === "claude"
-                      ? "qwen3.5-plus"
-                      : t("留空则使用请求中的模型")
-                  }
-                  value={modelOverride}
-                  disabled={!isServiceReady}
-                  onChange={(event) => setModelOverride(event.target.value)}
-                />
-                <p className="text-[11px] leading-4 text-muted-foreground">
-                  {t("用于 API 转发服务要求固定模型名的场景；连接测试和真实转发都会使用该模型。")}
-                </p>
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="aggregate-api-model-whitelist">
-                  {t("额度模型白名单")}
-                </Label>
-                <Input
-                  id="aggregate-api-model-whitelist"
-                  placeholder="gpt-5.4, gpt-5.4-mini"
-                  value={modelWhitelist}
-                  disabled={!isServiceReady}
-                  onChange={(event) => setModelWhitelist(event.target.value)}
-                />
-                <p className="text-[11px] leading-4 text-muted-foreground">
-                  {t("仅用于额度池归属统计；留空表示该来源对所有 API 可用模型生效。")}
-                </p>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="aggregate-api-cost-multiplier">
-                    {t("成本倍率")}
-                  </Label>
-                  <Input
-                    id="aggregate-api-cost-multiplier"
-                    type="number"
-                    min={0.01}
-                    step={0.01}
-                    value={costMultiplier}
-                    disabled={!isServiceReady}
-                    onChange={(event) => setCostMultiplier(event.target.value)}
-                  />
-                  <p className="text-[11px] leading-4 text-muted-foreground">
-                    {t("请求费用按模型基础价格计算后乘以该倍率；默认 1。")}
-                  </p>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="aggregate-api-daily-spend-limit">
-                    {t("每日费用上限")}
-                  </Label>
-                  <Input
-                    id="aggregate-api-daily-spend-limit"
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={dailySpendLimitUsd}
-                    disabled={!isServiceReady}
-                    placeholder={t("留空表示不限")}
-                    onChange={(event) =>
-                      setDailySpendLimitUsd(event.target.value)
-                    }
-                  />
-                  <p className="text-[11px] leading-4 text-muted-foreground">
-                    {t("用于聚合 API 当日消耗控制；留空不限制。")}
-                  </p>
-                </div>
               </div>
 
               {authType === "apikey" ? (
@@ -972,6 +906,56 @@ export function AggregateApiModal({
                   ) : null}
                   </CardContent>
                 </Card>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-2">
+                  <Label htmlFor="aggregate-api-model-override">
+                    {t("上游模型覆写")}
+                  </Label>
+                  <Input
+                    id="aggregate-api-model-override"
+                    value={modelOverride}
+                    disabled={!isServiceReady}
+                    placeholder={t("留空则使用请求模型")}
+                    onChange={(event) => setModelOverride(event.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="aggregate-api-cost-multiplier">
+                    {t("成本倍率")}
+                  </Label>
+                  <Input
+                    id="aggregate-api-cost-multiplier"
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={costMultiplier}
+                    disabled={!isServiceReady}
+                    onChange={(event) => setCostMultiplier(event.target.value)}
+                  />
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    {t("请求费用按模型基础价格计算后乘以该倍率；默认 1。")}
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="aggregate-api-daily-spend-limit">
+                    {t("每日费用上限")}
+                  </Label>
+                  <Input
+                    id="aggregate-api-daily-spend-limit"
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={dailySpendLimitUsd}
+                    disabled={!isServiceReady}
+                    placeholder={t("留空表示不限")}
+                    onChange={(event) => setDailySpendLimitUsd(event.target.value)}
+                  />
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    {t("用于聚合 API 当日消耗控制；留空不限制。")}
+                  </p>
+                </div>
               </div>
 
               <Card size="sm">
@@ -1293,8 +1277,8 @@ export function AggregateApiModal({
             </div>
           </div>
 
-          <div className="border-t border-border/50 px-5 py-3">
-            <DialogFooter>
+          <div className="shrink-0 border-t border-border/50 px-5 py-3">
+            <DialogFooter className="mx-0 mb-0 gap-2 rounded-none border-0 bg-transparent p-0 sm:gap-2">
               {!generatedKey ? (
                 <DialogClose
                   className={buttonVariants({ variant: "ghost" })}

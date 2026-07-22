@@ -120,9 +120,7 @@ export function ModelForwardRulesEditor({
           className="gap-2"
           onClick={() =>
             onRowsChange((currentRows) => [
-              ...currentRows.filter(
-                (item) => item.pattern.length > 0 || item.target.length > 0,
-              ),
+              ...currentRows,
               createEmptyModelForwardRule(),
             ])
           }

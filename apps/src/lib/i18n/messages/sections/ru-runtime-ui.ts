@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../types";
 
 export const RU_RUNTIME_UI_MESSAGES: MessageCatalog = {
+  "Plugin workspace": "Рабочая область плагинов",
   打开: "Открыть",
   后刷新: " до обновления",
   本地服务已连接: "Локальный сервис подключён",

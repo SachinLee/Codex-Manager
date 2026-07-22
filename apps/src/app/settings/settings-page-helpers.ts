@@ -178,32 +178,6 @@ export const WORKER_PRESETS: WorkerPreset[] = [
 
 export const CUSTOM_WORKER_MODE_VALUE = "__custom__";
 
-export const DEFAULT_FREE_ACCOUNT_MAX_MODEL_OPTIONS = [
-  "auto",
-  "gpt-5",
-  "gpt-5-codex",
-  "gpt-5-codex-mini",
-  "gpt-5.1",
-  "gpt-5.1-codex",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex-mini",
-  "gpt-5.2",
-  "gpt-5.2-codex",
-  "gpt-5.3-codex",
-  "gpt-5.4-mini",
-  "gpt-5.4",
-] as const;
-
-export function formatFreeAccountModelLabel(
-  value: string | null | undefined,
-): string {
-  const normalized = String(value || "").trim();
-  if (!normalized || normalized === "auto") {
-    return "跟随请求";
-  }
-  return normalized;
-}
-
 export const SETTINGS_TABS = [
   "general",
   "appearance",

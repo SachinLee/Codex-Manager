@@ -64,6 +64,7 @@ test("normalizeRuntimeCapabilities 为 Web 网关补齐默认能力", () => {
     "https://author.qxnm.top/api/public/author-content"
   );
   assert.equal(capabilities.canManageService, false);
+  assert.equal(capabilities.canAutoStart, false);
   assert.equal(capabilities.canUseBrowserFileImport, true);
   assert.equal(capabilities.canUseBrowserDownloadExport, true);
 });
@@ -91,6 +92,7 @@ test("normalizeRuntimeCapabilities 在 unsupported-web 下保持保守默认值"
   assert.equal(capabilities.mode, "unsupported-web");
   assert.equal(capabilities.rpcBaseUrl, "/proxy/rpc");
   assert.equal(capabilities.canManageService, false);
+  assert.equal(capabilities.canAutoStart, false);
   assert.equal(capabilities.canUseBrowserFileImport, false);
   assert.equal(capabilities.canUseBrowserDownloadExport, false);
   assert.match(capabilities.unsupportedReason, /CodexManager Web 运行壳/);
@@ -119,6 +121,7 @@ test("resolveRuntimeCapabilityView 在桌面回退路径下暴露桌面能力", 
   assert.equal(view.canAccessManagementRpc, true);
   assert.equal(view.canManageService, true);
   assert.equal(view.canSelfUpdate, true);
+  assert.equal(view.canAutoStart, true);
   assert.equal(view.canOpenLocalDir, true);
 });
 

@@ -336,12 +336,11 @@ fn resolve_scoped_account_id_collision(
         return account_id;
     }
 
-    let fingerprint_source = payload
-        .refresh_token
-        .trim()
-        .is_empty()
-        .then_some(payload.access_token.as_str())
-        .unwrap_or(payload.refresh_token.as_str());
+    let fingerprint_source = if payload.refresh_token.trim().is_empty() {
+        payload.access_token.as_str()
+    } else {
+        payload.refresh_token.as_str()
+    };
     let fingerprint = token_fingerprint(fingerprint_source);
     let mut candidate = account_key(&account_id, Some(&format!("conflict_fp_{fingerprint}")));
     let mut suffix = 2usize;
@@ -766,7 +765,7 @@ fn import_single_item_with_account_id(
     item: &Value,
     sequence: usize,
 ) -> Result<ImportedAccount, String> {
-    let payload = extract_token_payload(&item)?;
+    let payload = extract_token_payload(item)?;
     let meta = extract_account_meta(item);
     let claims = parse_id_token_claims(&payload.id_token).ok();
     let token_fingerprint = token_fingerprint(&payload.refresh_token);

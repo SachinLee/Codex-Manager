@@ -1,6 +1,6 @@
 {
   "name": "codexmanager-frontend",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "packageManager": "pnpm@10.30.3",
   "private": true,
   "scripts": {
@@ -8,9 +8,12 @@
     "dev:desktop": "next dev --webpack -H 127.0.0.1 -p 3005",
     "build": "next build",
     "build:desktop": "next build",
+    "check": "pnpm run lint && pnpm run test:runtime && pnpm run build:desktop",
+    "test": "pnpm run test:runtime",
     "test:e2e": "playwright test",
     "test:navigation": "playwright test tests/navigation-cache.spec.ts",
-    "test:runtime": "node tests/run-runtime-tests.mjs",
+    "test:runtime": "node --test",
+    "test:ui": "pnpm run test:e2e",
     "start": "next start",
     "lint": "eslint"
   },

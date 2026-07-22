@@ -143,12 +143,14 @@ pub(super) async fn tcp_probe(addr: &str) -> bool {
     let addr = addr.strip_prefix("http://").unwrap_or(addr);
     let addr = addr.strip_prefix("https://").unwrap_or(addr);
     let addr = addr.split('/').next().unwrap_or(addr);
-    tokio::time::timeout(
-        Duration::from_millis(250),
-        tokio::net::TcpStream::connect(addr),
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await,
+        Ok(Ok(_))
     )
-    .await
-    .is_ok()
 }
 
 /// 函数 `service_bin_path`

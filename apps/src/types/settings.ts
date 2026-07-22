@@ -42,6 +42,8 @@ export interface QuotaGuardSettings {
 
 export interface AppSettings {
   updateAutoCheck: boolean;
+  autoStartEnabled: boolean;
+  autoStartSupported: boolean;
   closeToTrayOnClose: boolean;
   closeToTraySupported: boolean;
   lowTransparency: boolean;
@@ -63,20 +65,10 @@ export interface AppSettings {
   routeStrategyOptions: string[];
   freeAccountMaxModel: string;
   freeAccountMaxModelOptions: string[];
-  modelCatalogAutoRemoteFetch: boolean;
   modelForwardRules: string;
   compactModelForwardRules: string;
-  autoCompactEnabled: boolean;
   accountMaxInflight: number;
-  reasoningGuardEnabled: boolean;
-  reasoningGuardMatchMode: string;
-  reasoningGuardStreamAction: string;
-  reasoningGuardContinuationMarkerText: string;
-  reasoningGuardTargets: number[];
-  reasoningGuardInterceptStreaming: boolean;
-  reasoningGuardInterceptNonStreaming: boolean;
-  reasoningGuardRetryAttempts: number;
-  reasoningGuardBypassAfterConsecutive: number;
+  threadAwareAccountDistributionEnabled: boolean;
   quotaGuard: QuotaGuardSettings;
   gatewayOriginator: string;
   gatewayOriginatorDefault: string;
@@ -89,6 +81,7 @@ export interface AppSettings {
   authorSponsors: SponsorLinkItem[];
   authorServerRecommendations: SponsorLinkItem[];
   upstreamProxyUrl: string;
+  upstreamProxyBypassHosts: string;
   upstreamStreamTimeoutMs: number;
   upstreamTotalTimeoutMs: number;
   sseKeepaliveIntervalMs: number;

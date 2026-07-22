@@ -24,6 +24,10 @@ import {
 } from "@/components/ui/select";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
+import {
+  managedModelsV2Client,
+  managedModelV2ToModelInfo,
+} from "@/lib/api/managed-models-v2";
 import { appClient } from "@/lib/api/app-client";
 import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import { useAppStore } from "@/lib/store/useAppStore";
@@ -57,6 +61,7 @@ const REASONING_LABELS: Record<string, string> = {
   medium: "中 (medium)",
   high: "高 (high)",
   xhigh: "极高 (xhigh)",
+  max: "最大 (max)",
 };
 
 const SERVICE_TIER_LABELS: Record<string, string> = {
@@ -170,17 +175,10 @@ export function ApiKeyModal({
     : t("当前运行环境暂不支持平台密钥管理。");
 
   const { data: models } = useQuery({
-    queryKey: ["apikey-models"],
+    queryKey: ["managed-models-v2", "selector"],
     queryFn: async () => {
-      const cached = await accountClient.listModels(false);
-      if (cached.models.length > 0) {
-        return cached;
-      }
-      try {
-        return await accountClient.listModels(true);
-      } catch {
-        return cached;
-      }
+      const result = await managedModelsV2Client.list(false);
+      return { models: result.items.map(managedModelV2ToModelInfo) };
     },
     enabled: open && isServiceReady,
   });
@@ -356,7 +354,7 @@ export function ApiKeyModal({
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
-        queryClient.invalidateQueries({ queryKey: ["apikey-models"] }),
+        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
         queryClient.invalidateQueries({
           queryKey: ["account-manager", "api-key-owners"],
         }),
@@ -398,8 +396,8 @@ export function ApiKeyModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] sm:max-w-[680px] md:max-w-[760px] max-h-[90vh] overflow-y-auto glass-card">
-        <DialogHeader>
+      <DialogContent className="glass-card flex max-h-[90dvh] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[680px] md:max-w-[760px]">
+        <DialogHeader className="shrink-0 px-4 pb-4 pt-4 sm:px-6 sm:pt-6">
           <div className="flex items-center gap-3 mb-2">
             <div className="p-2 rounded-full bg-primary/10">
               <Key className="h-5 w-5 text-primary" />
@@ -413,7 +411,7 @@ export function ApiKeyModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-5 py-4">
+        <div className="grid min-h-0 flex-1 gap-5 overflow-y-auto px-4 py-4 sm:px-6">
           {!isServiceReady ? (
             <Alert>
               <Info />
@@ -707,11 +705,12 @@ export function ApiKeyModal({
                   <SelectItem value="medium">{t("中 (medium)")}</SelectItem>
                   <SelectItem value="high">{t("高 (high)")}</SelectItem>
                   <SelectItem value="xhigh">{t("极高 (xhigh)")}</SelectItem>
+                  <SelectItem value="max">{t("最大 (max)")}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
               <p className="min-h-[32px] text-[11px] text-muted-foreground">
-                {t("会覆盖请求里的 reasoning effort。")}
+                {t("会覆盖请求里的 reasoning effort。Ultra 由 Codex 客户端负责编排，网关覆盖最多设置为 max。")}
               </p>
             </div>
             <div className="grid gap-2 content-start">
@@ -766,7 +765,7 @@ export function ApiKeyModal({
           )}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="mx-0 mb-0 shrink-0 rounded-none px-4 sm:px-6">
           <DialogClose
             className={buttonVariants({ variant: "ghost" })}
             type="button"

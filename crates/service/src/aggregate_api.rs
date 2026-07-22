@@ -1,13 +1,10 @@
 use codexmanager_core::rpc::types::{
     AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
     AggregateApiRuntimeStatus, AggregateApiSecretResult, AggregateApiSummary,
-    AggregateApiSupplierModelDeleteParams, AggregateApiSupplierModelEntry,
-    AggregateApiSupplierModelImportParams, AggregateApiSupplierModelImportResult,
-    AggregateApiSupplierModelUpsertParams, AggregateApiTestResult, ManagedModelSourceModelEntry,
+    AggregateApiTestResult,
 };
 use codexmanager_core::storage::{
-    now_ts, AggregateApi, AggregateApiSupplierModel, GatewayCapabilityObservationRecord,
-    GatewayCapabilityScope, ModelSourceModel,
+    now_ts, AggregateApi, GatewayCapabilityObservationRecord, GatewayCapabilityScope,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -30,40 +27,12 @@ const AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM: &str = "custom";
 const CUSTOM_BALANCE_AUTH_PROVIDER_BEARER: &str = "provider_bearer";
 const CUSTOM_BALANCE_AUTH_BALANCE_BEARER: &str = "balance_bearer";
 const CUSTOM_BALANCE_AUTH_NONE: &str = "none";
-const CLAUDE_DEFAULT_PROBE_MODEL: &str = "claude-haiku-4-5-20251001";
-const ALIBABA_CODING_PLAN_PROBE_MODEL: &str = "qwen3.5-plus";
-const MAX_DISCOVERED_MODEL_IDS: usize = 512;
-const AGGREGATE_API_MODEL_SOURCE_KIND: &str = "aggregate_api";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UserPassSecret {
     username: String,
     password: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AggregateApiCapabilityProbeResult {
-    pub name: String,
-    pub status: String,
-    pub reason: String,
-    pub http_status: Option<i64>,
-    pub risk: Option<String>,
-    pub recommended_mode: Option<String>,
-    pub latency_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AggregateApiCapabilityDiagnosticsResult {
-    pub id: String,
-    pub provider_type: String,
-    pub diagnosed_at: i64,
-    pub latency_ms: i64,
-    pub non_mutating: bool,
-    pub live_smoke: bool,
-    pub probes: Vec<AggregateApiCapabilityProbeResult>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -163,6 +132,30 @@ fn normalize_supplier_name(value: Option<String>) -> Result<String, String> {
 /// 返回函数执行结果
 fn normalize_sort(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AggregateApiCapabilityProbeResult {
+    pub name: String,
+    pub status: String,
+    pub reason: String,
+    pub http_status: Option<i64>,
+    pub risk: Option<String>,
+    pub recommended_mode: Option<String>,
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AggregateApiCapabilityDiagnosticsResult {
+    pub id: String,
+    pub provider_type: String,
+    pub diagnosed_at: i64,
+    pub latency_ms: i64,
+    pub non_mutating: bool,
+    pub live_smoke: bool,
+    pub probes: Vec<AggregateApiCapabilityProbeResult>,
 }
 
 fn normalize_cost_multiplier(value: Option<f64>) -> Result<f64, String> {
@@ -458,38 +451,6 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn normalize_required_text(field_name: &str, value: impl AsRef<str>) -> Result<String, String> {
-    let trimmed = value.as_ref().trim();
-    if trimmed.is_empty() {
-        return Err(format!("{field_name} is required"));
-    }
-    Ok(trimmed.to_string())
-}
-
-fn normalize_supplier_model_status(value: Option<String>) -> Result<String, String> {
-    let normalized = value
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("available")
-        .to_ascii_lowercase()
-        .replace('-', "_");
-    match normalized.as_str() {
-        "available" | "active" | "enabled" | "enable" => Ok("available".to_string()),
-        "disabled" | "disable" | "inactive" => Ok("disabled".to_string()),
-        other => Err(format!("unsupported supplier model status: {other}")),
-    }
-}
-
-fn supplier_template_key_for_api(api: &AggregateApi) -> String {
-    api.supplier_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| api.url.trim())
-        .to_string()
-}
-
 fn normalize_auth_params_json(
     auth_type: &str,
     enabled: Option<bool>,
@@ -583,534 +544,8 @@ fn normalize_action_override(
 }
 
 #[cfg(test)]
-mod tests {
-    use codexmanager_core::storage::AggregateApi;
-    use serde_json::Value;
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::Duration;
-    use tiny_http::{Response, Server, StatusCode};
-
-    use super::{
-        action_path_or_default, build_codex_models_probe_url, claude_probe_fallback_models_for_api,
-        diagnostic_status_for_http, extract_custom_balance, extract_generic_balance,
-        extract_model_ids_from_models_response, extract_new_api_balance, normalize_action_override,
-        normalize_custom_balance_query_config, normalize_provider_type,
-        normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint,
-        provider_default_url, CustomBalanceQueryConfig, AGGREGATE_API_PROVIDER_CLAUDE,
-        AGGREGATE_API_PROVIDER_GEMINI, ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL,
-    };
-
-    fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
-        AggregateApi {
-            id: "agg-test".to_string(),
-            provider_type: "claude".to_string(),
-            supplier_name: Some("test".to_string()),
-            sort: 0,
-            url: "https://open.bigmodel.cn/api/anthropic".to_string(),
-            auth_type: "apikey".to_string(),
-            auth_params_json: None,
-            action: action.map(str::to_string),
-            model_override: None,
-            cost_multiplier: 1.0,
-            daily_spend_limit_usd: None,
-            status: "active".to_string(),
-            created_at: 0,
-            updated_at: 0,
-            last_test_at: None,
-            last_test_status: None,
-            last_test_error: None,
-            balance_query_enabled: false,
-            balance_query_template: None,
-            balance_query_base_url: None,
-            balance_query_user_id: None,
-            balance_query_config_json: None,
-            last_balance_at: None,
-            last_balance_status: None,
-            last_balance_error: None,
-            last_balance_json: None,
-        }
-    }
-
-    #[test]
-    fn diagnostic_status_classifies_endpoint_capability() {
-        assert_eq!(diagnostic_status_for_http("responses", 200).0, "supported");
-        assert_eq!(diagnostic_status_for_http("responses", 400).0, "supported");
-        assert_eq!(
-            diagnostic_status_for_http("responses", 404).0,
-            "unsupported"
-        );
-        assert_eq!(diagnostic_status_for_http("responses", 401).0, "unknown");
-        assert_eq!(
-            diagnostic_status_for_http("hostedImageGeneration", 400).0,
-            "unknown"
-        );
-    }
-
-    #[test]
-    fn action_override_disabled_stays_none() {
-        let value =
-            normalize_action_override(Some(false), Some("/v1/messages".to_string())).unwrap();
-        assert_eq!(value, Some(None));
-    }
-
-    #[test]
-    fn action_override_enabled_and_empty_preserves_empty_string() {
-        let value = normalize_action_override(Some(true), Some("   ".to_string())).unwrap();
-        assert_eq!(value, Some(Some(String::new())));
-    }
-
-    #[test]
-    fn empty_action_uses_base_url_without_default_path() {
-        let api = aggregate_api_with_action(Some(""));
-        let path = action_path_or_default(&api, "/v1/messages?beta=true");
-        assert_eq!(path, "");
-    }
-
-    #[test]
-    fn codex_models_probe_url_appends_client_version() {
-        let _guard = crate::test_env_guard();
-        crate::gateway::set_codex_user_agent_version("0.101.0")
-            .expect("set default codex user agent version");
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://api.openai.com/v1".to_string();
-
-        let url = build_codex_models_probe_url(&api);
-
-        assert_eq!(
-            url,
-            "https://api.openai.com/v1/models?client_version=0.101.0"
-        );
-    }
-
-    #[test]
-    fn codex_models_probe_url_preserves_custom_action_with_client_version() {
-        let _guard = crate::test_env_guard();
-        crate::gateway::set_codex_user_agent_version("0.101.0")
-            .expect("set default codex user agent version");
-        let mut api = aggregate_api_with_action(Some("/models?limit=20"));
-        api.url = "https://api.openai.com/v1".to_string();
-
-        let url = build_codex_models_probe_url(&api);
-
-        assert_eq!(
-            url,
-            "https://api.openai.com/v1/models?limit=20&client_version=0.101.0"
-        );
-    }
-
-    #[test]
-    fn gemini_provider_type_is_normalized_independently() {
-        assert_eq!(
-            normalize_provider_type(Some("gemini_native".to_string())).unwrap(),
-            AGGREGATE_API_PROVIDER_GEMINI
-        );
-        assert_eq!(
-            normalize_provider_type_value("google_gemini"),
-            AGGREGATE_API_PROVIDER_GEMINI
-        );
-        assert_eq!(
-            provider_default_url(AGGREGATE_API_PROVIDER_GEMINI),
-            "https://generativelanguage.googleapis.com"
-        );
-        assert_eq!(
-            normalize_provider_type(Some("claude".to_string())).unwrap(),
-            AGGREGATE_API_PROVIDER_CLAUDE
-        );
-    }
-
-    #[test]
-    fn claude_probe_models_prefer_alibaba_coding_plan_model_for_dashscope() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic".to_string();
-
-        assert_eq!(
-            claude_probe_fallback_models_for_api(&api),
-            vec![ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL]
-        );
-    }
-
-    #[test]
-    fn claude_probe_models_keep_anthropic_default_first_for_generic_urls() {
-        let mut api = aggregate_api_with_action(None);
-        api.url = "https://api.anthropic.com/v1".to_string();
-
-        assert_eq!(
-            claude_probe_fallback_models_for_api(&api),
-            vec![CLAUDE_DEFAULT_PROBE_MODEL, ALIBABA_CODING_PLAN_PROBE_MODEL]
-        );
-    }
-
-    #[test]
-    fn extract_model_ids_from_models_response_accepts_common_shapes() {
-        let body = r#"{
-            "data": [
-                {"id":"provider-model-a"},
-                {"model":"provider-model-b"},
-                "provider-model-c"
-            ],
-            "models": [{"slug":"ignored-because-data-wins"}]
-        }"#;
-
-        assert_eq!(
-            extract_model_ids_from_models_response(body),
-            vec![
-                "provider-model-a".to_string(),
-                "provider-model-b".to_string(),
-                "provider-model-c".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn extract_model_ids_from_models_response_keeps_full_provider_catalog() {
-        let mut data = (0..13)
-            .map(|index| serde_json::json!({ "id": format!("provider-model-{index}") }))
-            .collect::<Vec<Value>>();
-        data.push(serde_json::json!({ "id": "gpt-5.5" }));
-        let body = serde_json::json!({ "data": data }).to_string();
-
-        let models = extract_model_ids_from_models_response(body.as_str());
-
-        assert!(models.contains(&"gpt-5.5".to_string()));
-        assert_eq!(models.len(), 14);
-    }
-
-    #[test]
-    fn generic_balance_extractor_accepts_common_balance_shape() {
-        let body: Value = serde_json::from_str(
-            r#"{"is_active":true,"balance":12.5,"currency":"USD","used":1.25}"#,
-        )
-        .expect("parse balance body");
-
-        let snapshot = extract_generic_balance(&body).expect("extract balance");
-
-        assert!(snapshot.is_valid);
-        assert_eq!(snapshot.remaining, Some(12.5));
-        assert_eq!(snapshot.unit.as_deref(), Some("USD"));
-        assert_eq!(snapshot.used, Some(1.25));
-    }
-
-    #[test]
-    fn new_api_balance_extractor_converts_quota_to_usd() {
-        let body: Value = serde_json::from_str(
-            r#"{"success":true,"data":{"group":"default","quota":1000000,"used_quota":500000}}"#,
-        )
-        .expect("parse new api balance body");
-
-        let snapshot = extract_new_api_balance(&body).expect("extract balance");
-
-        assert!(snapshot.is_valid);
-        assert_eq!(snapshot.plan_name.as_deref(), Some("default"));
-        assert_eq!(snapshot.remaining, Some(2.0));
-        assert_eq!(snapshot.used, Some(1.0));
-        assert_eq!(snapshot.total, Some(3.0));
-    }
-
-    #[test]
-    fn generic_balance_extractor_accepts_usage_balance_shape() {
-        let body: Value = serde_json::from_str(
-            r#"{"mode":"quota_limited","status":"active","quota":{"limit":20,"used":7.5,"remaining":12.5}}"#,
-        )
-        .expect("parse usage body");
-
-        let snapshot = extract_generic_balance(&body).expect("extract usage balance");
-
-        assert!(snapshot.is_valid);
-        assert_eq!(snapshot.plan_name.as_deref(), Some("quota_limited"));
-        assert_eq!(snapshot.remaining, Some(12.5));
-        assert_eq!(snapshot.used, Some(7.5));
-        assert_eq!(snapshot.total, Some(20.0));
-        assert_eq!(snapshot.unit.as_deref(), Some("USD"));
-    }
-
-    #[test]
-    fn custom_balance_config_normalizes_and_extracts_paths() {
-        let normalized = normalize_custom_balance_query_config(Some(
-            r#"{
-                "method":"get",
-                "path":"v1/usage",
-                "auth":"balance-bearer",
-                "remainingPath":"data.available",
-                "totalPath":"data.limit",
-                "usedPath":"data.used",
-                "planPath":"data.plan",
-                "validPath":"data.valid",
-                "unit":"credits",
-                "multiplier":0.5
-            }"#
-            .to_string(),
-        ))
-        .expect("normalize custom balance config")
-        .expect("custom config present");
-        let config: CustomBalanceQueryConfig =
-            serde_json::from_str(normalized.as_str()).expect("parse normalized custom config");
-
-        assert_eq!(config.method.as_deref(), Some("GET"));
-        assert_eq!(config.path, "/v1/usage");
-        assert_eq!(config.auth.as_deref(), Some("balance_bearer"));
-
-        let body: Value = serde_json::from_str(
-            r#"{"data":{"available":4,"limit":10,"used":6,"plan":"pro","valid":true}}"#,
-        )
-        .expect("parse custom balance body");
-        let snapshot = extract_custom_balance(&body, &config).expect("extract custom balance");
-
-        assert!(snapshot.is_valid);
-        assert_eq!(snapshot.remaining, Some(2.0));
-        assert_eq!(snapshot.total, Some(5.0));
-        assert_eq!(snapshot.used, Some(3.0));
-        assert_eq!(snapshot.plan_name.as_deref(), Some("pro"));
-        assert_eq!(snapshot.unit.as_deref(), Some("credits"));
-    }
-
-    #[test]
-    fn custom_balance_config_rejects_absolute_request_path() {
-        let result = normalize_custom_balance_query_config(Some(
-            r#"{"path":"https://example.com/v1/usage","remainingPath":"balance"}"#.to_string(),
-        ));
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn claude_probe_uses_configured_model_without_model_discovery() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let mut request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive messages request")
-                .expect("messages request present");
-            let mut body = String::new();
-            request
-                .as_reader()
-                .read_to_string(&mut body)
-                .expect("read request body");
-            tx.send((
-                request.method().as_str().to_string(),
-                request.url().to_string(),
-                body,
-            ))
-            .expect("send messages request");
-            request
-                .respond(Response::from_string(
-                    r#"{"id":"msg_probe","type":"message"}"#,
-                ))
-                .expect("respond messages");
-        });
-
-        let mut api = aggregate_api_with_action(None);
-        api.url = base_url;
-        api.model_override = Some("qwen3.5-plus".to_string());
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let status = probe_claude_endpoint(&client, &api, "secret").expect("probe succeeds");
-
-        assert_eq!(status, 200);
-        let captured = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured request");
-        join.join().expect("join mock server");
-        assert_eq!(captured.0, "POST");
-        assert_eq!(captured.1, "/v1/messages?beta=true");
-        let body: Value = serde_json::from_str(captured.2.as_str()).expect("parse body");
-        assert_eq!(body["model"], "qwen3.5-plus");
-    }
-
-    #[test]
-    fn codex_probe_uses_configured_model_without_model_discovery() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let mut request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive chat completions request")
-                .expect("chat completions request present");
-            let mut body = String::new();
-            request
-                .as_reader()
-                .read_to_string(&mut body)
-                .expect("read request body");
-            tx.send((
-                request.method().as_str().to_string(),
-                request.url().to_string(),
-                body,
-            ))
-            .expect("send chat completions request");
-            request
-                .respond(Response::from_string(r#"{"id":"chatcmpl_probe"}"#))
-                .expect("respond chat completions");
-        });
-
-        let mut api = aggregate_api_with_action(Some("/chat/completions"));
-        api.url = base_url;
-        api.model_override = Some("qwen3.5-plus".to_string());
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let status = probe_codex_endpoint(&client, &api, "secret").expect("probe succeeds");
-
-        assert_eq!(status, 200);
-        let captured = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured request");
-        join.join().expect("join mock server");
-        assert_eq!(captured.0, "POST");
-        assert_eq!(captured.1, "/v1/chat/completions");
-        let body: Value = serde_json::from_str(captured.2.as_str()).expect("parse body");
-        assert_eq!(body["model"], "qwen3.5-plus");
-    }
-
-    #[test]
-    fn claude_probe_uses_discovered_model_before_fallbacks() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive model list request")
-                .expect("model list request present");
-            tx.send((
-                request.method().as_str().to_string(),
-                request.url().to_string(),
-                None,
-            ))
-            .expect("send model list request");
-            request
-                .respond(Response::from_string(
-                    r#"{"data":[{"id":"provider-model"}]}"#,
-                ))
-                .expect("respond model list");
-
-            let mut request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive messages request")
-                .expect("messages request present");
-            let mut body = String::new();
-            request
-                .as_reader()
-                .read_to_string(&mut body)
-                .expect("read request body");
-            tx.send((
-                request.method().as_str().to_string(),
-                request.url().to_string(),
-                Some(body),
-            ))
-            .expect("send messages request");
-            request
-                .respond(Response::from_string(
-                    r#"{"id":"msg_probe","type":"message"}"#,
-                ))
-                .expect("respond messages");
-        });
-
-        let mut api = aggregate_api_with_action(None);
-        api.url = base_url;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let status = probe_claude_endpoint(&client, &api, "secret").expect("probe succeeds");
-
-        assert_eq!(status, 200);
-        let first = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("first captured request");
-        let second = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("second captured request");
-        join.join().expect("join mock server");
-        assert_eq!(first.0, "GET");
-        assert_eq!(first.1, "/v1/models");
-        assert_eq!(second.0, "POST");
-        assert_eq!(second.1, "/v1/messages?beta=true");
-        let second_body: Value =
-            serde_json::from_str(second.2.as_deref().expect("second body")).expect("parse body");
-        assert_eq!(second_body["model"], "provider-model");
-    }
-
-    #[test]
-    fn claude_probe_retries_with_alibaba_model_after_default_model_bad_request() {
-        let server = Server::http("127.0.0.1:0").expect("start mock server");
-        let base_url = format!("http://{}/apps/anthropic", server.server_addr());
-        let (tx, rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            let request = server
-                .recv_timeout(Duration::from_secs(2))
-                .expect("receive model list request")
-                .expect("model list request present");
-            tx.send((request.url().to_string(), String::new()))
-                .expect("send captured model list request");
-            request
-                .respond(Response::from_string("").with_status_code(StatusCode(404)))
-                .expect("respond model list request");
-
-            for (index, status) in [400u16, 200u16].into_iter().enumerate() {
-                let mut request = server
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("receive mock request")
-                    .expect("mock request present");
-                let mut body = String::new();
-                request
-                    .as_reader()
-                    .read_to_string(&mut body)
-                    .expect("read request body");
-                tx.send((request.url().to_string(), body))
-                    .expect("send captured request");
-                let response_body = if index == 0 {
-                    r#"{"error":{"message":"model not found"}}"#
-                } else {
-                    r#"{"id":"msg_probe","type":"message","content":[]}"#
-                };
-                request
-                    .respond(
-                        Response::from_string(response_body).with_status_code(StatusCode(status)),
-                    )
-                    .expect("respond mock request");
-            }
-        });
-
-        let mut api = aggregate_api_with_action(None);
-        api.url = base_url;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("build client");
-
-        let status = probe_claude_endpoint(&client, &api, "secret").expect("probe succeeds");
-
-        assert_eq!(status, 200);
-        let models_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured model list request");
-        let first = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("first captured request");
-        let second = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("second captured request");
-        join.join().expect("join mock server");
-        assert_eq!(models_request.0, "/apps/anthropic/v1/models");
-        assert_eq!(first.0, "/apps/anthropic/v1/messages?beta=true");
-        assert_eq!(second.0, "/apps/anthropic/v1/messages?beta=true");
-        let first_body: Value = serde_json::from_str(first.1.as_str()).expect("parse first body");
-        let second_body: Value =
-            serde_json::from_str(second.1.as_str()).expect("parse second body");
-        assert_eq!(first_body["model"], CLAUDE_DEFAULT_PROBE_MODEL);
-        assert_eq!(second_body["model"], ALIBABA_CODING_PLAN_PROBE_MODEL);
-    }
-}
-
+#[path = "aggregate_api_tests.rs"]
+mod tests;
 fn serialize_userpass_secret(username: &str, password: &str) -> Result<String, String> {
     let secret = UserPassSecret {
         username: username.trim().to_string(),
@@ -1646,8 +1081,8 @@ fn extract_new_api_balance(
         return Err("new api balance response missing data.quota".to_string());
     }
     let remaining = quota.map(|value| value / 500_000.0);
-    let used = Some(used_quota / 500_000.0);
-    let total = remaining.map(|value| value + used.unwrap_or(0.0));
+    let used = used_quota / 500_000.0;
+    let total = remaining.map(|value| value + used);
     Ok(AggregateApiBalanceSnapshot {
         is_valid: success,
         invalid_message: if success {
@@ -1659,7 +1094,7 @@ fn extract_new_api_balance(
         unit: Some("USD".to_string()),
         plan_name: json_string(data.get("group")).or_else(|| json_string(data.get("plan"))),
         total,
-        used,
+        used: Some(used),
         extra: None,
     })
 }
@@ -1872,13 +1307,13 @@ fn build_claude_probe_body(model: &str) -> serde_json::Value {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn build_codex_probe_body() -> serde_json::Value {
+fn build_codex_probe_body(model: &str) -> serde_json::Value {
     json!({
-        "model": "gpt-5.1-codex",
+        "model": model,
         "input": [{
             "role": "user",
             "content": [{
-                "type": "text",
+                "type": "input_text",
                 "text": "Who are you?"
             }]
         }],
@@ -1886,403 +1321,24 @@ fn build_codex_probe_body() -> serde_json::Value {
     })
 }
 
-fn build_gemini_probe_body() -> serde_json::Value {
-    json!({
-        "contents": [{
-            "role": "user",
-            "parts": [{
-                "text": "Who are you?"
-            }]
-        }],
-        "generationConfig": {
-            "maxOutputTokens": 1
-        }
-    })
-}
-
-fn append_client_version_query(url: &str) -> String {
-    if url.contains("client_version=") {
-        return url.to_string();
+fn diagnostic_probe_result(
+    name: &str,
+    status: &str,
+    reason: impl Into<String>,
+    http_status: Option<i64>,
+    risk: Option<&str>,
+    recommended_mode: Option<&str>,
+    latency_ms: i64,
+) -> AggregateApiCapabilityProbeResult {
+    AggregateApiCapabilityProbeResult {
+        name: name.to_string(),
+        status: status.to_string(),
+        reason: reason.into(),
+        http_status,
+        risk: risk.map(str::to_string),
+        recommended_mode: recommended_mode.map(str::to_string),
+        latency_ms,
     }
-    let separator = if url.contains('?') { '&' } else { '?' };
-    format!(
-        "{url}{separator}client_version={}",
-        gateway::current_codex_user_agent_version()
-    )
-}
-
-/// 函数 `probe_codex_only_for_provider`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - provider_type: 参数 provider_type
-///
-/// # 返回
-/// 返回函数执行结果
-fn probe_codex_only_for_provider(provider_type: &str) -> bool {
-    !matches!(
-        provider_type,
-        AGGREGATE_API_PROVIDER_CLAUDE | AGGREGATE_API_PROVIDER_GEMINI
-    )
-}
-
-fn is_alibaba_claude_compat_url(url: &str) -> bool {
-    let normalized = url.trim().to_ascii_lowercase();
-    normalized.contains("dashscope.aliyuncs.com/apps/anthropic")
-        || normalized.contains("dashscope-intl.aliyuncs.com/apps/anthropic")
-        || normalized.contains("coding-intl.dashscope.aliyuncs.com/apps/anthropic")
-}
-
-fn claude_probe_fallback_models_for_api(api: &AggregateApi) -> Vec<&'static str> {
-    if is_alibaba_claude_compat_url(api.url.as_str()) {
-        return vec![ALIBABA_CODING_PLAN_PROBE_MODEL, CLAUDE_DEFAULT_PROBE_MODEL];
-    }
-    vec![CLAUDE_DEFAULT_PROBE_MODEL, ALIBABA_CODING_PLAN_PROBE_MODEL]
-}
-
-fn push_unique_model(models: &mut Vec<String>, model: &str) {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    if !models.iter().any(|item| item == trimmed) {
-        models.push(trimmed.to_string());
-    }
-}
-
-fn model_id_from_value(value: &serde_json::Value) -> Option<String> {
-    if let Some(model) = value.as_str() {
-        let trimmed = model.trim();
-        return if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-    }
-    let object = value.as_object()?;
-    ["id", "model", "slug", "name"]
-        .iter()
-        .find_map(|key| object.get(*key).and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(str::to_string)
-}
-
-fn extract_model_ids_from_models_response(body: &str) -> Vec<String> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-        return Vec::new();
-    };
-    let items = value
-        .get("data")
-        .and_then(serde_json::Value::as_array)
-        .or_else(|| value.get("models").and_then(serde_json::Value::as_array))
-        .or_else(|| value.as_array());
-    let Some(items) = items else {
-        return Vec::new();
-    };
-    let mut models = Vec::new();
-    for item in items {
-        if models.len() >= MAX_DISCOVERED_MODEL_IDS {
-            break;
-        }
-        if let Some(model) = model_id_from_value(item) {
-            push_unique_model(&mut models, model.as_str());
-        }
-    }
-    models
-}
-
-fn add_claude_probe_headers(
-    builder: reqwest::blocking::RequestBuilder,
-) -> reqwest::blocking::RequestBuilder {
-    builder
-        .header("anthropic-version", "2023-06-01")
-        .header(
-            "anthropic-beta",
-            "claude-code-20250219,interleaved-thinking-2025-05-14",
-        )
-        .header("accept", "application/json")
-        .header("accept-encoding", "identity")
-        .header("user-agent", "claude-cli/2.1.2 (external, cli)")
-        .header("x-app", "cli")
-}
-
-fn build_claude_models_probe_url(api: &AggregateApi) -> String {
-    normalize_probe_url(api.url.as_str(), "/models")
-}
-
-fn probe_claude_models_endpoint(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<Vec<String>, String> {
-    let url = build_claude_models_probe_url(api);
-    let builder = client.get(url.as_str());
-    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
-    let builder = if updated_url != url {
-        let rebuilt = client.get(updated_url.as_str());
-        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
-        rebuilt
-    } else {
-        builder
-    };
-    let response = add_claude_probe_headers(builder)
-        .send()
-        .map_err(|err| err.to_string())?;
-
-    let status_code = response.status().as_u16() as i64;
-    if !response.status().is_success() {
-        return Err(format!("claude models probe http_status={status_code}"));
-    }
-    let body = response.text().map_err(|err| err.to_string())?;
-    let models = extract_model_ids_from_models_response(body.as_str());
-    if models.is_empty() {
-        return Err("claude models probe returned empty model list".to_string());
-    }
-    Ok(models)
-}
-
-fn claude_probe_models_for_api(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-) -> (Vec<String>, Option<String>) {
-    let mut models = Vec::new();
-    let discovery_error = match probe_claude_models_endpoint(client, api, secret) {
-        Ok(discovered) => {
-            for model in discovered {
-                push_unique_model(&mut models, model.as_str());
-            }
-            None
-        }
-        Err(err) => Some(err),
-    };
-    for fallback in claude_probe_fallback_models_for_api(api) {
-        push_unique_model(&mut models, fallback);
-    }
-    (models, discovery_error)
-}
-
-fn should_retry_claude_probe_with_next_model(status_code: u16) -> bool {
-    status_code == 400
-}
-
-/// 函数 `add_codex_probe_headers`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - builder: 参数 builder
-/// - secret: 参数 secret
-///
-/// # 返回
-/// 返回函数执行结果
-fn add_codex_probe_headers(
-    builder: reqwest::blocking::RequestBuilder,
-) -> Result<reqwest::blocking::RequestBuilder, String> {
-    Ok(builder
-        .header("accept", "application/json")
-        .header("user-agent", gateway::current_codex_user_agent())
-        .header("originator", gateway::current_wire_originator())
-        .header("accept-encoding", "identity"))
-}
-
-fn build_codex_models_probe_url(api: &AggregateApi) -> String {
-    let probe_path = action_path_or_default(api, "/models");
-    let url = normalize_probe_url(api.url.as_str(), probe_path.as_str());
-    append_client_version_query(url.as_str())
-}
-
-/// 函数 `probe_codex_models_endpoint`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - client: 参数 client
-/// - base_url: 参数 base_url
-/// - secret: 参数 secret
-///
-/// # 返回
-/// 返回函数执行结果
-fn probe_codex_models_endpoint(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<i64, String> {
-    let url = build_codex_models_probe_url(api);
-    let builder = client.get(url.as_str());
-    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
-    let builder = if updated_url != url {
-        let rebuilt = client.get(updated_url.as_str());
-        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
-        rebuilt
-    } else {
-        builder
-    };
-    let response = add_codex_probe_headers(builder)?
-        .send()
-        .map_err(|err| err.to_string())?;
-
-    let status_code = response.status().as_u16() as i64;
-    if !response.status().is_success() {
-        return Err(format!("codex models probe http_status={status_code}"));
-    }
-    read_first_chunk(response)?;
-    Ok(status_code)
-}
-
-fn discover_codex_models_endpoint(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<Vec<String>, String> {
-    let url = build_codex_models_probe_url(api);
-    let builder = client.get(url.as_str());
-    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
-    let builder = if updated_url != url {
-        let rebuilt = client.get(updated_url.as_str());
-        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
-        rebuilt
-    } else {
-        builder
-    };
-    let response = add_codex_probe_headers(builder)?
-        .send()
-        .map_err(|err| err.to_string())?;
-    let status_code = response.status().as_u16();
-    if !response.status().is_success() {
-        return Err(format!("codex models discovery http_status={status_code}"));
-    }
-    let body = response.text().map_err(|err| err.to_string())?;
-    let models = extract_model_ids_from_models_response(body.as_str());
-    if models.is_empty() {
-        return Err("codex models discovery returned empty model list".to_string());
-    }
-    Ok(models)
-}
-
-/// 函数 `probe_codex_responses_endpoint`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - client: 参数 client
-/// - base_url: 参数 base_url
-/// - secret: 参数 secret
-///
-/// # 返回
-/// 返回函数执行结果
-fn probe_codex_responses_endpoint(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<i64, String> {
-    let action_hint = api
-        .action
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("/responses")
-        .to_ascii_lowercase();
-    let default_path = if action_hint.contains("chat/completions") {
-        "/chat/completions"
-    } else if action_hint.contains("responses") {
-        "/responses"
-    } else {
-        "/responses"
-    };
-    let probe_path = action_path_or_default(api, default_path);
-    let url = normalize_probe_url(api.url.as_str(), probe_path.as_str());
-    let builder = client.post(url.as_str());
-    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
-    let builder = if updated_url != url {
-        let rebuilt = client.post(updated_url.as_str());
-        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
-        rebuilt
-    } else {
-        builder
-    };
-    let request_body = if probe_path.to_ascii_lowercase().contains("chat/completions") {
-        json!({
-            "model": api.model_override.as_deref().unwrap_or("gpt-4o-mini"),
-            "messages": [{"role":"user","content":"hi"}],
-            "stream": false
-        })
-    } else if let Some(model_override) = api.model_override.as_deref() {
-        let mut body = build_codex_probe_body();
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("model".to_string(), json!(model_override));
-        }
-        body
-    } else {
-        build_codex_probe_body()
-    };
-    let response = add_codex_probe_headers(builder)?
-        .header("content-type", "application/json")
-        .header("accept", "text/event-stream")
-        .json(&request_body)
-        .send()
-        .map_err(|err| err.to_string())?;
-
-    let status_code = response.status().as_u16() as i64;
-    if !response.status().is_success() {
-        return Err(format!("codex probe http_status={status_code}"));
-    }
-    read_first_chunk(response)?;
-    Ok(status_code)
-}
-
-/// 函数 `probe_codex_endpoint`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - client: 参数 client
-/// - base_url: 参数 base_url
-/// - secret: 参数 secret
-///
-/// # 返回
-/// 返回函数执行结果
-fn probe_codex_endpoint(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-) -> Result<i64, String> {
-    let has_model_override = api
-        .model_override
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    if has_model_override {
-        return probe_codex_responses_endpoint(client, api, secret);
-    }
-
-    let models_result = probe_codex_models_endpoint(client, api, secret);
-    if let Ok(code) = models_result {
-        return Ok(code);
-    }
-    let models_err = models_result
-        .err()
-        .unwrap_or_else(|| "codex models probe failed".to_string());
-    let responses_result = probe_codex_responses_endpoint(client, api, secret);
-    if let Ok(code) = responses_result {
-        return Ok(code);
-    }
-
-    let responses_err = responses_result
-        .err()
-        .unwrap_or_else(|| "codex responses probe failed".to_string());
-    Err(format!("{models_err}; {responses_err}"))
 }
 
 fn diagnostic_status_for_http(probe_name: &str, status: i64) -> (&'static str, String) {
@@ -2312,62 +1368,7 @@ fn diagnostic_status_for_http(probe_name: &str, status: i64) -> (&'static str, S
     }
 }
 
-fn diagnostic_probe_result(
-    name: &str,
-    status: &str,
-    reason: impl Into<String>,
-    http_status: Option<i64>,
-    risk: Option<&str>,
-    recommended_mode: Option<&str>,
-    latency_ms: i64,
-) -> AggregateApiCapabilityProbeResult {
-    AggregateApiCapabilityProbeResult {
-        name: name.to_string(),
-        status: status.to_string(),
-        reason: reason.into(),
-        http_status,
-        risk: risk.map(str::to_string),
-        recommended_mode: recommended_mode.map(str::to_string),
-        latency_ms,
-    }
-}
-
-fn send_diagnostic_request(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-    method: &str,
-    url: String,
-    body: Option<serde_json::Value>,
-) -> Result<i64, String> {
-    let builder = if method.eq_ignore_ascii_case("POST") {
-        client.post(url.as_str())
-    } else {
-        client.get(url.as_str())
-    };
-    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
-    let builder = if updated_url != url {
-        let rebuilt = if method.eq_ignore_ascii_case("POST") {
-            client.post(updated_url.as_str())
-        } else {
-            client.get(updated_url.as_str())
-        };
-        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
-        rebuilt
-    } else {
-        builder
-    };
-    let mut builder = add_codex_probe_headers(builder)?
-        .header("content-type", "application/json")
-        .header("accept", "application/json");
-    if let Some(body) = body {
-        builder = builder.json(&body);
-    }
-    let response = builder.send().map_err(|err| err.to_string())?;
-    Ok(response.status().as_u16() as i64)
-}
-
-fn run_http_capability_probe(
+fn run_diagnostic_request(
     client: &reqwest::blocking::Client,
     api: &AggregateApi,
     secret: &str,
@@ -2379,12 +1380,70 @@ fn run_http_capability_probe(
     recommended_mode: Option<&str>,
 ) -> AggregateApiCapabilityProbeResult {
     let started_at = Instant::now();
-    match send_diagnostic_request(client, api, secret, method, url, body) {
-        Ok(status) => {
-            let (capability_status, reason) = diagnostic_status_for_http(name, status);
+    let request = if method.eq_ignore_ascii_case("POST") {
+        client.post(url.as_str())
+    } else {
+        client.get(url.as_str())
+    };
+    let result = (|| -> Result<(i64, Option<Vec<u8>>), String> {
+        let (request, updated_url) = apply_probe_auth(request, url.clone(), api, secret)?;
+        let request = if updated_url != url {
+            let rebuilt = if method.eq_ignore_ascii_case("POST") {
+                client.post(updated_url.as_str())
+            } else {
+                client.get(updated_url.as_str())
+            };
+            apply_probe_auth(rebuilt, updated_url, api, secret)?.0
+        } else {
+            request
+        };
+        let mut request = add_codex_probe_headers(request)?
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .timeout(std::time::Duration::from_secs(15));
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().map_err(|err| err.to_string())?;
+        let status = response.status().as_u16() as i64;
+        let body = if name == "hostedImageGeneration" && (200..=299).contains(&status) {
+            Some(response.bytes().map_err(|err| err.to_string())?.to_vec())
+        } else {
+            None
+        };
+        Ok((status, body))
+    })();
+    match result {
+        Ok((status, body)) => {
+            if name == "hostedImageGeneration" && (200..=299).contains(&status) {
+                let semantic_status = body
+                    .as_deref()
+                    .ok_or_else(|| "hosted image probe response body missing".to_string())
+                    .and_then(|body| {
+                        serde_json::from_slice::<serde_json::Value>(body)
+                            .map_err(|_| "hosted image probe returned invalid JSON".to_string())
+                    })
+                    .and_then(|body| {
+                        crate::gateway::http_bridge::hosted_image_generation_semantic_error(&body)
+                            .map(|message| Err(message.to_string()))
+                            .unwrap_or(Ok(()))
+                    });
+                if let Err(reason) = semantic_status {
+                    return diagnostic_probe_result(
+                        name,
+                        "unknown",
+                        reason,
+                        Some(status),
+                        risk,
+                        recommended_mode,
+                        started_at.elapsed().as_millis() as i64,
+                    );
+                }
+            }
+            let (status_name, reason) = diagnostic_status_for_http(name, status);
             diagnostic_probe_result(
                 name,
-                capability_status,
+                status_name,
                 reason,
                 Some(status),
                 risk,
@@ -2392,10 +1451,10 @@ fn run_http_capability_probe(
                 started_at.elapsed().as_millis() as i64,
             )
         }
-        Err(err) => diagnostic_probe_result(
+        Err(error) => diagnostic_probe_result(
             name,
             "unknown",
-            err,
+            error,
             None,
             risk,
             recommended_mode,
@@ -2404,141 +1463,29 @@ fn run_http_capability_probe(
     }
 }
 
-fn aggregate_api_diagnostic_probes(
-    client: &reqwest::blocking::Client,
-    api: &AggregateApi,
-    secret: &str,
-    live_smoke: bool,
-) -> Vec<AggregateApiCapabilityProbeResult> {
-    let mut probes = Vec::new();
-    probes.push(run_http_capability_probe(
-        client,
-        api,
-        secret,
-        "models",
-        "GET",
-        build_codex_models_probe_url(api),
-        None,
-        None,
-        Some("sync_models"),
-    ));
-
-    let mut responses_body = build_codex_probe_body();
-    if let Some(obj) = responses_body.as_object_mut() {
-        obj.insert("stream".to_string(), json!(false));
-        if let Some(model_override) = api
-            .model_override
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            obj.insert("model".to_string(), json!(model_override));
-        }
-    }
-    if live_smoke {
-        probes.push(run_http_capability_probe(
-            client,
-            api,
-            secret,
-            "responses",
-            "POST",
-            normalize_probe_url(api.url.as_str(), "/responses"),
-            Some(responses_body.clone()),
-            Some("live inference probe may consume a tiny amount of quota"),
-            Some("responses"),
-        ));
-        probes.push(run_http_capability_probe(
-            client,
-            api,
-            secret,
-            "responsesCompact",
-            "POST",
-            normalize_probe_url(api.url.as_str(), "/responses/compact"),
-            Some(responses_body.clone()),
-            Some("live inference probe may consume a tiny amount of quota"),
-            Some("responses_compact"),
-        ));
-    } else {
-        probes.push(diagnostic_probe_result(
-            "responses",
-            "not_tested",
-            "Responses probe is opt-in because it can consume inference quota",
-            None,
-            Some("live inference smoke may consume quota"),
-            Some("responses"),
-            0,
-        ));
-        probes.push(diagnostic_probe_result(
-            "responsesCompact",
-            "not_tested",
-            "Responses compact probe is opt-in because it can consume inference quota",
-            None,
-            Some("live inference smoke may consume quota"),
-            Some("responses_compact"),
-            0,
-        ));
-    }
-    probes.push(diagnostic_probe_result(
-        "responsesWebSocket",
-        "not_tested",
-        "WebSocket probe is not part of the default non-mutating diagnostic",
-        None,
-        Some("live WebSocket smoke may open a billable realtime session"),
-        Some("http_responses_fallback"),
-        0,
-    ));
-
-    if live_smoke {
-        let mut image_body = responses_body;
-        if let Some(obj) = image_body.as_object_mut() {
-            obj.insert("tools".to_string(), json!([{ "type": "image_generation" }]));
-        }
-        probes.push(run_http_capability_probe(
-            client,
-            api,
-            secret,
-            "hostedImageGeneration",
-            "POST",
-            normalize_probe_url(api.url.as_str(), "/responses"),
-            Some(image_body),
-            Some("hosted image generation smoke may consume image quota"),
-            Some("hosted_image_generation"),
-        ));
-    } else {
-        probes.push(diagnostic_probe_result(
-            "hostedImageGeneration",
-            "not_tested",
-            "Hosted image generation is opt-in because it can consume image quota",
-            None,
-            Some("live image smoke may consume image quota"),
-            Some("semantic_validation_only"),
-            0,
-        ));
-    }
-    probes
+fn diagnostic_model_for(api: &AggregateApi) -> &str {
+    api.model_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or("gpt-5.1-codex")
 }
 
-fn persist_live_capability_probe(
+fn persist_live_image_capability_probe(
     storage: &codexmanager_core::storage::Storage,
     api: &AggregateApi,
-    probes: &[AggregateApiCapabilityProbeResult],
+    probe: &AggregateApiCapabilityProbeResult,
 ) -> Result<(), String> {
-    let Some(probe) = probes.iter().find(|probe| {
-        probe.name == "hostedImageGeneration"
-            && matches!(probe.status.as_str(), "supported" | "unsupported")
-    }) else {
+    if !matches!(probe.status.as_str(), "supported" | "unsupported") {
         return Ok(());
-    };
+    }
     let observed_at = now_ts();
     storage
         .upsert_gateway_capability_observation(&GatewayCapabilityObservationRecord {
             scope: GatewayCapabilityScope {
                 source_kind: "aggregate_api".to_string(),
                 source_id: api.id.clone(),
-                upstream_model_pattern: api
-                    .model_override
-                    .clone()
-                    .unwrap_or_else(|| "*".to_string()),
+                upstream_model_pattern: diagnostic_model_for(api).to_string(),
                 protocol: "responses".to_string(),
                 capability_key: gateway::IMAGE_GENERATION_CAPABILITY.to_string(),
             },
@@ -2573,29 +1520,108 @@ pub(crate) fn diagnose_aggregate_api_capabilities(
         .ok_or_else(|| "aggregate api secret not found".to_string())?;
     let provider_type = normalize_provider_type_value(api.provider_type.as_str());
     let started_at = Instant::now();
-    let client = gateway::fresh_upstream_client();
-    let probes = if provider_type == AGGREGATE_API_PROVIDER_CODEX {
-        aggregate_api_diagnostic_probes(&client, &api, &secret, live_smoke)
-    } else {
-        vec![diagnostic_probe_result(
-            "models",
-            "unknown",
-            format!("diagnostics MVP currently focuses on Codex/OpenAI-compatible aggregate APIs; provider={provider_type}"),
-            None,
-            None,
-            Some("use_test_connection"),
-            0,
-        )]
-    };
-    if live_smoke {
-        if let Err(err) = persist_live_capability_probe(&storage, &api, &probes) {
+    gateway::prepare_upstream_client_for_aggregate_api_candidate(
+        api.id.as_str(),
+        api.url.as_str(),
+    )?;
+    let client =
+        gateway::upstream_client_for_aggregate_api_candidate(api.id.as_str(), api.url.as_str());
+    let mut probes = vec![run_diagnostic_request(
+        &client,
+        &api,
+        &secret,
+        "models",
+        "GET",
+        normalize_probe_url(api.url.as_str(), "/models"),
+        None,
+        None,
+        Some("model_catalog"),
+    )];
+    if provider_type == AGGREGATE_API_PROVIDER_CODEX && live_smoke {
+        let model = diagnostic_model_for(&api);
+        let mut responses = build_codex_probe_body(model);
+        responses["stream"] = json!(false);
+        probes.push(run_diagnostic_request(
+            &client,
+            &api,
+            &secret,
+            "responses",
+            "POST",
+            normalize_probe_url(api.url.as_str(), "/responses"),
+            Some(responses.clone()),
+            Some("live inference smoke may consume quota"),
+            Some("responses"),
+        ));
+        probes.push(run_diagnostic_request(
+            &client,
+            &api,
+            &secret,
+            "responsesCompact",
+            "POST",
+            normalize_probe_url(api.url.as_str(), "/responses/compact"),
+            Some(responses.clone()),
+            Some("live inference smoke may consume a tiny amount of quota"),
+            Some("responses_compact"),
+        ));
+        let mut image = responses;
+        image["tools"] = json!([{ "type": "image_generation" }]);
+        let image_probe = run_diagnostic_request(
+            &client,
+            &api,
+            &secret,
+            "hostedImageGeneration",
+            "POST",
+            normalize_probe_url(api.url.as_str(), "/responses"),
+            Some(image),
+            Some("hosted image generation smoke may consume image quota"),
+            Some("hosted_image_generation"),
+        );
+        if let Err(error) = persist_live_image_capability_probe(&storage, &api, &image_probe) {
             log::warn!(
                 "event=aggregate_api_capability_probe_persist_failed aggregate_api_id={} error={}",
                 api_id,
-                err
+                error
             );
         }
+        probes.push(image_probe);
+    } else {
+        probes.push(diagnostic_probe_result(
+            "responses",
+            "not_tested",
+            "Responses probe is opt-in because it can consume inference quota",
+            None,
+            Some("live inference smoke may consume quota"),
+            Some("responses"),
+            0,
+        ));
+        probes.push(diagnostic_probe_result(
+            "responsesCompact",
+            "not_tested",
+            "Responses compact probe is opt-in because it can consume inference quota",
+            None,
+            Some("live inference smoke may consume a tiny amount of quota"),
+            Some("responses_compact"),
+            0,
+        ));
+        probes.push(diagnostic_probe_result(
+            "hostedImageGeneration",
+            "not_tested",
+            "Hosted image generation is opt-in because it can consume image quota",
+            None,
+            Some("live image smoke may consume image quota"),
+            Some("semantic_validation_only"),
+            0,
+        ));
     }
+    probes.push(diagnostic_probe_result(
+        "responsesWebSocket",
+        "not_tested",
+        "WebSocket probe is not part of the bounded HTTP diagnostic",
+        None,
+        Some("live WebSocket smoke may open a billable realtime session"),
+        Some("http_responses_fallback"),
+        0,
+    ));
     Ok(AggregateApiCapabilityDiagnosticsResult {
         id: api_id.to_string(),
         provider_type,
@@ -2605,6 +1631,168 @@ pub(crate) fn diagnose_aggregate_api_capabilities(
         live_smoke,
         probes,
     })
+}
+
+fn probe_http_error(
+    probe: &str,
+    status_code: u16,
+    response: reqwest::blocking::Response,
+) -> String {
+    let detail = response.bytes().ok().and_then(|body| {
+        gateway::summarize_upstream_error_hint_from_body(status_code, body.as_ref()).or_else(|| {
+            let detail = short_error_body(String::from_utf8_lossy(body.as_ref()).as_ref());
+            (!detail.is_empty()).then_some(detail)
+        })
+    });
+    match detail {
+        Some(detail) => format!("{probe} probe http_status={status_code}; {detail}"),
+        None => format!("{probe} probe http_status={status_code}"),
+    }
+}
+
+fn is_minimax_aggregate_api(api: &AggregateApi) -> bool {
+    if api
+        .supplier_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("minimax"))
+    {
+        return true;
+    }
+    reqwest::Url::parse(api.url.as_str())
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+        .is_some_and(|host| host == "minimax.io" || host.ends_with(".minimax.io"))
+}
+
+fn build_gemini_probe_body() -> serde_json::Value {
+    json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "text": "Who are you?"
+            }]
+        }],
+        "generationConfig": {
+            "maxOutputTokens": 1
+        }
+    })
+}
+
+/// 函数 `add_codex_probe_headers`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-04-02
+///
+/// # 参数
+/// - builder: 参数 builder
+/// - secret: 参数 secret
+///
+/// # 返回
+/// 返回函数执行结果
+fn add_codex_probe_headers(
+    builder: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    Ok(builder
+        .header("accept", "application/json")
+        .header("user-agent", gateway::current_codex_user_agent())
+        .header("originator", gateway::current_wire_originator())
+        .header("accept-encoding", "identity"))
+}
+
+/// 函数 `probe_codex_responses_endpoint`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-04-02
+///
+/// # 参数
+/// - client: 参数 client
+/// - base_url: 参数 base_url
+/// - secret: 参数 secret
+///
+/// # 返回
+/// 返回函数执行结果
+fn probe_codex_responses_endpoint(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    model: &str,
+) -> Result<i64, String> {
+    let action_hint = api
+        .action
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("/responses")
+        .to_ascii_lowercase();
+    let default_path = if action_hint.contains("chat/completions") {
+        "/chat/completions"
+    } else {
+        "/responses"
+    };
+    let probe_path = action_path_or_default(api, default_path);
+    let url = normalize_probe_url(api.url.as_str(), probe_path.as_str());
+    let builder = client.post(url.as_str());
+    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    let builder = if updated_url != url {
+        let rebuilt = client.post(updated_url.as_str());
+        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+        rebuilt
+    } else {
+        builder
+    };
+    let request_body = if probe_path.to_ascii_lowercase().contains("chat/completions") {
+        json!({
+            "model": model,
+            "messages": [{"role":"user","content":"hi"}],
+            "stream": false
+        })
+    } else if is_minimax_aggregate_api(api) {
+        json!({
+            "model": model,
+            "input": "Who are you?",
+            "stream": false
+        })
+    } else {
+        build_codex_probe_body(model)
+    };
+    let response = add_codex_probe_headers(builder)?
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream")
+        .json(&request_body)
+        .send()
+        .map_err(|err| err.to_string())?;
+
+    let status_code = response.status().as_u16() as i64;
+    if !response.status().is_success() {
+        return Err(probe_http_error("codex", status_code as u16, response));
+    }
+    read_first_chunk(response)?;
+    Ok(status_code)
+}
+
+/// 函数 `probe_codex_endpoint`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-04-02
+///
+/// # 参数
+/// - client: 参数 client
+/// - base_url: 参数 base_url
+/// - secret: 参数 secret
+///
+/// # 返回
+/// 返回函数执行结果
+fn probe_codex_endpoint(
+    client: &reqwest::blocking::Client,
+    api: &AggregateApi,
+    secret: &str,
+    model: &str,
+) -> Result<i64, String> {
+    probe_codex_responses_endpoint(client, api, secret, model)
 }
 
 /// 函数 `probe_claude_endpoint`
@@ -2624,80 +1812,49 @@ fn probe_claude_endpoint(
     client: &reqwest::blocking::Client,
     api: &AggregateApi,
     secret: &str,
+    model: &str,
 ) -> Result<i64, String> {
     let probe_path = action_path_or_default(api, "/messages?beta=true");
     let url = normalize_probe_url(api.url.as_str(), probe_path.as_str());
-    let (mut models, discovery_error) = if let Some(model_override) = api
-        .model_override
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        (vec![model_override.to_string()], None)
+    let builder = client.post(url.as_str());
+    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
+    let builder = if updated_url != url {
+        let rebuilt = client.post(updated_url.as_str());
+        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
+        rebuilt
     } else {
-        claude_probe_models_for_api(client, api, secret)
+        builder
     };
-    if models.is_empty() {
-        models = claude_probe_fallback_models_for_api(api)
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+    let response = builder
+        .header("anthropic-version", "2023-06-01")
+        .header(
+            "anthropic-beta",
+            "claude-code-20250219,interleaved-thinking-2025-05-14",
+        )
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("accept-encoding", "identity")
+        .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+        .header("x-app", "cli")
+        .json(&build_claude_probe_body(model))
+        .send()
+        .map_err(|err| err.to_string())?;
+    let status_code = response.status().as_u16() as i64;
+    if !response.status().is_success() {
+        return Err(probe_http_error("claude", status_code as u16, response));
     }
-    let mut last_error = None;
-    for (index, model) in models.iter().enumerate() {
-        let builder = client.post(url.as_str());
-        let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
-        let builder = if updated_url != url {
-            let rebuilt = client.post(updated_url.as_str());
-            let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, api, secret)?;
-            rebuilt
-        } else {
-            builder
-        };
-        let response = builder
-            .header("anthropic-version", "2023-06-01")
-            .header(
-                "anthropic-beta",
-                "claude-code-20250219,interleaved-thinking-2025-05-14",
-            )
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .header("accept-encoding", "identity")
-            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
-            .header("x-app", "cli")
-            .json(&build_claude_probe_body(model))
-            .send()
-            .map_err(|err| err.to_string())?;
-
-        let status_code = response.status().as_u16() as i64;
-        if response.status().is_success() {
-            read_first_chunk(response)?;
-            return Ok(status_code);
-        }
-
-        let status_code_u16 = response.status().as_u16();
-        last_error = Some(format!(
-            "claude probe http_status={status_code} model={model}"
-        ));
-        if index + 1 >= models.len() || !should_retry_claude_probe_with_next_model(status_code_u16)
-        {
-            break;
-        }
-    }
-    Err(match (discovery_error, last_error) {
-        (Some(discovery), Some(probe)) => format!("{discovery}; {probe}"),
-        (None, Some(probe)) => probe,
-        (Some(discovery), None) => discovery,
-        (None, None) => "claude probe failed".to_string(),
-    })
+    read_first_chunk(response)?;
+    Ok(status_code)
 }
 
 fn probe_gemini_endpoint(
     client: &reqwest::blocking::Client,
     api: &AggregateApi,
     secret: &str,
+    model: &str,
 ) -> Result<i64, String> {
-    let probe_path = action_path_or_default(api, "/v1beta/models/gemini-2.5-flash:generateContent");
+    let default_path = format!("/v1beta/models/{model}:generateContent");
+    let probe_path = action_path_or_default(api, default_path.as_str());
     let url = normalize_probe_url(api.url.as_str(), probe_path.as_str());
     let builder = client.post(url.as_str());
     let (builder, updated_url) = apply_probe_auth(builder, url.clone(), api, secret)?;
@@ -2718,7 +1875,7 @@ fn probe_gemini_endpoint(
 
     let status_code = response.status().as_u16() as i64;
     if !response.status().is_success() {
-        return Err(format!("gemini probe http_status={status_code}"));
+        return Err(probe_http_error("gemini", status_code as u16, response));
     }
     read_first_chunk(response)?;
     Ok(status_code)
@@ -2738,18 +1895,22 @@ fn probe_gemini_endpoint(
 pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
     let items = storage
-        .list_aggregate_apis()
-        .map_err(|err| format!("list aggregate apis failed: {err}"))?;
-    let assignments = storage
-        .list_quota_source_model_assignments()
-        .map_err(|err| format!("list aggregate api model assignments failed: {err}"))?;
+        .list_aggregate_api_summaries()
+        .map_err(|err| format!("load aggregate api list failed: {err}"))?;
     let mut models_by_api = std::collections::HashMap::<String, Vec<String>>::new();
-    for assignment in assignments {
-        if assignment.source_kind == "aggregate_api" {
+    for model in storage
+        .list_managed_models_v2(true)
+        .map_err(|err| format!("load model catalog V2 routes failed: {err}"))?
+    {
+        for route in model
+            .routes
+            .into_iter()
+            .filter(|route| route.enabled && route.source_kind == "aggregate_api")
+        {
             models_by_api
-                .entry(assignment.source_id)
+                .entry(route.source_id)
                 .or_default()
-                .push(assignment.model_slug);
+                .push(model.slug.clone());
         }
     }
     Ok(items
@@ -2810,152 +1971,6 @@ pub(crate) fn reset_aggregate_api_runtime_status(
     Ok(gateway::gateway_reset_aggregate_api_runtime_status(api_id))
 }
 
-pub(crate) fn list_aggregate_api_supplier_models(
-    supplier_key: Option<String>,
-    provider_type: Option<String>,
-) -> Result<Vec<AggregateApiSupplierModelEntry>, String> {
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let supplier_key = supplier_key.and_then(|value| normalize_optional_text(Some(value)));
-    let provider_type = provider_type
-        .map(|value| normalize_provider_type(Some(value)))
-        .transpose()?
-        .and_then(|value| normalize_optional_text(Some(value)));
-    storage
-        .list_aggregate_api_supplier_models(supplier_key.as_deref(), provider_type.as_deref())
-        .map_err(|err| format!("list supplier models failed: {err}"))
-        .map(|items| items.into_iter().map(supplier_model_entry).collect())
-}
-
-pub(crate) fn save_aggregate_api_supplier_model(
-    params: AggregateApiSupplierModelUpsertParams,
-) -> Result<AggregateApiSupplierModelEntry, String> {
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let supplier_key = normalize_required_text("supplierKey", params.supplier_key)?;
-    let provider_type = normalize_provider_type(Some(params.provider_type))?;
-    let upstream_model = normalize_required_text("upstreamModel", params.upstream_model)?;
-    let now = now_ts();
-    let model = AggregateApiSupplierModel {
-        supplier_key,
-        provider_type,
-        upstream_model,
-        display_name: params
-            .display_name
-            .and_then(|value| normalize_optional_text(Some(value))),
-        status: normalize_supplier_model_status(params.status)?,
-        created_at: now,
-        updated_at: now,
-    };
-    storage
-        .upsert_aggregate_api_supplier_model(&model)
-        .map_err(|err| format!("save supplier model failed: {err}"))?;
-    Ok(supplier_model_entry(model))
-}
-
-pub(crate) fn delete_aggregate_api_supplier_model(
-    params: AggregateApiSupplierModelDeleteParams,
-) -> Result<(), String> {
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let supplier_key = normalize_required_text("supplierKey", params.supplier_key)?;
-    let provider_type = normalize_provider_type(Some(params.provider_type))?;
-    let upstream_model = normalize_required_text("upstreamModel", params.upstream_model)?;
-    storage
-        .delete_aggregate_api_supplier_model(
-            supplier_key.as_str(),
-            provider_type.as_str(),
-            upstream_model.as_str(),
-        )
-        .map_err(|err| format!("delete supplier model failed: {err}"))
-}
-
-pub(crate) fn import_aggregate_api_supplier_models(
-    params: AggregateApiSupplierModelImportParams,
-) -> Result<AggregateApiSupplierModelImportResult, String> {
-    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let api_id = normalize_required_text("apiId", params.api_id)?;
-    let api = storage
-        .find_aggregate_api_by_id(api_id.as_str())
-        .map_err(|err| format!("read aggregate api failed: {err}"))?
-        .ok_or_else(|| "aggregate api not found".to_string())?;
-    let supplier_key = params
-        .supplier_key
-        .and_then(|value| normalize_optional_text(Some(value)))
-        .unwrap_or_else(|| supplier_template_key_for_api(&api));
-    let provider_type = params
-        .provider_type
-        .map(|value| normalize_provider_type(Some(value)))
-        .transpose()?
-        .unwrap_or_else(|| normalize_provider_type_value(api.provider_type.as_str()));
-    let templates = storage
-        .list_aggregate_api_supplier_models(
-            Some(supplier_key.as_str()),
-            Some(provider_type.as_str()),
-        )
-        .map_err(|err| format!("list supplier models failed: {err}"))?;
-    let mut imported = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let now = now_ts();
-    for template in templates {
-        if template.status != "available" {
-            continue;
-        }
-        if !seen.insert(template.upstream_model.clone()) {
-            continue;
-        }
-        let record = ModelSourceModel {
-            source_kind: AGGREGATE_API_MODEL_SOURCE_KIND.to_string(),
-            source_id: api.id.clone(),
-            upstream_model: template.upstream_model,
-            display_name: template.display_name,
-            status: "available".to_string(),
-            discovery_kind: "template".to_string(),
-            last_synced_at: Some(now),
-            extra_json: "{}".to_string(),
-            created_at: now,
-            updated_at: now,
-        };
-        storage
-            .upsert_model_source_model(&record)
-            .map_err(|err| format!("import supplier model failed: {err}"))?;
-        imported.push(source_model_entry(record));
-    }
-    if !imported.is_empty() {
-        crate::apikey_models::auto_associate_aggregate_api_source_models(
-            &storage,
-            api.id.as_str(),
-        )?;
-    }
-    Ok(AggregateApiSupplierModelImportResult {
-        imported: imported.len(),
-        items: imported,
-    })
-}
-
-fn supplier_model_entry(model: AggregateApiSupplierModel) -> AggregateApiSupplierModelEntry {
-    AggregateApiSupplierModelEntry {
-        supplier_key: model.supplier_key,
-        provider_type: model.provider_type,
-        upstream_model: model.upstream_model,
-        display_name: model.display_name,
-        status: model.status,
-        created_at: model.created_at,
-        updated_at: model.updated_at,
-    }
-}
-
-fn source_model_entry(model: ModelSourceModel) -> ManagedModelSourceModelEntry {
-    ManagedModelSourceModelEntry {
-        source_kind: model.source_kind,
-        source_id: model.source_id,
-        upstream_model: model.upstream_model,
-        display_name: model.display_name,
-        status: model.status,
-        discovery_kind: model.discovery_kind,
-        last_synced_at: model.last_synced_at,
-        created_at: model.created_at,
-        updated_at: model.updated_at,
-    }
-}
-
 /// 函数 `create_aggregate_api`
 ///
 /// 作者: gaohongshun
@@ -2989,9 +2004,8 @@ pub(crate) fn create_aggregate_api(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
-    model_slugs: Option<Vec<String>>,
 ) -> Result<AggregateApiCreateResult, String> {
-    let mut storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let normalized_provider_type = normalize_provider_type(provider_type)?;
     let normalized_supplier_name = normalize_supplier_name(supplier_name)?;
     let normalized_sort = normalize_sort(sort);
@@ -3086,16 +2100,6 @@ pub(crate) fn create_aggregate_api(
             ));
         }
     }
-    if let Some(model_slugs) = model_slugs {
-        if let Err(err) =
-            storage.set_quota_source_model_assignments("aggregate_api", &id, model_slugs.as_slice())
-        {
-            let _ = storage.delete_aggregate_api(&id);
-            return Err(format!(
-                "persist aggregate api model assignments failed: {err}"
-            ));
-        }
-    }
     Ok(AggregateApiCreateResult {
         id,
         key: if record.auth_type == AGGREGATE_API_AUTH_APIKEY {
@@ -3141,14 +2145,13 @@ pub(crate) fn update_aggregate_api(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
-    model_slugs: Option<Vec<String>>,
 ) -> Result<(), String> {
     if api_id.is_empty() {
         return Err("aggregate api id required".to_string());
     }
-    let mut storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let existing = storage
-        .find_aggregate_api_by_id(api_id)
+        .find_aggregate_api_update_config_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api not found".to_string())?;
     let existing_auth_type = normalize_auth_type(Some(existing.auth_type.clone()))
@@ -3230,16 +2233,20 @@ pub(crate) fn update_aggregate_api(
             .update_aggregate_api_model_override(api_id, normalized.as_deref())
             .map_err(|err| err.to_string())?;
     }
-    if cost_multiplier.is_some() {
-        let normalized = normalize_cost_multiplier(cost_multiplier)?;
+    if let Some(cost_multiplier) = cost_multiplier {
         storage
-            .update_aggregate_api_cost_multiplier(api_id, normalized)
+            .update_aggregate_api_cost_multiplier(
+                api_id,
+                normalize_cost_multiplier(Some(cost_multiplier))?,
+            )
             .map_err(|err| err.to_string())?;
     }
     if let Some(daily_spend_limit_usd) = daily_spend_limit_usd {
-        let normalized = normalize_daily_spend_limit_usd(daily_spend_limit_usd)?;
         storage
-            .update_aggregate_api_daily_spend_limit_usd(api_id, normalized)
+            .update_aggregate_api_daily_spend_limit_usd(
+                api_id,
+                normalize_daily_spend_limit_usd(daily_spend_limit_usd)?,
+            )
             .map_err(|err| err.to_string())?;
     }
 
@@ -3349,11 +2356,6 @@ pub(crate) fn update_aggregate_api(
                 .map_err(|err| err.to_string())?;
         }
     }
-    if let Some(model_slugs) = model_slugs {
-        storage
-            .set_quota_source_model_assignments("aggregate_api", api_id, model_slugs.as_slice())
-            .map_err(|err| err.to_string())?;
-    }
     Ok(())
 }
 
@@ -3394,15 +2396,14 @@ pub(crate) fn read_aggregate_api_secret(api_id: &str) -> Result<AggregateApiSecr
         return Err("aggregate api id required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let api = storage
-        .find_aggregate_api_by_id(api_id)
+    let config = storage
+        .find_aggregate_api_secret_config_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api not found".to_string())?;
-    let key = storage
-        .find_aggregate_api_secret_by_id(api_id)
-        .map_err(|err| err.to_string())?
+    let key = config
+        .secret_value
         .ok_or_else(|| "aggregate api secret not found".to_string())?;
-    let auth_type = normalize_auth_type(Some(api.auth_type))?;
+    let auth_type = normalize_auth_type(Some(config.auth_type))?;
     if auth_type == AGGREGATE_API_AUTH_USERPASS {
         let parsed: UserPassSecret = serde_json::from_str(key.as_str())
             .map_err(|_| "invalid aggregate api secret".to_string())?;
@@ -3434,6 +2435,41 @@ pub(crate) fn read_aggregate_api_secret(api_id: &str) -> Result<AggregateApiSecr
 ///
 /// # 返回
 /// 返回函数执行结果
+fn configured_aggregate_probe_model(
+    storage: &codexmanager_core::storage::Storage,
+    api_id: &str,
+) -> Result<String, String> {
+    let mut routes = storage
+        .list_managed_models_v2(true)
+        .map_err(|err| format!("read model catalog V2 routes failed: {err}"))?
+        .into_iter()
+        .flat_map(|model| {
+            model
+                .routes
+                .into_iter()
+                .filter(move |route| {
+                    route.enabled
+                        && route.source_kind == "aggregate_api"
+                        && route.source_id == api_id
+                        && !route.upstream_model.trim().is_empty()
+                })
+                .map(move |route| (route.priority, model.sort_order, route.upstream_model))
+        })
+        .collect::<Vec<_>>();
+    routes.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    routes
+        .into_iter()
+        .next()
+        .map(|(_, _, model)| model)
+        .ok_or_else(|| "aggregate api has no enabled model catalog V2 route".to_string())
+}
+
 pub(crate) fn test_aggregate_api_connection(
     api_id: &str,
 ) -> Result<AggregateApiTestResult, String> {
@@ -3441,32 +2477,33 @@ pub(crate) fn test_aggregate_api_connection(
         return Err("aggregate api id required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let api = storage
-        .find_aggregate_api_by_id(api_id)
+    let api_with_secrets = storage
+        .find_aggregate_api_with_secrets_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api not found".to_string())?;
-    let secret = storage
-        .find_aggregate_api_secret_by_id(api_id)
-        .map_err(|err| err.to_string())?;
-    let Some(secret) = secret else {
-        return Err("aggregate api secret not found".to_string());
-    };
-    let client = gateway::fresh_upstream_client();
+    let api = api_with_secrets.api;
+    let secret = api_with_secrets
+        .secret_value
+        .ok_or_else(|| "aggregate api secret not found".to_string())?;
+    let probe_model = configured_aggregate_probe_model(&storage, api_id)?;
+    let client = gateway::upstream_client_for_aggregate_url(api.url.as_str());
     let started_at = Instant::now();
     let provider_type = normalize_provider_type_value(api.provider_type.as_str());
     let result = match provider_type.as_str() {
-        AGGREGATE_API_PROVIDER_CLAUDE => probe_claude_endpoint(&client, &api, &secret),
-        AGGREGATE_API_PROVIDER_GEMINI => probe_gemini_endpoint(&client, &api, &secret),
-        _ if probe_codex_only_for_provider(provider_type.as_str()) => {
-            probe_codex_endpoint(&client, &api, &secret)
+        AGGREGATE_API_PROVIDER_CLAUDE => {
+            probe_claude_endpoint(&client, &api, &secret, probe_model.as_str())
         }
-        _ => probe_codex_endpoint(&client, &api, &secret),
+        AGGREGATE_API_PROVIDER_GEMINI => {
+            probe_gemini_endpoint(&client, &api, &secret, probe_model.as_str())
+        }
+        _ => probe_codex_endpoint(&client, &api, &secret, probe_model.as_str()),
     };
     let (ok, status_code, last_error) = match result {
         Ok(code) => (true, Some(code), None),
         Err(err) => (false, None, Some(err)),
     };
-    let message = last_error.map(|err| format!("provider={provider_type}; {err}"));
+    let message =
+        last_error.map(|err| format!("provider={provider_type}; model={probe_model}; {err}"));
 
     let _ = storage.update_aggregate_api_test_result(api_id, ok, status_code, message.as_deref());
     Ok(AggregateApiTestResult {
@@ -3479,49 +2516,6 @@ pub(crate) fn test_aggregate_api_connection(
     })
 }
 
-pub(crate) fn discover_aggregate_api_models(api_id: &str) -> Result<Vec<String>, String> {
-    if api_id.trim().is_empty() {
-        return Err("aggregate api id required".to_string());
-    }
-    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let api = storage
-        .find_aggregate_api_by_id(api_id)
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "aggregate api not found".to_string())?;
-    let secret = storage
-        .find_aggregate_api_secret_by_id(api_id)
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "aggregate api secret not found".to_string())?;
-    if let Some(model_override) = api
-        .model_override
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(vec![model_override.to_string()]);
-    }
-
-    let client = gateway::fresh_upstream_client();
-    let provider_type = normalize_provider_type_value(api.provider_type.as_str());
-    match provider_type.as_str() {
-        AGGREGATE_API_PROVIDER_CLAUDE => {
-            let (models, discovery_error) = claude_probe_models_for_api(&client, &api, &secret);
-            if models.is_empty() {
-                Err(discovery_error.unwrap_or_else(|| {
-                    "claude models discovery returned empty model list".to_string()
-                }))
-            } else {
-                Ok(models)
-            }
-        }
-        AGGREGATE_API_PROVIDER_GEMINI => Err(
-            "gemini aggregate api does not expose a generic model list; add source models manually"
-                .to_string(),
-        ),
-        _ => discover_codex_models_endpoint(&client, &api, &secret),
-    }
-}
-
 pub(crate) fn refresh_aggregate_api_balance(
     api_id: &str,
 ) -> Result<AggregateApiBalanceRefreshResult, String> {
@@ -3529,24 +2523,22 @@ pub(crate) fn refresh_aggregate_api_balance(
         return Err("aggregate api id required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let api = storage
-        .find_aggregate_api_by_id(api_id)
+    let api_with_secrets = storage
+        .find_aggregate_api_with_secrets_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api not found".to_string())?;
+    let api = api_with_secrets.api;
     if !api.balance_query_enabled {
         return Err("aggregate api balance query is disabled".to_string());
     }
-    let provider_secret = storage
-        .find_aggregate_api_secret_by_id(api_id)
-        .map_err(|err| err.to_string())?
+    let provider_secret = api_with_secrets
+        .secret_value
         .ok_or_else(|| "aggregate api secret not found".to_string())?;
-    let balance_secret = storage
-        .find_aggregate_api_balance_secret_by_id(api_id)
-        .map_err(|err| err.to_string())?;
+    let balance_secret = api_with_secrets.balance_access_token;
     let template = default_balance_query_template(normalize_balance_query_template(
         api.balance_query_template.clone(),
     )?);
-    let client = gateway::fresh_upstream_client();
+    let client = gateway::upstream_client_for_aggregate_url(api.url.as_str());
     let started_at = Instant::now();
     let result = match template.as_str() {
         AGGREGATE_API_BALANCE_TEMPLATE_NEW_API => {

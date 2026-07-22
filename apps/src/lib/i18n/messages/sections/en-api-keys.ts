@@ -1,11 +1,14 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_API_KEYS_MESSAGES: MessageCatalog = {
+  "Gateway access": "Gateway access",
   项目: "Project",
   "Token / 金额": "Token / Amount",
   已花费: "Spent",
   不限额: "Unlimited",
   已达上限: "Limit reached",
+  管理员视图: "Admin view",
+  成员视图: "Member view",
   "请选择平台 Key 归属成员": "Select the member owner for this platform key",
   账号组筛选: "Account group filter",
   "额度分发开启时，平台 Key 必须归属到一个成员钱包。":

@@ -8,8 +8,6 @@ pub(crate) mod disable;
 pub(crate) mod enable;
 #[path = "apikey_list.rs"]
 pub(crate) mod list;
-#[path = "apikey_models.rs"]
-pub(crate) mod models;
 #[path = "apikey_profile.rs"]
 pub(crate) mod profile;
 #[path = "apikey_read_secret.rs"]

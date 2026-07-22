@@ -61,6 +61,36 @@ test("首页仪表盘不再为已移除的活跃账号卡片预取日志样本",
   );
 });
 
+test("桌面启动快照命令会透传轻量快照参数", async () => {
+  const source = await readSource("src-tauri/src/commands/startup.rs");
+  assert.match(source, /day_start_ts: Option<i64>/);
+  assert.match(source, /day_end_ts: Option<i64>/);
+  assert.match(source, /include_api_models: Option<bool>/);
+  assert.match(source, /include_api_keys: Option<bool>/);
+  assert.match(source, /include_accounts: Option<bool>/);
+  assert.match(source, /include_usage_snapshots: Option<bool>/);
+  assert.match(source, /include_account_runtime: Option<bool>/);
+  assert.match(source, /include_account_details: Option<bool>/);
+  assert.match(source, /"includeApiModels": include_api_models/);
+  assert.match(source, /"includeApiKeys": include_api_keys/);
+  assert.match(source, /"includeAccounts": include_accounts/);
+  assert.match(source, /"includeUsageSnapshots": include_usage_snapshots/);
+  assert.match(source, /"includeAccountRuntime": include_account_runtime/);
+  assert.match(source, /"includeAccountDetails": include_account_details/);
+  assert.match(
+    source,
+    /rpc_call_in_background\("startup\/snapshot", addr, Some\(params\)\)\.await/,
+  );
+});
+
+test("托盘预览使用较轻的启动快照", async () => {
+  const source = await readSource("src/app/tray-preview/page.tsx");
+  assert.match(source, /requestLogLimit: TRAY_PREVIEW_REQUEST_LOG_LIMIT/);
+  assert.match(source, /includeApiModels: false/);
+  assert.match(source, /includeApiKeys: false/);
+  assert.match(source, /includeAccountDetails: false/);
+});
+
 test("首页账户统计优先使用启动快照汇总", async () => {
   const hookSource = await readSource("src/hooks/useDashboardStats.ts");
   assert.match(hookSource, /const accountSummary = data\?\.accountSummary;/);

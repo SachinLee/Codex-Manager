@@ -1,5 +1,3 @@
-import type { ManagedModelSourceModel } from "@/types/model";
-
 export interface ApiKey {
   id: string;
   name: string;
@@ -66,28 +64,6 @@ export interface AggregateApiRuntimeStatus {
   remainingSecs: number;
   lastFailureAt: number | null;
   reason: string | null;
-}
-
-export interface AggregateApiCreateResult {
-  id: string;
-  key: string;
-}
-
-export interface AggregateApiSecretResult {
-  id: string;
-  key: string;
-  authType: string;
-  username: string | null;
-  password: string | null;
-}
-
-export interface AggregateApiTestResult {
-  id: string;
-  ok: boolean;
-  statusCode: number | null;
-  message: string | null;
-  testedAt: number;
-  latencyMs: number;
 }
 
 export type AggregateApiCapabilityStatus =
@@ -171,26 +147,6 @@ export interface AggregateApiCapabilityAttempt {
   createdAt: number;
 }
 
-export interface AggregateApiBalanceSnapshot {
-  isValid: boolean;
-  invalidMessage: string | null;
-  remaining: number | null;
-  unit: string | null;
-  planName: string | null;
-  total: number | null;
-  used: number | null;
-  extra: Record<string, unknown> | null;
-}
-
-export interface AggregateApiBalanceRefreshResult {
-  id: string;
-  ok: boolean;
-  balance: AggregateApiBalanceSnapshot | null;
-  message: string | null;
-  queriedAt: number;
-  latencyMs: number;
-}
-
 export interface AggregateApiDailyUsageStat {
   aggregateApiId: string;
   aggregateApiSupplierName: string | null;
@@ -238,19 +194,46 @@ export interface AggregateApiReasoningGuardStat {
   lastEventAt: number | null;
 }
 
-export interface AggregateApiSupplierModel {
-  supplierKey: string;
-  providerType: string;
-  upstreamModel: string;
-  displayName: string | null;
-  status: string;
-  createdAt: number;
-  updatedAt: number;
+export interface AggregateApiCreateResult {
+  id: string;
+  key: string;
 }
 
-export interface AggregateApiSupplierModelImportResult {
-  imported: number;
-  items: ManagedModelSourceModel[];
+export interface AggregateApiSecretResult {
+  id: string;
+  key: string;
+  authType: string;
+  username: string | null;
+  password: string | null;
+}
+
+export interface AggregateApiTestResult {
+  id: string;
+  ok: boolean;
+  statusCode: number | null;
+  message: string | null;
+  testedAt: number;
+  latencyMs: number;
+}
+
+export interface AggregateApiBalanceSnapshot {
+  isValid: boolean;
+  invalidMessage: string | null;
+  remaining: number | null;
+  unit: string | null;
+  planName: string | null;
+  total: number | null;
+  used: number | null;
+  extra: Record<string, unknown> | null;
+}
+
+export interface AggregateApiBalanceRefreshResult {
+  id: string;
+  ok: boolean;
+  balance: AggregateApiBalanceSnapshot | null;
+  message: string | null;
+  queriedAt: number;
+  latencyMs: number;
 }
 
 export interface ApiKeyUsageStat {

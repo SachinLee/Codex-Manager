@@ -91,6 +91,8 @@
 | [原生Codex线程锚点优先级说明.md](report/原生Codex线程锚点优先级说明.md) | 说明原生 Codex、`prompt_cache_key` 与兼容兜底锚点的优先级规则 |
 | [后台任务账号跳过说明.md](report/后台任务账号跳过说明.md) | 后台任务过滤、禁用账号、workspace 停用原因 |
 | [最小排障手册.md](report/最小排障手册.md) | 快速定位最常见启动与转发问题 |
+| [模型目录V2管理与计费说明.md](report/模型目录V2管理与计费说明.md) | 管理 builtin/custom、整数价格阶梯、routes、instructions policy、导入导出与钱包扣费 |
+| [聚合API请求规则与配置说明.md](report/聚合API请求规则与配置说明.md) | 聚合上游连接、V2 route、鉴权、余额查询与排障 |
 | [插件中心最小接入说明.md](report/插件中心最小接入说明.md) | 插件中心最小接入字段、接口和 Rhai 最小函数 |
 | [当前网关与Codex请求头和参数差异表.md](report/当前网关与Codex请求头和参数差异表.md) | 当前网关参数传递、请求头和请求参数与 Codex 的对照说明 |
 | [插件中心对接与接口清单.md](report/插件中心对接与接口清单.md) | 插件中心接入方式、市场模式、RPC/Tauri 命令、清单字段、Rhai 接口清单 |

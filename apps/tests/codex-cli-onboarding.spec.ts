@@ -113,6 +113,16 @@ async function mockRuntimeAndRpc(page: Page) {
       });
       return;
     }
+    if (method === "accountManager/session/current") {
+      await ok({
+        mode: "none",
+        currentUser: null,
+        role: "system_admin",
+        permissions: [],
+        distributionEnabled: false,
+      });
+      return;
+    }
     if (method === "aggregateApi/list") {
       await ok({ items: [] });
       return;
@@ -146,6 +156,69 @@ async function mockRuntimeAndRpc(page: Page) {
   return { settingsSetPayloads };
 }
 
+test("Codex CLI guide keeps its panels and footer from overlapping", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await mockRuntimeAndRpc(page);
+
+  await page.goto("/aggregate-api/");
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "Codex 首次接入引导" }),
+  ).toBeVisible();
+
+  const stepsPanel = dialog
+    .getByRole("heading", { name: "基础步骤" })
+    .locator("xpath=ancestor::section[1]");
+  const configPanel = dialog
+    .getByRole("heading", { name: "基础配置示例" })
+    .locator("xpath=ancestor::section[1]");
+  const scrollArea = dialog.getByTestId("codex-guide-scroll");
+  const footer = dialog.locator('[data-slot="dialog-footer"]');
+
+  const [desktopSteps, desktopConfig, desktopScroll, desktopFooter] =
+    await Promise.all([
+      stepsPanel.boundingBox(),
+      configPanel.boundingBox(),
+      scrollArea.boundingBox(),
+      footer.boundingBox(),
+    ]);
+  expect(desktopSteps).not.toBeNull();
+  expect(desktopConfig).not.toBeNull();
+  expect(desktopScroll).not.toBeNull();
+  expect(desktopFooter).not.toBeNull();
+  expect(Math.abs(desktopSteps!.y - desktopConfig!.y)).toBeLessThanOrEqual(1);
+  expect(desktopSteps!.x + desktopSteps!.width).toBeLessThanOrEqual(
+    desktopConfig!.x,
+  );
+  expect(desktopScroll!.y + desktopScroll!.height).toBeLessThanOrEqual(
+    desktopFooter!.y + 1,
+  );
+
+  await page.setViewportSize({ width: 900, height: 760 });
+  const [stackedSteps, stackedConfig] = await Promise.all([
+    stepsPanel.boundingBox(),
+    configPanel.boundingBox(),
+  ]);
+  expect(stackedSteps).not.toBeNull();
+  expect(stackedConfig).not.toBeNull();
+  expect(stackedConfig!.y).toBeGreaterThanOrEqual(
+    stackedSteps!.y + stackedSteps!.height,
+  );
+  const scrollState = await scrollArea.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    };
+  });
+  expect(scrollState.scrollHeight).toBeGreaterThan(scrollState.clientHeight);
+  expect(scrollState.scrollTop).toBeGreaterThan(0);
+  await expect(footer).toBeVisible();
+});
+
 test("temporary Codex CLI guide close survives a hard reload in the same tab", async ({
   page,
 }) => {
@@ -153,20 +226,20 @@ test("temporary Codex CLI guide close survives a hard reload in the same tab", a
 
   await page.goto("/aggregate-api/");
   await expect(
-    page.getByRole("heading", { name: "Codex CLI 首次接入引导" }),
+    page.getByRole("heading", { name: "Codex 首次接入引导" }),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "本次关闭" }).click();
   await expect(
-    page.getByRole("heading", { name: "Codex CLI 首次接入引导" }),
+    page.getByRole("heading", { name: "Codex 首次接入引导" }),
   ).not.toBeVisible();
 
   await page.reload();
   await expect(
-    page.getByRole("columnheader", { name: "供应商 / URL" }).last(),
+    page.getByRole("columnheader", { name: "模型路由" }).last(),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Codex CLI 首次接入引导" }),
+    page.getByRole("heading", { name: "Codex 首次接入引导" }),
   ).not.toBeVisible();
 });
 
@@ -178,9 +251,9 @@ test("collapsed sidebar brand uses the app title", async ({ page }) => {
 
   await page.goto("/");
   const brandButton = page.getByRole("button", {
-    name: "重新打开 Codex CLI 引导",
+    name: "重新打开 Codex 引导",
   });
-  await expect(brandButton).toHaveAttribute("title", "重新打开 Codex CLI 引导");
+  await expect(brandButton).toHaveAttribute("title", "重新打开 Codex 引导");
 
   await page.getByRole("button", { name: "收起侧边栏" }).click();
 
@@ -201,7 +274,7 @@ test("checking don't show again persists the guide dismissal before reload", asy
 
   await page.goto("/aggregate-api/");
   await expect(
-    page.getByRole("heading", { name: "Codex CLI 首次接入引导" }),
+    page.getByRole("heading", { name: "Codex 首次接入引导" }),
   ).toBeVisible();
 
   await page
@@ -217,15 +290,15 @@ test("checking don't show again persists the guide dismissal before reload", asy
     )
     .toBe(true);
   await expect(
-    page.getByRole("heading", { name: "Codex CLI 首次接入引导" }),
+    page.getByRole("heading", { name: "Codex 首次接入引导" }),
   ).not.toBeVisible();
 
   await page.evaluate(() => window.sessionStorage.clear());
   await page.reload();
   await expect(
-    page.getByRole("columnheader", { name: "供应商 / URL" }).last(),
+    page.getByRole("columnheader", { name: "模型路由" }).last(),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Codex CLI 首次接入引导" }),
+    page.getByRole("heading", { name: "Codex 首次接入引导" }),
   ).not.toBeVisible();
 });

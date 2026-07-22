@@ -38,6 +38,22 @@ interface AppState {
 
 const initialShellPath: TopLevelRoutePath = "/";
 
+function hasPartialStateChanges<T extends object>(
+  current: T,
+  patch: Partial<T>,
+): boolean {
+  for (const key of Object.keys(patch) as Array<keyof T>) {
+    if (!Object.is(current[key], patch[key])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function areTabsEqual(left: TopLevelRoutePath[], right: TopLevelRoutePath[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
 export const useAppStore = create<AppState>((set) => ({
   serviceStatus: {
     connected: false,
@@ -47,6 +63,8 @@ export const useAppStore = create<AppState>((set) => ({
   },
   appSettings: {
     updateAutoCheck: true,
+    autoStartEnabled: false,
+    autoStartSupported: false,
     closeToTrayOnClose: false,
     closeToTraySupported: false,
     lowTransparency: false,
@@ -86,20 +104,10 @@ export const useAppStore = create<AppState>((set) => ({
       "gpt-5.4-mini",
       "gpt-5.4",
     ],
-    modelCatalogAutoRemoteFetch: true,
     modelForwardRules: "",
     compactModelForwardRules: "",
-    autoCompactEnabled: false,
     accountMaxInflight: 1,
-    reasoningGuardEnabled: true,
-    reasoningGuardMatchMode: "targets",
-    reasoningGuardStreamAction: "strictRetry",
-    reasoningGuardContinuationMarkerText: "Continue thinking...",
-    reasoningGuardTargets: [516, 1034, 1552],
-    reasoningGuardInterceptStreaming: true,
-    reasoningGuardInterceptNonStreaming: true,
-    reasoningGuardRetryAttempts: 3,
-    reasoningGuardBypassAfterConsecutive: 0,
+    threadAwareAccountDistributionEnabled: true,
     quotaGuard: {
       enabled: true,
       primaryMinRemainingPercent: 5,
@@ -117,6 +125,7 @@ export const useAppStore = create<AppState>((set) => ({
     authorSponsors: DEFAULT_AUTHOR_SPONSORS,
     authorServerRecommendations: DEFAULT_AUTHOR_SERVER_RECOMMENDATIONS,
     upstreamProxyUrl: "",
+    upstreamProxyBypassHosts: "",
     upstreamStreamTimeoutMs: 300000,
     upstreamTotalTimeoutMs: 0,
     sseKeepaliveIntervalMs: 15000,
@@ -153,25 +162,48 @@ export const useAppStore = create<AppState>((set) => ({
   currentShellPath: initialShellPath,
   openShellTabs: [initialShellPath],
 
-  setServiceStatus: (status) => 
-    set((state) => ({ serviceStatus: { ...state.serviceStatus, ...status } })),
+  setServiceStatus: (status) =>
+    set((state) =>
+      hasPartialStateChanges(state.serviceStatus, status)
+        ? { serviceStatus: { ...state.serviceStatus, ...status } }
+        : state,
+    ),
   
   setAppSettings: (settings) =>
-    set((state) => ({ appSettings: { ...state.appSettings, ...settings } })),
+    set((state) =>
+      hasPartialStateChanges(state.appSettings, settings)
+        ? { appSettings: { ...state.appSettings, ...settings } }
+        : state,
+    ),
 
-  setRuntimeCapabilities: (runtimeCapabilities) => set({ runtimeCapabilities }),
+  setRuntimeCapabilities: (runtimeCapabilities) =>
+    set((state) =>
+      Object.is(state.runtimeCapabilities, runtimeCapabilities)
+        ? state
+        : { runtimeCapabilities },
+    ),
     
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
   
-  setSidebarOpen: (open) => set({ isSidebarOpen: open }),
+  setSidebarOpen: (open) =>
+    set((state) => (state.isSidebarOpen === open ? state : { isSidebarOpen: open })),
 
-  openCodexCliGuide: () => set({ isCodexCliGuideOpen: true }),
+  openCodexCliGuide: () =>
+    set((state) =>
+      state.isCodexCliGuideOpen ? state : { isCodexCliGuideOpen: true },
+    ),
 
-  closeCodexCliGuide: () => set({ isCodexCliGuideOpen: false }),
+  closeCodexCliGuide: () =>
+    set((state) =>
+      state.isCodexCliGuideOpen ? { isCodexCliGuideOpen: false } : state,
+    ),
 
   syncShellPathFromLocation: (path) =>
     set((state) => {
       const nextPath = toTopLevelRoutePath(path);
+      if (state.currentShellPath === nextPath && state.openShellTabs.includes(nextPath)) {
+        return state;
+      }
       return {
         currentShellPath: nextPath,
         openShellTabs: state.openShellTabs.includes(nextPath)
@@ -227,6 +259,13 @@ export const useAppStore = create<AppState>((set) => ({
           "",
           buildStaticRouteUrl(nextCurrent),
         );
+      }
+
+      if (
+        state.currentShellPath === nextCurrent &&
+        areTabsEqual(state.openShellTabs, normalizedTabs)
+      ) {
+        return state;
       }
 
       return {

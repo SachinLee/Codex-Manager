@@ -68,14 +68,14 @@ export const serviceClient = {
     );
     return normalizeStartupSnapshot(result);
   },
-  syncCodexModelsCache: (params: {
+  exportCodexModelsCache: (params: {
     userAgent: string;
     models: Array<Record<string, unknown>>;
     codexHome?: string | null;
     etag?: string | null;
     fetchedAt?: string;
   }) =>
-    invoke<unknown>("service_sync_codex_models_cache", {
+    invoke<unknown>("service_export_codex_models_cache", {
       userAgent: params.userAgent,
       models: params.models,
       codexHome: params.codexHome || null,

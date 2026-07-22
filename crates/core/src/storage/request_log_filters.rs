@@ -18,7 +18,7 @@ pub(super) fn build_request_log_filters(
     key_filter: Option<&KeyIdSqlFilter<'_>>,
     include_route_detail_fields: bool,
 ) -> RequestLogSqlFilters {
-    let mut clauses = Vec::new();
+    let mut clauses = vec!["r.cleared_at IS NULL".to_string()];
     let mut params = Vec::new();
 
     let query = request_log_query::parse_request_log_query(query);

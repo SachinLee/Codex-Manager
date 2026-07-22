@@ -119,10 +119,9 @@ fn delete_unavailable_free_accounts_scans_total_but_loads_cleanup_status_candida
     let _lock = test_env_guard();
     let dir = new_test_dir("cleanup-unavailable-free-accounts");
     let db_path = dir.join("codexmanager.db");
-    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     for account in [
         account("acc-active", "active", 1),
         account("acc-unavailable-free", "unavailable", 2),
@@ -175,10 +174,9 @@ fn delete_banned_accounts_removes_only_banned_accounts() {
     let _lock = test_env_guard();
     let dir = new_test_dir("cleanup-banned-accounts");
     let db_path = dir.join("codexmanager.db");
-    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     storage
         .insert_account(&Account {
             id: "acc-banned".to_string(),
@@ -228,10 +226,9 @@ fn delete_accounts_by_statuses_removes_selected_statuses_only() {
     let _lock = test_env_guard();
     let dir = new_test_dir("cleanup-accounts-by-status");
     let db_path = dir.join("codexmanager.db");
-    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     for (idx, (id, status)) in [
         ("acc-active", "active"),
         ("acc-unavailable", "unavailable"),

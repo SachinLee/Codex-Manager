@@ -218,7 +218,7 @@ export function SummaryCard({
           {value}
         </div>
         {detail ? (
-          <div className="mt-1 truncate text-[11px] font-semibold text-amber-500">
+          <div className="mt-1 truncate text-[11px] font-medium text-amber-500">
             {detail}
           </div>
         ) : null}
@@ -460,11 +460,16 @@ export function normalizeAggregateApiUrl(value: string): string {
 
 export function formatModelEffortDisplay(log: RequestLog): string {
   const model = String(log.model || "").trim();
+  const clientEffort = String(log.clientReasoningEffort || "").trim();
   const effort = String(log.reasoningEffort || "").trim();
-  if (model && effort) {
-    return `${model}/${effort}`;
+  const displayedEffort =
+    clientEffort && effort && clientEffort.toLowerCase() !== effort.toLowerCase()
+      ? `${clientEffort}→${effort}`
+      : effort || clientEffort;
+  if (model && displayedEffort) {
+    return `${model}/${displayedEffort}`;
   }
-  return model || effort || "-";
+  return model || displayedEffort || "-";
 }
 
 export function normalizeRequestType(value: string): "ws" | "http" {

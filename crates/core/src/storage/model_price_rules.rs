@@ -9,7 +9,7 @@ fn model_price_rule_select_columns() -> &'static str {
         cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
         cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
         cache_hit_price_per_1m, long_context_threshold_tokens,
-        long_context_threshold_inclusive,
+        COALESCE(long_context_threshold_inclusive, 0) AS long_context_threshold_inclusive,
         long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m,
         long_context_cache_write_price_per_1m,
@@ -43,7 +43,8 @@ impl Storage {
         rules: &[ModelPriceRule],
         seed_version: &str,
     ) -> Result<()> {
-        self.conn.execute_batch("SAVEPOINT replace_official_model_price_rules")?;
+        self.conn
+            .execute_batch("SAVEPOINT replace_official_model_price_rules")?;
         let result = (|| {
             for rule in rules {
                 self.upsert_model_price_rule(rule)?;
@@ -71,7 +72,6 @@ impl Storage {
             }
         }
     }
-
 }
 
 fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRule) -> Result<()> {
@@ -161,7 +161,6 @@ fn upsert_model_price_rule_on_connection(conn: &Connection, rule: &ModelPriceRul
 }
 
 impl Storage {
-
     pub fn count_model_price_rules_for_seed(&self, seed_version: &str) -> Result<i64> {
         self.conn.query_row(
             model_price_rule_count_for_seed_sql(),
@@ -277,6 +276,9 @@ impl Storage {
         self.ensure_model_price_rules_custom_exact_lookup_index()?;
         self.ensure_model_price_rules_enabled_pattern_lookup_index()?;
         self.ensure_column("model_price_rules", "cache_write_price_per_1m", "REAL")?;
+        self.ensure_column("model_price_rules", "cache_write_5m_price_per_1m", "REAL")?;
+        self.ensure_column("model_price_rules", "cache_write_1h_price_per_1m", "REAL")?;
+        self.ensure_column("model_price_rules", "cache_hit_price_per_1m", "REAL")?;
         self.ensure_column(
             "model_price_rules",
             "long_context_threshold_inclusive",
@@ -381,6 +383,7 @@ fn enabled_custom_exact_model_price_rule_sql() -> &'static str {
         cache_write_price_per_1m, output_price_per_1m, reasoning_output_price_per_1m,
         cache_write_5m_price_per_1m, cache_write_1h_price_per_1m,
         cache_hit_price_per_1m, long_context_threshold_tokens,
+        COALESCE(long_context_threshold_inclusive, 0) AS long_context_threshold_inclusive,
         long_context_input_price_per_1m,
         long_context_cached_input_price_per_1m,
         long_context_cache_write_price_per_1m,

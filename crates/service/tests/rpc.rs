@@ -3,6 +3,7 @@ use codexmanager_core::storage::{
     now_ts, Account, Event, GatewayReasoningGuardEvent, RequestLog, RequestTokenStat, Storage,
     Token, UsageSnapshotRecord,
 };
+use codexmanager_service::ServerHandle;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -38,10 +39,12 @@ fn new_test_dir(prefix: &str) -> PathBuf {
 }
 
 struct RpcTestContext {
-    _env_lock: MutexGuard<'static, ()>,
     _db_path_guard: EnvGuard,
     _auto_usage_refresh_guard: EnvGuard,
     dir: PathBuf,
+    // Rust drops fields in declaration order. Keep the lock last so every
+    // environment guard is restored before another RPC test can acquire it.
+    _env_lock: MutexGuard<'static, ()>,
 }
 
 impl RpcTestContext {
@@ -65,10 +68,10 @@ impl RpcTestContext {
         let auto_usage_refresh_guard =
             EnvGuard::set("CODEXMANAGER_AUTO_USAGE_REFRESH_AFTER_ACCOUNT_ADD", "0");
         Self {
-            _env_lock: env_lock,
             _db_path_guard: db_path_guard,
             _auto_usage_refresh_guard: auto_usage_refresh_guard,
             dir,
+            _env_lock: env_lock,
         }
     }
 
@@ -147,14 +150,15 @@ impl Drop for RpcTestContext {
 /// 时间: 2026-04-02
 ///
 /// # 参数
-/// - addr: 参数 addr
+/// - server: 参数 server
 /// - body: 参数 body
 /// - headers: 参数 headers
 ///
 /// # 返回
 /// 返回函数执行结果
-fn post_rpc_raw(addr: &str, body: &str, headers: &[(&str, &str)]) -> (u16, String) {
-    let mut stream = TcpStream::connect(addr).expect("connect server");
+fn post_rpc_raw(server: ServerHandle, body: &str, headers: &[(&str, &str)]) -> (u16, String) {
+    let addr = server.addr.clone();
+    let mut stream = TcpStream::connect(&addr).expect("connect server");
     let mut request = format!("POST /rpc HTTP/1.1\r\nHost: {addr}\r\n");
     for (name, value) in headers {
         request.push_str(name);
@@ -175,6 +179,7 @@ fn post_rpc_raw(addr: &str, body: &str, headers: &[(&str, &str)]) -> (u16, Strin
         .and_then(|value| value.parse::<u16>().ok())
         .expect("status");
     let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    server.join();
     (status, body)
 }
 
@@ -185,15 +190,15 @@ fn post_rpc_raw(addr: &str, body: &str, headers: &[(&str, &str)]) -> (u16, Strin
 /// 时间: 2026-04-02
 ///
 /// # 参数
-/// - addr: 参数 addr
+/// - server: 参数 server
 /// - body: 参数 body
 ///
 /// # 返回
 /// 返回函数执行结果
-fn post_rpc(addr: &str, body: &str) -> serde_json::Value {
+fn post_rpc(server: ServerHandle, body: &str) -> serde_json::Value {
     let token = codexmanager_service::rpc_auth_token().to_string();
     let (status, body) = post_rpc_raw(
-        addr,
+        server,
         body,
         &[
             ("Content-Type", "application/json"),
@@ -561,7 +566,7 @@ fn rpc_initialize_roundtrip() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert!(result.get("serverName").is_none());
     assert!(result
@@ -605,7 +610,7 @@ fn rpc_account_list_empty_uses_default_pagination() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     let items = result
@@ -648,7 +653,7 @@ fn rpc_account_list_returns_all_accounts() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     let items = result
@@ -742,7 +747,7 @@ fn rpc_account_list_includes_account_plan_type() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let item = v
         .get("result")
         .and_then(|value| value.get("items"))
@@ -827,7 +832,7 @@ fn rpc_account_list_prefers_free_subscription_result_over_token_plan() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let item = v
         .get("result")
         .and_then(|value| value.get("items"))
@@ -910,7 +915,7 @@ fn rpc_account_list_prefers_accounts_check_plan_over_subscription_plan() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let item = v
         .get("result")
         .and_then(|value| value.get("items"))
@@ -959,7 +964,7 @@ fn rpc_account_update_profile_updates_label_note_tags_and_sort() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert_eq!(
         result.get("ok").and_then(|value| value.as_bool()),
@@ -1005,7 +1010,7 @@ fn rpc_app_settings_set_invalid_payload_returns_structured_error() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     let message = result
@@ -1056,7 +1061,7 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
         trace: None,
     };
     let set_json = serde_json::to_string(&set_req).expect("serialize");
-    let set_resp = post_rpc(&set_server.addr, &set_json);
+    let set_resp = post_rpc(set_server, &set_json);
     let set_result = set_resp.get("result").expect("result");
     assert_eq!(
         set_result
@@ -1073,7 +1078,7 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
         trace: None,
     };
     let get_json = serde_json::to_string(&get_req).expect("serialize");
-    let get_resp = post_rpc(&get_server.addr, &get_json);
+    let get_resp = post_rpc(get_server, &get_json);
     let get_result = get_resp.get("result").expect("result");
     assert_eq!(
         get_result
@@ -1109,7 +1114,7 @@ fn rpc_account_delete_many_deletes_requested_accounts() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     assert_eq!(
@@ -1277,7 +1282,7 @@ fn rpc_account_delete_unavailable_free_removes_refresh_invalid_free_accounts() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize delete");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     assert_eq!(
@@ -1355,7 +1360,7 @@ fn rpc_account_delete_by_statuses_deletes_only_selected_statuses() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize delete");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     assert_eq!(
@@ -1443,7 +1448,7 @@ fn rpc_account_delete_by_statuses_deletes_unknown_status() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize delete");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     assert_eq!(
@@ -1496,7 +1501,7 @@ fn rpc_account_update_status_toggles_manual_enable_disable() {
         trace: None,
     };
     let disable_json = serde_json::to_string(&disable_req).expect("serialize");
-    let disable_resp = post_rpc(&disable_server.addr, &disable_json);
+    let disable_resp = post_rpc(disable_server, &disable_json);
     let disable_result = disable_resp.get("result").expect("result");
     assert_eq!(
         disable_result.get("ok").and_then(|value| value.as_bool()),
@@ -1521,7 +1526,7 @@ fn rpc_account_update_status_toggles_manual_enable_disable() {
         trace: None,
     };
     let enable_json = serde_json::to_string(&enable_req).expect("serialize");
-    let enable_resp = post_rpc(&enable_server.addr, &enable_json);
+    let enable_resp = post_rpc(enable_server, &enable_json);
     let enable_result = enable_resp.get("result").expect("result");
     assert_eq!(
         enable_result.get("ok").and_then(|value| value.as_bool()),
@@ -1559,7 +1564,7 @@ fn rpc_login_start_returns_url() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert_eq!(result.get("type").and_then(|v| v.as_str()), Some("chatgpt"));
     let auth_url = result.get("authUrl").and_then(|v| v.as_str()).unwrap();
@@ -1591,7 +1596,7 @@ fn rpc_login_start_returns_api_key_variant() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert_eq!(
         result.get("type").and_then(|value| value.as_str()),
@@ -1624,7 +1629,7 @@ fn rpc_login_start_chatgpt_device_code_returns_user_code() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert_eq!(
         result.get("type").and_then(|v| v.as_str()),
@@ -1679,7 +1684,7 @@ fn rpc_login_start_chatgpt_device_code_returns_user_code() {
         trace: None,
     };
     let status_json = serde_json::to_string(&status_req).expect("serialize status");
-    let status_resp = post_rpc(&status_server.addr, &status_json);
+    let status_resp = post_rpc(status_server, &status_json);
     let status_result = status_resp.get("result").expect("status result");
     assert_eq!(
         status_result.get("status").and_then(|value| value.as_str()),
@@ -1730,7 +1735,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     };
     let login_json = serde_json::to_string(&login_req).expect("serialize login");
     let login_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let login_resp = post_rpc(&login_server.addr, &login_json);
+    let login_resp = post_rpc(login_server, &login_json);
     let login_result = login_resp.get("result").expect("login result");
     assert_eq!(
         login_result.get("type").and_then(|value| value.as_str()),
@@ -1745,7 +1750,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     };
     let read_json = serde_json::to_string(&read_req).expect("serialize read");
     let read_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let read_resp = post_rpc(&read_server.addr, &read_json);
+    let read_resp = post_rpc(read_server, &read_json);
     let read_result = read_resp.get("result").expect("read result");
     let account = read_result.get("account").expect("current account");
     assert!(read_result.get("authMode").is_none());
@@ -1772,7 +1777,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     };
     let logout_json = serde_json::to_string(&logout_req).expect("serialize logout");
     let logout_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let logout_resp = post_rpc(&logout_server.addr, &logout_json);
+    let logout_resp = post_rpc(logout_server, &logout_json);
     let logout_result = logout_resp.get("result").expect("logout result");
     assert!(logout_result
         .as_object()
@@ -1780,7 +1785,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
 
     let read_after_logout_server =
         codexmanager_service::start_one_shot_server().expect("start server");
-    let read_after_logout = post_rpc(&read_after_logout_server.addr, &read_json);
+    let read_after_logout = post_rpc(read_after_logout_server, &read_json);
     let read_after_logout_result = read_after_logout.get("result").expect("read result");
     assert!(read_after_logout_result.get("account").unwrap().is_null());
 
@@ -1859,7 +1864,7 @@ fn rpc_chatgpt_auth_tokens_login_enqueues_usage_refresh() {
     };
     let login_json = serde_json::to_string(&login_req).expect("serialize login");
     let login_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let login_resp = post_rpc(&login_server.addr, &login_json);
+    let login_resp = post_rpc(login_server, &login_json);
     let login_result = login_resp.get("result").expect("login result");
     assert_eq!(
         login_result.get("type").and_then(|value| value.as_str()),
@@ -1972,7 +1977,7 @@ fn rpc_chatgpt_auth_tokens_refresh_updates_access_token() {
     };
     let login_json = serde_json::to_string(&login_req).expect("serialize login");
     let login_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let login_resp = post_rpc(&login_server.addr, &login_json);
+    let login_resp = post_rpc(login_server, &login_json);
     let login_result = login_resp.get("result").expect("login result");
     assert_eq!(
         login_result.get("type").and_then(|value| value.as_str()),
@@ -1990,7 +1995,7 @@ fn rpc_chatgpt_auth_tokens_refresh_updates_access_token() {
     };
     let refresh_json = serde_json::to_string(&refresh_req).expect("serialize refresh");
     let refresh_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let refresh_rpc_resp = post_rpc(&refresh_server.addr, &refresh_json);
+    let refresh_rpc_resp = post_rpc(refresh_server, &refresh_json);
     let refresh_result = refresh_rpc_resp.get("result").expect("refresh result");
     assert_eq!(
         refresh_result
@@ -2154,7 +2159,7 @@ fn rpc_usage_refresh_persists_subscription_fields() {
     };
     let login_json = serde_json::to_string(&login_req).expect("serialize login");
     let login_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let login_resp = post_rpc(&login_server.addr, &login_json);
+    let login_resp = post_rpc(login_server, &login_json);
     let login_result = login_resp.get("result").expect("login result");
     assert_eq!(
         login_result.get("type").and_then(|value| value.as_str()),
@@ -2180,7 +2185,7 @@ fn rpc_usage_refresh_persists_subscription_fields() {
     };
     let refresh_json = serde_json::to_string(&refresh_req).expect("serialize usage refresh");
     let refresh_server = codexmanager_service::start_one_shot_server().expect("start server");
-    let refresh_resp = post_rpc(&refresh_server.addr, &refresh_json);
+    let refresh_resp = post_rpc(refresh_server, &refresh_json);
     assert_eq!(
         refresh_resp
             .get("result")
@@ -2271,7 +2276,7 @@ fn rpc_usage_read_empty() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert!(result.get("snapshot").is_some());
 }
@@ -2299,7 +2304,7 @@ fn rpc_login_status_pending() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     assert!(result.get("status").is_some());
 }
@@ -2327,7 +2332,7 @@ fn rpc_usage_list_empty() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
     let items = result
         .get("items")
@@ -2421,7 +2426,7 @@ fn rpc_usage_aggregate_returns_backend_summary() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let v = post_rpc(&server.addr, &json);
+    let v = post_rpc(server, &json);
     let result = v.get("result").expect("result");
 
     assert_eq!(
@@ -2535,7 +2540,7 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
         trace: None,
     };
     let list_json = serde_json::to_string(&list_req).expect("serialize requestlog list");
-    let list_resp = post_rpc(&server.addr, &list_json);
+    let list_resp = post_rpc(server, &list_json);
     let list_result = list_resp.get("result").expect("requestlog list result");
     assert_eq!(
         list_result.get("total").and_then(|value| value.as_i64()),
@@ -2582,7 +2587,7 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
         trace: None,
     };
     let summary_json = serde_json::to_string(&summary_req).expect("serialize requestlog summary");
-    let summary_resp = post_rpc(&summary_server.addr, &summary_json);
+    let summary_resp = post_rpc(summary_server, &summary_json);
     let summary_result = summary_resp
         .get("result")
         .expect("requestlog summary result");
@@ -2628,7 +2633,7 @@ fn rpc_apikey_create_accepts_custom_key_and_rejects_duplicate() {
         trace: None,
     };
     let create_json = serde_json::to_string(&create_req).expect("serialize apikey create");
-    let create_resp = post_rpc(&server.addr, &create_json);
+    let create_resp = post_rpc(server, &create_json);
     let create_result = create_resp.get("result").expect("create result");
     assert_eq!(
         create_result.get("key").and_then(|value| value.as_str()),
@@ -2648,7 +2653,7 @@ fn rpc_apikey_create_accepts_custom_key_and_rejects_duplicate() {
         trace: None,
     };
     let read_json = serde_json::to_string(&read_req).expect("serialize apikey read secret");
-    let read_resp = post_rpc(&read_server.addr, &read_json);
+    let read_resp = post_rpc(read_server, &read_json);
     assert_eq!(
         read_resp
             .get("result")
@@ -2669,7 +2674,7 @@ fn rpc_apikey_create_accepts_custom_key_and_rejects_duplicate() {
     };
     let duplicate_json =
         serde_json::to_string(&duplicate_req).expect("serialize duplicate apikey create");
-    let duplicate_resp = post_rpc(&duplicate_server.addr, &duplicate_json);
+    let duplicate_resp = post_rpc(duplicate_server, &duplicate_json);
     let duplicate_result = duplicate_resp.get("result").expect("duplicate result");
     let message = duplicate_result
         .get("error")
@@ -2730,7 +2735,7 @@ fn rpc_apikey_update_model_updates_name_with_chinese() {
         trace: None,
     };
     let update_json = serde_json::to_string(&update_req).expect("serialize apikey update");
-    let update_resp = post_rpc(&server.addr, &update_json);
+    let update_resp = post_rpc(server, &update_json);
     assert_eq!(
         update_resp
             .get("result")
@@ -2747,7 +2752,7 @@ fn rpc_apikey_update_model_updates_name_with_chinese() {
         trace: None,
     };
     let list_json = serde_json::to_string(&list_req).expect("serialize apikey list");
-    let list_resp = post_rpc(&list_server.addr, &list_json);
+    let list_resp = post_rpc(list_server, &list_json);
     let items = list_resp
         .get("result")
         .and_then(|value| value.get("items"))
@@ -2801,7 +2806,7 @@ fn rpc_requestlog_account_daily_usage_returns_camel_case_cache_stats() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize account daily usage");
-    let resp = post_rpc(&server.addr, &json);
+    let resp = post_rpc(server, &json);
     let item = resp
         .get("result")
         .and_then(|value| value.get("items"))
@@ -2876,7 +2881,7 @@ fn rpc_requestlog_aggregate_api_daily_usage_returns_camel_case_cache_stats() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize aggregate api daily usage");
-    let resp = post_rpc(&server.addr, &json);
+    let resp = post_rpc(server, &json);
     let item = resp
         .get("result")
         .and_then(|value| value.get("items"))
@@ -2910,7 +2915,7 @@ fn rpc_requestlog_aggregate_api_daily_usage_returns_camel_case_cache_stats() {
     assert_eq!(
         item.get("billableTotalTokens")
             .and_then(|value| value.as_i64()),
-        Some(98)
+        Some(118)
     );
     assert_eq!(
         item.get("billableEstimatedCostUsd")
@@ -2995,7 +3000,7 @@ fn rpc_requestlog_aggregate_api_reasoning_guard_returns_rates() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize aggregate api reasoning guard");
-    let resp = post_rpc(&server.addr, &json);
+    let resp = post_rpc(server, &json);
     let item = resp
         .get("result")
         .and_then(|value| value.get("items"))
@@ -3077,7 +3082,7 @@ fn rpc_rejects_missing_token() {
         trace: None,
     };
     let json = serde_json::to_string(&req).expect("serialize");
-    let (status, _) = post_rpc_raw(&server.addr, &json, &[("Content-Type", "application/json")]);
+    let (status, _) = post_rpc_raw(server, &json, &[("Content-Type", "application/json")]);
     assert_eq!(status, 401);
 }
 
@@ -3106,7 +3111,7 @@ fn rpc_rejects_cross_site_origin() {
     let json = serde_json::to_string(&req).expect("serialize");
     let token = codexmanager_service::rpc_auth_token().to_string();
     let (status, _) = post_rpc_raw(
-        &server.addr,
+        server,
         &json,
         &[
             ("Content-Type", "application/json"),
@@ -3143,7 +3148,7 @@ fn rpc_accepts_loopback_origin() {
     let json = serde_json::to_string(&req).expect("serialize");
     let token = codexmanager_service::rpc_auth_token().to_string();
     let (status, body) = post_rpc_raw(
-        &server.addr,
+        server,
         &json,
         &[
             ("Content-Type", "application/json"),
@@ -3169,7 +3174,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
                 trace: None,
             };
             let json = serde_json::to_string(&req).expect("serialize");
-            post_rpc(&server.addr, &json)
+            post_rpc(server, &json)
         };
     let call_rpc =
         |id: i64, method: &str, params: Option<serde_json::Value>| -> serde_json::Value {
@@ -3221,7 +3226,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         "apikey/create",
         Some(serde_json::json!({
             "name": "Member key",
-            "modelSlug": "gpt-5",
+            "modelSlug": "gpt-5.4-mini",
             "rotationStrategy": "account_rotation"
         })),
     );
@@ -3231,17 +3236,35 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
     storage.init().expect("init storage");
     codexmanager_service::wallet_precheck_for_api_key(&storage, &key_id)
         .expect("unassigned api key should bypass wallet precheck");
-    let missing_owner_charge = codexmanager_service::wallet_charge_for_request(
+    let unassigned_request_log_id = storage
+        .insert_request_log(&codexmanager_core::storage::RequestLog {
+            key_id: Some(key_id.clone()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            model: Some("gpt-5.4-mini".to_string()),
+            status_code: Some(200),
+            created_at: codexmanager_core::storage::now_ts(),
+            ..Default::default()
+        })
+        .expect("insert unassigned request log");
+    let missing_owner_charge = codexmanager_service::record_request_charge_v2(
         &storage,
         Some(&key_id),
-        41,
-        0.25,
+        unassigned_request_log_id,
+        "gpt-5.4-mini",
         None,
-        Some("default"),
+        "actual",
+        1,
+        0,
+        0,
+        None,
+        true,
+        None,
         None,
     )
-    .expect("unassigned api key should bypass wallet charge");
-    assert!(missing_owner_charge.is_none());
+    .expect("unassigned api key should record an uncharged snapshot");
+    assert_eq!(missing_owner_charge.rate_multiplier_millis, 1_000);
+    assert_eq!(storage.request_charge_ledger_entry_count().unwrap(), 0);
 
     let admin_owner_error = call_rpc(
         207,
@@ -3312,7 +3335,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
             "priority": 10
         })),
     );
-    let rule_id = rules["items"]
+    let _rule_id = rules["items"]
         .as_array()
         .expect("billing rules")
         .iter()
@@ -3321,21 +3344,49 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         .expect("rule id")
         .to_string();
 
-    let charge_entry = codexmanager_service::wallet_charge_for_request(
+    let group_id = storage
+        .default_model_group_id()
+        .expect("read default group")
+        .expect("default group");
+    let mut group = storage
+        .find_model_group(&group_id)
+        .expect("read default group")
+        .expect("default group");
+    group.rate_multiplier_millis = 1_500;
+    group.updated_at = codexmanager_core::storage::now_ts();
+    storage
+        .upsert_model_group(&group)
+        .expect("save group multiplier");
+    let request_log_id = storage
+        .insert_request_log(&codexmanager_core::storage::RequestLog {
+            key_id: Some(key_id.clone()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            model: Some("gpt-5.4-mini".to_string()),
+            status_code: Some(200),
+            created_at: codexmanager_core::storage::now_ts(),
+            ..Default::default()
+        })
+        .expect("insert charged request log");
+    let charge_snapshot = codexmanager_service::record_request_charge_v2(
         &storage,
         Some(&key_id),
-        42,
-        0.25,
+        request_log_id,
+        "gpt-5.4-mini",
         None,
-        Some("default"),
+        "actual",
+        333_333,
+        0,
+        0,
         Some(r#"{"test":true}"#.to_string()),
+        true,
+        None,
+        None,
     )
-    .expect("charge wallet")
-    .expect("charge entry");
-    assert_eq!(
-        charge_entry.pricing_rule_id.as_deref(),
-        Some(rule_id.as_str())
-    );
+    .expect("charge wallet");
+    assert_eq!(charge_snapshot.base_cost_microusd, 250_000);
+    assert_eq!(charge_snapshot.charged_cost_microusd, 375_000);
+    assert_eq!(charge_snapshot.rate_multiplier_millis, 1_500);
     let charged_wallet = storage
         .find_wallet_by_owner("user", &user_id)
         .expect("read wallet")

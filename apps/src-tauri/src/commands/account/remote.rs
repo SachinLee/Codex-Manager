@@ -32,7 +32,6 @@ fn account_update_payload(
     label: Option<String>,
     note: Option<String>,
     tags: Option<String>,
-    model_slugs: Option<Vec<String>>,
     quota_capacity_primary_window_tokens: Option<i64>,
     quota_capacity_secondary_window_tokens: Option<i64>,
 ) -> Option<serde_json::Value> {
@@ -58,9 +57,6 @@ fn account_update_payload(
     }
     if let Some(value) = tags {
         params.insert("tags".to_string(), serde_json::json!(value));
-    }
-    if let Some(value) = model_slugs {
-        params.insert("modelSlugs".to_string(), serde_json::json!(value));
     }
     if let Some(value) = quota_capacity_primary_window_tokens {
         params.insert(
@@ -206,7 +202,6 @@ pub async fn service_account_update(
     label: Option<String>,
     note: Option<String>,
     tags: Option<String>,
-    model_slugs: Option<Vec<String>>,
     quota_capacity_primary_window_tokens: Option<i64>,
     quota_capacity_secondary_window_tokens: Option<i64>,
 ) -> Result<serde_json::Value, String> {
@@ -221,7 +216,6 @@ pub async fn service_account_update(
             label,
             note,
             tags,
-            model_slugs,
             quota_capacity_primary_window_tokens,
             quota_capacity_secondary_window_tokens,
         ),
@@ -300,7 +294,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .expect("payload");
         let expected = serde_json::json!({
@@ -326,7 +319,6 @@ mod tests {
         let actual = account_update_payload(
             "acc-1".to_string(),
             Some(5),
-            None,
             None,
             None,
             None,
@@ -366,7 +358,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .expect("payload");
         let expected = serde_json::json!({
@@ -381,7 +372,6 @@ mod tests {
             "acc-1".to_string(),
             None,
             Some(true),
-            None,
             None,
             None,
             None,

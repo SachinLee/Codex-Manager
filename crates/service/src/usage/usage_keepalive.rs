@@ -10,8 +10,13 @@
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn run_gateway_keepalive_once() -> Result<(), String> {
-    // 中文注释：定期探活 models 路径可预热上游连接与 token exchange，减少服务空闲后首个请求的冷启动失败概率。
-    let _ = crate::gateway::fetch_models_for_picker()?;
+    // Keep the background task local-only after the V2 cutover. It verifies that
+    // the catalog remains readable without contacting any upstream `/models` API.
+    let storage =
+        crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    storage
+        .list_api_models_v2()
+        .map_err(|err| format!("model catalog V2 keepalive failed: {err}"))?;
     Ok(())
 }
 

@@ -9,6 +9,7 @@ use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
     AGGREGATE_API_PROVIDER_GEMINI,
 };
+use crate::gateway::upstream::support::payload_rewrite::build_continuation_recovery_body;
 use crate::gateway::{PassthroughSseProtocol, ResponseAdapter};
 use bytes::Bytes;
 
@@ -23,6 +24,8 @@ fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
         auth_params_json: None,
         action: action.map(str::to_string),
         model_override: None,
+        cost_multiplier: 1.0,
+        daily_spend_limit_usd: None,
         status: "active".to_string(),
         created_at: 0,
         updated_at: 0,
@@ -85,6 +88,14 @@ fn build_upstream_url_keeps_root_base_behavior() {
         url.as_str(),
         "https://api.example.com/v1/messages?beta=true"
     );
+}
+
+#[test]
+fn build_upstream_url_deduplicates_v1_base_path() {
+    let url = build_upstream_url("https://api.minimax.io/v1", "/v1/responses")
+        .expect("build upstream url");
+
+    assert_eq!(url.as_str(), "https://api.minimax.io/v1/responses");
 }
 
 #[test]
@@ -219,6 +230,8 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
                 auth_params_json: None,
                 action: None,
                 model_override: None,
+                cost_multiplier: 1.0,
+                daily_spend_limit_usd: None,
                 status: "active".to_string(),
                 created_at: now,
                 updated_at: now,
@@ -268,6 +281,8 @@ fn explicit_aggregate_api_id_promotes_matching_active_provider_candidate_only() 
                 auth_params_json: None,
                 action: None,
                 model_override: None,
+                cost_multiplier: 1.0,
+                daily_spend_limit_usd: None,
                 status: "active".to_string(),
                 created_at: now,
                 updated_at: now,
@@ -355,6 +370,39 @@ fn successful_bridge_keeps_success_status() {
 fn incomplete_bridge_without_status_defaults_to_bad_gateway() {
     let status_code = bridge_status_code(None, false, None);
     assert_eq!(status_code, 502);
+}
+
+#[test]
+fn aggregate_continuation_recovery_rebuilds_each_retry_from_the_original_candidate_body() {
+    let original = br#"{
+        "stream": false,
+        "previous_response_id": "resp_stale",
+        "input": [{"role":"user","content":"hello"}],
+        "include": ["reasoning.encrypted_content"]
+    }"#;
+
+    let first = build_continuation_recovery_body(original, "continue safely")
+        .expect("build first continuation body");
+    let second = build_continuation_recovery_body(original, "continue safely")
+        .expect("rebuild second continuation body from original body");
+    let first: serde_json::Value = serde_json::from_slice(&first).expect("parse first body");
+    let second: serde_json::Value = serde_json::from_slice(&second).expect("parse second body");
+
+    assert_eq!(
+        first, second,
+        "continuation retries must not accumulate markers"
+    );
+    assert!(first.get("previous_response_id").is_none());
+    assert_eq!(
+        first["input"]
+            .as_array()
+            .expect("sanitized input")
+            .iter()
+            .filter(|item| item["phase"] == "commentary")
+            .count(),
+        1,
+        "each continuation request contains exactly one commentary marker"
+    );
 }
 
 /// 函数 `bridge_status_code`

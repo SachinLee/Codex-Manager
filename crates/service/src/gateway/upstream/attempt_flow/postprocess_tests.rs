@@ -7,6 +7,15 @@ use std::thread;
 use std::time::Duration;
 use tiny_http::{Response, Server, StatusCode};
 
+const MOCK_UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn test_http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("build test HTTP client")
+}
+
 /// 函数 `build_account`
 ///
 /// 作者: gaohongshun
@@ -82,6 +91,7 @@ fn anthropic_challenge_uses_extended_cooldown_reason() {
 /// 无
 #[test]
 fn retries_server_error_once_before_final_decision() {
+    let _env_lock = crate::test_env_guard();
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let now = now_ts();
@@ -98,7 +108,7 @@ fn retries_server_error_once_before_final_decision() {
     let join = thread::spawn(move || {
         for (index, status) in [500u16, 200u16].into_iter().enumerate() {
             let mut request = server
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(MOCK_UPSTREAM_REQUEST_TIMEOUT)
                 .expect("receive upstream request")
                 .expect("request present");
             let mut body = Vec::new();
@@ -113,7 +123,7 @@ fn retries_server_error_once_before_final_decision() {
         }
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = test_http_client();
     let incoming_headers = IncomingHeaderSnapshot::default();
     let request_ctx = UpstreamRequestContext {
         request_path: "/v1/responses",
@@ -171,6 +181,7 @@ fn retries_server_error_once_before_final_decision() {
 
 #[test]
 fn chatgpt_challenge_on_last_candidate_retries_without_same_account_failover() {
+    let _env_lock = crate::test_env_guard();
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let now = now_ts();
@@ -187,7 +198,7 @@ fn chatgpt_challenge_on_last_candidate_retries_without_same_account_failover() {
     let join = thread::spawn(move || {
         for index in 0..2 {
             let mut request = server
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(MOCK_UPSTREAM_REQUEST_TIMEOUT)
                 .expect("receive upstream request")
                 .expect("request present");
             let mut body = Vec::new();
@@ -210,7 +221,7 @@ fn chatgpt_challenge_on_last_candidate_retries_without_same_account_failover() {
         }
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = test_http_client();
     let incoming_headers = IncomingHeaderSnapshot::default();
     let request_ctx = UpstreamRequestContext {
         request_path: "/v1/responses",
@@ -268,6 +279,7 @@ fn chatgpt_challenge_on_last_candidate_retries_without_same_account_failover() {
 
 #[test]
 fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() {
+    let _env_lock = crate::test_env_guard();
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let now = now_ts();
@@ -283,7 +295,7 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
     let hit_count_thread = Arc::clone(&hit_count);
     let join = thread::spawn(move || {
         let mut request = server
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(MOCK_UPSTREAM_REQUEST_TIMEOUT)
             .expect("receive upstream request")
             .expect("request present");
         let mut body = Vec::new();
@@ -299,7 +311,7 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
         request.respond(response).expect("respond first");
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = test_http_client();
     let incoming_headers = IncomingHeaderSnapshot::default();
     let request_ctx = UpstreamRequestContext {
         request_path: "/v1/responses",
@@ -357,6 +369,7 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
 
 #[test]
 fn cloudflare_cf_ray_directly_failovers_without_same_account_retry() {
+    let _env_lock = crate::test_env_guard();
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let now = now_ts();
@@ -372,7 +385,7 @@ fn cloudflare_cf_ray_directly_failovers_without_same_account_retry() {
     let hit_count_thread = Arc::clone(&hit_count);
     let join = thread::spawn(move || {
         let mut request = server
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(MOCK_UPSTREAM_REQUEST_TIMEOUT)
             .expect("receive upstream request")
             .expect("request present");
         let mut body = Vec::new();
@@ -387,7 +400,7 @@ fn cloudflare_cf_ray_directly_failovers_without_same_account_retry() {
         request.respond(response).expect("respond first");
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = test_http_client();
     let incoming_headers = IncomingHeaderSnapshot::default();
     let request_ctx = UpstreamRequestContext {
         request_path: "/v1/responses",

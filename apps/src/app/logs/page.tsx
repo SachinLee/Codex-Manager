@@ -8,10 +8,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { accountClient } from "@/lib/api/account-client";
-import {
-  codexLauncherClient,
-  type CodexSession,
-} from "@/lib/api/codex-launcher";
+import { codexLauncherClient } from "@/lib/api/codex-launcher";
 import {
   buildStartupSnapshotQueryKey,
   STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
@@ -54,7 +51,7 @@ function LogsPageContent() {
   const { t } = useI18n();
   const localDayRange = useLocalDayRange();
   const searchParams = useSearchParams();
-  const { serviceStatus } = useAppStore();
+  const serviceStatus = useAppStore((state) => state.serviceStatus);
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
@@ -235,15 +232,6 @@ function LogsPageContent() {
     );
   }, [aggregateApisResult]);
 
-  const codexSessionMap = useMemo(() => {
-    return new Map<string, CodexSession>(
-      codexSessions
-        .map((session) => [String(session.sessionId || "").trim(), session] as const)
-        .filter(([sessionId]) => sessionId),
-    );
-  }, [codexSessions]);
-
-
   const logs = logsResult?.items || [];
   const isLogsLoading =
     serviceStatus.connected &&
@@ -412,7 +400,6 @@ function LogsPageContent() {
             accountNameMap={accountNameMap}
             apiKeyMap={apiKeyMap}
             aggregateApiMap={aggregateApiMap}
-            codexSessionMap={codexSessionMap}
             clearMutationPending={clearMutation.isPending}
             onSearchChange={(value) => {
               setSearch(value);

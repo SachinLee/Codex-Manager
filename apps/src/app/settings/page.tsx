@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { appClient } from "@/lib/api/app-client";
-import { accountClient } from "@/lib/api/account-client";
 import type {
   UpdateCheckResult,
   UpdatePrepareResult,
@@ -67,6 +66,7 @@ import { useI18n } from "@/lib/i18n/provider";
 import { AppearanceTabContent } from "@/app/settings/components/appearance-tab-content";
 import { EnvTabContent } from "@/app/settings/components/env-tab-content";
 import { GatewayTabContent } from "@/app/settings/components/gateway-tab-content";
+import { ThemePreviewSwatch } from "@/app/settings/components/theme-preview-swatch";
 import {
   AccessControlCard,
   ServiceListenCard,
@@ -160,7 +160,7 @@ import {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="glass-card shadow-sm">
+        <Card className="glass-card mission-panel shadow-sm">
           <CardHeader>
             <div className="flex items-center gap-2">
               <UserRound className="h-4 w-4 text-primary" />
@@ -190,7 +190,7 @@ import {
           </CardContent>
         </Card>
 
-        <Card className="glass-card shadow-sm">
+        <Card className="glass-card mission-panel shadow-sm">
           <CardHeader>
             <div className="flex items-center gap-2">
               <LockKeyhole className="h-4 w-4 text-primary" />
@@ -231,7 +231,7 @@ import {
         </Card>
       </div>
 
-      <Card className="glass-card shadow-sm">
+      <Card className="glass-card mission-panel shadow-sm">
         <CardHeader>
           <div className="flex items-center gap-2">
             <Palette className="h-4 w-4 text-primary" />
@@ -240,25 +240,31 @@ import {
           <CardDescription>{t("这些偏好只影响当前浏览器会话")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {THEMES.map((item) => (
-              <Button
-                key={item.id}
-                type="button"
-                variant="outline"
-                onClick={() => setTheme(item.id)}
-                className={cn(
-                  "flex h-auto items-center justify-start gap-3 rounded-xl border border-border/60 bg-background/45 p-3 text-left transition-colors hover:bg-accent/50",
-                  theme === item.id ? "ring-2 ring-primary/40" : "",
-                )}
-              >
-                <span
-                  className="h-5 w-5 rounded-full border border-border/50"
-                  style={{ backgroundColor: item.color }}
-                />
-                <span className="text-sm font-medium">{t(item.name)}</span>
-              </Button>
-            ))}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {THEMES.map((item) => {
+              const isActive = theme === item.id;
+              return (
+                <Button
+                  key={item.id}
+                  type="button"
+                  variant="outline"
+                  onClick={() => setTheme(item.id)}
+                  className={cn(
+                    "flex h-auto items-center justify-start gap-3 rounded-lg border border-border/60 bg-background/55 p-3 text-left transition-colors hover:border-primary/25 hover:bg-accent/30",
+                    isActive ? "border-primary/45 bg-primary/10 ring-1 ring-primary/20" : "",
+                  )}
+                >
+                  <ThemePreviewSwatch
+                    id={item.id}
+                    color={item.color}
+                    className="h-9 w-12"
+                  />
+                  <span className={cn("min-w-0 truncate text-sm font-medium", isActive ? "text-primary" : "text-foreground")}>
+                    {t(item.name)}
+                  </span>
+                </Button>
+              );
+            })}
           </div>
         </CardContent>
       </Card>
@@ -277,6 +283,7 @@ function AdminSettingsPage() {
     canAccessManagementRpc,
     canSelfUpdate,
     canOpenLocalDir,
+    canAutoStart,
     canCloseToTray,
   } = useRuntimeCapabilities();
   const isPageActive = useDesktopPageActive("/settings/");
@@ -296,16 +303,15 @@ function AdminSettingsPage() {
   const [upstreamProxyDraft, setUpstreamProxyDraft] = useState<string | null>(
     null,
   );
+  const [upstreamProxyBypassDraft, setUpstreamProxyBypassDraft] = useState<
+    string | null
+  >(null);
   const [gatewayOriginatorDraft, setGatewayOriginatorDraft] = useState<
     string | null
   >(null);
   const [modelForwardRuleRowsDraft, setModelForwardRuleRowsDraft] = useState<
     ReturnType<typeof parseModelForwardRules> | null
   >(null);
-  const [
-    compactModelForwardRuleRowsDraft,
-    setCompactModelForwardRuleRowsDraft,
-  ] = useState<ReturnType<typeof parseModelForwardRules> | null>(null);
   const [lastUpdateCheck, setLastUpdateCheck] =
     useState<UpdateCheckResult | null>(null);
   const [updateDialogCheck, setUpdateDialogCheck] =
@@ -331,17 +337,6 @@ function AdminSettingsPage() {
   const [quotaGuardDraft, setQuotaGuardDraft] = useState<Record<string, string>>(
     {},
   );
-  const [reasoningGuardDraft, setReasoningGuardDraft] = useState<string | null>(
-    null,
-  );
-  const [reasoningGuardTargetsDraft, setReasoningGuardTargetsDraft] =
-    useState<string | null>(null);
-  const [reasoningGuardRetryDraft, setReasoningGuardRetryDraft] =
-    useState<string | null>(null);
-  const [
-    reasoningGuardContinuationMarkerDraft,
-    setReasoningGuardContinuationMarkerDraft,
-  ] = useState<string | null>(null);
   const [workerAdvancedDialogOpen, setWorkerAdvancedDialogOpen] =
     useState(false);
   const [webPasswordModalOpen, setWebPasswordModalOpen] = useState(false);
@@ -407,10 +402,6 @@ function AdminSettingsPage() {
   const modelForwardRuleRows = ensureModelForwardRuleRows(
     modelForwardRuleRowsDraft ??
       parseModelForwardRules(snapshot?.modelForwardRules || ""),
-  );
-  const compactModelForwardRuleRows = ensureModelForwardRuleRows(
-    compactModelForwardRuleRowsDraft ??
-      parseModelForwardRules(snapshot?.compactModelForwardRules || ""),
   );
   usePageTransitionReady(
     "/settings/",
@@ -739,6 +730,8 @@ function AdminSettingsPage() {
 
   const upstreamProxyInput =
     upstreamProxyDraft ?? (snapshot?.upstreamProxyUrl || "");
+  const upstreamProxyBypassInput =
+    upstreamProxyBypassDraft ?? (snapshot?.upstreamProxyBypassHosts || "");
   const gatewayOriginatorDefault =
     snapshot?.gatewayOriginatorDefault || DEFAULT_CODEX_ORIGINATOR;
   const gatewayOriginatorInput =
@@ -768,37 +761,6 @@ function AdminSettingsPage() {
       .then(() => setModelForwardRuleRowsDraft(null))
       .catch(() => undefined);
   };
-  const updateCompactModelForwardRuleRows = (
-    updater: (rows: ReturnType<typeof parseModelForwardRules>) => ReturnType<
-      typeof parseModelForwardRules
-    >,
-  ) => {
-    const sourceRows =
-      compactModelForwardRuleRowsDraft ??
-      parseModelForwardRules(snapshot?.compactModelForwardRules || "");
-    setCompactModelForwardRuleRowsDraft(
-      updater(ensureModelForwardRuleRows(sourceRows)),
-    );
-  };
-  const commitCompactModelForwardRulesDraft = () => {
-    if (compactModelForwardRuleRowsDraft == null) return;
-    const nextSerialized = serializeModelForwardRules(
-      compactModelForwardRuleRowsDraft,
-    );
-    if (
-      nextSerialized.trim() ===
-      (snapshot?.compactModelForwardRules || "").trim()
-    ) {
-      setCompactModelForwardRuleRowsDraft(null);
-      return;
-    }
-    void updateSettings
-      .mutateAsync({
-        compactModelForwardRules: nextSerialized,
-      })
-      .then(() => setCompactModelForwardRuleRowsDraft(null))
-      .catch(() => undefined);
-  };
   const transportInputValues = {
     sseKeepaliveIntervalMs:
       transportDraft.sseKeepaliveIntervalMs ??
@@ -818,18 +780,6 @@ function AdminSettingsPage() {
       quotaGuardDraft.secondaryMinRemainingPercent ??
       stringifyNumber(snapshot?.quotaGuard.secondaryMinRemainingPercent),
   };
-  const reasoningGuardInputValue =
-    reasoningGuardDraft ??
-    stringifyNumber(snapshot?.reasoningGuardBypassAfterConsecutive);
-  const reasoningGuardTargetsInputValue =
-    reasoningGuardTargetsDraft ??
-    (snapshot?.reasoningGuardTargets?.join(", ") || "516, 1034, 1552");
-  const reasoningGuardRetryInputValue =
-    reasoningGuardRetryDraft ??
-    stringifyNumber(snapshot?.reasoningGuardRetryAttempts);
-  const reasoningGuardContinuationMarkerInputValue =
-    reasoningGuardContinuationMarkerDraft ??
-    (snapshot?.reasoningGuardContinuationMarkerText || "Continue thinking...");
   const selectedEnvValue = selectedEnvKey
     ? (envDrafts[selectedEnvKey] ??
       snapshot?.envOverrides[selectedEnvKey] ??
@@ -1085,25 +1035,6 @@ function AdminSettingsPage() {
    * # 返回
    * 返回函数执行结果
    */
-  const handleModelCatalogAutoRemoteFetchChange = (checked: boolean) => {
-    void updateSettings
-      .mutateAsync({ modelCatalogAutoRemoteFetch: checked })
-      .then(async () => {
-        if (!checked) return;
-        try {
-          const catalog = await accountClient.listManagedModels(false);
-          queryClient.setQueryData(["managed-model-catalog"], catalog);
-          await Promise.all([
-            queryClient.invalidateQueries({ queryKey: ["managed-model-catalog"] }),
-            queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
-            queryClient.invalidateQueries({ queryKey: ["apikey-models"] }),
-          ]);
-        } catch (error) {
-          toast.error(`${t("刷新模型失败")}: ${getAppErrorMessage(error)}`);
-        }
-      })
-      .catch(() => undefined);
-  };
   const saveTransportField = (
     key:
       | "sseKeepaliveIntervalMs"
@@ -1161,77 +1092,6 @@ function AdminSettingsPage() {
           return nextDraft;
         });
       })
-      .catch(() => undefined);
-  };
-
-  const saveReasoningGuardBypassThreshold = () => {
-    const nextValue = parseIntegerInput(reasoningGuardInputValue, 0);
-    if (nextValue == null) {
-      toast.error(t("请输入合法的数值"));
-      setReasoningGuardDraft(null);
-      return;
-    }
-    void updateSettings
-      .mutateAsync({
-        reasoningGuardBypassAfterConsecutive: nextValue,
-      })
-      .then(() => setReasoningGuardDraft(null))
-      .catch(() => undefined);
-  };
-
-  const parseReasoningGuardTargetsInput = (value: string): number[] | null => {
-    const targets = value
-      .split(/[\s,;]+/)
-      .map((part) => Number(part.trim()))
-      .filter((part) => Number.isInteger(part) && part > 0);
-    const uniqueTargets = Array.from(new Set(targets));
-    return uniqueTargets.length > 0 ? uniqueTargets : null;
-  };
-
-  const saveReasoningGuardTargets = () => {
-    const nextTargets = parseReasoningGuardTargetsInput(
-      reasoningGuardTargetsInputValue,
-    );
-    if (!nextTargets) {
-      toast.error(t("请输入至少一个合法的 token 数值"));
-      setReasoningGuardTargetsDraft(null);
-      return;
-    }
-    void updateSettings
-      .mutateAsync({
-        reasoningGuardTargets: nextTargets,
-      })
-      .then(() => setReasoningGuardTargetsDraft(null))
-      .catch(() => undefined);
-  };
-
-  const saveReasoningGuardRetryAttempts = () => {
-    const nextValue = parseIntegerInput(reasoningGuardRetryInputValue, 0);
-    if (nextValue == null) {
-      toast.error(t("请输入合法的数值"));
-      setReasoningGuardRetryDraft(null);
-      return;
-    }
-    void updateSettings
-      .mutateAsync({
-        reasoningGuardRetryAttempts: nextValue,
-      })
-      .then(() => setReasoningGuardRetryDraft(null))
-      .catch(() => undefined);
-  };
-
-  const saveReasoningGuardContinuationMarkerText = () => {
-    const nextValue = reasoningGuardContinuationMarkerInputValue.trim();
-    if (!nextValue) {
-      toast.error(t("请输入续写提示文本"));
-      setReasoningGuardContinuationMarkerDraft(null);
-      return;
-    }
-    void updateSettings
-      .mutateAsync({
-        reasoningGuardContinuationMarkerText: nextValue,
-      })
-      .then(() => setReasoningGuardContinuationMarkerDraft(null))
       .catch(() => undefined);
   };
 
@@ -1496,7 +1356,7 @@ function AdminSettingsPage() {
         }}
         className="w-full"
       >
-        <TabsList className="glass-card mb-6 flex h-11 w-full justify-start overflow-x-auto rounded-xl p-1 no-scrollbar lg:w-fit">
+        <TabsList className="glass-card mission-panel mb-6 flex h-11 w-full justify-start overflow-x-auto rounded-lg p-1 no-scrollbar lg:w-fit">
           <TabsTrigger value="general" className="gap-2 px-5 shrink-0">
             <SettingsIcon className="h-4 w-4" /> {t("通用")}
           </TabsTrigger>
@@ -1533,6 +1393,7 @@ function AdminSettingsPage() {
             canDownloadUpdate={canDownloadUpdate}
             updateActionBusyLabel={updateActionBusyLabel}
             snapshot={snapshot}
+            canAutoStart={canAutoStart}
             canCloseToTray={canCloseToTray}
             updateSettings={updateSettings}
           />
@@ -1568,25 +1429,6 @@ function AdminSettingsPage() {
             t={t}
             snapshot={snapshot}
             updateSettings={updateSettings}
-            onModelCatalogAutoRemoteFetchChange={handleModelCatalogAutoRemoteFetchChange}
-            reasoningGuardInputValue={reasoningGuardInputValue}
-            setReasoningGuardDraft={setReasoningGuardDraft}
-            saveReasoningGuardBypassThreshold={saveReasoningGuardBypassThreshold}
-            reasoningGuardTargetsInputValue={reasoningGuardTargetsInputValue}
-            setReasoningGuardTargetsDraft={setReasoningGuardTargetsDraft}
-            saveReasoningGuardTargets={saveReasoningGuardTargets}
-            reasoningGuardRetryInputValue={reasoningGuardRetryInputValue}
-            setReasoningGuardRetryDraft={setReasoningGuardRetryDraft}
-            saveReasoningGuardRetryAttempts={saveReasoningGuardRetryAttempts}
-            reasoningGuardContinuationMarkerInputValue={
-              reasoningGuardContinuationMarkerInputValue
-            }
-            setReasoningGuardContinuationMarkerDraft={
-              setReasoningGuardContinuationMarkerDraft
-            }
-            saveReasoningGuardContinuationMarkerText={
-              saveReasoningGuardContinuationMarkerText
-            }
             quotaGuardInputValues={quotaGuardInputValues}
             setQuotaGuardDraft={setQuotaGuardDraft}
             saveQuotaGuardField={saveQuotaGuardField}
@@ -1596,9 +1438,6 @@ function AdminSettingsPage() {
             modelForwardRuleRows={modelForwardRuleRows}
             updateModelForwardRuleRows={updateModelForwardRuleRows}
             commitModelForwardRulesDraft={commitModelForwardRulesDraft}
-            compactModelForwardRuleRows={compactModelForwardRuleRows}
-            updateCompactModelForwardRuleRows={updateCompactModelForwardRuleRows}
-            commitCompactModelForwardRulesDraft={commitCompactModelForwardRulesDraft}
             gatewayOriginatorInput={gatewayOriginatorInput}
             gatewayOriginatorDraft={gatewayOriginatorDraft}
             setGatewayOriginatorDraft={setGatewayOriginatorDraft}
@@ -1606,6 +1445,9 @@ function AdminSettingsPage() {
             upstreamProxyInput={upstreamProxyInput}
             upstreamProxyDraft={upstreamProxyDraft}
             setUpstreamProxyDraft={setUpstreamProxyDraft}
+            upstreamProxyBypassInput={upstreamProxyBypassInput}
+            upstreamProxyBypassDraft={upstreamProxyBypassDraft}
+            setUpstreamProxyBypassDraft={setUpstreamProxyBypassDraft}
           />
         </TabsContent>
 
@@ -1674,7 +1516,7 @@ function AdminSettingsPage() {
       >
         <DialogContent
           showCloseButton={false}
-          className="glass-card p-6 sm:max-w-[480px]"
+          className="glass-card mission-panel p-6 sm:max-w-[480px]"
         >
           <DialogHeader>
             <DialogTitle>

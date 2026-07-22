@@ -10,24 +10,16 @@ use support::test_env_guard;
 
 const CODEX_IMAGE_AUTO_INJECT_TOOL_ENV: &str =
     "CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL";
+const LEGACY_COMPACT_MODEL_FORWARD_RULES_SETTING_KEY: &str = "gateway.compact_model_forward_rules";
 
 const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
     CODEX_IMAGE_AUTO_INJECT_TOOL_ENV,
-    "CODEXMANAGER_AUTO_COMPACT_ENABLED",
     "CODEXMANAGER_SERVICE_ADDR",
     "CODEXMANAGER_WEB_ADDR",
     "CODEXMANAGER_ROUTE_STRATEGY",
     "CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL",
     "CODEXMANAGER_MODEL_FORWARD_RULES",
-    "CODEXMANAGER_REASONING_GUARD_ENABLED",
-    "CODEXMANAGER_REASONING_GUARD_TARGETS",
-    "CODEXMANAGER_REASONING_GUARD_MATCH_MODE",
-    "CODEXMANAGER_REASONING_GUARD_STREAM_ACTION",
-    "CODEXMANAGER_REASONING_GUARD_CONTINUATION_MARKER_TEXT",
-    "CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING",
-    "CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING",
-    "CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS",
-    "CODEXMANAGER_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE",
+    "CODEXMANAGER_COMPACT_MODEL_FORWARD_RULES",
     "CODEXMANAGER_QUOTA_GUARD_ENABLED",
     "CODEXMANAGER_QUOTA_GUARD_5H_MIN_REMAINING_PERCENT",
     "CODEXMANAGER_QUOTA_GUARD_WEEKLY_MIN_REMAINING_PERCENT",
@@ -94,16 +86,7 @@ fn reset_runtime_defaults() {
         "routeStrategy": "balanced",
         "freeAccountMaxModel": "gpt-5.2",
         "modelForwardRules": "",
-        "autoCompactEnabled": false,
-        "reasoningGuardEnabled": true,
-        "reasoningGuardTargets": [516, 1034, 1552],
-        "reasoningGuardMatchMode": "targets",
-        "reasoningGuardStreamAction": "strictRetry",
-        "reasoningGuardContinuationMarkerText": "Continue thinking...",
-        "reasoningGuardInterceptStreaming": true,
-        "reasoningGuardInterceptNonStreaming": true,
-        "reasoningGuardRetryAttempts": 3,
-        "reasoningGuardBypassAfterConsecutive": 0,
+        "compactModelForwardRules": "",
         "quotaGuard": {
             "enabled": true,
             "primaryMinRemainingPercent": 5,
@@ -730,15 +713,6 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
             "routeStrategy": "rr",
             "freeAccountMaxModel": "gpt-5.3-codex",
             "modelForwardRules": "spark*=gpt-5.4-mini",
-            "reasoningGuardEnabled": true,
-            "reasoningGuardTargets": [516, 1034, 1552, 1034, -1],
-            "reasoningGuardMatchMode": "formula_518n_minus_2",
-            "reasoningGuardStreamAction": "continuation_recovery",
-            "reasoningGuardContinuationMarkerText": "Continue with encrypted context",
-            "reasoningGuardInterceptStreaming": true,
-            "reasoningGuardInterceptNonStreaming": false,
-            "reasoningGuardRetryAttempts": 2,
-            "reasoningGuardBypassAfterConsecutive": 9,
             "quotaGuard": {
                 "enabled": true,
                 "primaryMinRemainingPercent": 7,
@@ -845,40 +819,6 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 .and_then(|value| value.as_str()),
             Some("spark*=gpt-5.4-mini")
         );
-        assert_eq!(
-            snapshot
-                .get("reasoningGuardTargets")
-                .and_then(|value| value.as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.as_i64())
-                        .collect::<Vec<_>>()
-                }),
-            Some(vec![516, 1034, 1552])
-        );
-        assert_eq!(
-            snapshot
-                .get("reasoningGuardMatchMode")
-                .and_then(|value| value.as_str()),
-            Some("formula518nMinus2")
-        );
-        assert_eq!(
-            snapshot
-                .get("reasoningGuardStreamAction")
-                .and_then(|value| value.as_str()),
-            Some("continuationRecovery")
-        );
-        assert_eq!(
-            snapshot
-                .get("reasoningGuardContinuationMarkerText")
-                .and_then(|value| value.as_str()),
-            Some("Continue with encrypted context")
-        );
-        assert_eq!(snapshot["reasoningGuardInterceptStreaming"], true);
-        assert_eq!(snapshot["reasoningGuardInterceptNonStreaming"], false);
-        assert_eq!(snapshot["reasoningGuardRetryAttempts"], 2);
-        assert_eq!(snapshot["reasoningGuardBypassAfterConsecutive"], 9);
         assert_eq!(snapshot["quotaGuard"]["enabled"], true);
         assert_eq!(snapshot["quotaGuard"]["primaryMinRemainingPercent"], 7.0);
         assert_eq!(snapshot["quotaGuard"]["secondaryMinRemainingPercent"], 12.0);
@@ -957,38 +897,6 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY)
                 .expect("read model forward rules"),
             Some("spark*=gpt-5.4-mini".to_string())
-        );
-        assert_eq!(
-            storage
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY
-                )
-                .expect("read reasoning guard targets"),
-            Some("516,1034,1552".to_string())
-        );
-        assert_eq!(
-            storage
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY
-                )
-                .expect("read reasoning guard stream intercept"),
-            Some("1".to_string())
-        );
-        assert_eq!(
-            storage
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY
-                )
-                .expect("read reasoning guard non-stream intercept"),
-            Some("0".to_string())
-        );
-        assert_eq!(
-            storage
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY
-                )
-                .expect("read reasoning guard retry attempts"),
-            Some("2".to_string())
         );
         let stored_quota_guard = storage
             .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_QUOTA_GUARD_KEY)
@@ -1083,33 +991,6 @@ fn app_settings_set_preserves_dark_one_theme() {
 }
 
 #[test]
-fn app_settings_rejects_reasoning_guard_with_all_intercepts_disabled() {
-    with_temp_db(|_| {
-        let err = codexmanager_service::app_settings_set(Some(&json!({
-            "reasoningGuardEnabled": true,
-            "reasoningGuardInterceptStreaming": false,
-            "reasoningGuardInterceptNonStreaming": false
-        })))
-        .expect_err("enabled reasoning guard should keep at least one intercept mode");
-
-        assert!(
-            err.contains("at least one intercept mode"),
-            "unexpected error: {err}"
-        );
-
-        let snapshot = codexmanager_service::app_settings_set(Some(&json!({
-            "reasoningGuardEnabled": false,
-            "reasoningGuardInterceptStreaming": false,
-            "reasoningGuardInterceptNonStreaming": false
-        })))
-        .expect("disabled reasoning guard may preserve both intercept switches off");
-        assert_eq!(snapshot["reasoningGuardEnabled"], false);
-        assert_eq!(snapshot["reasoningGuardInterceptStreaming"], false);
-        assert_eq!(snapshot["reasoningGuardInterceptNonStreaming"], false);
-    });
-}
-
-#[test]
 fn app_settings_set_preserves_model_forward_rules_case() {
     with_temp_db(|db_path| {
         let snapshot = codexmanager_service::app_settings_set(Some(&json!({
@@ -1135,36 +1016,56 @@ fn app_settings_set_preserves_model_forward_rules_case() {
 }
 
 #[test]
-fn app_settings_auto_compact_switch_roundtrips_and_defaults_to_disabled() {
-    with_temp_db(|_| {
-        let initial = codexmanager_service::app_settings_get().expect("read initial settings");
+fn app_settings_get_migrates_legacy_compact_model_forward_rules() {
+    with_temp_db(|db_path| {
+        let storage = Storage::open(db_path).expect("open storage");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
+                "spark*=gpt-5.4-mini",
+                now_ts(),
+            )
+            .expect("save model forward rules");
+        storage
+            .set_app_setting(
+                LEGACY_COMPACT_MODEL_FORWARD_RULES_SETTING_KEY,
+                "gpt-5.4=gpt-5.4-openai-compact",
+                now_ts(),
+            )
+            .expect("save legacy compact model forward rules");
+        drop(storage);
+
+        let snapshot = codexmanager_service::app_settings_get().expect("get app settings");
+
         assert_eq!(
-            initial
-                .get("autoCompactEnabled")
-                .and_then(|value| value.as_bool()),
-            Some(false)
+            snapshot
+                .get("modelForwardRules")
+                .and_then(|value| value.as_str()),
+            Some("spark*=gpt-5.4-mini\ngpt-5.4=gpt-5.4-openai-compact")
+        );
+        assert_eq!(
+            snapshot
+                .get("compactModelForwardRules")
+                .and_then(|value| value.as_str()),
+            Some("")
+        );
+        assert_eq!(
+            codexmanager_service::current_gateway_model_forward_rules(),
+            "spark*=gpt-5.4-mini\ngpt-5.4=gpt-5.4-openai-compact"
         );
 
-        let enabled = codexmanager_service::app_settings_set(Some(&json!({
-            "autoCompactEnabled": true
-        })))
-        .expect("enable auto compact");
+        let storage = Storage::open(db_path).expect("open storage");
         assert_eq!(
-            enabled
-                .get("autoCompactEnabled")
-                .and_then(|value| value.as_bool()),
-            Some(true)
+            storage
+                .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY)
+                .expect("read migrated model forward rules"),
+            Some("spark*=gpt-5.4-mini\ngpt-5.4=gpt-5.4-openai-compact".to_string())
         );
-
-        let disabled = codexmanager_service::app_settings_set(Some(&json!({
-            "autoCompactEnabled": false
-        })))
-        .expect("disable auto compact");
         assert_eq!(
-            disabled
-                .get("autoCompactEnabled")
-                .and_then(|value| value.as_bool()),
-            Some(false)
+            storage
+                .get_app_setting(LEGACY_COMPACT_MODEL_FORWARD_RULES_SETTING_KEY)
+                .expect("read legacy compact model forward rules"),
+            Some(String::new())
         );
     });
 }

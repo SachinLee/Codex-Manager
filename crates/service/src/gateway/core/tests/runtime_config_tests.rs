@@ -328,14 +328,10 @@ fn upstream_client_pool_builds_matching_blocking_and_async_clients() {
 
     let pool = crate::lock_utils::read_recover(upstream_client_pool_lock(), "test_pool");
     assert_eq!(pool.proxies.len(), 2);
-    assert_eq!(pool.clients.len(), pool.proxies.len());
-    assert_eq!(pool.async_clients.len(), pool.proxies.len());
     assert_eq!(pool.retry_clients.len(), pool.proxies.len());
     assert_eq!(pool.async_retry_clients.len(), pool.proxies.len());
 
     let account_id = "account-42";
-    assert!(pool.client_for_account(account_id).is_some());
-    assert!(pool.async_client_for_account(account_id).is_some());
     assert!(pool.retry_client_for_account(account_id).is_some());
     assert!(pool.async_retry_client_for_account(account_id).is_some());
     assert_eq!(
@@ -420,6 +416,101 @@ fn upstream_client_for_account_reuses_cached_proxy_pool_retry_client() {
 }
 
 #[test]
+fn account_candidate_client_prepare_reuses_cached_account_clients() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
+    let _proxy_list_guard = EnvGuard::clear(ENV_PROXY_LIST);
+
+    reload_from_env();
+    let _ = upstream_total_timeout();
+    reset_upstream_client_build_count_for_test();
+    reset_async_upstream_client_build_count_for_test();
+
+    prepare_upstream_client_for_account("account-42").expect("prepare account client");
+    assert_eq!(upstream_client_build_count_for_test(), 1);
+    assert_eq!(async_upstream_client_build_count_for_test(), 1);
+
+    prepare_upstream_client_for_account("account-42").expect("prepare account client again");
+    let blocking = upstream_client_for_account("account-42");
+    let async_client = async_upstream_client_for_account("account-42");
+    assert_eq!(upstream_client_build_count_for_test(), 1);
+    assert_eq!(async_upstream_client_build_count_for_test(), 1);
+    drop(blocking);
+    drop(async_client);
+
+    prepare_upstream_client_for_account("account-43").expect("prepare second account client");
+    assert_eq!(upstream_client_build_count_for_test(), 2);
+    assert_eq!(async_upstream_client_build_count_for_test(), 2);
+}
+
+#[test]
+fn aggregate_candidate_client_cache_keys_include_id_and_url() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
+    let _proxy_list_guard = EnvGuard::clear(ENV_PROXY_LIST);
+
+    reload_from_env();
+    let _ = upstream_total_timeout();
+    reset_upstream_client_build_count_for_test();
+
+    prepare_upstream_client_for_aggregate_api_candidate("agg-a", "https://agg.example/v1")
+        .expect("prepare aggregate client");
+    assert_eq!(upstream_client_build_count_for_test(), 1);
+
+    prepare_upstream_client_for_aggregate_api_candidate("agg-a", "https://agg.example/v1")
+        .expect("prepare same aggregate client");
+    let client = upstream_client_for_aggregate_api_candidate("agg-a", "https://agg.example/v1");
+    assert_eq!(upstream_client_build_count_for_test(), 1);
+    drop(client);
+
+    prepare_upstream_client_for_aggregate_api_candidate("agg-a", "https://other.example/v1")
+        .expect("prepare aggregate client with changed url");
+    assert_eq!(upstream_client_build_count_for_test(), 2);
+
+    prepare_upstream_client_for_aggregate_api_candidate("agg-b", "https://agg.example/v1")
+        .expect("prepare aggregate client with changed id");
+    assert_eq!(upstream_client_build_count_for_test(), 3);
+}
+
+#[test]
+fn aggregate_candidate_client_key_includes_proxy_profile() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
+    let _proxy_list_guard = EnvGuard::clear(ENV_PROXY_LIST);
+
+    reload_from_env();
+    let direct_key =
+        aggregate_candidate_client_key("agg-a", "https://agg.example/v1").expect("direct key");
+
+    set_upstream_proxy_url(Some("http://127.0.0.1:7890")).expect("set proxy");
+    let proxied_key =
+        aggregate_candidate_client_key("agg-a", "https://agg.example/v1").expect("proxied key");
+
+    assert_ne!(direct_key, proxied_key);
+}
+
+#[test]
+fn aggregate_candidate_client_key_bypasses_proxy_for_configured_host() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "http://127.0.0.1:7890");
+    let _bypass_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_BYPASS_HOSTS, "api.example.test");
+    let _proxy_list_guard = EnvGuard::clear(ENV_PROXY_LIST);
+
+    reload_from_env();
+
+    let bypass_key =
+        aggregate_candidate_client_key("agg-a", "https://api.example.test/v1").expect("key");
+    let proxied_key =
+        aggregate_candidate_client_key("agg-a", "https://api.openai.com/v1").expect("key");
+
+    assert_eq!(bypass_key.proxy_profile.as_deref(), None);
+    assert_eq!(
+        proxied_key.proxy_profile.as_deref(),
+        Some("http://127.0.0.1:7890")
+    );
+}
+
+#[test]
 fn async_upstream_client_for_account_reuses_cached_proxy_pool_client() {
     let _guard = crate::test_env_guard();
     let _global_proxy_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
@@ -444,6 +535,120 @@ fn async_upstream_client_for_account_reuses_cached_proxy_pool_client() {
     assert_eq!(async_upstream_client_build_count_for_test(), after_first);
     drop(fresh);
     drop(another_fresh);
+}
+
+#[test]
+fn aggregate_api_proxy_bypass_is_empty_without_configured_hosts() {
+    let _guard = crate::test_env_guard();
+    let _bypass_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_BYPASS_HOSTS);
+
+    reload_from_env();
+
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://api.minimax.io"
+    ));
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://api.minimax.io/v1/models"
+    ));
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://chat.minimax.io/v1/responses"
+    ));
+
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://api.openai.com/v1/models"
+    ));
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://notminimax.io/v1/models"
+    ));
+    assert!(!aggregate_api_should_bypass_upstream_proxy("not a url"));
+}
+
+#[test]
+fn aggregate_api_proxy_bypass_uses_configured_hosts() {
+    let _guard = crate::test_env_guard();
+    let _bypass_guard = EnvGuard::set(
+        ENV_UPSTREAM_PROXY_BYPASS_HOSTS,
+        "api.example.test, *.direct.example, https://service.local:8443/path",
+    );
+
+    reload_from_env();
+
+    assert!(aggregate_api_should_bypass_upstream_proxy(
+        "https://api.example.test/v1/models"
+    ));
+    assert!(aggregate_api_should_bypass_upstream_proxy(
+        "https://chat.direct.example/v1/responses"
+    ));
+    assert!(aggregate_api_should_bypass_upstream_proxy(
+        "https://service.local:9443/v1"
+    ));
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://not-api.example.test/v1/models"
+    ));
+    assert!(!aggregate_api_should_bypass_upstream_proxy(
+        "https://direct.example/v1/responses"
+    ));
+}
+
+#[test]
+fn aggregate_api_client_uses_global_proxy_when_no_bypass_host_is_configured() {
+    let _guard = crate::test_env_guard();
+    let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "http://127.0.0.1:7890");
+    let _bypass_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_BYPASS_HOSTS);
+    let _proxy_list_guard = EnvGuard::clear(ENV_PROXY_LIST);
+
+    reload_from_env();
+    reset_direct_upstream_client_use_count_for_test();
+
+    let first = upstream_client_for_aggregate_url("https://api.minimax.io");
+    let second = upstream_client_for_aggregate_url("https://api.minimax.io/v1/models");
+
+    assert_eq!(direct_upstream_client_use_count_for_test(), 0);
+    drop(first);
+    drop(second);
+
+    let non_minimax = upstream_client_for_aggregate_url("https://api.openai.com/v1/models");
+    assert_eq!(direct_upstream_client_use_count_for_test(), 0);
+    drop(non_minimax);
+}
+
+#[test]
+fn aggregate_api_client_uses_direct_client_for_configured_bypass_host() {
+    let _guard = crate::test_env_guard();
+    let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "http://127.0.0.1:7890");
+    let _bypass_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_BYPASS_HOSTS, "api.example.test");
+    let _proxy_list_guard = EnvGuard::clear(ENV_PROXY_LIST);
+
+    reload_from_env();
+    reset_direct_upstream_client_use_count_for_test();
+
+    let direct = upstream_client_for_aggregate_url("https://api.example.test/v1/models");
+    let after_direct = direct_upstream_client_use_count_for_test();
+    let proxied = upstream_client_for_aggregate_url("https://api.openai.com/v1/models");
+
+    assert_eq!(after_direct, 1);
+    assert_eq!(direct_upstream_client_use_count_for_test(), after_direct);
+    drop(direct);
+    drop(proxied);
+}
+
+#[test]
+fn set_upstream_proxy_bypass_hosts_normalizes_and_updates_env() {
+    let _guard = crate::test_env_guard();
+    let _bypass_guard = EnvGuard::clear(ENV_UPSTREAM_PROXY_BYPASS_HOSTS);
+
+    let applied = set_upstream_proxy_bypass_hosts(Some(
+        " https://API.Example.Test:8443/v1\n*.Direct.Example, api.example.test ",
+    ));
+
+    assert_eq!(applied, "api.example.test\n*.direct.example");
+    assert_eq!(
+        std::env::var(ENV_UPSTREAM_PROXY_BYPASS_HOSTS)
+            .ok()
+            .as_deref(),
+        Some("api.example.test\n*.direct.example")
+    );
+    assert_eq!(upstream_proxy_bypass_hosts(), applied);
 }
 
 /// 函数 `set_upstream_proxy_url_updates_env_and_cache`
@@ -681,7 +886,7 @@ fn set_model_forward_rules_rejects_invalid_target_auto() {
 }
 
 #[test]
-fn set_compact_model_forward_rules_updates_env_cache_and_matching() {
+fn set_compact_model_forward_rules_keeps_legacy_storage_only() {
     let _guard = crate::test_env_guard();
     let _rules_guard = EnvGuard::clear(ENV_COMPACT_MODEL_FORWARD_RULES);
 
@@ -696,11 +901,6 @@ fn set_compact_model_forward_rules_updates_env_cache_and_matching() {
             .as_deref(),
         Some(applied.as_str())
     );
-    assert_eq!(
-        resolve_compact_forwarded_model("gpt-5.4"),
-        Some("gpt-5.4-openai-compact".to_string())
-    );
-    assert_eq!(resolve_compact_forwarded_model("gpt-5.4-mini"), None);
     assert_eq!(resolve_forwarded_model("gpt-5.4"), None);
 }
 

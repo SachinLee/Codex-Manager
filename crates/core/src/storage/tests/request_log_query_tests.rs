@@ -250,4 +250,3 @@ fn model_prefix_query_remains_supported() {
         } if pattern == "%gpt-5.6%"
     ));
 }
-

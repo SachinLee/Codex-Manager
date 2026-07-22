@@ -197,6 +197,7 @@ pub(super) fn maybe_respond_local_count_tokens(
                     provider_cost_usd_ticks: None,
                     provider_cost_nano_usd: None,
                     first_response_ms: None,
+                    estimated_input_tokens: None,
                 },
             )?;
             Ok(None)

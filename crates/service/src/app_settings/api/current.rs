@@ -11,43 +11,29 @@ use super::author_links::{
 };
 use super::{
     current_background_tasks_snapshot_value, current_env_overrides,
-    current_gateway_account_max_inflight, current_gateway_auto_compact_enabled,
-    current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
-    current_gateway_model_catalog_auto_remote_fetch, current_gateway_model_forward_rules,
-    current_gateway_originator, current_gateway_quota_guard,
-    current_gateway_reasoning_guard_bypass_after_consecutive,
-    current_gateway_reasoning_guard_continuation_marker_text,
-    current_gateway_reasoning_guard_enabled,
-    current_gateway_reasoning_guard_intercept_non_streaming,
-    current_gateway_reasoning_guard_intercept_streaming,
-    current_gateway_reasoning_guard_match_mode, current_gateway_reasoning_guard_retry_attempts,
-    current_gateway_reasoning_guard_stream_action, current_gateway_reasoning_guard_targets,
-    current_gateway_residency_requirement, current_gateway_sse_keepalive_interval_ms,
-    current_gateway_upstream_stream_timeout_ms, current_gateway_upstream_total_timeout_ms,
-    current_gateway_user_agent_version, current_saved_service_addr, current_service_bind_mode,
-    default_gateway_originator, default_gateway_user_agent_version, env_override_catalog_value,
-    env_override_reserved_keys, env_override_unsupported_keys, normalize_optional_text,
-    normalize_ui_appearance_preset, normalize_ui_locale, normalize_ui_theme,
-    parse_bool_with_default, residency_requirement_options, save_env_overrides_value,
-    save_persisted_app_setting, save_persisted_bool_setting, sync_runtime_settings_from_storage,
+    current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
+    current_gateway_free_account_max_model, current_gateway_model_forward_rules,
+    current_gateway_originator, current_gateway_quota_guard, current_gateway_residency_requirement,
+    current_gateway_sse_keepalive_interval_ms,
+    current_gateway_thread_aware_account_distribution_enabled,
+    current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
+    current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
+    current_saved_service_addr, current_service_bind_mode, default_gateway_originator,
+    default_gateway_user_agent_version, env_override_catalog_value, env_override_reserved_keys,
+    env_override_unsupported_keys, normalize_optional_text, normalize_ui_appearance_preset,
+    normalize_ui_locale, normalize_ui_theme, parse_bool_with_default,
+    residency_requirement_options, save_env_overrides_value, save_persisted_app_setting,
+    save_persisted_bool_setting, sync_runtime_settings_from_storage,
     APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
-    APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
-    APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
-    APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
-    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
-    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
-    APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
-    APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
+    APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
+    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
+    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
+    APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
     APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
@@ -173,6 +159,7 @@ fn current_app_settings_value_inner(
     let background_tasks = current_background_tasks_snapshot_value()?;
     let runtime_time_zone = current_runtime_time_zone_value();
     let update_auto_check = setting_bool(&settings, APP_SETTING_UPDATE_AUTO_CHECK_KEY, true);
+    let auto_start_enabled = setting_bool(&settings, APP_SETTING_AUTO_START_ENABLED_KEY, false);
     let persisted_close_to_tray =
         setting_bool(&settings, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, false);
     let close_to_tray = close_to_tray_on_close.unwrap_or(persisted_close_to_tray);
@@ -203,27 +190,12 @@ fn current_app_settings_value_inner(
         current_service_bind_mode()
     };
     let route_strategy = crate::gateway::current_route_strategy().to_string();
-    let capability_routing_mode = crate::gateway::current_capability_routing_mode()
-        .as_str()
-        .to_string();
     let free_account_max_model = current_gateway_free_account_max_model();
-    let model_catalog_auto_remote_fetch = current_gateway_model_catalog_auto_remote_fetch();
     let model_forward_rules = current_gateway_model_forward_rules();
     let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
-    let auto_compact_enabled = current_gateway_auto_compact_enabled();
     let account_max_inflight = current_gateway_account_max_inflight();
-    let reasoning_guard_enabled = current_gateway_reasoning_guard_enabled();
-    let reasoning_guard_targets = current_gateway_reasoning_guard_targets();
-    let reasoning_guard_match_mode = current_gateway_reasoning_guard_match_mode();
-    let reasoning_guard_stream_action = current_gateway_reasoning_guard_stream_action();
-    let reasoning_guard_continuation_marker_text =
-        current_gateway_reasoning_guard_continuation_marker_text();
-    let reasoning_guard_intercept_streaming = current_gateway_reasoning_guard_intercept_streaming();
-    let reasoning_guard_intercept_non_streaming =
-        current_gateway_reasoning_guard_intercept_non_streaming();
-    let reasoning_guard_retry_attempts = current_gateway_reasoning_guard_retry_attempts();
-    let reasoning_guard_bypass_after_consecutive =
-        current_gateway_reasoning_guard_bypass_after_consecutive();
+    let thread_aware_account_distribution_enabled =
+        current_gateway_thread_aware_account_distribution_enabled();
     let quota_guard = current_gateway_quota_guard();
     let gateway_originator = current_gateway_originator();
     let gateway_user_agent_version = current_gateway_user_agent_version();
@@ -233,6 +205,7 @@ fn current_app_settings_value_inner(
     let free_account_max_model_options =
         load_free_account_max_model_options(&free_account_max_model);
     let upstream_proxy_url = crate::gateway::current_upstream_proxy_url();
+    let upstream_proxy_bypass_hosts = current_gateway_upstream_proxy_bypass_hosts();
     let upstream_stream_timeout_ms = current_gateway_upstream_stream_timeout_ms();
     let upstream_total_timeout_ms = current_gateway_upstream_total_timeout_ms();
     let sse_keepalive_interval_ms = current_gateway_sse_keepalive_interval_ms();
@@ -280,6 +253,7 @@ fn current_app_settings_value_inner(
     if persist_snapshot {
         persist_current_snapshot(
             update_auto_check,
+            auto_start_enabled,
             persisted_close_to_tray,
             lightweight_mode_on_close_to_tray,
             codex_cli_guide_dismissed,
@@ -291,19 +265,10 @@ fn current_app_settings_value_inner(
             &service_listen_mode,
             &route_strategy,
             &free_account_max_model,
-            model_catalog_auto_remote_fetch,
             &model_forward_rules,
             &compact_model_forward_rules,
             account_max_inflight,
-            reasoning_guard_enabled,
-            &reasoning_guard_targets,
-            &reasoning_guard_match_mode,
-            &reasoning_guard_stream_action,
-            &reasoning_guard_continuation_marker_text,
-            reasoning_guard_intercept_streaming,
-            reasoning_guard_intercept_non_streaming,
-            reasoning_guard_retry_attempts,
-            reasoning_guard_bypass_after_consecutive,
+            thread_aware_account_distribution_enabled,
             &gateway_originator,
             &gateway_user_agent_version,
             &gateway_residency_requirement,
@@ -313,6 +278,7 @@ fn current_app_settings_value_inner(
             &author_sponsors_raw,
             &author_server_recommendations_raw,
             upstream_proxy_url.as_deref(),
+            &upstream_proxy_bypass_hosts,
             upstream_stream_timeout_ms,
             upstream_total_timeout_ms,
             sse_keepalive_interval_ms,
@@ -326,21 +292,13 @@ fn current_app_settings_value_inner(
             &service_listen_mode,
             &route_strategy,
             &free_account_max_model,
-            model_catalog_auto_remote_fetch,
             &model_forward_rules,
-            reasoning_guard_enabled,
-            &reasoning_guard_targets,
-            &reasoning_guard_match_mode,
-            &reasoning_guard_stream_action,
-            &reasoning_guard_continuation_marker_text,
-            reasoning_guard_intercept_streaming,
-            reasoning_guard_intercept_non_streaming,
-            reasoning_guard_retry_attempts,
-            reasoning_guard_bypass_after_consecutive,
+            thread_aware_account_distribution_enabled,
             &gateway_originator,
             &gateway_user_agent_version,
             &gateway_residency_requirement,
             upstream_proxy_url.as_deref(),
+            &upstream_proxy_bypass_hosts,
             upstream_stream_timeout_ms,
             sse_keepalive_interval_ms,
             &background_tasks_raw,
@@ -402,59 +360,17 @@ fn current_app_settings_value_inner(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert("autoStartEnabled".to_string(), auto_start_enabled.into());
+        object.insert("autoStartSupported".to_string(), false.into());
         object.insert(
-            "capabilityRoutingMode".to_string(),
-            capability_routing_mode.into(),
+            "threadAwareAccountDistributionEnabled".to_string(),
+            thread_aware_account_distribution_enabled.into(),
         );
         object.insert(
-            "capabilityRoutingModeOptions".to_string(),
-            serde_json::json!(["off", "observe", "enforce"]),
-        );
-        object.insert(
-            "autoCompactEnabled".to_string(),
-            auto_compact_enabled.into(),
-        );
-        object.insert(
-            "modelCatalogAutoRemoteFetch".to_string(),
-            model_catalog_auto_remote_fetch.into(),
+            "upstreamProxyBypassHosts".to_string(),
+            upstream_proxy_bypass_hosts.into(),
         );
         object.insert("runtimeTimeZone".to_string(), runtime_time_zone);
-        object.insert(
-            "reasoningGuardEnabled".to_string(),
-            reasoning_guard_enabled.into(),
-        );
-        object.insert(
-            "reasoningGuardTargets".to_string(),
-            serde_json::json!(reasoning_guard_targets),
-        );
-        object.insert(
-            "reasoningGuardMatchMode".to_string(),
-            reasoning_guard_match_mode.into(),
-        );
-        object.insert(
-            "reasoningGuardStreamAction".to_string(),
-            reasoning_guard_stream_action.into(),
-        );
-        object.insert(
-            "reasoningGuardContinuationMarkerText".to_string(),
-            reasoning_guard_continuation_marker_text.into(),
-        );
-        object.insert(
-            "reasoningGuardInterceptStreaming".to_string(),
-            reasoning_guard_intercept_streaming.into(),
-        );
-        object.insert(
-            "reasoningGuardInterceptNonStreaming".to_string(),
-            reasoning_guard_intercept_non_streaming.into(),
-        );
-        object.insert(
-            "reasoningGuardRetryAttempts".to_string(),
-            reasoning_guard_retry_attempts.into(),
-        );
-        object.insert(
-            "reasoningGuardBypassAfterConsecutive".to_string(),
-            reasoning_guard_bypass_after_consecutive.into(),
-        );
         object.insert("webAuthMode".to_string(), current_web_auth_mode().into());
         object.insert(
             "webAuthModeOptions".to_string(),
@@ -532,7 +448,14 @@ fn load_free_account_max_model_options(current: &str) -> Vec<String> {
     let cached = crate::storage_helpers::open_storage()
         .and_then(|storage| {
             storage
-                .list_api_available_model_catalog_slugs_with_prefix("default", "gpt-")
+                .list_api_models_v2()
+                .map(|models| {
+                    models
+                        .into_iter()
+                        .map(|model| model.slug)
+                        .filter(|slug| slug.starts_with("gpt-"))
+                        .collect::<Vec<_>>()
+                })
                 .ok()
         })
         .unwrap_or_default();
@@ -632,6 +555,7 @@ fn is_free_account_max_model_option(slug: &str) -> bool {
 /// 无
 fn persist_current_snapshot(
     update_auto_check: bool,
+    auto_start_enabled: bool,
     persisted_close_to_tray: bool,
     lightweight_mode_on_close_to_tray: bool,
     codex_cli_guide_dismissed: bool,
@@ -643,19 +567,10 @@ fn persist_current_snapshot(
     service_listen_mode: &str,
     route_strategy: &str,
     free_account_max_model: &str,
-    model_catalog_auto_remote_fetch: bool,
     model_forward_rules: &str,
     compact_model_forward_rules: &str,
     account_max_inflight: usize,
-    reasoning_guard_enabled: bool,
-    reasoning_guard_targets: &[i64],
-    reasoning_guard_match_mode: &str,
-    reasoning_guard_stream_action: &str,
-    reasoning_guard_continuation_marker_text: &str,
-    reasoning_guard_intercept_streaming: bool,
-    reasoning_guard_intercept_non_streaming: bool,
-    reasoning_guard_retry_attempts: usize,
-    reasoning_guard_bypass_after_consecutive: usize,
+    thread_aware_account_distribution_enabled: bool,
     gateway_originator: &str,
     gateway_user_agent_version: &str,
     gateway_residency_requirement: &str,
@@ -665,6 +580,7 @@ fn persist_current_snapshot(
     author_sponsors_raw: &str,
     author_server_recommendations_raw: &str,
     upstream_proxy_url: Option<&str>,
+    upstream_proxy_bypass_hosts: &str,
     upstream_stream_timeout_ms: u64,
     upstream_total_timeout_ms: u64,
     sse_keepalive_interval_ms: u64,
@@ -672,6 +588,7 @@ fn persist_current_snapshot(
     env_overrides: &BTreeMap<String, String>,
 ) {
     let _ = save_persisted_bool_setting(APP_SETTING_UPDATE_AUTO_CHECK_KEY, update_auto_check);
+    let _ = save_persisted_bool_setting(APP_SETTING_AUTO_START_ENABLED_KEY, auto_start_enabled);
     let _ = save_persisted_bool_setting(
         APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
         persisted_close_to_tray,
@@ -699,10 +616,6 @@ fn persist_current_snapshot(
         APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
         Some(free_account_max_model),
     );
-    let _ = save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
-        model_catalog_auto_remote_fetch,
-    );
     let _ = save_persisted_app_setting(
         APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
         if model_forward_rules.trim().is_empty() {
@@ -724,40 +637,8 @@ fn persist_current_snapshot(
         Some(&account_max_inflight.to_string()),
     );
     let _ = save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
-        reasoning_guard_enabled,
-    );
-    let _ = save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
-        Some(&reasoning_guard_targets_text(reasoning_guard_targets)),
-    );
-    let _ = save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
-        Some(reasoning_guard_match_mode),
-    );
-    let _ = save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
-        Some(reasoning_guard_stream_action),
-    );
-    let _ = save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
-        Some(reasoning_guard_continuation_marker_text),
-    );
-    let _ = save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
-        reasoning_guard_intercept_streaming,
-    );
-    let _ = save_persisted_bool_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
-        reasoning_guard_intercept_non_streaming,
-    );
-    let _ = save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
-        Some(&reasoning_guard_retry_attempts.to_string()),
-    );
-    let _ = save_persisted_app_setting(
-        APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
-        Some(&reasoning_guard_bypass_after_consecutive.to_string()),
+        APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
+        thread_aware_account_distribution_enabled,
     );
     let _ =
         save_persisted_app_setting(APP_SETTING_GATEWAY_ORIGINATOR_KEY, Some(gateway_originator));
@@ -800,6 +681,14 @@ fn persist_current_snapshot(
         upstream_proxy_url,
     );
     let _ = save_persisted_app_setting(
+        APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
+        if upstream_proxy_bypass_hosts.trim().is_empty() {
+            None
+        } else {
+            Some(upstream_proxy_bypass_hosts)
+        },
+    );
+    let _ = save_persisted_app_setting(
         APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
         Some(&upstream_stream_timeout_ms.to_string()),
     );
@@ -820,14 +709,6 @@ fn persist_current_snapshot(
 
 fn persisted_text_value(value: Option<&str>) -> String {
     normalize_optional_text(value).unwrap_or_default()
-}
-
-fn reasoning_guard_targets_text(values: &[i64]) -> String {
-    values
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn save_persisted_bool_setting_if_changed(
@@ -873,21 +754,13 @@ fn persist_get_snapshot_if_changed(
     service_listen_mode: &str,
     route_strategy: &str,
     free_account_max_model: &str,
-    model_catalog_auto_remote_fetch: bool,
     model_forward_rules: &str,
-    reasoning_guard_enabled: bool,
-    reasoning_guard_targets: &[i64],
-    reasoning_guard_match_mode: &str,
-    reasoning_guard_stream_action: &str,
-    reasoning_guard_continuation_marker_text: &str,
-    reasoning_guard_intercept_streaming: bool,
-    reasoning_guard_intercept_non_streaming: bool,
-    reasoning_guard_retry_attempts: usize,
-    reasoning_guard_bypass_after_consecutive: usize,
+    thread_aware_account_distribution_enabled: bool,
     gateway_originator: &str,
     gateway_user_agent_version: &str,
     gateway_residency_requirement: &str,
     upstream_proxy_url: Option<&str>,
+    upstream_proxy_bypass_hosts: &str,
     upstream_stream_timeout_ms: u64,
     sse_keepalive_interval_ms: u64,
     background_tasks_raw: &str,
@@ -909,11 +782,6 @@ fn persist_get_snapshot_if_changed(
         APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
         Some(free_account_max_model),
     );
-    save_persisted_bool_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_MODEL_CATALOG_AUTO_REMOTE_FETCH_KEY,
-        model_catalog_auto_remote_fetch,
-    );
     save_app_setting_if_changed(
         settings,
         APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
@@ -925,48 +793,8 @@ fn persist_get_snapshot_if_changed(
     );
     save_persisted_bool_setting_if_changed(
         settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_ENABLED_KEY,
-        reasoning_guard_enabled,
-    );
-    save_app_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_TARGETS_KEY,
-        Some(&reasoning_guard_targets_text(reasoning_guard_targets)),
-    );
-    save_app_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_MATCH_MODE_KEY,
-        Some(reasoning_guard_match_mode),
-    );
-    save_app_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_STREAM_ACTION_KEY,
-        Some(reasoning_guard_stream_action),
-    );
-    save_app_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_CONTINUATION_MARKER_TEXT_KEY,
-        Some(reasoning_guard_continuation_marker_text),
-    );
-    save_persisted_bool_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_STREAMING_KEY,
-        reasoning_guard_intercept_streaming,
-    );
-    save_persisted_bool_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_INTERCEPT_NON_STREAMING_KEY,
-        reasoning_guard_intercept_non_streaming,
-    );
-    save_app_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_RETRY_ATTEMPTS_KEY,
-        Some(&reasoning_guard_retry_attempts.to_string()),
-    );
-    save_app_setting_if_changed(
-        settings,
-        APP_SETTING_GATEWAY_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE_KEY,
-        Some(&reasoning_guard_bypass_after_consecutive.to_string()),
+        APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
+        thread_aware_account_distribution_enabled,
     );
     save_app_setting_if_changed(
         settings,
@@ -991,6 +819,15 @@ fn persist_get_snapshot_if_changed(
         settings,
         APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
         upstream_proxy_url,
+    );
+    save_app_setting_if_changed(
+        settings,
+        APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
+        if upstream_proxy_bypass_hosts.trim().is_empty() {
+            None
+        } else {
+            Some(upstream_proxy_bypass_hosts)
+        },
     );
     save_app_setting_if_changed(
         settings,

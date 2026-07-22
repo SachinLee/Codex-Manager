@@ -66,7 +66,6 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let label = super::string_param(req, "label");
             let note = super::string_param(req, "note");
             let tags = super::string_param(req, "tags");
-            let model_slugs = string_array_param(req, "modelSlugs");
             let quota_capacity_primary_window_tokens =
                 super::i64_param(req, "quotaCapacityPrimaryWindowTokens");
             let quota_capacity_secondary_window_tokens =
@@ -79,7 +78,6 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 label.as_deref(),
                 note.as_deref(),
                 tags.as_deref(),
-                model_slugs,
                 quota_capacity_primary_window_tokens,
                 quota_capacity_secondary_window_tokens,
             ))
@@ -287,22 +285,6 @@ fn account_sort_updates_param(
         updates.push(account_update::AccountSortUpdate { account_id, sort });
     }
     Ok(updates)
-}
-
-fn string_array_param(req: &JsonRpcRequest, key: &str) -> Option<Vec<String>> {
-    req.params
-        .as_ref()
-        .and_then(|params| params.get(key))
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str())
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
 }
 
 /// 函数 `first_str_param`

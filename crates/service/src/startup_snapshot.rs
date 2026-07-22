@@ -6,8 +6,8 @@ use codexmanager_core::{
 };
 
 use crate::{
-    account_list, apikey_list, apikey_models, gateway, requestlog_list, requestlog_today_summary,
-    storage_helpers, usage_aggregate, RpcActor,
+    account_list, apikey_list, gateway, requestlog_list, requestlog_today_summary, storage_helpers,
+    usage_aggregate, RpcActor,
 };
 
 const STARTUP_REQUEST_LOG_DEFAULT_LIMIT: i64 = 24;
@@ -121,7 +121,7 @@ pub(crate) fn read_startup_snapshot(
         Vec::new()
     };
     let api_models = if include_api_models {
-        apikey_models::read_model_options_from_storage(&storage)?
+        crate::models_v2::models_response_with_storage(&storage)?
     } else {
         Default::default()
     };
@@ -189,7 +189,7 @@ pub(crate) fn read_startup_snapshot_for_actor(
         Vec::new()
     };
     let api_models = if include_api_models {
-        apikey_models::read_model_options_from_storage(&storage)?
+        crate::models_v2::models_response_with_storage(&storage)?
     } else {
         Default::default()
     };

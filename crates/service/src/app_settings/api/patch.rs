@@ -6,35 +6,27 @@ use super::author_links::{
     normalize_author_link_items, serialize_author_link_items, AuthorLinkItem,
 };
 use super::{
-    current_gateway_reasoning_guard_enabled,
-    current_gateway_reasoning_guard_intercept_non_streaming,
-    current_gateway_reasoning_guard_intercept_streaming, save_persisted_app_setting,
-    set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed, set_env_overrides,
-    set_gateway_account_max_inflight, set_gateway_auto_compact_enabled,
+    save_persisted_app_setting, set_auto_start_enabled_setting, set_close_to_tray_on_close_setting,
+    set_codex_cli_guide_dismissed, set_env_overrides, set_gateway_account_max_inflight,
     set_gateway_background_tasks, set_gateway_compact_model_forward_rules,
-    set_gateway_capability_routing_mode,
-    set_gateway_free_account_max_model, set_gateway_model_catalog_auto_remote_fetch,
-    set_gateway_model_forward_rules, set_gateway_originator, set_gateway_quota_guard,
-    set_gateway_reasoning_guard_bypass_after_consecutive,
-    set_gateway_reasoning_guard_continuation_marker_text, set_gateway_reasoning_guard_enabled,
-    set_gateway_reasoning_guard_intercept_non_streaming,
-    set_gateway_reasoning_guard_intercept_streaming, set_gateway_reasoning_guard_match_mode,
-    set_gateway_reasoning_guard_retry_attempts, set_gateway_reasoning_guard_stream_action,
-    set_gateway_reasoning_guard_targets, set_gateway_residency_requirement,
-    set_gateway_route_strategy, set_gateway_sse_keepalive_interval_ms,
-    set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
-    set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version,
-    set_lightweight_mode_on_close_to_tray_setting, set_saved_service_addr, set_service_bind_mode,
-    set_ui_appearance_preset, set_ui_locale, set_ui_low_transparency_enabled, set_ui_theme,
-    set_update_auto_check_enabled, BackgroundTasksInput, QuotaGuardInput,
-    APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
-    APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
+    set_gateway_free_account_max_model, set_gateway_model_forward_rules, set_gateway_originator,
+    set_gateway_quota_guard, set_gateway_residency_requirement, set_gateway_route_strategy,
+    set_gateway_sse_keepalive_interval_ms, set_gateway_thread_aware_account_distribution_enabled,
+    set_gateway_upstream_proxy_bypass_hosts, set_gateway_upstream_proxy_url,
+    set_gateway_upstream_stream_timeout_ms, set_gateway_upstream_total_timeout_ms,
+    set_gateway_user_agent_version, set_lightweight_mode_on_close_to_tray_setting,
+    set_saved_service_addr, set_service_bind_mode, set_ui_appearance_preset, set_ui_locale,
+    set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
+    BackgroundTasksInput, QuotaGuardInput, APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY,
+    APP_SETTING_AUTHOR_SPONSORS_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
+    APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
 };
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AppSettingsPatch {
     update_auto_check: Option<bool>,
+    auto_start_enabled: Option<bool>,
     close_to_tray_on_close: Option<bool>,
     lightweight_mode_on_close_to_tray: Option<bool>,
     codex_cli_guide_dismissed: Option<bool>,
@@ -45,22 +37,11 @@ pub(super) struct AppSettingsPatch {
     service_addr: Option<String>,
     pub(super) service_listen_mode: Option<String>,
     route_strategy: Option<String>,
-    capability_routing_mode: Option<String>,
     free_account_max_model: Option<String>,
-    model_catalog_auto_remote_fetch: Option<bool>,
     model_forward_rules: Option<String>,
     compact_model_forward_rules: Option<String>,
-    auto_compact_enabled: Option<bool>,
     account_max_inflight: Option<usize>,
-    reasoning_guard_enabled: Option<bool>,
-    reasoning_guard_targets: Option<Vec<i64>>,
-    reasoning_guard_match_mode: Option<String>,
-    reasoning_guard_stream_action: Option<String>,
-    reasoning_guard_continuation_marker_text: Option<String>,
-    reasoning_guard_intercept_streaming: Option<bool>,
-    reasoning_guard_intercept_non_streaming: Option<bool>,
-    reasoning_guard_retry_attempts: Option<usize>,
-    reasoning_guard_bypass_after_consecutive: Option<usize>,
+    thread_aware_account_distribution_enabled: Option<bool>,
     gateway_originator: Option<String>,
     gateway_user_agent_version: Option<String>,
     gateway_residency_requirement: Option<String>,
@@ -69,6 +50,7 @@ pub(super) struct AppSettingsPatch {
     author_sponsors: Option<Vec<AuthorLinkItem>>,
     author_server_recommendations: Option<Vec<AuthorLinkItem>>,
     upstream_proxy_url: Option<String>,
+    upstream_proxy_bypass_hosts: Option<String>,
     upstream_stream_timeout_ms: Option<u64>,
     upstream_total_timeout_ms: Option<u64>,
     sse_keepalive_interval_ms: Option<u64>,
@@ -111,27 +93,11 @@ pub(super) fn parse_app_settings_patch(params: Option<&Value>) -> Result<AppSett
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), String> {
-    let next_reasoning_guard_enabled = patch
-        .reasoning_guard_enabled
-        .unwrap_or_else(current_gateway_reasoning_guard_enabled);
-    let next_reasoning_guard_intercept_streaming = patch
-        .reasoning_guard_intercept_streaming
-        .unwrap_or_else(current_gateway_reasoning_guard_intercept_streaming);
-    let next_reasoning_guard_intercept_non_streaming = patch
-        .reasoning_guard_intercept_non_streaming
-        .unwrap_or_else(current_gateway_reasoning_guard_intercept_non_streaming);
-    if next_reasoning_guard_enabled
-        && !next_reasoning_guard_intercept_streaming
-        && !next_reasoning_guard_intercept_non_streaming
-    {
-        return Err(
-            "reasoningGuardEnabled requires at least one intercept mode to stay enabled"
-                .to_string(),
-        );
-    }
-
     if let Some(enabled) = patch.update_auto_check {
         set_update_auto_check_enabled(enabled)?;
+    }
+    if let Some(enabled) = patch.auto_start_enabled {
+        set_auto_start_enabled_setting(enabled)?;
     }
     if let Some(enabled) = patch.close_to_tray_on_close {
         set_close_to_tray_on_close_setting(enabled)?;
@@ -163,14 +129,8 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     if let Some(strategy) = patch.route_strategy {
         let _ = set_gateway_route_strategy(&strategy)?;
     }
-    if let Some(mode) = patch.capability_routing_mode {
-        let _ = set_gateway_capability_routing_mode(&mode)?;
-    }
     if let Some(model) = patch.free_account_max_model {
         let _ = set_gateway_free_account_max_model(&model)?;
-    }
-    if let Some(enabled) = patch.model_catalog_auto_remote_fetch {
-        let _ = set_gateway_model_catalog_auto_remote_fetch(enabled)?;
     }
     if let Some(raw) = patch.model_forward_rules {
         let _ = set_gateway_model_forward_rules(&raw)?;
@@ -178,38 +138,11 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     if let Some(raw) = patch.compact_model_forward_rules {
         let _ = set_gateway_compact_model_forward_rules(&raw)?;
     }
-    if let Some(enabled) = patch.auto_compact_enabled {
-        let _ = set_gateway_auto_compact_enabled(enabled)?;
-    }
     if let Some(limit) = patch.account_max_inflight {
         let _ = set_gateway_account_max_inflight(limit)?;
     }
-    if let Some(enabled) = patch.reasoning_guard_enabled {
-        let _ = set_gateway_reasoning_guard_enabled(enabled)?;
-    }
-    if let Some(targets) = patch.reasoning_guard_targets {
-        let _ = set_gateway_reasoning_guard_targets(&targets)?;
-    }
-    if let Some(mode) = patch.reasoning_guard_match_mode {
-        let _ = set_gateway_reasoning_guard_match_mode(&mode)?;
-    }
-    if let Some(action) = patch.reasoning_guard_stream_action {
-        let _ = set_gateway_reasoning_guard_stream_action(&action)?;
-    }
-    if let Some(marker_text) = patch.reasoning_guard_continuation_marker_text {
-        let _ = set_gateway_reasoning_guard_continuation_marker_text(&marker_text)?;
-    }
-    if let Some(enabled) = patch.reasoning_guard_intercept_streaming {
-        let _ = set_gateway_reasoning_guard_intercept_streaming(enabled)?;
-    }
-    if let Some(enabled) = patch.reasoning_guard_intercept_non_streaming {
-        let _ = set_gateway_reasoning_guard_intercept_non_streaming(enabled)?;
-    }
-    if let Some(attempts) = patch.reasoning_guard_retry_attempts {
-        let _ = set_gateway_reasoning_guard_retry_attempts(attempts)?;
-    }
-    if let Some(threshold) = patch.reasoning_guard_bypass_after_consecutive {
-        let _ = set_gateway_reasoning_guard_bypass_after_consecutive(threshold)?;
+    if let Some(enabled) = patch.thread_aware_account_distribution_enabled {
+        let _ = set_gateway_thread_aware_account_distribution_enabled(enabled)?;
     }
     if let Some(originator) = patch.gateway_originator {
         let _ = set_gateway_originator(&originator)?;
@@ -253,6 +186,9 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(proxy_url) = patch.upstream_proxy_url {
         let _ = set_gateway_upstream_proxy_url(Some(&proxy_url))?;
+    }
+    if let Some(bypass_hosts) = patch.upstream_proxy_bypass_hosts {
+        let _ = set_gateway_upstream_proxy_bypass_hosts(Some(&bypass_hosts))?;
     }
     if let Some(timeout_ms) = patch.upstream_stream_timeout_ms {
         let _ = set_gateway_upstream_stream_timeout_ms(timeout_ms)?;

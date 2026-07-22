@@ -22,6 +22,7 @@ export type RuntimeCapabilityView = {
   canAccessManagementRpc: boolean;
   canManageService: boolean;
   canSelfUpdate: boolean;
+  canAutoStart: boolean;
   canCloseToTray: boolean;
   canOpenLocalDir: boolean;
   canUseBrowserFileImport: boolean;
@@ -162,6 +163,7 @@ export function buildDesktopRuntimeCapabilities(): RuntimeCapabilities {
     authorContentUrl: CONFIGURED_AUTHOR_CONTENT_URL,
     canManageService: true,
     canSelfUpdate: true,
+    canAutoStart: true,
     canCloseToTray: true,
     canOpenLocalDir: true,
     canUseBrowserFileImport: true,
@@ -193,6 +195,7 @@ export function buildWebGatewayRuntimeCapabilities(
       CONFIGURED_WEB_AUTHOR_CONTENT_URL || DEFAULT_WEB_AUTHOR_CONTENT_URL,
     canManageService: false,
     canSelfUpdate: false,
+    canAutoStart: false,
     canCloseToTray: false,
     canOpenLocalDir: false,
     canUseBrowserFileImport: true,
@@ -225,6 +228,7 @@ export function buildUnsupportedWebCapabilities(
     authorContentUrl: CONFIGURED_AUTHOR_CONTENT_URL,
     canManageService: false,
     canSelfUpdate: false,
+    canAutoStart: false,
     canCloseToTray: false,
     canOpenLocalDir: false,
     canUseBrowserFileImport: false,
@@ -277,6 +281,10 @@ export function normalizeRuntimeCapabilities(
     canSelfUpdate: asBoolean(
       source.canSelfUpdate,
       defaultCapabilities.canSelfUpdate
+    ),
+    canAutoStart: asBoolean(
+      source.canAutoStart,
+      defaultCapabilities.canAutoStart
     ),
     canCloseToTray: asBoolean(
       source.canCloseToTray,
@@ -332,6 +340,7 @@ export function resolveRuntimeCapabilityView(
     canAccessManagementRpc: mode !== "unsupported-web",
     canManageService: resolvedCapabilities.canManageService,
     canSelfUpdate: resolvedCapabilities.canSelfUpdate,
+    canAutoStart: resolvedCapabilities.canAutoStart,
     canCloseToTray: resolvedCapabilities.canCloseToTray,
     canOpenLocalDir: resolvedCapabilities.canOpenLocalDir,
     canUseBrowserFileImport: resolvedCapabilities.canUseBrowserFileImport,

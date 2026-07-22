@@ -1,7 +1,7 @@
 use super::{
     format_upstream_error_message, gateway_proxy_max_body_bytes, gateway_proxy_target_url,
     service_probe_client, should_skip_gateway_request_header, should_skip_gateway_response_header,
-    ENV_GATEWAY_PROXY_MAX_BODY_BYTES,
+    tcp_probe, ENV_GATEWAY_PROXY_MAX_BODY_BYTES,
 };
 use axum::http::{header, HeaderValue, Uri};
 use std::sync::{Mutex, MutexGuard};
@@ -54,6 +54,27 @@ fn service_probe_client_builds_with_dedicated_config_and_reuses_cache() {
     let first = service_probe_client().expect("build first probe client");
     let second = service_probe_client().expect("reuse probe client");
     drop((first, second));
+}
+
+#[tokio::test]
+async fn tcp_probe_reports_listening_socket_as_reachable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind probe listener");
+    let addr = listener.local_addr().expect("read probe listener address");
+
+    assert!(tcp_probe(&format!("http://{addr}/rpc")).await);
+}
+
+#[tokio::test]
+async fn tcp_probe_reports_refused_connection_as_unreachable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve probe port");
+    let addr = listener.local_addr().expect("read reserved probe address");
+    drop(listener);
+
+    assert!(!tcp_probe(&addr.to_string()).await);
 }
 
 #[test]

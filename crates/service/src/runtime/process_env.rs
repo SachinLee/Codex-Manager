@@ -233,6 +233,7 @@ pub(crate) fn resolve_installation_id() -> std::io::Result<String> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)?;
     file.lock()?;
 

@@ -92,7 +92,12 @@ fn body_for_attempt_keeps_native_codex_retry_shape() {
         Some(true)
     );
     assert!(value.get("prompt_cache_key").is_none());
-    assert!(value.get("instructions").is_none());
+    assert_eq!(
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("Follow the user's instructions.")
+    );
     assert!(value.get("tool_choice").is_none());
     assert!(value.get("include").is_none());
 }
@@ -134,7 +139,12 @@ fn body_for_attempt_injects_local_thread_anchor_without_compat_shape() {
         value.get("store").and_then(serde_json::Value::as_bool),
         Some(true)
     );
-    assert!(value.get("instructions").is_none());
+    assert_eq!(
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("Follow the user's instructions.")
+    );
     assert!(value.get("tool_choice").is_none());
     assert!(value.get("include").is_none());
 }

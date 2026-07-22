@@ -89,7 +89,7 @@ export function EnvTabContent({
       </div>
 
       <div className="grid gap-6 md:grid-cols-[300px_1fr]">
-        <Card className="glass-card flex h-[500px] flex-col shadow-sm">
+        <Card className="glass-card mission-panel flex h-[500px] flex-col shadow-sm">
           <CardHeader className="pb-3">
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -142,7 +142,7 @@ export function EnvTabContent({
           </CardContent>
         </Card>
 
-        <Card className="glass-card min-h-[500px] shadow-sm">
+        <Card className="glass-card mission-panel min-h-[500px] shadow-sm">
           {selectedEnvKey ? (
             <>
               <CardHeader>

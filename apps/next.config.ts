@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 
-const nextConfig: NextConfig = {
+const baseNextConfig: NextConfig = {
   // 暂时禁用 Beta 版编译器以确保稳定性
   reactCompiler: false,
   experimental: {
@@ -20,5 +21,89 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
 };
+
+const configureDevWebpack: NonNullable<NextConfig["webpack"]> = (config) => {
+  const ignored = config.watchOptions?.ignored;
+  const ignoredPatterns = Array.isArray(ignored)
+    ? ignored.filter(
+        (pattern): pattern is string =>
+          typeof pattern === "string" && pattern.length > 0,
+      )
+    : typeof ignored === "string" && ignored.length > 0
+      ? [ignored]
+      : [];
+
+  config.watchOptions = {
+    ...config.watchOptions,
+    ignored: [
+      ...ignoredPatterns,
+      "**/node_modules/**",
+      "**/src-tauri/target/**",
+      "**/.pnpm-store/**",
+    ],
+    poll: 1000,
+  };
+
+  return config;
+};
+
+function normalizeDevWebOrigin(value: string | undefined): string {
+  const normalized = (value || "").trim().replace(/\/+$/, "");
+  return normalized || "http://localhost:48761";
+}
+
+const devWebOrigin = normalizeDevWebOrigin(
+  process.env.CODEXMANAGER_DEV_WEB_ORIGIN,
+);
+
+const configureDevWebRuntimeRewrites: NonNullable<NextConfig["rewrites"]> =
+  async () => [
+    {
+      source: "/api/runtime",
+      destination: `${devWebOrigin}/api/runtime`,
+    },
+    {
+      source: "/api/runtime/",
+      destination: `${devWebOrigin}/api/runtime`,
+    },
+    {
+      source: "/api/rpc",
+      destination: `${devWebOrigin}/api/rpc`,
+    },
+    {
+      source: "/api/rpc/",
+      destination: `${devWebOrigin}/api/rpc`,
+    },
+    {
+      source: "/api/events/:path*",
+      destination: `${devWebOrigin}/api/events/:path*`,
+    },
+    {
+      source: "/api/author-content",
+      destination: `${devWebOrigin}/api/author-content`,
+    },
+    {
+      source: "/__auth_status",
+      destination: `${devWebOrigin}/__auth_status`,
+    },
+    {
+      source: "/__login",
+      destination: `${devWebOrigin}/__login`,
+    },
+    {
+      source: "/__logout",
+      destination: `${devWebOrigin}/__logout`,
+    },
+  ];
+
+const nextConfig = (phase: string): NextConfig =>
+  phase === PHASE_DEVELOPMENT_SERVER
+    ? {
+        ...baseNextConfig,
+        output: undefined,
+        webpack: configureDevWebpack,
+        rewrites: configureDevWebRuntimeRewrites,
+      }
+    : baseNextConfig;
 
 export default nextConfig;

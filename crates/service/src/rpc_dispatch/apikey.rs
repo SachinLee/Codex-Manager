@@ -1,14 +1,12 @@
 use codexmanager_core::rpc::types::{
     ApiKeyListResult, ApiKeyUsageStatListResult, JsonRpcRequest, JsonRpcResponse,
-    ManagedModelCatalogResult, ManagedModelCatalogUpsertParams, ManagedModelRoutingResult,
-    ManagedModelSourceMappingUpsertParams, ManagedModelSourceModelUpsertParams,
-    ManagedModelSourceSyncParams, ModelsResponse,
 };
+use codexmanager_core::storage::{ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats};
 
 use crate::RpcActor;
 use crate::{
-    apikey_create, apikey_delete, apikey_disable, apikey_enable, apikey_list, apikey_models,
-    apikey_read_secret, apikey_update_model, apikey_usage_stats,
+    apikey_create, apikey_delete, apikey_disable, apikey_enable, apikey_list, apikey_read_secret,
+    apikey_update_model, apikey_usage_stats,
 };
 
 fn ensure_api_key_access(actor: &RpcActor, key_id: &str) -> Result<(), String> {
@@ -38,45 +36,65 @@ fn allowed_model_slugs_for_actor(
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let slugs = storage
-        .allowed_model_slugs_for_user(user_id, codexmanager_core::storage::now_ts())
+        .allowed_model_slugs_for_user_v2(user_id, codexmanager_core::storage::now_ts())
         .map_err(|err| format!("read allowed model groups failed: {err}"))?
         .into_iter()
         .collect();
     Ok(Some(slugs))
 }
 
-fn filter_models_for_actor(
+fn filter_models_v2_for_actor(
     actor: &RpcActor,
-    models: ModelsResponse,
-) -> Result<ModelsResponse, String> {
+    mut result: crate::models_v2::ManagedModelListV2Result,
+) -> Result<crate::models_v2::ManagedModelListV2Result, String> {
     let Some(allowed) = allowed_model_slugs_for_actor(actor)? else {
-        return Ok(models);
+        return Ok(result);
     };
-    Ok(ModelsResponse {
-        models: models
-            .models
-            .into_iter()
-            .filter(|model| allowed.contains(model.slug.as_str()))
-            .collect(),
-        extra: models.extra,
-    })
+    result
+        .items
+        .retain(|model| allowed.contains(model.slug.as_str()));
+    for model in &mut result.items {
+        model.routes.clear();
+        model.permission_group_ids.clear();
+        model.instructions_text = None;
+    }
+    result.stats = ModelCatalogV2Stats {
+        total: result.items.len() as i64,
+        enabled: result.items.iter().filter(|model| model.enabled).count() as i64,
+        builtin: result
+            .items
+            .iter()
+            .filter(|model| model.origin == "builtin")
+            .count() as i64,
+        custom: result
+            .items
+            .iter()
+            .filter(|model| model.origin == "custom")
+            .count() as i64,
+        price_missing: result
+            .items
+            .iter()
+            .filter(|model| model.price.price_status == "missing")
+            .count() as i64,
+        missing_route: 0,
+    };
+    Ok(result)
 }
 
-fn filter_catalog_for_actor(
+fn filter_model_v2_for_actor(
     actor: &RpcActor,
-    catalog: ManagedModelCatalogResult,
-) -> Result<ManagedModelCatalogResult, String> {
+    mut model: ManagedModelV2,
+) -> Result<ManagedModelV2, String> {
     let Some(allowed) = allowed_model_slugs_for_actor(actor)? else {
-        return Ok(catalog);
+        return Ok(model);
     };
-    Ok(ManagedModelCatalogResult {
-        items: catalog
-            .items
-            .into_iter()
-            .filter(|item| allowed.contains(item.model.slug.as_str()))
-            .collect(),
-        extra: catalog.extra,
-    })
+    if !allowed.contains(model.slug.as_str()) {
+        return Err(super::permission_denied("apikey/managedModelGetV2"));
+    }
+    model.routes.clear();
+    model.permission_group_ids.clear();
+    model.instructions_text = None;
+    Ok(model)
 }
 
 /// 函数 `try_handle`
@@ -162,98 +180,83 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                     .and_then(|_| apikey_read_secret::read_api_key_secret(key_id)),
             )
         }
-        "apikey/models" => {
-            let refresh_remote = super::bool_param(req, "refreshRemote").unwrap_or(false);
+        "apikey/managedModelListV2" => {
+            let include_hidden =
+                actor.is_admin() && super::bool_param(req, "includeHidden").unwrap_or(false);
             super::value_or_error(
-                apikey_models::read_model_options(refresh_remote)
-                    .and_then(|models| filter_models_for_actor(actor, models)),
+                crate::models_v2::list(include_hidden)
+                    .and_then(|result| filter_models_v2_for_actor(actor, result)),
             )
         }
-        "apikey/modelCatalogList" => {
-            let refresh_remote = super::bool_param(req, "refreshRemote").unwrap_or(false);
-            super::value_or_error(
-                apikey_models::read_managed_model_catalog(refresh_remote)
-                    .and_then(|catalog| filter_catalog_for_actor(actor, catalog)),
-            )
-        }
-        "apikey/modelCatalogSave" => {
-            let params = req
-                .params
-                .clone()
-                .ok_or_else(|| "缺少模型参数".to_string())
-                .and_then(|value| {
-                    serde_json::from_value::<ManagedModelCatalogUpsertParams>(value)
-                        .map_err(|err| format!("解析模型参数失败: {err}"))
-                });
-            super::value_or_error(params.and_then(apikey_models::save_managed_model_catalog_model))
-        }
-        "apikey/modelCatalogDelete" => {
+        "apikey/managedModelGetV2" => {
             let slug = super::str_param(req, "slug").unwrap_or("");
-            super::ok_or_error(apikey_models::delete_managed_model_catalog_model(slug))
+            super::value_or_error(
+                crate::models_v2::get(slug)
+                    .and_then(|model| filter_model_v2_for_actor(actor, model)),
+            )
         }
-        "apikey/modelCatalogPruneStaleRemote" => {
+        "apikey/managedModelUpsertV2" => {
             if !actor.is_admin() {
-                super::value_or_error::<ManagedModelCatalogResult>(Err(super::permission_denied(
-                    "apikey/modelCatalogPruneStaleRemote",
+                super::value_or_error::<ManagedModelV2>(Err(super::permission_denied(
+                    "apikey/managedModelUpsertV2",
                 )))
             } else {
-                super::value_or_error(
-                    apikey_models::prune_stale_remote_managed_model_catalog()
-                        .and_then(|catalog| filter_catalog_for_actor(actor, catalog)),
-                )
+                let params = req
+                    .params
+                    .clone()
+                    .ok_or_else(|| "missing managed model V2 payload".to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<ManagedModelV2Upsert>(value)
+                            .map_err(|err| format!("parse managed model V2 payload failed: {err}"))
+                    });
+                super::value_or_error(params.and_then(crate::models_v2::upsert))
             }
         }
-        "apikey/modelRouting" => {
-            if actor.is_admin() {
-                super::value_or_error(apikey_models::read_managed_model_routing())
+        "apikey/managedModelDeleteV2" => {
+            if !actor.is_admin() {
+                super::ok_or_error(Err(super::permission_denied("apikey/managedModelDeleteV2")))
             } else {
-                super::value_or_error::<ManagedModelRoutingResult>(Ok(Default::default()))
+                let slug = super::str_param(req, "slug").unwrap_or("");
+                super::ok_or_error(crate::models_v2::delete(slug))
             }
         }
-        "apikey/modelSourceSync" => {
-            let params = req
-                .params
-                .clone()
-                .ok_or_else(|| "缺少来源参数".to_string())
-                .and_then(|value| {
-                    serde_json::from_value::<ManagedModelSourceSyncParams>(value)
-                        .map_err(|err| format!("解析来源参数失败: {err}"))
-                });
-            super::value_or_error(params.and_then(apikey_models::sync_managed_model_source_models))
+        "apikey/managedModelImportPreviewV2" => {
+            if !actor.is_admin() {
+                super::value_or_error::<crate::models_v2::ManagedModelImportPreviewV2Result>(Err(
+                    super::permission_denied("apikey/managedModelImportPreviewV2"),
+                ))
+            } else {
+                let params = req
+                    .params
+                    .clone()
+                    .ok_or_else(|| "missing model import preview payload".to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<
+                            crate::models_v2::ManagedModelImportPreviewV2Params,
+                        >(value)
+                        .map_err(|err| format!("parse model import preview payload failed: {err}"))
+                    });
+                super::value_or_error(params.and_then(crate::models_v2::preview_import))
+            }
         }
-        "apikey/modelSourceModelSave" => {
-            let params = req
-                .params
-                .clone()
-                .ok_or_else(|| "缺少来源模型参数".to_string())
-                .and_then(|value| {
-                    serde_json::from_value::<ManagedModelSourceModelUpsertParams>(value)
-                        .map_err(|err| format!("解析来源模型参数失败: {err}"))
-                });
-            super::value_or_error(params.and_then(apikey_models::upsert_managed_model_source_model))
-        }
-        "apikey/modelSourceMappingSave" => {
-            let params = req
-                .params
-                .clone()
-                .ok_or_else(|| "缺少映射参数".to_string())
-                .and_then(|value| {
-                    serde_json::from_value::<ManagedModelSourceMappingUpsertParams>(value)
-                        .map_err(|err| format!("解析映射参数失败: {err}"))
-                });
-            super::value_or_error(params.and_then(apikey_models::save_managed_model_source_mapping))
-        }
-        "apikey/modelSourceMappingDelete" => {
-            let id = super::str_param(req, "id").unwrap_or("");
-            let source_kind = super::str_param(req, "sourceKind").unwrap_or("");
-            let source_id = super::str_param(req, "sourceId").unwrap_or("");
-            let upstream_model = super::str_param(req, "upstreamModel").unwrap_or("");
-            super::ok_or_error(apikey_models::delete_managed_model_source_mapping(
-                id,
-                source_kind,
-                source_id,
-                upstream_model,
-            ))
+        "apikey/managedModelImportCommitV2" => {
+            if !actor.is_admin() {
+                super::value_or_error::<crate::models_v2::ManagedModelImportPreviewV2Result>(Err(
+                    super::permission_denied("apikey/managedModelImportCommitV2"),
+                ))
+            } else {
+                let params = req
+                    .params
+                    .clone()
+                    .ok_or_else(|| "missing model import commit payload".to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<
+                            crate::models_v2::ManagedModelImportCommitV2Params,
+                        >(value)
+                        .map_err(|err| format!("parse model import commit payload failed: {err}"))
+                    });
+                super::value_or_error(params.and_then(crate::models_v2::commit_import))
+            }
         }
         "apikey/usageStats" => super::value_or_error(
             apikey_usage_stats::read_api_key_usage_stats_for_actor(actor)

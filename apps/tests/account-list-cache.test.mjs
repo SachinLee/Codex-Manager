@@ -6,7 +6,7 @@ import test from "node:test";
 const appsRoot = path.resolve(import.meta.dirname, "..");
 
 async function readSource(relativePath) {
-  return fs.readFile(path.join(appsRoot, relativePath), "utf8");
+  return (await fs.readFile(path.join(appsRoot, relativePath), "utf8")).replace(/\r\n/g, "\n");
 }
 
 function readConstFunctionBody(source, functionName) {

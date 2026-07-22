@@ -44,7 +44,6 @@ export const EN_DYNAMIC_UI_MESSAGES: MessageCatalog = {
     "Service returned an empty response. Startup may be incomplete, the process may have exited, or the port may be occupied.",
   服务已启动: "Service started",
   高风险: "High risk",
-  供应商模型保存结果为空: "Supplier model save result is empty",
   海湾青: "Ocean cyan",
   极光青: "Aurora teal",
   极夜黑: "Polar night",

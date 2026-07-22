@@ -45,6 +45,7 @@ pub(crate) fn extract_plan_type_from_id_token(id_token: &str) -> Option<String> 
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_free_plan_type(plan_type: Option<&str>) -> bool {
     let Some(plan_type) = plan_type else {
         return false;
@@ -67,6 +68,7 @@ pub(crate) fn is_free_plan_type(plan_type: Option<&str>) -> bool {
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_free_plan_from_credits_json(raw_credits_json: Option<&str>) -> bool {
     is_free_plan_type(extract_plan_type_from_credits_json(raw_credits_json).as_deref())
 }
@@ -227,6 +229,7 @@ pub(crate) fn is_single_window_long_usage_snapshot(snapshot: &UsageSnapshotRecor
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_free_or_single_window_account_with_snapshot(
     token: &Token,
     snapshot: Option<&UsageSnapshotRecord>,

@@ -6,7 +6,7 @@ use super::{
 };
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{Account, ApiKey};
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn sample_api_key() -> ApiKey {
     ApiKey {
@@ -333,7 +333,7 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
             json!({
                 "type": "response.create",
                 "model": "gpt-5.4",
-                "instructions": "stay",
+                "instructions": "  stay exactly\n",
                 "previous_response_id": "resp_previous",
                 "input": "hello",
                 "tools": [{ "type": "function", "name": "ping", "parameters": { "type": "object", "properties": {} } }],
@@ -396,6 +396,7 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
 
     assert_eq!(keys, expected);
     assert_eq!(value["type"], "response.create");
+    assert_eq!(value["instructions"], "  stay exactly\n");
     assert_eq!(value["previous_response_id"], "resp_previous");
     assert_eq!(value["generate"], false);
     assert_eq!(value["reasoning"]["context"], "current_turn");
@@ -420,6 +421,70 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
     assert!(object.get("truncation").is_none());
     assert!(object.get("user").is_none());
     assert!(object.get("unknown_field").is_none());
+}
+
+#[test]
+fn websocket_response_create_uses_minimal_fallback_for_missing_or_blank_instructions() {
+    let _guard = crate::test_env_guard();
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers_with_metadata(),
+        prompt_cache_key: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+
+    for instructions in [
+        None,
+        Some(Value::Null),
+        Some(json!("")),
+        Some(json!(" \n\t")),
+    ] {
+        let mut frame = json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": "hello"
+        });
+        if let Some(instructions) = instructions {
+            frame["instructions"] = instructions;
+        }
+        let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+            .unwrap_or_else(|_| panic!("rewrite websocket frame failed"));
+        let value: Value =
+            serde_json::from_str(&prepared.text).expect("parse prepared websocket frame");
+
+        assert_eq!(value["instructions"], "Follow the user's instructions.");
+    }
+}
+
+#[test]
+fn websocket_logs_client_ultra_and_sends_upstream_max() {
+    let _guard = crate::test_env_guard();
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers_with_metadata(),
+        prompt_cache_key: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "reasoning": { "effort": "ultra" },
+        "input": "handle a complex task"
+    });
+
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .unwrap_or_else(|_| panic!("rewrite websocket frame failed"));
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse rewritten frame");
+
+    assert_eq!(prepared.client_reasoning_effort.as_deref(), Some("ultra"));
+    assert_eq!(prepared.reasoning_effort.as_deref(), Some("max"));
+    assert_eq!(
+        prepared.reasoning_source.as_deref(),
+        Some("client_request_normalized")
+    );
+    assert_eq!(value["reasoning"]["effort"], "max");
 }
 
 #[test]

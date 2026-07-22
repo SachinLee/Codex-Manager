@@ -18,3 +18,5 @@ pub(crate) mod scheduler;
 pub(crate) mod snapshot_store;
 #[path = "usage_token_refresh.rs"]
 pub(crate) mod token_refresh;
+#[path = "usage_tray_summary.rs"]
+pub(crate) mod tray_summary;

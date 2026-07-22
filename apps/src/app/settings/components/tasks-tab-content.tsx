@@ -81,7 +81,7 @@ export function TasksTabContent({
 }) {
   return (
     <>
-      <Card className="glass-card shadow-sm">
+      <Card className="glass-card mission-panel shadow-sm">
         <CardHeader>
           <CardTitle className="text-base">{t("后台任务线程")}</CardTitle>
           <CardDescription>{t("管理自动轮询和保活任务；")}</CardDescription>
@@ -205,7 +205,7 @@ export function TasksTabContent({
         </CardContent>
       </Card>
 
-      <Card className="glass-card shadow-sm">
+      <Card className="glass-card mission-panel shadow-sm">
         <CardHeader>
           <div className="flex items-center gap-2">
             <SettingsIcon className="h-4 w-4 text-primary" />
@@ -305,7 +305,7 @@ export function TasksTabContent({
         open={workerAdvancedDialogOpen}
         onOpenChange={setWorkerAdvancedDialogOpen}
       >
-        <DialogContent className="glass-card sm:max-w-2xl">
+        <DialogContent className="glass-card mission-panel sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("高级参数")}</DialogTitle>
             <DialogDescription>

@@ -79,8 +79,11 @@ fn fetch_codex_latest_version_reads_registry_payload() {
 fn sync_gateway_user_agent_version_from_codex_latest_persists_runtime_version() {
     let _guard = crate::test_env_guard();
     let db_path = unique_temp_db_path();
+    Storage::open(&db_path)
+        .expect("open storage")
+        .init()
+        .expect("init storage");
     let _db_env = EnvGuard::set("CODEXMANAGER_DB_PATH", Some(&db_path.to_string_lossy()));
-    crate::initialize_storage_if_needed().expect("init storage");
     let (registry_url, join) = spawn_latest_registry("0.128.0");
 
     let version = sync_gateway_user_agent_version_from_codex_latest_url(registry_url.as_str())

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use rusqlite::{params_from_iter, OptionalExtension, Result};
 
 use super::key_id_filters::{key_id_in_clause, normalize_key_ids, SQLITE_IN_CLAUSE_BATCH_SIZE};
+use super::request_token_stats::token_total_sql_expr_for;
 use super::{now_ts, ApiKeyQuotaOverviewStats, Storage};
 
 fn api_key_quota_limit_select_columns() -> &'static str {
@@ -94,7 +95,8 @@ impl Storage {
         if key_id.is_empty() {
             return Ok(0);
         }
-        let mut stmt = self.conn.prepare(api_key_total_token_usage_sql())?;
+        let sql = api_key_total_token_usage_sql();
+        let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query([key_id])?;
         if let Some(row) = rows.next()? {
             let total: i64 = row.get(0)?;
@@ -141,23 +143,15 @@ impl Storage {
     }
 }
 
-fn api_key_total_token_usage_sql() -> &'static str {
-    "WITH selected_stats AS (
+fn api_key_total_token_usage_sql() -> String {
+    format!(
+        "WITH selected_stats AS (
         SELECT
             input_tokens,
             cached_input_tokens,
             output_tokens,
             total_tokens
         FROM request_token_stats
-        WHERE key_id = ?1
-          AND TRIM(key_id) <> ''
-        UNION ALL
-        SELECT
-            input_tokens,
-            cached_input_tokens,
-            output_tokens,
-            total_tokens
-        FROM request_token_stat_hourly_rollups
         WHERE key_id = ?1
           AND TRIM(key_id) <> ''
         UNION ALL
@@ -173,20 +167,13 @@ fn api_key_total_token_usage_sql() -> &'static str {
      SELECT
         IFNULL(
             SUM(
-                CASE
-                    WHEN total_tokens IS NOT NULL THEN
-                        CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
-                    ELSE
-                        CASE
-                            WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
-                                THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
-                            ELSE 0
-                        END
-                END
+                {token_total}
             ),
             0
         ) AS total_tokens
-     FROM selected_stats"
+     FROM selected_stats",
+        token_total = token_total_sql_expr_for(""),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -259,13 +246,11 @@ fn api_key_usage_cte_sql(include_cost: bool, scope: ApiKeyUsageScope) -> String 
         ""
     };
     let raw_from = api_key_usage_from_sql("request_token_stats", "s", scope);
-    let hourly_from = api_key_usage_from_sql("request_token_stat_hourly_rollups", "h", scope);
     let legacy_from = api_key_usage_from_sql("request_token_stat_rollups", "r", scope);
     let raw_where = api_key_usage_where_sql("s", scope);
-    let hourly_where = api_key_usage_where_sql("h", scope);
     let legacy_where = api_key_usage_where_sql("r", scope);
-    let hourly_cost_select = rollup_cost_select.replace("{rollup_alias}", "h");
     let legacy_cost_select = rollup_cost_select.replace("{rollup_alias}", "r");
+    let raw_total = token_total_sql_expr_for("s.");
 
     format!(
         "WITH key_usage AS (
@@ -275,24 +260,9 @@ fn api_key_usage_cte_sql(include_cost: bool, scope: ApiKeyUsageScope) -> String 
                 FROM (
                     SELECT
                         s.key_id AS key_id,
-                        CASE
-                            WHEN s.total_tokens IS NOT NULL THEN
-                                CASE WHEN s.total_tokens > 0 THEN s.total_tokens ELSE 0 END
-                            ELSE
-                                CASE
-                                    WHEN IFNULL(s.input_tokens, 0) - IFNULL(s.cached_input_tokens, 0) + IFNULL(s.output_tokens, 0) > 0
-                                        THEN IFNULL(s.input_tokens, 0) - IFNULL(s.cached_input_tokens, 0) + IFNULL(s.output_tokens, 0)
-                                    ELSE 0
-                                END
-                        END AS total_tokens{raw_cost_select}
+                        {raw_total} AS total_tokens{raw_cost_select}
                     FROM {raw_from}
                     WHERE {raw_where}
-                    UNION ALL
-                    SELECT
-                        NULLIF(TRIM(h.key_id), '') AS key_id,
-                        CASE WHEN IFNULL(h.total_tokens, 0) > 0 THEN h.total_tokens ELSE 0 END AS total_tokens{hourly_cost_select}
-                    FROM {hourly_from}
-                    WHERE {hourly_where}
                     UNION ALL
                     SELECT
                         NULLIF(TRIM(r.key_id), '') AS key_id,
