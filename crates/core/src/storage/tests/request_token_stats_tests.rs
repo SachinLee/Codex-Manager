@@ -1285,6 +1285,7 @@ fn dashboard_rollups_survive_cleared_request_logs() {
             reasoning_output_tokens: Some(2),
             estimated_cost_usd: Some(0.25),
             created_at: 3_700,
+            ..RequestTokenStat::default()
         })
         .expect("insert openai stat");
     storage
