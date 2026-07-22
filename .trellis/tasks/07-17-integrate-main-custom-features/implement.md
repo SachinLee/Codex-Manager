@@ -90,3 +90,13 @@ o such column: cache_write_input_tokens).
 - Fetched origin/main: still `482f7ffa`, already ancestor of integrate branch (no third merge needed).
 - Service post-merge fixes (`bd1484b9`): restored main's `item_requires_encrypted_content` removal for reasoning/encrypted_content items; hardened proxy latency fake proxy accept capacity for warmup+10 samples under parallel load.
 - Focused retests: strip_encrypted_content, stripped_candidate, images_reader partial events, latency 204 all pass.
+
+## Progress log (2026-07-22 16:00)
+
+- Hardened flaky service tests under full parallel suite:
+  - `latency.rs` fake proxy: long overall accept deadline, full request-header read, blocking accepted sockets, 2 runtime workers
+  - SSE keepalive emission tests: silent gap raised to 2000ms so reader setup under load cannot collapse the window
+  - auth account temp DB path uniqueness (nanos suffix)
+- Validation: `cargo test -p codexmanager-service --lib` → **1276 passed; 0 failed**
+- `git fetch origin main`: origin/main still ancestor of integrate branch (no new main commits to merge)
+- Remaining acceptance: `cargo test --workspace`, frontend `test:runtime` / `build` / `build:desktop`

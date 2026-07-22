@@ -209,7 +209,7 @@ pub(crate) fn proxy_profile_url_test_entry(
 fn proxy_test_runtime() -> &'static Runtime {
     PROXY_TEST_RUNTIME.get_or_init(|| {
         Builder::new_multi_thread()
-            .worker_threads(1)
+            .worker_threads(2)
             .enable_all()
             .thread_name("proxy-test-http")
             .build()
@@ -318,7 +318,17 @@ mod tests {
 
         handle.join().expect("join fake proxy");
 
-        assert_eq!(result.status, "ok");
+        assert_eq!(
+            result.status.as_str(),
+            "ok",
+            "status={} code={:?} err_code={:?} err={:?} redirected={} latency={:?}",
+            result.status,
+            result.status_code,
+            result.error_code,
+            result.error,
+            result.redirected,
+            result.url_latency_ms
+        );
         assert_eq!(result.status_code, Some(204));
         assert!(!result.redirected);
         assert!(result.url_latency_ms.is_some());
@@ -334,30 +344,83 @@ mod tests {
         let proxy_url = format!("http://{addr}");
         let (tx, rx) = mpsc::channel();
         let handle = thread::spawn(move || {
+            // Keep accepting for the whole test window. Do not exit on a single
+            // idle accept timeout — client runtime warm-up can exceed 2s, and
+            // the previous loop would drop the listener and cause connection errors.
             let _ = listener.set_nonblocking(true);
-            // Warmup + 10 samples (+ occasional retries) under parallel cargo test load.
-            for _ in 0..24 {
-                let mut stream_opt = None;
-                let start_wait = Instant::now();
-                while start_wait.elapsed() < Duration::from_millis(2_000) {
-                    if let Ok((stream, _)) = listener.accept() {
-                        stream_opt = Some(stream);
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut served = 0_u32;
+            let mut idle_since = Instant::now();
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        idle_since = Instant::now();
+                        // Accepted sockets may inherit nonblocking from the listener.
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
-                let Some(mut stream) = stream_opt else {
-                    break;
-                };
+                        // Read full request headers before responding.
+                        let mut request = Vec::new();
+                        let mut buf = [0_u8; 1024];
+                        loop {
+                            match stream.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(size) => {
+                                    request.extend_from_slice(&buf[..size]);
+                                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                                        break;
+                                    }
+                                }
+                                Err(err)
+                                    if err.kind() == std::io::ErrorKind::WouldBlock
+                                        || err.kind() == std::io::ErrorKind::TimedOut =>
+                                {
+                                    break;
+                                }
+                                Err(_) => break,
+                            }
+                        }
 
-                let mut buffer = vec![0_u8; 8192];
-                if let Ok(size) = stream.read(&mut buffer) {
-                    let request = String::from_utf8_lossy(&buffer[..size]).to_string();
-                    if tx.send(request).is_err() {
-                        break;
+                        if request.is_empty() {
+                            continue;
+                        }
+                        let request_text = String::from_utf8_lossy(&request).to_string();
+                        if tx.send(request_text).is_err() {
+                            break;
+                        }
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        served += 1;
+                        // Warmup + 10 samples is enough; keep a short tail for retries.
+                        if served >= 16 {
+                            // Stay up briefly for any in-flight retry, then exit.
+                            let tail_deadline = Instant::now() + Duration::from_millis(500);
+                            while Instant::now() < tail_deadline {
+                                match listener.accept() {
+                                    Ok((mut stream, _)) => {
+                                        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                                        let mut drain = [0_u8; 1024];
+                                        let _ = stream.read(&mut drain);
+                                        let _ = stream.write_all(response.as_bytes());
+                                    }
+                                    Err(_) => thread::sleep(Duration::from_millis(10)),
+                                }
+                            }
+                            break;
+                        }
                     }
-                    let _ = stream.write_all(response.as_bytes());
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            || err.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        // Exit early once we have served traffic and gone idle.
+                        if served > 0 && idle_since.elapsed() > Duration::from_secs(3) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
                 }
             }
         });

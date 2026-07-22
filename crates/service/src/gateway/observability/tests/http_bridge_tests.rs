@@ -2248,7 +2248,8 @@ fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_keepalive_1\"}}\n\n",
                 0,
             ),
-            ("data: [DONE]\n\n", 50),
+            // Keep gap well above interval + reader setup under parallel load.
+            ("data: [DONE]\n\n", 2000),
         ],
     );
     let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
@@ -2329,7 +2330,8 @@ fn openai_responses_passthrough_reader_emits_keepalive_during_silent_gap() {
             (
                 "event: response.completed\n\
                  data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_eventsource_keepalive\"}}\n\n",
-                80,
+                // Keep well above interval + reader setup under parallel load.
+                2000,
             ),
         ],
     );

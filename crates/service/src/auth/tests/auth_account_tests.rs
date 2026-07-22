@@ -78,9 +78,13 @@ fn resolve_refresh_target_prefers_explicit_account_id_over_current_account() {
     let _guard = crate::test_env_guard();
     let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
     let db_path = std::env::temp_dir().join(format!(
-        "codexmanager-auth-target-{}-{}.sqlite",
+        "codexmanager-auth-target-{}-{}-{}.sqlite",
         std::process::id(),
-        now_ts()
+        now_ts(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
     ));
     std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
 
