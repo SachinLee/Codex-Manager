@@ -2410,18 +2410,14 @@ pub(crate) fn respond_with_stream_upstream(
 
 fn resolve_stream_keepalive_frame(
     response_adapter: ResponseAdapter,
-    request_path: &str,
+    _request_path: &str,
 ) -> SseKeepAliveFrame {
     match response_adapter {
-        ResponseAdapter::Passthrough => {
-            if request_path.starts_with("/v1/responses") {
-                SseKeepAliveFrame::OpenAIResponses
-            } else {
-                SseKeepAliveFrame::Comment
-            }
-        }
-        ResponseAdapter::AnthropicMessagesFromResponses
-        | ResponseAdapter::ResponsesFromAnthropicMessages
+        // Prefer protocol-aware keepalive when available; fall back to SSE comments
+        // so image generation and long-lived streams stay alive.
+        ResponseAdapter::ResponsesFromAnthropicMessages => SseKeepAliveFrame::Anthropic,
+        ResponseAdapter::Passthrough
+        | ResponseAdapter::AnthropicMessagesFromResponses
         | ResponseAdapter::ChatCompletionsFromResponses
         | ResponseAdapter::CompactFromChatCompletions
         | ResponseAdapter::ImagesB64JsonFromResponses
