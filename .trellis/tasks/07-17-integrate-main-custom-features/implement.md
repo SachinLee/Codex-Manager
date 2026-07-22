@@ -63,3 +63,14 @@ pnpm -C apps run test:runtime
 pnpm -C apps run build
 pnpm -C apps run build:desktop
 ```
+
+## Progress log (2026-07-22)
+
+- Completed first non-ff merge of main@514f3dba on `codex/integrate-main-20260717` (`ae9aed07`), including `117_custom_feature_bridge` and post-merge ports.
+- Updated local `main` to `origin/main` (`482f7ffa`, +141 commits).
+- Completed second non-ff merge (`e099182a`) preserving dual features:
+  - main: proxy profiles, reset credits, usage analytics, image keepalive settings, catalog pricing updates, Sub2API import hardenings
+  - custom: capability routing, Codex launcher/session, account/aggregate daily usage, migration bridge name retained
+- Conflict strategy: additive for dual product features; main architecture for shared runtime; unique migration names for coexistence.
+- Follow-up fix: `655b5297` align SSE keepalive variants.
+- Validation: first-merge `cargo check` for core/service succeeded earlier; post-second-merge check still pending (cargo index update).

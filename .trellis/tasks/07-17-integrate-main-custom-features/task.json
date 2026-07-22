@@ -15,12 +15,12 @@
   "branch": "codex/integrate-main-20260717",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "655b5297",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "First merge (main@514f3dba) committed as ae9aed07; second merge (origin/main@482f7ffa) committed as e099182a; keepalive compile fix 655b5297. cargo check pending network index update. package.json remains untracked by design.",
   "meta": {}
 }
