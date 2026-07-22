@@ -54,38 +54,7 @@ use images::{
 /// 无
 pub(super) fn reload_from_env() {
     reload_output_text_from_env();
-    stream_readers::reload_from_env();
     reasoning_guard::clear_runtime_state();
-}
-
-/// 函数 `current_sse_keepalive_interval_ms`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 返回函数执行结果
-pub(super) fn current_sse_keepalive_interval_ms() -> u64 {
-    stream_readers::current_sse_keepalive_interval_ms()
-}
-
-/// 函数 `set_sse_keepalive_interval_ms`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 返回函数执行结果
-pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
-    stream_readers::set_sse_keepalive_interval_ms(interval_ms)
 }
 
 /// 函数 `summarize_upstream_error_hint_from_body`

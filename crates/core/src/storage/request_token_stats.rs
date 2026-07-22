@@ -2,6 +2,7 @@ use rusqlite::{params, params_from_iter, types::Value, Result, Row};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::key_id_filters::{PairedKeyIdSqlFilter, TempKeyIdFilter};
+use super::reasoning_guard_events::GUARD_RETRY_ACTION_SQL;
 use super::{
     now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary, ApiKeyModelTokenUsageSummary,
     ApiKeyTokenUsageSummary, DailyTokenUsageRollup, MemberDashboardUsageBreakdownSnapshot,
@@ -49,6 +50,22 @@ fn token_total_sql_expr() -> &'static str {
             END
      END"
 }
+
+pub(super) fn token_total_sql_expr_for(prefix: &str) -> String {
+    format!(
+        "CASE
+        WHEN {prefix}total_tokens IS NOT NULL THEN
+            CASE WHEN {prefix}total_tokens > 0 THEN {prefix}total_tokens ELSE 0 END
+        ELSE
+            CASE
+                WHEN IFNULL({prefix}input_tokens, 0) + IFNULL({prefix}output_tokens, 0) > 0
+                    THEN IFNULL({prefix}input_tokens, 0) + IFNULL({prefix}output_tokens, 0)
+                ELSE 0
+            END
+     END"
+    )
+}
+
 
 const TOKEN_ROLLUP_COLUMNS: &str = "
     IFNULL(SUM(IFNULL(t.input_tokens, 0)), 0) AS input_tokens,
@@ -122,6 +139,7 @@ fn token_usage_rollup_from_row(row: &Row<'_>, offset: usize) -> Result<TokenUsag
     Ok(TokenUsageRollup {
         input_tokens: row.get::<_, i64>(offset)?.max(0),
         cached_input_tokens: row.get::<_, i64>(offset + 1)?.max(0),
+        cache_write_input_tokens: 0,
         output_tokens: row.get::<_, i64>(offset + 2)?.max(0),
         reasoning_output_tokens: row.get::<_, i64>(offset + 3)?.max(0),
         total_tokens: row.get::<_, i64>(offset + 4)?.max(0),
@@ -139,6 +157,12 @@ fn request_log_query_summary_from_usage(usage: TokenUsageRollup) -> RequestLogQu
         error_count: usage.error_count,
         total_tokens: usage.total_tokens,
         estimated_cost_usd: usage.estimated_cost_usd,
+        guard_retry_total_tokens: 0,
+        guard_retry_estimated_cost_usd: 0.0,
+        long_context_count: 0,
+        long_context_cost_usd: 0.0,
+        long_context_uplift_usd: 0.0,
+        legacy_candidate_count: 0,
     }
 }
 
@@ -146,6 +170,7 @@ fn empty_request_log_today_summary() -> RequestLogTodaySummary {
     RequestLogTodaySummary {
         input_tokens: 0,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 0,
         reasoning_output_tokens: 0,
         estimated_cost_usd: 0.0,
@@ -156,6 +181,7 @@ fn request_log_today_summary_from_row(row: &Row<'_>) -> Result<RequestLogTodaySu
     Ok(RequestLogTodaySummary {
         input_tokens: row.get(0)?,
         cached_input_tokens: row.get(1)?,
+        cache_write_input_tokens: 0,
         output_tokens: row.get(2)?,
         reasoning_output_tokens: row.get(3)?,
         estimated_cost_usd: row.get(4)?,
@@ -629,6 +655,7 @@ fn map_token_usage_summary(row: &Row<'_>) -> Result<TokenUsageSummary> {
         model: row.get(0)?,
         input_tokens: row.get::<_, i64>(1)?.max(0),
         cached_input_tokens: row.get::<_, i64>(2)?.max(0),
+        cache_write_input_tokens: 0,
         output_tokens: row.get::<_, i64>(3)?.max(0),
         reasoning_output_tokens: row.get::<_, i64>(4)?.max(0),
         total_tokens: row.get::<_, i64>(5)?.max(0),
@@ -642,6 +669,7 @@ fn map_api_key_model_token_usage_summary(row: &Row<'_>) -> Result<ApiKeyModelTok
         model: row.get(1)?,
         input_tokens: row.get::<_, i64>(2)?.max(0),
         cached_input_tokens: row.get::<_, i64>(3)?.max(0),
+        cache_write_input_tokens: 0,
         output_tokens: row.get::<_, i64>(4)?.max(0),
         reasoning_output_tokens: row.get::<_, i64>(5)?.max(0),
         total_tokens: row.get::<_, i64>(6)?.max(0),
@@ -1832,14 +1860,6 @@ impl Storage {
         Ok(items)
     }
 
-    pub fn summarize_request_token_stats_by_model(
-        &self,
-        start_ts: Option<i64>,
-        end_ts: Option<i64>,
-    ) -> Result<Vec<TokenUsageSummary>> {
-        self.summarize_request_token_stats_by_model_filtered(start_ts, end_ts, None)
-    }
-
     pub fn summarize_request_token_stats_by_aggregate_api_between(
         &self,
         start_ts: i64,
@@ -2090,7 +2110,6 @@ impl Storage {
         }
         Ok(())
     }
-}
 }
 
 fn cache_hit_rate(input_tokens: i64, cached_input_tokens: i64) -> f64 {

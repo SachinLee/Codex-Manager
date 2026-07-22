@@ -13,7 +13,7 @@ const CONTINUATION_ENCRYPTED_INCLUDE: &str = "reasoning.encrypted_content";
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(in super::super) fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
+pub(in crate::gateway) fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
     // Fast path: avoid JSON parsing unless we hit a recovery path.
     std::str::from_utf8(body)
         .ok()
@@ -66,7 +66,7 @@ fn strip_encrypted_content_value(value: &mut Value) -> bool {
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(in super::super) fn strip_encrypted_content_from_body(body: &[u8]) -> Option<Vec<u8>> {
+pub(in crate::gateway) fn strip_encrypted_content_from_body(body: &[u8]) -> Option<Vec<u8>> {
     let mut value: Value = serde_json::from_slice(body).ok()?;
     if !strip_encrypted_content_value(&mut value) {
         return None;
