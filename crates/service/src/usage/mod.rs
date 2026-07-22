@@ -12,6 +12,8 @@ pub(crate) mod list;
 pub(crate) mod read;
 #[path = "usage_refresh.rs"]
 pub(crate) mod refresh;
+#[path = "usage_reset_credits.rs"]
+pub(crate) mod reset_credits;
 #[path = "usage_scheduler.rs"]
 pub(crate) mod scheduler;
 #[path = "usage_snapshot_store.rs"]

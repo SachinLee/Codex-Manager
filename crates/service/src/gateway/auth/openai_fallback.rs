@@ -2,8 +2,11 @@ use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use reqwest::blocking::Client;
 use reqwest::Method;
-use serde_json::Value;
 use std::time::Instant;
+
+use super::upstream::support::payload_rewrite::{
+    body_has_encrypted_content_hint, strip_encrypted_content_from_body,
+};
 
 /// 函数 `should_force_connection_close`
 ///
@@ -43,78 +46,6 @@ fn force_connection_close(headers: &mut Vec<(String, String)>) {
     } else {
         headers.push(("Connection".to_string(), "close".to_string()));
     }
-}
-
-/// 函数 `body_has_encrypted_content_hint`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - body: 参数 body
-///
-/// # 返回
-/// 返回函数执行结果
-fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
-    // Fast path: avoid JSON parsing unless we hit the recovery path.
-    std::str::from_utf8(body)
-        .ok()
-        .is_some_and(|text| text.contains("\"encrypted_content\""))
-}
-
-/// 函数 `strip_encrypted_content_value`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - value: 参数 value
-///
-/// # 返回
-/// 返回函数执行结果
-fn strip_encrypted_content_value(value: &mut Value) -> bool {
-    match value {
-        Value::Object(map) => {
-            let mut changed = map.remove("encrypted_content").is_some();
-            for v in map.values_mut() {
-                if strip_encrypted_content_value(v) {
-                    changed = true;
-                }
-            }
-            changed
-        }
-        Value::Array(items) => {
-            let mut changed = false;
-            for item in items.iter_mut() {
-                if strip_encrypted_content_value(item) {
-                    changed = true;
-                }
-            }
-            changed
-        }
-        _ => false,
-    }
-}
-
-/// 函数 `strip_encrypted_content_from_body`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - body: 参数 body
-///
-/// # 返回
-/// 返回函数执行结果
-fn strip_encrypted_content_from_body(body: &[u8]) -> Option<Vec<u8>> {
-    let mut value: Value = serde_json::from_slice(body).ok()?;
-    if !strip_encrypted_content_value(&mut value) {
-        return None;
-    }
-    serde_json::to_vec(&value).ok()
 }
 
 /// 函数 `extract_prompt_cache_key`
@@ -264,6 +195,7 @@ pub(super) fn try_openai_fallback(
     let mut upstream_headers = if is_compact_request_path(request_path) {
         let header_input = super::upstream::header_profile::CodexCompactUpstreamHeaderInput {
             auth_token: bearer.as_str(),
+            is_fedramp: false,
             chatgpt_account_id: resolve_chatgpt_account_header(account, upstream_base),
             installation_id: None,
             incoming_user_agent: incoming_headers.user_agent(),
@@ -284,6 +216,7 @@ pub(super) fn try_openai_fallback(
     } else {
         let header_input = super::upstream::header_profile::CodexUpstreamHeaderInput {
             auth_token: bearer.as_str(),
+            is_fedramp: false,
             chatgpt_account_id: resolve_chatgpt_account_header(account, upstream_base),
             incoming_user_agent: incoming_headers.user_agent(),
             incoming_originator: incoming_headers.originator(),
@@ -332,7 +265,15 @@ pub(super) fn try_openai_fallback(
     let resp = match build_request(client).send() {
         Ok(resp) => resp,
         Err(first_err) => {
-            let fresh = super::fresh_upstream_client_for_account(account.id.as_str());
+            let fresh = match super::fresh_upstream_client_for_account(account.id.as_str()) {
+                Ok(client) => client,
+                Err(fresh_err) => {
+                    return Err(format!(
+                        "{}; retry_after_fresh_client_build: {}",
+                        first_err, fresh_err
+                    ));
+                }
+            };
             match build_request(&fresh).send() {
                 Ok(resp) => {
                     log::info!(

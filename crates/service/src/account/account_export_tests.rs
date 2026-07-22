@@ -1,8 +1,8 @@
 use super::{
-    build_single_export_bundle_json, load_export_metadata, normalize_selected_account_ids,
-    sanitize_file_stem,
+    build_account_export_payload, build_single_export_bundle_json, load_export_metadata,
+    normalize_selected_account_ids, sanitize_file_stem,
 };
-use codexmanager_core::storage::{Account, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, AccountAgentIdentity, Storage, Token};
 use std::collections::HashMap;
 
 fn sample_account(id: &str, label: &str) -> Account {
@@ -139,11 +139,47 @@ fn single_export_bundle_uses_array_shape_for_reimport() {
     let token = sample_token("acc-1");
     let tokens = HashMap::from([(token.account_id.clone(), token)]);
 
-    let bundle = build_single_export_bundle_json(&[account], &tokens, &HashMap::new())
-        .expect("build export bundle");
+    let bundle =
+        build_single_export_bundle_json(&[account], &tokens, &HashMap::new(), &HashMap::new())
+            .expect("build export bundle");
     let content = bundle.content.expect("bundle content");
     let value: serde_json::Value = serde_json::from_slice(&content).expect("parse bundle");
 
     assert!(value.is_array());
     assert_eq!(value.as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn agent_identity_export_includes_reimportable_credentials() {
+    let account = sample_account("acc-agent", "agent");
+    let token = sample_token("acc-agent");
+    let now = now_ts();
+    let identity = AccountAgentIdentity {
+        account_id: account.id.clone(),
+        agent_runtime_id: "runtime-1".to_string(),
+        agent_private_key: "private-key".to_string(),
+        task_id: None,
+        chatgpt_user_id: "user-1".to_string(),
+        chatgpt_account_is_fedramp: true,
+        auth_mode: "agentIdentity".to_string(),
+        workspace_id: Some("workspace-1".to_string()),
+        created_at: now,
+        updated_at: now,
+    };
+
+    let value = serde_json::to_value(build_account_export_payload(
+        &account,
+        &token,
+        None,
+        Some(&identity),
+    ))
+    .expect("serialize export payload");
+
+    assert_eq!(value["credentials"]["auth_mode"], "agentIdentity");
+    assert_eq!(value["credentials"]["agent_runtime_id"], "runtime-1");
+    assert_eq!(value["credentials"]["agent_private_key"], "private-key");
+    assert!(value["credentials"].get("task_id").is_none());
+    assert_eq!(value["credentials"]["chatgpt_user_id"], "user-1");
+    assert_eq!(value["credentials"]["chatgpt_account_is_fedramp"], true);
+    assert_eq!(value["credentials"]["workspace_id"], "workspace-1");
 }

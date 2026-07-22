@@ -547,6 +547,12 @@ pub(super) async fn gateway_proxy(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
+    if parts.method == axum::http::Method::GET
+        && super::gateway_websocket::is_upgrade_request(&parts.headers)
+    {
+        drop(body);
+        return super::gateway_websocket::proxy(state, parts).await;
+    }
     let target_url = gateway_proxy_target_url(state.service_addr.as_str(), &parts.uri);
     let max_body_bytes = gateway_proxy_max_body_bytes();
 

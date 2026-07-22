@@ -301,6 +301,9 @@
     color: var(--foreground);
     min-height: 100vh;
     position: relative;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body::before {
@@ -342,7 +345,9 @@
   }
 
   html.tray-preview-mode body::before,
-  body.tray-preview-mode::before {
+  html.tray-preview-mode body::after,
+  body.tray-preview-mode::before,
+  body.tray-preview-mode::after {
     content: none !important;
     display: none !important;
     background: transparent !important;
@@ -643,9 +648,40 @@
   box-shadow: inset 0 0 0 1px rgb(var(--primary-rgb) / 0.12), 0 10px 22px -20px rgb(var(--primary-rgb) / 0.36);
 }
 
+html.tray-preview-mode [data-slot="button"].tray-preview-open-button {
+  box-shadow: none !important;
+}
+
+html.tray-preview-mode [data-slot="button"].tray-preview-open-button:not(.tray-preview-open-button-active) {
+  background: transparent !important;
+}
+
+html.tray-preview-mode [data-slot="button"].tray-preview-open-button.tray-preview-open-button-active {
+  background: rgb(var(--primary-rgb) / 0.07) !important;
+}
+
+[data-slot="button"][data-variant="outline"].shadow-none:hover,
+[data-slot="button"][data-variant="ghost"].shadow-none:hover {
+  box-shadow: none;
+}
+
+.codex-guide-step-button,
+.codex-guide-step-button * {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 [data-slot="badge"] {
   border-color: rgb(var(--primary-rgb) / 0.2);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+/* Promote header badges to their own compositing layer so text renders crisply
+   inside the backdrop-filter context on Windows (WebView2 / Chromium). */
+.glass-header [data-slot="badge"] {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  transform: translateZ(0);
 }
 
 [data-appearance='modern'] [data-slot="tooltip-content"] {

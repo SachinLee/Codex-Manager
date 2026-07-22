@@ -23,6 +23,7 @@ mod quota;
 mod requestlog;
 mod service_config;
 mod startup;
+mod system;
 mod usage;
 
 /// 函数 `response`
@@ -193,12 +194,25 @@ const MEMBER_METHOD_ALLOWLIST: &[&str] = &[
     "account/chatgptAuthTokens/refresh",
     "account/chatgptAuthTokens/refreshAll",
     "account/list",
+    "account/proxy/clear",
+    "account/proxy/cancel-test",
+    "account/proxy/get",
+    "account/proxy/latency-test",
+    "account/proxy/set",
+    "account/proxy/speed-test",
+    "account/proxy/cloudflare-speed-test",
+    "account/proxy/speed-test-history",
+    "account/proxy/latency-test-history",
+    "account/proxy/diagnostics-history",
+    "account/proxy/test",
+    "account/proxy/test-job",
     "account/read",
     "account/update",
     "account/updateSorts",
     "account/usage/aggregate",
     "account/usage/list",
     "account/usage/read",
+    "account/usage/resetCredits",
     "account/usage/refresh",
     "account/warmup",
     "accountManager/password/change",
@@ -305,6 +319,9 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = service_config::try_handle(&req) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = system::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = startup::try_handle(&req, &actor) {

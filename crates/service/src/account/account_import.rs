@@ -3,7 +3,8 @@ use codexmanager_core::auth::{
     parse_id_token_claims, IdTokenClaims, DEFAULT_ISSUER,
 };
 use codexmanager_core::storage::{
-    now_ts, Account, AccountImportSnapshot, AccountImportTokenSubject, Storage, Token,
+    now_ts, Account, AccountAgentIdentity, AccountImportSnapshot, AccountImportTokenSubject,
+    Storage, Token,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -31,6 +32,7 @@ pub(crate) struct AccountImportResult {
     failed: usize,
     errors: Vec<AccountImportError>,
     imported_account_ids: Vec<String>,
+    usage_refresh_account_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,12 +48,25 @@ struct ImportTokenPayload {
     refresh_token: String,
     account_id_hint: Option<String>,
     chatgpt_account_id_hint: Option<String>,
+    agent_identity: Option<ImportAgentIdentityPayload>,
+}
+
+#[derive(Debug)]
+struct ImportAgentIdentityPayload {
+    agent_runtime_id: String,
+    agent_private_key: String,
+    task_id: Option<String>,
+    chatgpt_user_id: String,
+    chatgpt_account_is_fedramp: bool,
+    auth_mode: String,
+    workspace_id: Option<String>,
 }
 
 #[derive(Debug)]
 struct ImportedAccount {
     account_id: String,
     created: bool,
+    supports_usage_refresh: bool,
 }
 
 #[derive(Debug, Default)]
@@ -381,6 +396,14 @@ pub(crate) fn import_account_auth_json(
     contents: Vec<String>,
 ) -> Result<AccountImportResult, String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    import_account_auth_json_with_storage(&storage, contents, true)
+}
+
+fn import_account_auth_json_with_storage(
+    storage: &Storage,
+    contents: Vec<String>,
+    enqueue_usage_refresh: bool,
+) -> Result<AccountImportResult, String> {
     let mut index = ExistingAccountIndex::build(&storage)?;
     let mut result = AccountImportResult {
         total: 0,
@@ -389,6 +412,7 @@ pub(crate) fn import_account_auth_json(
         failed: 0,
         errors: Vec::new(),
         imported_account_ids: Vec::new(),
+        usage_refresh_account_ids: Vec::new(),
     };
     let mut progress = AccountImportProgress::new();
     let batch_size = import_batch_size();
@@ -403,6 +427,7 @@ pub(crate) fn import_account_auth_json(
                     &mut progress,
                     items,
                     batch_size,
+                    enqueue_usage_refresh,
                 );
             }
             Err(err) => {
@@ -457,6 +482,7 @@ fn import_items_in_batches(
     progress: &mut AccountImportProgress,
     items: Vec<Value>,
     batch_size: usize,
+    enqueue_usage_refresh: bool,
 ) {
     if items.is_empty() {
         return;
@@ -483,10 +509,22 @@ fn import_items_in_batches(
                             .imported_account_ids
                             .push(imported.account_id.clone());
                     }
+                    if imported.supports_usage_refresh
+                        && !result
+                            .usage_refresh_account_ids
+                            .iter()
+                            .any(|id| id == &imported.account_id)
+                    {
+                        result
+                            .usage_refresh_account_ids
+                            .push(imported.account_id.clone());
+                    }
                     progress.on_item_success(imported.created);
-                    let _ = crate::usage_refresh::enqueue_usage_refresh_after_account_add(
-                        &imported.account_id,
-                    );
+                    if enqueue_usage_refresh && imported.supports_usage_refresh {
+                        let _ = crate::usage_refresh::enqueue_usage_refresh_after_account_add(
+                            &imported.account_id,
+                        );
+                    }
                 }
                 Err(err) => {
                     result.failed += 1;
@@ -723,15 +761,45 @@ fn parse_items_from_content(content: &str) -> Result<Vec<Value>, String> {
     if trimmed.starts_with('[') {
         let values: Vec<Value> =
             serde_json::from_str(trimmed).map_err(|err| format!("invalid JSON array: {err}"))?;
-        return Ok(values);
+        return Ok(values.into_iter().flat_map(expand_import_value).collect());
     }
 
     let mut out = Vec::new();
     let stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
     for value in stream {
-        out.push(value.map_err(|err| format!("invalid JSON object stream: {err}"))?);
+        out.extend(expand_import_value(
+            value.map_err(|err| format!("invalid JSON object stream: {err}"))?,
+        ));
     }
     Ok(out)
+}
+
+fn expand_import_value(value: Value) -> Vec<Value> {
+    let is_sub2api_wrapper = value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("sub2api-data"))
+        || value.get("exported_at").is_some()
+        || value.get("version").is_some();
+    if is_sub2api_wrapper {
+        if let Some(accounts) = value.get("accounts").and_then(Value::as_array) {
+            return accounts
+                .iter()
+                .filter(|account| is_supported_sub2api_chatgpt_account(account))
+                .cloned()
+                .collect();
+        }
+    }
+    if value.get("platform").is_some() && !is_supported_sub2api_chatgpt_account(&value) {
+        return Vec::new();
+    }
+    vec![value]
+}
+
+fn is_supported_sub2api_chatgpt_account(account: &Value) -> bool {
+    optional_string(account, "platform")
+        .is_some_and(|platform| platform.eq_ignore_ascii_case("openai"))
+        && optional_string(account, "type").is_some_and(|kind| kind.eq_ignore_ascii_case("oauth"))
 }
 
 /// 函数 `import_single_item`
@@ -769,12 +837,18 @@ fn import_single_item_with_account_id(
     let meta = extract_account_meta(item);
     let claims = parse_id_token_claims(&payload.id_token).ok();
     let token_fingerprint = token_fingerprint(&payload.refresh_token);
-    let subject_account_id = extract_import_subject_account_id(
-        claims.as_ref(),
-        &payload.id_token,
-        &payload.access_token,
-        &payload.refresh_token,
-    );
+    let subject_account_id = payload
+        .agent_identity
+        .as_ref()
+        .map(|identity| identity.chatgpt_user_id.clone())
+        .or_else(|| {
+            extract_import_subject_account_id(
+                claims.as_ref(),
+                &payload.id_token,
+                &payload.access_token,
+                &payload.refresh_token,
+            )
+        });
     let chatgpt_account_id = clean_value(
         meta.chatgpt_account_id
             .clone()
@@ -911,8 +985,32 @@ fn import_single_item_with_account_id(
         api_key_access_token: None,
         last_refresh: now,
     };
+    let agent_identity = payload
+        .agent_identity
+        .as_ref()
+        .map(|identity| AccountAgentIdentity {
+            account_id: account_id.clone(),
+            agent_runtime_id: identity.agent_runtime_id.clone(),
+            agent_private_key: identity.agent_private_key.clone(),
+            task_id: identity.task_id.clone(),
+            chatgpt_user_id: identity.chatgpt_user_id.clone(),
+            chatgpt_account_is_fedramp: identity.chatgpt_account_is_fedramp,
+            auth_mode: identity.auth_mode.clone(),
+            workspace_id: identity.workspace_id.clone(),
+            created_at: now,
+            updated_at: now,
+        });
+    if let Some(identity) = agent_identity.as_ref() {
+        crate::agent_identity::validate_agent_identity(identity)?;
+    }
     storage
-        .upsert_imported_account_bundle(&account, note.as_deref(), tags.as_deref(), &token)
+        .upsert_imported_account_bundle(
+            &account,
+            note.as_deref(),
+            tags.as_deref(),
+            &token,
+            agent_identity.as_ref(),
+        )
         .map_err(|e| e.to_string())?;
     index.upsert_index(&account);
     let account_snapshot = account_import_snapshot_from_account(&account);
@@ -926,6 +1024,8 @@ fn import_single_item_with_account_id(
     Ok(ImportedAccount {
         account_id,
         created,
+        supports_usage_refresh: agent_identity.is_some()
+            || (!token.access_token.trim().is_empty() && !token.refresh_token.trim().is_empty()),
     })
 }
 
@@ -988,19 +1088,26 @@ fn extract_import_subject_account_id(
 /// # 返回
 /// 返回函数执行结果
 fn extract_token_payload(item: &Value) -> Result<ImportTokenPayload, String> {
-    let tokens = item.get("tokens").unwrap_or(item);
-    let access_token = required_string_any(
-        &[
-            (tokens, "access_token"),
-            (tokens, "accessToken"),
-            (item, "access_token"),
-            (item, "accessToken"),
-        ],
-        "access_token/accessToken",
-    )?;
+    let credentials = item.get("credentials").unwrap_or(item);
+    let tokens = item.get("tokens").unwrap_or(credentials);
+    let agent_identity = extract_agent_identity_payload(item, credentials)?;
+    let access_token = optional_string_any(&[
+        (tokens, "access_token"),
+        (tokens, "accessToken"),
+        (credentials, "access_token"),
+        (credentials, "accessToken"),
+        (item, "access_token"),
+        (item, "accessToken"),
+    ])
+    .unwrap_or_default();
+    if access_token.is_empty() && agent_identity.is_none() {
+        return Err("missing field: access_token/accessToken".to_string());
+    }
     let id_token = optional_string_any(&[
         (tokens, "id_token"),
         (tokens, "idToken"),
+        (credentials, "id_token"),
+        (credentials, "idToken"),
         (item, "id_token"),
         (item, "idToken"),
     ])
@@ -1008,6 +1115,8 @@ fn extract_token_payload(item: &Value) -> Result<ImportTokenPayload, String> {
     let refresh_token = optional_string_any(&[
         (tokens, "refresh_token"),
         (tokens, "refreshToken"),
+        (credentials, "refresh_token"),
+        (credentials, "refreshToken"),
         (item, "refresh_token"),
         (item, "refreshToken"),
     ])
@@ -1015,12 +1124,16 @@ fn extract_token_payload(item: &Value) -> Result<ImportTokenPayload, String> {
     let account_id_hint = optional_string_any(&[
         (tokens, "account_id"),
         (tokens, "accountId"),
+        (credentials, "account_id"),
+        (credentials, "accountId"),
         (item, "account_id"),
         (item, "accountId"),
     ]);
     let chatgpt_account_id_hint = optional_string_any(&[
         (tokens, "chatgpt_account_id"),
         (tokens, "chatgptAccountId"),
+        (credentials, "chatgpt_account_id"),
+        (credentials, "chatgptAccountId"),
         (item, "chatgpt_account_id"),
         (item, "chatgptAccountId"),
     ]);
@@ -1030,7 +1143,78 @@ fn extract_token_payload(item: &Value) -> Result<ImportTokenPayload, String> {
         refresh_token,
         account_id_hint,
         chatgpt_account_id_hint,
+        agent_identity,
     })
+}
+
+fn extract_agent_identity_payload(
+    item: &Value,
+    credentials: &Value,
+) -> Result<Option<ImportAgentIdentityPayload>, String> {
+    let auth_mode = optional_string_any(&[
+        (credentials, "auth_mode"),
+        (credentials, "authMode"),
+        (item, "auth_mode"),
+        (item, "authMode"),
+    ]);
+    let agent_runtime_id = optional_string_any(&[
+        (credentials, "agent_runtime_id"),
+        (credentials, "agentRuntimeId"),
+        (item, "agent_runtime_id"),
+        (item, "agentRuntimeId"),
+    ]);
+    let agent_private_key = optional_string_any(&[
+        (credentials, "agent_private_key"),
+        (credentials, "agentPrivateKey"),
+        (item, "agent_private_key"),
+        (item, "agentPrivateKey"),
+    ]);
+    let is_agent_identity = match auth_mode.as_deref() {
+        Some(mode) => mode.eq_ignore_ascii_case("agentIdentity"),
+        None => agent_runtime_id.is_some() || agent_private_key.is_some(),
+    };
+    if !is_agent_identity {
+        return Ok(None);
+    }
+
+    let required = |value: Option<String>, field: &str| {
+        value.ok_or_else(|| format!("missing field: credentials.{field}"))
+    };
+    Ok(Some(ImportAgentIdentityPayload {
+        agent_runtime_id: required(agent_runtime_id, "agent_runtime_id")?,
+        agent_private_key: required(agent_private_key, "agent_private_key")?,
+        task_id: optional_string_any(&[
+            (credentials, "task_id"),
+            (credentials, "taskId"),
+            (item, "task_id"),
+            (item, "taskId"),
+        ]),
+        chatgpt_user_id: required(
+            optional_string_any(&[
+                (credentials, "chatgpt_user_id"),
+                (credentials, "chatgptUserId"),
+                (credentials, "user_id"),
+                (credentials, "userId"),
+                (item, "chatgpt_user_id"),
+                (item, "chatgptUserId"),
+            ]),
+            "chatgpt_user_id",
+        )?,
+        chatgpt_account_is_fedramp: optional_bool_any(&[
+            (credentials, "chatgpt_account_is_fedramp"),
+            (credentials, "chatgptAccountIsFedramp"),
+            (item, "chatgpt_account_is_fedramp"),
+            (item, "chatgptAccountIsFedramp"),
+        ])
+        .unwrap_or(false),
+        auth_mode: auth_mode.unwrap_or_else(|| "agentIdentity".to_string()),
+        workspace_id: optional_string_any(&[
+            (credentials, "workspace_id"),
+            (credentials, "workspaceId"),
+            (item, "workspace_id"),
+            (item, "workspaceId"),
+        ]),
+    }))
 }
 
 /// 函数 `resolve_logical_account_id`
@@ -1146,8 +1330,15 @@ fn token_fingerprint(refresh_token: &str) -> String {
 /// 返回函数执行结果
 fn extract_account_meta(item: &Value) -> ImportAccountMeta {
     let meta = item.get("meta").unwrap_or(item);
+    let credentials = item.get("credentials").unwrap_or(item);
+    let extra = item.get("extra").unwrap_or(item);
     ImportAccountMeta {
-        label: optional_string_any(&[(meta, "label"), (item, "label")]),
+        label: optional_string_any(&[
+            (meta, "label"),
+            (item, "label"),
+            (item, "name"),
+            (extra, "name"),
+        ]),
         issuer: optional_string_any(&[(meta, "issuer"), (item, "issuer")]),
         group_name: optional_string_any(&[
             (meta, "group_name"),
@@ -1162,59 +1353,28 @@ fn extract_account_meta(item: &Value) -> ImportAccountMeta {
             (meta, "workspaceId"),
             (item, "workspace_id"),
             (item, "workspaceId"),
+            (credentials, "workspace_id"),
+            (credentials, "workspaceId"),
+            (extra, "workspace_id"),
+            (extra, "workspaceId"),
         ]),
         chatgpt_account_id: optional_string_any(&[
             (meta, "chatgpt_account_id"),
             (meta, "chatgptAccountId"),
             (item, "chatgpt_account_id"),
             (item, "chatgptAccountId"),
+            (credentials, "chatgpt_account_id"),
+            (credentials, "chatgptAccountId"),
+            (extra, "chatgpt_account_id"),
+            (extra, "chatgptAccountId"),
         ]),
     }
 }
 
-/// 函数 `required_string`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - value: 参数 value
-/// - key: 参数 key
-///
-/// # 返回
-/// 返回函数执行结果
-fn required_string(value: &Value, key: &str) -> Result<String, String> {
-    let raw = value
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("missing field: tokens.{key}"))?;
-    let out = raw.trim();
-    if out.is_empty() {
-        return Err(format!("empty field: tokens.{key}"));
-    }
-    Ok(out.to_string())
-}
-
-/// 函数 `required_string_any`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - candidates: 参数 candidates
-/// - label: 参数 label
-///
-/// # 返回
-/// 返回函数执行结果
-fn required_string_any(candidates: &[(&Value, &str)], label: &str) -> Result<String, String> {
-    for (value, key) in candidates {
-        if let Ok(found) = required_string(value, key) {
-            return Ok(found);
-        }
-    }
-    Err(format!("missing field: {label}"))
+fn optional_bool_any(candidates: &[(&Value, &str)]) -> Option<bool> {
+    candidates
+        .iter()
+        .find_map(|(value, key)| value.get(key).and_then(Value::as_bool))
 }
 
 /// 函数 `optional_string`

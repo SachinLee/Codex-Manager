@@ -19,7 +19,7 @@ fn prices() -> (Storage, Vec<CatalogModelPrice>) {
 #[test]
 fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     let (_storage, prices) = prices();
-    assert_eq!(prices.len(), 8);
+    assert_eq!(prices.len(), 9);
     let mini = resolve_model_price_from_catalog(&prices, "gpt-5.4-mini", 0).expect("mini");
     assert_eq!(mini.provider, "openai");
     assert_close(mini.input_price_per_1m, 0.75);
@@ -28,16 +28,20 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert!(resolve_model_price_from_catalog(&prices, "gpt-5.4-mini-snapshot", 0).is_none());
     let sol = resolve_model_price_from_catalog(&prices, "gpt-5.6-sol", 0).expect("sol");
     assert_close(sol.input_price_per_1m, 5.0);
-    assert_close(sol.cached_input_price_per_1m, 5.0);
+    assert_close(sol.cached_input_price_per_1m, 0.5);
     assert_close(sol.output_price_per_1m, 30.0);
     let terra = resolve_model_price_from_catalog(&prices, "gpt-5.6-terra", 0).expect("terra");
     assert_close(terra.input_price_per_1m, 2.5);
-    assert_close(terra.cached_input_price_per_1m, 2.5);
+    assert_close(terra.cached_input_price_per_1m, 0.25);
     assert_close(terra.output_price_per_1m, 15.0);
     let luna = resolve_model_price_from_catalog(&prices, "gpt-5.6-luna", 0).expect("luna");
     assert_close(luna.input_price_per_1m, 1.0);
-    assert_close(luna.cached_input_price_per_1m, 1.0);
+    assert_close(luna.cached_input_price_per_1m, 0.1);
     assert_close(luna.output_price_per_1m, 6.0);
+    let image = resolve_model_price_from_catalog(&prices, "gpt-image-2", 0).expect("image");
+    assert_close(image.input_price_per_1m, 8.0);
+    assert_close(image.cached_input_price_per_1m, 2.0);
+    assert_close(image.output_price_per_1m, 30.0);
     assert!(resolve_model_price_from_catalog(&prices, "codex-auto-review", 0).is_none());
     assert!(resolve_model_price_from_catalog(&prices, "unknown-provider-model", 0).is_none());
 }
@@ -55,12 +59,37 @@ fn catalog_price_switches_at_272k_boundary() {
 }
 
 #[test]
+fn gpt56_catalog_prices_switch_to_official_long_context_rates() {
+    let (_storage, prices) = prices();
+    for (slug, base, long_rates) in [
+        ("gpt-5.6-sol", (5.0, 0.5, 30.0), (10.0, 1.0, 45.0)),
+        ("gpt-5.6-terra", (2.5, 0.25, 15.0), (5.0, 0.5, 22.5)),
+        ("gpt-5.6-luna", (1.0, 0.1, 6.0), (2.0, 0.2, 9.0)),
+    ] {
+        let standard =
+            resolve_model_price_from_catalog(&prices, slug, 271_999).expect("standard tier");
+        assert_close(standard.input_price_per_1m, base.0);
+        assert_close(standard.cached_input_price_per_1m, base.1);
+        assert_close(standard.output_price_per_1m, base.2);
+
+        let long = resolve_model_price_from_catalog(&prices, slug, 272_000).expect("long tier");
+        assert_close(long.input_price_per_1m, long_rates.0);
+        assert_close(long.cached_input_price_per_1m, long_rates.1);
+        assert_close(long.output_price_per_1m, long_rates.2);
+    }
+}
+
+#[test]
 fn catalog_cost_uses_cached_subset_once() {
     let (_storage, prices) = prices();
     let cost = estimate_cost_with_catalog(&prices, Some("gpt-5.4"), 1_000, 400, 100);
     assert_eq!(cost.price_status, "ok");
     assert_eq!(cost.provider.as_deref(), Some("openai"));
     assert_close(cost.cost_usd.expect("cost"), 0.0031);
+
+    let gpt56 = estimate_cost_with_catalog(&prices, Some("gpt-5.6-sol"), 1_000, 400, 100);
+    assert_eq!(gpt56.price_status, "ok");
+    assert_close(gpt56.cost_usd.expect("GPT-5.6 cost"), 0.0062);
 }
 
 #[test]

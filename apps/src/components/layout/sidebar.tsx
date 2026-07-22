@@ -14,6 +14,7 @@ import {
   Settings,
   UserRound,
   Rocket,
+  Globe,
   ChevronLeft,
   ChevronRight,
   type LucideIcon,
@@ -51,6 +52,7 @@ const NAV_ITEM_BY_PATH = new Map<TopLevelRoutePath, { icon: LucideIcon }>([
   ["/codex-launcher", { icon: Rocket }],
   ["/logs", { icon: FileText }],
   ["/settings", { icon: Settings }],
+  ["/proxy-settings", { icon: Globe }],
   ["/author", { icon: UserRound }],
 ]);
 
@@ -90,7 +92,7 @@ const NavItem = memo(({
       "group/nav relative flex min-h-10 items-center gap-3 overflow-hidden rounded-md border border-transparent px-3 py-2 text-[13px] transition-colors duration-200 hover:border-primary/20 hover:bg-primary/5 hover:text-primary",
       !isSidebarOpen && "justify-center px-0",
       isActive
-        ? "border-primary/25 bg-primary/10 text-primary shadow-[inset_3px_0_0_rgb(var(--primary-rgb)/0.8),0_10px_22px_-20px_rgb(var(--primary-rgb)/0.34)]"
+        ? "border-primary/25 bg-primary/10 text-primary shadow-[0_10px_22px_-20px_rgb(var(--primary-rgb)/0.34)]"
         : "text-muted-foreground",
     )}
   >
@@ -257,7 +259,7 @@ export function Sidebar() {
             isSidebarOpen ? "text-left" : "justify-center"
           )}
         >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-primary/20 bg-white text-primary shadow-sm">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-primary/20 bg-card text-primary shadow-sm">
             {logoFailed ? (
               <span className="text-sm font-bold">CM</span>
             ) : (

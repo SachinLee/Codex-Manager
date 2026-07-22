@@ -194,7 +194,11 @@ export default function UsageModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid min-h-0 gap-4 overflow-y-auto py-4 pr-1">
+        <div
+          data-slot="usage-modal-scroll-body"
+          className="grid min-h-0 auto-rows-max content-start gap-4 overflow-y-auto overscroll-contain py-4 pr-2 [scrollbar-color:var(--border)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent"
+          style={{ scrollbarGutter: "stable" }}
+        >
           {!account.hasToken ? (
             <Alert variant="destructive">
               <ShieldAlert className="h-4 w-4" />

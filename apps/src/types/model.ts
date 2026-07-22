@@ -49,6 +49,9 @@ export interface ModelInfo {
   effectiveContextWindowPercent: number | null;
   experimentalSupportedTools: string[];
   inputModalities: string[];
+  outputModalities: string[];
+  supportedEndpoints: string[];
+  supportsTextGeneration: boolean;
   minimalClientVersion: unknown | null;
   supportsSearchTool: boolean | null;
   availableInPlans: string[];

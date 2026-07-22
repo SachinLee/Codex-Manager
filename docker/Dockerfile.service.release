@@ -10,8 +10,8 @@ WORKDIR /app
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates wget tzdata \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid ${APP_UID} ${APP_USER} \
-    && useradd --system --uid ${APP_UID} --gid ${APP_UID} --home-dir /app --create-home --shell /usr/sbin/nologin ${APP_USER} \
+    && groupadd --gid ${APP_UID} ${APP_USER} \
+    && useradd --uid ${APP_UID} --gid ${APP_UID} --home-dir /app --no-create-home --shell /usr/sbin/nologin ${APP_USER} \
     && mkdir -p /data \
     && chown -R ${APP_UID}:${APP_UID} /app /data
 

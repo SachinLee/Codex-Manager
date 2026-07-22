@@ -91,6 +91,7 @@ pub(crate) fn create_api_key(
 ) -> Result<ApiKeyCreateResult, String> {
     // 创建平台 Key 并写入存储
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    crate::models_v2::ensure_text_generation_model(&storage, model_slug.as_deref())?;
     let key = resolve_platform_key(&storage, custom_key)?;
     let key_hash = hash_platform_key(&key);
     let key_id = generate_key_id();

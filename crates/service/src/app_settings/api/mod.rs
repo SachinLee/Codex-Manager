@@ -13,7 +13,8 @@ pub(super) use super::gateway::{
     current_background_tasks_snapshot_value, current_gateway_account_max_inflight,
     current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
     current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
-    current_gateway_residency_requirement, current_gateway_sse_keepalive_interval_ms,
+    current_gateway_residency_requirement, current_gateway_sse_keepalive_enabled,
+    current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
     current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
@@ -22,10 +23,11 @@ pub(super) use super::gateway::{
     set_gateway_compact_model_forward_rules, set_gateway_free_account_max_model,
     set_gateway_model_forward_rules, set_gateway_originator, set_gateway_quota_guard,
     set_gateway_residency_requirement, set_gateway_route_strategy,
-    set_gateway_sse_keepalive_interval_ms, set_gateway_thread_aware_account_distribution_enabled,
-    set_gateway_upstream_proxy_bypass_hosts, set_gateway_upstream_proxy_url,
-    set_gateway_upstream_stream_timeout_ms, set_gateway_upstream_total_timeout_ms,
-    set_gateway_user_agent_version, BackgroundTasksInput, QuotaGuardInput,
+    set_gateway_sse_keepalive_enabled, set_gateway_sse_keepalive_interval_ms,
+    set_gateway_thread_aware_account_distribution_enabled, set_gateway_upstream_proxy_bypass_hosts,
+    set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
+    set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version, BackgroundTasksInput,
+    QuotaGuardInput,
 };
 pub(super) use super::runtime_sync::sync_runtime_settings_from_storage;
 pub(super) use super::service::{
@@ -50,6 +52,7 @@ pub(super) use super::{
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,

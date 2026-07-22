@@ -37,6 +37,7 @@ pub(crate) fn update_api_key_model(
         return Err("key id required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    crate::models_v2::ensure_text_generation_model(&storage, model_slug.as_deref())?;
     if has_name {
         let normalized_name = name
             .as_deref()

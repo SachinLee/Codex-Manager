@@ -24,7 +24,7 @@ impl Read for PausingReader {
         }
         if !self.paused {
             self.paused = true;
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(200));
         }
         Ok(0)
     }
@@ -33,8 +33,7 @@ impl Read for PausingReader {
 #[test]
 fn metadata_only_upstream_frame_records_first_response_before_keepalive() {
     let _guard = crate::test_env_guard();
-    let previous = super::super::current_sse_keepalive_interval_ms();
-    super::super::set_sse_keepalive_interval_ms(1).expect("set keepalive interval");
+    let _runtime_guard = super::super::SseKeepaliveRuntimeGuard::enabled_with_interval(1);
     let upstream = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_first\",\"model\":\"gpt-5.4\"}}\n\n",
     );
@@ -46,11 +45,10 @@ fn metadata_only_upstream_frame_records_first_response_before_keepalive() {
         None,
         Instant::now(),
     );
-    let mut buf = [0_u8; 128];
+    let mut buf = [0_u8; 4096];
 
     let read = reader.read(&mut buf).expect("read keepalive");
 
-    super::super::set_sse_keepalive_interval_ms(previous).expect("restore keepalive interval");
     assert!(read > 0);
     assert_eq!(
         std::str::from_utf8(&buf[..read]).expect("utf8"),

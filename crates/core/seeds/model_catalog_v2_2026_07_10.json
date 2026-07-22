@@ -1,5 +1,5 @@
 {
-  "revision": 3,
+  "revision": 5,
   "source_sha256": "4914710f243f67c3b32895bfc91e51798cddd2f4020f4c82230fef2798eb0076",
   "models": [
     {
@@ -12,10 +12,11 @@
       "context_window": 372000,
       "max_context_window": 372000,
       "capabilities": {"reasoning_efforts":["low","medium","high","xhigh","max","ultra"],"service_tiers":["priority"],"additional_speed_tiers":["fast"],"input_modalities":["text","image"],"prefer_websockets":true,"supports_parallel_tool_calls":true,"supports_reasoning_summaries":true,"default_reasoning_summary":"none","reasoning_summary_format":"experimental","supports_verbosity":true,"default_verbosity":"low","supports_image_detail_original":true,"supports_search_tool":true,"apply_patch_tool_type":"freeform","web_search_tool_type":"text_and_image","shell_type":"shell_command","truncation_mode":"tokens","truncation_limit":10000,"experimental_supported_tools":[],"effective_context_window_percent":95,"minimal_client_version":"0.144.0","default_service_tier":null,"auto_compact_token_limit":null,"auto_review_model_override":null,"comp_hash":"3000","tool_mode":"code_mode_only","multi_agent_version":"v2","use_responses_lite":true,"include_skills_usage_instructions":false},
-      "price_status": "estimated",
-      "price_source": "user_provided_openai_gpt-5.6_2026-07-14_cached_at_input_rate",
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/models/compare",
       "price_tiers": [
-        {"min_input_tokens":0,"input_microusd_per_1m":5000000,"cached_input_microusd_per_1m":5000000,"output_microusd_per_1m":30000000}
+        {"min_input_tokens":0,"input_microusd_per_1m":5000000,"cached_input_microusd_per_1m":500000,"output_microusd_per_1m":30000000},
+        {"min_input_tokens":272000,"input_microusd_per_1m":10000000,"cached_input_microusd_per_1m":1000000,"output_microusd_per_1m":45000000}
       ]
     },
     {
@@ -28,10 +29,11 @@
       "context_window": 372000,
       "max_context_window": 372000,
       "capabilities": {"reasoning_efforts":["low","medium","high","xhigh","max","ultra"],"service_tiers":["priority"],"additional_speed_tiers":["fast"],"input_modalities":["text","image"],"prefer_websockets":true,"supports_parallel_tool_calls":true,"supports_reasoning_summaries":true,"default_reasoning_summary":"none","reasoning_summary_format":"experimental","supports_verbosity":true,"default_verbosity":"low","supports_image_detail_original":true,"supports_search_tool":true,"apply_patch_tool_type":"freeform","web_search_tool_type":"text_and_image","shell_type":"shell_command","truncation_mode":"tokens","truncation_limit":10000,"experimental_supported_tools":[],"effective_context_window_percent":95,"minimal_client_version":"0.144.0","default_service_tier":null,"auto_compact_token_limit":null,"auto_review_model_override":null,"comp_hash":"3000","tool_mode":"code_mode_only","multi_agent_version":"v2","use_responses_lite":true,"include_skills_usage_instructions":false},
-      "price_status": "estimated",
-      "price_source": "user_provided_openai_gpt-5.6_2026-07-14_cached_at_input_rate",
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/models/compare",
       "price_tiers": [
-        {"min_input_tokens":0,"input_microusd_per_1m":2500000,"cached_input_microusd_per_1m":2500000,"output_microusd_per_1m":15000000}
+        {"min_input_tokens":0,"input_microusd_per_1m":2500000,"cached_input_microusd_per_1m":250000,"output_microusd_per_1m":15000000},
+        {"min_input_tokens":272000,"input_microusd_per_1m":5000000,"cached_input_microusd_per_1m":500000,"output_microusd_per_1m":22500000}
       ]
     },
     {
@@ -44,10 +46,11 @@
       "context_window": 372000,
       "max_context_window": 372000,
       "capabilities": {"reasoning_efforts":["low","medium","high","xhigh","max"],"service_tiers":["priority"],"additional_speed_tiers":["fast"],"input_modalities":["text","image"],"prefer_websockets":true,"supports_parallel_tool_calls":true,"supports_reasoning_summaries":true,"default_reasoning_summary":"none","reasoning_summary_format":"experimental","supports_verbosity":true,"default_verbosity":"low","supports_image_detail_original":true,"supports_search_tool":true,"apply_patch_tool_type":"freeform","web_search_tool_type":"text_and_image","shell_type":"shell_command","truncation_mode":"tokens","truncation_limit":10000,"experimental_supported_tools":[],"effective_context_window_percent":95,"minimal_client_version":"0.144.0","default_service_tier":null,"auto_compact_token_limit":null,"auto_review_model_override":null,"comp_hash":"3000","tool_mode":"code_mode_only","multi_agent_version":"v1","use_responses_lite":true,"include_skills_usage_instructions":false},
-      "price_status": "estimated",
-      "price_source": "user_provided_openai_gpt-5.6_2026-07-14_cached_at_input_rate",
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/models/compare",
       "price_tiers": [
-        {"min_input_tokens":0,"input_microusd_per_1m":1000000,"cached_input_microusd_per_1m":1000000,"output_microusd_per_1m":6000000}
+        {"min_input_tokens":0,"input_microusd_per_1m":1000000,"cached_input_microusd_per_1m":100000,"output_microusd_per_1m":6000000},
+        {"min_input_tokens":272000,"input_microusd_per_1m":2000000,"cached_input_microusd_per_1m":200000,"output_microusd_per_1m":9000000}
       ]
     },
     {
@@ -114,6 +117,22 @@
       "price_source": "verified_seed_2026-05-11",
       "price_tiers": [
         {"min_input_tokens":0,"input_microusd_per_1m":1750000,"cached_input_microusd_per_1m":175000,"output_microusd_per_1m":14000000}
+      ]
+    },
+    {
+      "slug": "gpt-image-2",
+      "display_name": "GPT Image 2",
+      "description": "State-of-the-art image generation and editing model.",
+      "visibility": "list",
+      "priority": 44,
+      "default_reasoning_effort": null,
+      "context_window": null,
+      "max_context_window": null,
+      "capabilities": {"reasoning_efforts":[],"service_tiers":[],"additional_speed_tiers":[],"input_modalities":["text","image"],"output_modalities":["image"],"supported_endpoints":["/v1/images/generations","/v1/images/edits"],"snapshot":"gpt-image-2-2026-04-21","supports_text_generation":false,"supports_image_generation":true,"supports_image_editing":true,"supports_transparent_background":false,"include_skills_usage_instructions":false},
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/pricing#image-generation",
+      "price_tiers": [
+        {"min_input_tokens":0,"input_microusd_per_1m":8000000,"cached_input_microusd_per_1m":2000000,"output_microusd_per_1m":30000000}
       ]
     },
     {

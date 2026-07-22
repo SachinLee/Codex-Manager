@@ -34,8 +34,7 @@ impl Read for PausingReader {
 #[test]
 fn metadata_only_upstream_frame_records_first_response_before_keepalive() {
     let _guard = crate::test_env_guard();
-    let previous = super::super::current_sse_keepalive_interval_ms();
-    super::super::set_sse_keepalive_interval_ms(1).expect("set keepalive interval");
+    let _runtime_guard = super::super::SseKeepaliveRuntimeGuard::enabled_with_interval(1);
     let upstream = concat!(
         "event: message_delta\n",
         "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
@@ -47,15 +46,16 @@ fn metadata_only_upstream_frame_records_first_response_before_keepalive() {
         Some("fallback-model"),
         Instant::now(),
     );
-    let mut buf = [0_u8; 128];
+    let mut buf = [0_u8; 4096];
 
+    let mapped = reader.read(&mut buf).expect("read mapped metadata");
     let read = reader.read(&mut buf).expect("read keepalive");
 
-    super::super::set_sse_keepalive_interval_ms(previous).expect("restore keepalive interval");
+    assert!(mapped > 0);
     assert!(read > 0);
     assert_eq!(
         std::str::from_utf8(&buf[..read]).expect("utf8"),
-        std::str::from_utf8(SseKeepAliveFrame::OpenAIResponses.bytes()).expect("utf8")
+        std::str::from_utf8(SseKeepAliveFrame::Comment.bytes()).expect("utf8")
     );
     let usage = usage_collector.lock().expect("usage lock").clone();
     assert!(usage.first_response_ms.is_some());

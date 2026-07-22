@@ -10,7 +10,13 @@ use super::{now_ts, ModelGroupAccess, ModelGroupModel, ModelPriceTierV2, Storage
 const MIGRATION_VERSION: &str = "112_model_catalog_v2";
 const GPT56_PRICING_MIGRATION_VERSION: &str = "114_model_catalog_gpt56_prices";
 const CODEX_METADATA_MIGRATION_VERSION: &str = "115_model_catalog_codex_metadata";
+const GPT56_OFFICIAL_PRICING_MIGRATION_VERSION: &str = "121_model_catalog_gpt56_official_prices";
+const GPT56_OFFICIAL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/compare";
+#[cfg(test)]
+const GPT_IMAGE_2_PRICE_SOURCE: &str =
+    "https://developers.openai.com/api/docs/pricing#image-generation";
 const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
+const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2"];
 
 #[derive(Debug, Clone, Deserialize)]
 struct BuiltinCatalogFixture {
@@ -26,9 +32,9 @@ struct BuiltinModelSeed {
     description: String,
     visibility: String,
     priority: i64,
-    default_reasoning_effort: String,
-    context_window: i64,
-    max_context_window: i64,
+    default_reasoning_effort: Option<String>,
+    context_window: Option<i64>,
+    max_context_window: Option<i64>,
     capabilities: Value,
     price_status: String,
     price_source: Option<String>,
@@ -118,6 +124,22 @@ pub struct ManagedModelV2Upsert {
     #[serde(default)]
     pub previous_slug: Option<String>,
     pub model: ManagedModelV2,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedModelStateV2Update {
+    pub slug: String,
+    pub enabled: bool,
+    pub visibility: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedModelBatchStateV2Update {
+    pub slugs: Vec<String>,
+    pub enabled: bool,
+    pub visibility: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -389,6 +411,13 @@ fn list_permission_groups(conn: &Connection, model_id: &str) -> Result<Vec<Strin
     stmt.query_map([model_id], |row| row.get(0))?.collect()
 }
 
+fn get_managed_model_v2_with_conn(conn: &Connection, slug: &str) -> Result<Option<ManagedModelV2>> {
+    let sql = format!("{MODEL_SELECT} WHERE m.slug=?1 COLLATE NOCASE");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([slug.trim()])?;
+    rows.next()?.map(|row| map_model(conn, row)).transpose()
+}
+
 fn insert_seed(
     conn: &Connection,
     fixture: &BuiltinCatalogFixture,
@@ -424,6 +453,13 @@ fn insert_seed(
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     )?;
     if origin != "builtin" {
+        if origin == "custom"
+            && TOLERATED_CUSTOM_SEED_COLLISIONS
+                .iter()
+                .any(|slug| seed.slug.eq_ignore_ascii_case(slug))
+        {
+            return Ok(());
+        }
         return Err(rusqlite::Error::InvalidParameterName(format!(
             "builtin seed slug {} is owned by a custom model",
             seed.slug
@@ -784,18 +820,36 @@ fn migrate_legacy_groups(conn: &Connection) -> Result<()> {
 }
 
 fn migration_smoke(conn: &Connection) -> Result<()> {
+    let fixture = fixture();
+    let expected_seed_count = fixture.models.len() as i64;
     let model_count: i64 = conn.query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))?;
-    let builtin_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM models WHERE origin='builtin'",
-        [],
-        |row| row.get(0),
-    )?;
+    let mut covered_seed_count = 0_i64;
+    for seed in &fixture.models {
+        let origin = conn
+            .query_row(
+                "SELECT origin FROM models WHERE slug=?1 COLLATE NOCASE",
+                [&seed.slug],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let covered = origin.as_deref() == Some("builtin")
+            || (origin.as_deref() == Some("custom")
+                && TOLERATED_CUSTOM_SEED_COLLISIONS
+                    .iter()
+                    .any(|slug| seed.slug.eq_ignore_ascii_case(slug)));
+        if covered {
+            covered_seed_count += 1;
+        }
+    }
     let orphan_count: i64 = conn.query_row(
         "SELECT (SELECT COUNT(*) FROM model_prices p LEFT JOIN models m ON m.id=p.model_id WHERE m.id IS NULL)
           +(SELECT COUNT(*) FROM model_price_tiers p LEFT JOIN models m ON m.id=p.model_id WHERE m.id IS NULL)
           +(SELECT COUNT(*) FROM model_routes r LEFT JOIN models m ON m.id=r.model_id WHERE m.id IS NULL)",
         [], |row| row.get(0))?;
-    if model_count < 8 || builtin_count != 8 || orphan_count != 0 {
+    if model_count < expected_seed_count
+        || covered_seed_count != expected_seed_count
+        || orphan_count != 0
+    {
         return Err(rusqlite::Error::SqliteFailure(
             (),
             Some("model catalog V2 smoke check failed".to_string()),
@@ -1096,6 +1150,87 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) fn apply_gpt56_official_pricing_migration(&self) -> Result<()> {
+        if self.has_migration(GPT56_OFFICIAL_PRICING_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(include_str!(
+            "../../migrations/121_model_catalog_gpt56_official_prices.sql"
+        ))?;
+        let invalid_rows: i64 = tx.query_row(
+            "SELECT COUNT(*)
+             FROM _gpt56_official_price_candidates candidate
+             JOIN models m ON m.id=candidate.model_id
+             JOIN model_prices p ON p.model_id=m.id
+             WHERE m.origin<>'builtin'
+                OR p.price_status<>'official'
+                OR p.price_source<>?1
+                OR p.input_microusd_per_1m<>CASE lower(m.slug)
+                     WHEN 'gpt-5.6-sol' THEN 5000000
+                     WHEN 'gpt-5.6-terra' THEN 2500000
+                     WHEN 'gpt-5.6-luna' THEN 1000000
+                   END
+                OR p.cached_input_microusd_per_1m<>CASE lower(m.slug)
+                     WHEN 'gpt-5.6-sol' THEN 500000
+                     WHEN 'gpt-5.6-terra' THEN 250000
+                     WHEN 'gpt-5.6-luna' THEN 100000
+                   END
+                OR p.output_microusd_per_1m<>CASE lower(m.slug)
+                     WHEN 'gpt-5.6-sol' THEN 30000000
+                     WHEN 'gpt-5.6-terra' THEN 15000000
+                     WHEN 'gpt-5.6-luna' THEN 6000000
+                   END
+                OR COALESCE(m.builtin_revision,0)<4
+                OR (SELECT COUNT(*) FROM model_price_tiers tier
+                    WHERE tier.model_id=m.id)<>2
+                OR NOT EXISTS(
+                     SELECT 1 FROM model_price_tiers base
+                     WHERE base.model_id=m.id AND base.min_input_tokens=0
+                       AND base.input_microusd_per_1m=p.input_microusd_per_1m
+                       AND base.cached_input_microusd_per_1m=p.cached_input_microusd_per_1m
+                       AND base.output_microusd_per_1m=p.output_microusd_per_1m
+                   )
+                OR NOT EXISTS(
+                     SELECT 1 FROM model_price_tiers long_tier
+                     WHERE long_tier.model_id=m.id AND long_tier.min_input_tokens=272000
+                       AND long_tier.input_microusd_per_1m=CASE lower(m.slug)
+                         WHEN 'gpt-5.6-sol' THEN 10000000
+                         WHEN 'gpt-5.6-terra' THEN 5000000
+                         WHEN 'gpt-5.6-luna' THEN 2000000
+                       END
+                       AND long_tier.cached_input_microusd_per_1m=CASE lower(m.slug)
+                         WHEN 'gpt-5.6-sol' THEN 1000000
+                         WHEN 'gpt-5.6-terra' THEN 500000
+                         WHEN 'gpt-5.6-luna' THEN 200000
+                       END
+                       AND long_tier.output_microusd_per_1m=CASE lower(m.slug)
+                         WHEN 'gpt-5.6-sol' THEN 45000000
+                         WHEN 'gpt-5.6-terra' THEN 22500000
+                         WHEN 'gpt-5.6-luna' THEN 9000000
+                       END
+                   )",
+            [GPT56_OFFICIAL_PRICE_SOURCE],
+            |row| row.get(0),
+        )?;
+        if invalid_rows != 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                (),
+                Some("GPT-5.6 official pricing migration smoke check failed".to_string()),
+            ));
+        }
+        tx.execute("DROP TABLE _gpt56_official_price_candidates", [])?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![GPT56_OFFICIAL_PRICING_MIGRATION_VERSION, now_ts()],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(GPT56_OFFICIAL_PRICING_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
     pub fn smoke_check_model_catalog_v2(&self) -> Result<()> {
         migration_smoke(&self.conn)
     }
@@ -1127,12 +1262,7 @@ impl Storage {
     }
 
     pub fn get_managed_model_v2(&self, slug: &str) -> Result<Option<ManagedModelV2>> {
-        let sql = format!("{MODEL_SELECT} WHERE m.slug=?1 COLLATE NOCASE");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query([slug.trim()])?;
-        rows.next()?
-            .map(|row| map_model(&self.conn, row))
-            .transpose()
+        get_managed_model_v2_with_conn(&self.conn, slug)
     }
 
     pub fn get_enabled_model_v2(&self, slug: &str) -> Result<Option<ManagedModelV2>> {
@@ -1186,6 +1316,84 @@ impl Storage {
             .collect()
     }
 
+    pub fn update_managed_model_state_v2(
+        &self,
+        input: &ManagedModelStateV2Update,
+    ) -> Result<ManagedModelV2> {
+        let visibility = input.visibility.trim();
+        if !matches!(visibility, "list" | "hide") {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "invalid model visibility".to_string(),
+            ));
+        }
+        let updated = self.conn.execute(
+            "UPDATE models
+             SET enabled=?2,visibility=?3,user_edited=1,updated_at=?4
+             WHERE slug=?1 COLLATE NOCASE",
+            params![input.slug.trim(), input.enabled, visibility, now_ts()],
+        )?;
+        if updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        self.get_managed_model_v2(&input.slug)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn update_managed_models_state_v2(
+        &self,
+        input: &ManagedModelBatchStateV2Update,
+    ) -> Result<Vec<ManagedModelV2>> {
+        let visibility = input.visibility.trim();
+        if !matches!(visibility, "list" | "hide") {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "invalid model visibility".to_string(),
+            ));
+        }
+        let mut seen = HashSet::new();
+        let slugs = input
+            .slugs
+            .iter()
+            .filter_map(|slug| {
+                let slug = slug.trim();
+                if slug.is_empty() || !seen.insert(slug.to_ascii_lowercase()) {
+                    None
+                } else {
+                    Some(slug.to_string())
+                }
+            })
+            .collect::<Vec<_>>();
+        if slugs.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "managed model slugs must not be empty".to_string(),
+            ));
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let updated_at = now_ts();
+        for slug in &slugs {
+            let updated = tx.execute(
+                "UPDATE models
+                 SET enabled=?2,visibility=?3,user_edited=1,updated_at=?4
+                 WHERE slug=?1 COLLATE NOCASE",
+                params![slug, input.enabled, visibility, updated_at],
+            )?;
+            if updated == 0 {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "managed model not found: {slug}"
+                )));
+            }
+        }
+        let models = slugs
+            .iter()
+            .map(|slug| {
+                self.get_managed_model_v2(slug)?
+                    .ok_or(rusqlite::Error::QueryReturnedNoRows)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        tx.commit()?;
+        Ok(models)
+    }
+
     pub fn delete_managed_model_v2(&self, slug: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         let origin = tx
@@ -1197,7 +1405,12 @@ impl Storage {
             .optional()?;
         match origin.as_deref() {
             Some("builtin") => {
-                tx.execute("UPDATE models SET enabled=0,user_edited=1,updated_at=?2 WHERE slug=?1 COLLATE NOCASE",params![slug.trim(),now_ts()])?;
+                tx.execute(
+                    "UPDATE models
+                     SET enabled=0,visibility='hide',user_edited=1,updated_at=?2
+                     WHERE slug=?1 COLLATE NOCASE",
+                    params![slug.trim(), now_ts()],
+                )?;
             }
             Some("custom") => {
                 tx.execute(
@@ -1399,8 +1612,8 @@ mod tests {
     fn fixture_contains_no_prompt_fields() {
         let raw = include_str!("../../seeds/model_catalog_v2_2026_07_10.json");
         let value: Value = serde_json::from_str(raw).expect("parse fixture");
-        assert_eq!(value["models"].as_array().map(Vec::len), Some(8));
-        assert_eq!(value["revision"].as_i64(), Some(3));
+        assert_eq!(value["models"].as_array().map(Vec::len), Some(9));
+        assert_eq!(value["revision"].as_i64(), Some(5));
         assert!(!raw.contains("base_instructions"));
         assert!(!raw.contains("instructions_template"));
         assert!(!raw.contains("instructions_text"));
@@ -1412,6 +1625,20 @@ mod tests {
                     .and_then(Value::as_bool),
                 Some(false)
             );
+            if model["slug"] == "gpt-image-2" {
+                assert!(model["context_window"].is_null());
+                assert!(model["max_context_window"].is_null());
+                assert!(model["default_reasoning_effort"].is_null());
+                assert_eq!(capabilities["snapshot"], "gpt-image-2-2026-04-21");
+                assert_eq!(capabilities["supports_text_generation"], false);
+                assert_eq!(capabilities["supports_image_generation"], true);
+                assert_eq!(capabilities["supports_image_editing"], true);
+                assert_eq!(
+                    capabilities["supported_endpoints"],
+                    serde_json::json!(["/v1/images/generations", "/v1/images/edits"])
+                );
+                continue;
+            }
             for key in [
                 "additional_speed_tiers",
                 "default_verbosity",
@@ -1449,25 +1676,60 @@ mod tests {
         let storage = storage();
         let all = storage.list_managed_models_v2(true).expect("list all");
         let visible = storage.list_api_models_v2().expect("list visible");
-        assert_eq!(all.len(), 8);
-        assert_eq!(visible.len(), 7);
+        assert_eq!(all.len(), 9);
+        assert_eq!(visible.len(), 8);
         assert_eq!(
             all.iter()
                 .filter(|model| model.price.price_status == "missing")
                 .count(),
             1
         );
-        for (slug, input, output) in [
-            ("gpt-5.6-sol", 5_000_000, 30_000_000),
-            ("gpt-5.6-terra", 2_500_000, 15_000_000),
-            ("gpt-5.6-luna", 1_000_000, 6_000_000),
+        for (slug, input, cached, output, long_input, long_cached, long_output) in [
+            (
+                "gpt-5.6-sol",
+                5_000_000,
+                500_000,
+                30_000_000,
+                10_000_000,
+                1_000_000,
+                45_000_000,
+            ),
+            (
+                "gpt-5.6-terra",
+                2_500_000,
+                250_000,
+                15_000_000,
+                5_000_000,
+                500_000,
+                22_500_000,
+            ),
+            (
+                "gpt-5.6-luna",
+                1_000_000,
+                100_000,
+                6_000_000,
+                2_000_000,
+                200_000,
+                9_000_000,
+            ),
         ] {
             let model = all.iter().find(|model| model.slug == slug).unwrap();
-            assert_eq!(model.price.price_status, "estimated");
+            assert_eq!(model.price.price_status, "official");
+            assert_eq!(
+                model.price.price_source.as_deref(),
+                Some(GPT56_OFFICIAL_PRICE_SOURCE)
+            );
             assert_eq!(model.price.input_microusd_per_1m, Some(input));
-            assert_eq!(model.price.cached_input_microusd_per_1m, Some(input));
+            assert_eq!(model.price.cached_input_microusd_per_1m, Some(cached));
             assert_eq!(model.price.output_microusd_per_1m, Some(output));
-            assert_eq!(model.price_tiers.len(), 1);
+            assert_eq!(model.price_tiers.len(), 2);
+            assert_eq!(model.price_tiers[1].min_input_tokens, 272_000);
+            assert_eq!(model.price_tiers[1].input_microusd_per_1m, long_input);
+            assert_eq!(
+                model.price_tiers[1].cached_input_microusd_per_1m,
+                long_cached
+            );
+            assert_eq!(model.price_tiers[1].output_microusd_per_1m, long_output);
         }
         let gpt54 = all.iter().find(|model| model.slug == "gpt-5.4").unwrap();
         assert_eq!(gpt54.price_tiers.len(), 2);
@@ -1476,11 +1738,36 @@ mod tests {
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(3));
+        assert_eq!(sol.builtin_revision, Some(5));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["tool_mode"], "code_mode_only");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
         assert_eq!(sol.capabilities["comp_hash"], "3000");
+        let image = all
+            .iter()
+            .find(|model| model.slug == "gpt-image-2")
+            .unwrap();
+        assert_eq!(image.display_name, "GPT Image 2");
+        assert_eq!(image.builtin_revision, Some(5));
+        assert_eq!(image.context_window, None);
+        assert_eq!(image.max_context_window, None);
+        assert_eq!(image.default_reasoning_effort, None);
+        assert_eq!(image.price.price_status, "official");
+        assert_eq!(
+            image.price.price_source.as_deref(),
+            Some(GPT_IMAGE_2_PRICE_SOURCE)
+        );
+        assert_eq!(image.price.input_microusd_per_1m, Some(8_000_000));
+        assert_eq!(image.price.cached_input_microusd_per_1m, Some(2_000_000));
+        assert_eq!(image.price.output_microusd_per_1m, Some(30_000_000));
+        assert_eq!(image.price_tiers.len(), 1);
+        assert_eq!(image.capabilities["supports_text_generation"], false);
+        assert_eq!(
+            image.capabilities["output_modalities"],
+            serde_json::json!(["image"])
+        );
+        assert_eq!(image.routes.len(), 1);
+        assert_eq!(image.routes[0].upstream_model, "gpt-image-2");
         assert!(all
             .iter()
             .all(|model| model.instructions_mode == "passthrough"
@@ -1495,6 +1782,115 @@ mod tests {
         let model = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
         assert_eq!(model.display_name, "Edited");
         assert!(!model.enabled);
+    }
+
+    #[test]
+    fn revision_five_seeds_image_model_into_an_existing_revision_four_catalog() {
+        let storage = storage();
+        storage
+            .conn
+            .execute("DELETE FROM models WHERE slug='gpt-image-2'", [])
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET builtin_revision=4 WHERE origin='builtin'",
+                [],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE model_catalog_v2_meta SET value='4' WHERE key='builtin_revision'",
+                [],
+            )
+            .unwrap();
+
+        storage.seed_missing_builtin_models_v2().unwrap();
+        storage.smoke_check_model_catalog_v2().unwrap();
+
+        let image = storage
+            .get_managed_model_v2("gpt-image-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(image.origin, "builtin");
+        assert_eq!(image.builtin_revision, Some(5));
+        assert_eq!(image.routes.len(), 1);
+        assert_eq!(image.routes[0].upstream_model, "gpt-image-2");
+        let sol = storage
+            .get_managed_model_v2("gpt-5.6-sol")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sol.builtin_revision, Some(4));
+        let revision: String = storage
+            .conn
+            .query_row(
+                "SELECT value FROM model_catalog_v2_meta WHERE key='builtin_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, "5");
+    }
+
+    #[test]
+    fn image_seed_preserves_an_existing_custom_slug_collision() {
+        let storage = storage();
+        let mut custom = storage
+            .get_managed_model_v2("gpt-image-2")
+            .unwrap()
+            .unwrap();
+        storage
+            .conn
+            .execute("DELETE FROM models WHERE slug='gpt-image-2'", [])
+            .unwrap();
+        custom.id.clear();
+        custom.display_name = "My Existing Image Route".to_string();
+        custom.origin = "custom".to_string();
+        custom.builtin_revision = None;
+        custom.user_edited = true;
+        custom.price.price_status = "custom".to_string();
+        custom.price.price_source = Some("existing-user-config".to_string());
+        custom.routes[0].id.clear();
+        custom.routes[0].upstream_model = "my-image-upstream".to_string();
+        let saved = storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                model: custom,
+                ..Default::default()
+            })
+            .unwrap();
+
+        storage.seed_missing_builtin_models_v2().unwrap();
+        storage.smoke_check_model_catalog_v2().unwrap();
+
+        let preserved = storage
+            .get_managed_model_v2("gpt-image-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved.id, saved.id);
+        assert_eq!(preserved.origin, "custom");
+        assert_eq!(preserved.builtin_revision, None);
+        assert_eq!(preserved.display_name, "My Existing Image Route");
+        assert_eq!(
+            preserved.price.price_source.as_deref(),
+            Some("existing-user-config")
+        );
+        assert_eq!(preserved.routes.len(), 1);
+        assert_eq!(preserved.routes[0].upstream_model, "my-image-upstream");
+
+        storage
+            .delete_managed_model_v2("gpt-image-2")
+            .expect("delete preserved custom model");
+        storage
+            .seed_missing_builtin_models_v2()
+            .expect("seed builtin after custom model is removed");
+        let restored = storage
+            .get_managed_model_v2("gpt-image-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.origin, "builtin");
+        assert_eq!(restored.builtin_revision, Some(5));
+        assert_eq!(restored.routes[0].upstream_model, "gpt-image-2");
     }
 
     #[test]
@@ -1549,7 +1945,7 @@ mod tests {
         assert_eq!(sol.price.cached_input_microusd_per_1m, Some(5_000_000));
         assert_eq!(sol.price.output_microusd_per_1m, Some(30_000_000));
         assert_eq!(sol.price_tiers.len(), 1);
-        assert_eq!(sol.builtin_revision, Some(3));
+        assert_eq!(sol.builtin_revision, Some(5));
 
         let terra = storage
             .get_managed_model_v2("gpt-5.6-terra")
@@ -1563,6 +1959,143 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
                 [GPT56_PRICING_MIGRATION_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn gpt56_official_pricing_migration_updates_seeded_estimates_only() {
+        let storage = storage();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_OFFICIAL_PRICING_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+        storage
+            .conn
+            .execute_batch(
+                "DELETE FROM model_price_tiers
+                 WHERE model_id IN (
+                   SELECT id FROM models
+                   WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna')
+                 );
+                 INSERT INTO model_price_tiers(
+                   model_id,min_input_tokens,input_microusd_per_1m,
+                   cached_input_microusd_per_1m,output_microusd_per_1m
+                 )
+                 SELECT id,0,
+                   CASE lower(slug)
+                     WHEN 'gpt-5.6-sol' THEN 5000000
+                     WHEN 'gpt-5.6-terra' THEN 2500000
+                     WHEN 'gpt-5.6-luna' THEN 1000000
+                   END,
+                   CASE lower(slug)
+                     WHEN 'gpt-5.6-sol' THEN 5000000
+                     WHEN 'gpt-5.6-terra' THEN 2500000
+                     WHEN 'gpt-5.6-luna' THEN 1000000
+                   END,
+                   CASE lower(slug)
+                     WHEN 'gpt-5.6-sol' THEN 30000000
+                     WHEN 'gpt-5.6-terra' THEN 15000000
+                     WHEN 'gpt-5.6-luna' THEN 6000000
+                   END
+                 FROM models
+                 WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna');
+                 UPDATE model_prices
+                 SET input_microusd_per_1m=CASE lower((
+                       SELECT slug FROM models WHERE id=model_prices.model_id
+                     ))
+                       WHEN 'gpt-5.6-sol' THEN 5000000
+                       WHEN 'gpt-5.6-terra' THEN 2500000
+                       WHEN 'gpt-5.6-luna' THEN 1000000
+                     END,
+                     cached_input_microusd_per_1m=CASE lower((
+                       SELECT slug FROM models WHERE id=model_prices.model_id
+                     ))
+                       WHEN 'gpt-5.6-sol' THEN 5000000
+                       WHEN 'gpt-5.6-terra' THEN 2500000
+                       WHEN 'gpt-5.6-luna' THEN 1000000
+                     END,
+                     output_microusd_per_1m=CASE lower((
+                       SELECT slug FROM models WHERE id=model_prices.model_id
+                     ))
+                       WHEN 'gpt-5.6-sol' THEN 30000000
+                       WHEN 'gpt-5.6-terra' THEN 15000000
+                       WHEN 'gpt-5.6-luna' THEN 6000000
+                     END,
+                     price_status='estimated',
+                     price_source='user_provided_openai_gpt-5.6_2026-07-14_cached_at_input_rate'
+                 WHERE model_id IN (
+                   SELECT id FROM models
+                   WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna')
+                 );
+                 UPDATE models SET builtin_revision=3
+                 WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna');
+                 UPDATE models
+                 SET display_name='Edited Sol',user_edited=1
+                 WHERE slug='gpt-5.6-sol';
+                 UPDATE model_prices
+                 SET cached_input_microusd_per_1m=777000,
+                     price_status='custom',price_source='local-ui'
+                 WHERE model_id=(SELECT id FROM models WHERE slug='gpt-5.6-terra');
+                 UPDATE model_price_tiers
+                 SET cached_input_microusd_per_1m=777000
+                 WHERE model_id=(SELECT id FROM models WHERE slug='gpt-5.6-terra');",
+            )
+            .unwrap();
+
+        storage.apply_gpt56_official_pricing_migration().unwrap();
+        storage.apply_gpt56_official_pricing_migration().unwrap();
+
+        for (slug, cached, long_input, long_cached, long_output) in [
+            ("gpt-5.6-sol", 500_000, 10_000_000, 1_000_000, 45_000_000),
+            ("gpt-5.6-luna", 100_000, 2_000_000, 200_000, 9_000_000),
+        ] {
+            let model = storage.get_managed_model_v2(slug).unwrap().unwrap();
+            assert_eq!(model.price.price_status, "official");
+            assert_eq!(
+                model.price.price_source.as_deref(),
+                Some(GPT56_OFFICIAL_PRICE_SOURCE)
+            );
+            assert_eq!(model.price.cached_input_microusd_per_1m, Some(cached));
+            assert_eq!(model.price_tiers.len(), 2);
+            assert_eq!(model.price_tiers[1].min_input_tokens, 272_000);
+            assert_eq!(model.price_tiers[1].input_microusd_per_1m, long_input);
+            assert_eq!(
+                model.price_tiers[1].cached_input_microusd_per_1m,
+                long_cached
+            );
+            assert_eq!(model.price_tiers[1].output_microusd_per_1m, long_output);
+            assert_eq!(model.builtin_revision, Some(4));
+        }
+
+        let sol = storage
+            .get_managed_model_v2("gpt-5.6-sol")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sol.display_name, "Edited Sol");
+        assert!(sol.user_edited);
+
+        let terra = storage
+            .get_managed_model_v2("gpt-5.6-terra")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terra.price.price_status, "custom");
+        assert_eq!(terra.price.price_source.as_deref(), Some("local-ui"));
+        assert_eq!(terra.price.cached_input_microusd_per_1m, Some(777_000));
+        assert_eq!(terra.price_tiers.len(), 1);
+        assert_eq!(terra.builtin_revision, Some(3));
+
+        let applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
+                [GPT56_OFFICIAL_PRICING_MIGRATION_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
@@ -1608,7 +2141,7 @@ mod tests {
             .get_managed_model_v2("gpt-5.6-sol")
             .unwrap()
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(3));
+        assert_eq!(sol.builtin_revision, Some(5));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
 
@@ -1684,16 +2217,18 @@ mod tests {
     }
 
     #[test]
-    fn builtin_delete_disables_and_custom_delete_removes() {
+    fn builtin_delete_hides_and_disables_while_custom_delete_removes() {
         let storage = storage();
         storage.delete_managed_model_v2("gpt-5.4").unwrap();
-        assert!(
-            !storage
-                .get_managed_model_v2("gpt-5.4")
-                .unwrap()
-                .unwrap()
-                .enabled
-        );
+        let deleted_builtin = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        assert!(!deleted_builtin.enabled);
+        assert_eq!(deleted_builtin.visibility, "hide");
+        assert!(deleted_builtin.user_edited);
+        assert!(!storage
+            .list_managed_models_v2(false)
+            .unwrap()
+            .iter()
+            .any(|model| model.slug == "gpt-5.4"));
         let mut custom = storage
             .get_managed_model_v2("gpt-5.4-mini")
             .unwrap()
@@ -1717,6 +2252,122 @@ mod tests {
             .get_managed_model_v2("local-model")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn state_update_changes_only_enabled_visibility_and_edit_metadata() {
+        let storage = storage();
+        let baseline = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        for (enabled, visibility) in [
+            (false, "list"),
+            (true, "hide"),
+            (false, "hide"),
+            (true, "list"),
+        ] {
+            let updated = storage
+                .update_managed_model_state_v2(&ManagedModelStateV2Update {
+                    slug: baseline.slug.clone(),
+                    enabled,
+                    visibility: visibility.to_string(),
+                })
+                .unwrap();
+            assert_eq!(updated.enabled, enabled);
+            assert_eq!(updated.visibility, visibility);
+            assert!(updated.user_edited);
+            assert_eq!(updated.price, baseline.price);
+            assert_eq!(updated.price_tiers, baseline.price_tiers);
+            assert_eq!(updated.routes, baseline.routes);
+            assert_eq!(updated.permission_group_ids, baseline.permission_group_ids);
+        }
+        assert!(matches!(
+            storage.update_managed_model_state_v2(&ManagedModelStateV2Update {
+                slug: baseline.slug.clone(),
+                enabled: true,
+                visibility: "hidden".to_string(),
+            }),
+            Err(rusqlite::Error::InvalidParameterName(_))
+        ));
+        assert!(matches!(
+            storage.update_managed_model_state_v2(&ManagedModelStateV2Update {
+                slug: "missing-model".to_string(),
+                enabled: true,
+                visibility: "list".to_string(),
+            }),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        ));
+    }
+
+    #[test]
+    fn batch_state_update_is_atomic_deduplicated_and_preserves_model_details() {
+        let storage = storage();
+        let first = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        let second = storage
+            .get_managed_model_v2("gpt-5.4-mini")
+            .unwrap()
+            .unwrap();
+
+        let updated = storage
+            .update_managed_models_state_v2(&ManagedModelBatchStateV2Update {
+                slugs: vec![
+                    " gpt-5.4 ".to_string(),
+                    "GPT-5.4".to_string(),
+                    "gpt-5.4-mini".to_string(),
+                ],
+                enabled: false,
+                visibility: "hide".to_string(),
+            })
+            .unwrap();
+        assert_eq!(updated.len(), 2);
+        assert!(updated
+            .iter()
+            .all(|model| !model.enabled && model.visibility == "hide"));
+        assert!(updated.iter().all(|model| model.user_edited));
+        assert_eq!(updated[0].updated_at, updated[1].updated_at);
+        assert_eq!(updated[0].price, first.price);
+        assert_eq!(updated[0].routes, first.routes);
+        assert_eq!(updated[1].price, second.price);
+        assert_eq!(updated[1].routes, second.routes);
+
+        storage
+            .update_managed_models_state_v2(&ManagedModelBatchStateV2Update {
+                slugs: vec!["gpt-5.4".to_string(), "gpt-5.4-mini".to_string()],
+                enabled: true,
+                visibility: "list".to_string(),
+            })
+            .unwrap();
+        let before_failed_batch = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        assert!(storage
+            .update_managed_models_state_v2(&ManagedModelBatchStateV2Update {
+                slugs: vec!["gpt-5.4".to_string(), "missing-model".to_string()],
+                enabled: false,
+                visibility: "hide".to_string(),
+            })
+            .is_err());
+        let after_failed_batch = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        assert_eq!(after_failed_batch.enabled, before_failed_batch.enabled);
+        assert_eq!(
+            after_failed_batch.visibility,
+            before_failed_batch.visibility
+        );
+        assert_eq!(
+            after_failed_batch.updated_at,
+            before_failed_batch.updated_at
+        );
+
+        assert!(storage
+            .update_managed_models_state_v2(&ManagedModelBatchStateV2Update {
+                slugs: vec!["  ".to_string()],
+                enabled: true,
+                visibility: "list".to_string(),
+            })
+            .is_err());
+        assert!(storage
+            .update_managed_models_state_v2(&ManagedModelBatchStateV2Update {
+                slugs: vec!["gpt-5.4".to_string()],
+                enabled: true,
+                visibility: "hidden".to_string(),
+            })
+            .is_err());
     }
 
     #[test]
@@ -1773,7 +2424,7 @@ mod tests {
                 .list_managed_models_v2(true)
                 .expect("list migrated models")
                 .len(),
-            8
+            9
         );
     }
 }

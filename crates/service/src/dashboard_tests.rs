@@ -1,11 +1,12 @@
 use super::{
-    build_dashboard_source_summaries, build_dashboard_user_summaries, daily_usage_bucket,
-    dashboard_source_ids, filter_source_usage, read_member_usage_breakdown, read_usage_trend_7d,
+    build_dashboard_model_usage_series, build_dashboard_source_summaries,
+    build_dashboard_user_summaries, daily_usage_bucket, dashboard_source_ids, filter_source_usage,
+    normalize_admin_series_bucket_seconds, read_member_usage_breakdown, read_usage_trend_7d,
     SourceMetadata,
 };
 use codexmanager_core::storage::{
-    ApiKey, ApiKeyOwner, AppUser, DailyTokenUsageRollup, RequestTokenStat, SourceTokenUsageRollup,
-    Storage, TokenUsageRollup, UserTokenUsageRollup,
+    ApiKey, ApiKeyOwner, AppUser, DailyTokenUsageRollup, ModelTokenUsageRollup, RequestTokenStat,
+    SourceTokenUsageRollup, Storage, TokenUsageRollup, UserTokenUsageRollup,
 };
 use std::collections::HashMap;
 
@@ -38,6 +39,20 @@ fn daily_usage(start: i64, end: i64, total_tokens: i64) -> DailyTokenUsageRollup
     DailyTokenUsageRollup {
         day_start_ts: start,
         day_end_ts: end,
+        usage: TokenUsageRollup {
+            total_tokens,
+            request_count: 1,
+            success_count: 1,
+            ..TokenUsageRollup::default()
+        },
+    }
+}
+
+fn model_usage(model: &str, start: i64, end: i64, total_tokens: i64) -> ModelTokenUsageRollup {
+    ModelTokenUsageRollup {
+        bucket_start_ts: start,
+        bucket_end_ts: end,
+        model: model.to_string(),
         usage: TokenUsageRollup {
             total_tokens,
             request_count: 1,
@@ -96,6 +111,46 @@ fn daily_usage_bucket_reuses_exact_today_bucket() {
         daily_usage_bucket(&items, 1_700_086_400, 1_700_160_000).map(|usage| usage.total_tokens),
         None
     );
+}
+
+#[test]
+fn admin_series_resolution_only_uses_hourly_for_bounded_ranges() {
+    assert_eq!(
+        normalize_admin_series_bucket_seconds(Some(3_600), 0, 7 * 86_400),
+        3_600
+    );
+    assert_eq!(
+        normalize_admin_series_bucket_seconds(Some(3_600), 0, 32 * 86_400),
+        86_400
+    );
+    assert_eq!(
+        normalize_admin_series_bucket_seconds(Some(60), 0, 86_400),
+        86_400
+    );
+}
+
+#[test]
+fn model_usage_series_ranks_models_and_fills_empty_buckets() {
+    let series = build_dashboard_model_usage_series(
+        0,
+        7_200,
+        3_600,
+        vec![
+            model_usage("gpt-5", 0, 3_600, 30),
+            model_usage("gpt-4.1", 3_600, 7_200, 20),
+            model_usage("gpt-5", 3_600, 7_200, 10),
+        ],
+    );
+
+    assert_eq!(series.len(), 2);
+    assert_eq!(series[0].model, "gpt-5");
+    assert_eq!(series[0].usage.total_tokens, 40);
+    assert_eq!(series[0].points.len(), 2);
+    assert_eq!(series[0].points[0].usage.total_tokens, 30);
+    assert_eq!(series[0].points[1].usage.total_tokens, 10);
+    assert_eq!(series[1].model, "gpt-4.1");
+    assert_eq!(series[1].points[0].usage.total_tokens, 0);
+    assert_eq!(series[1].points[1].usage.total_tokens, 20);
 }
 
 #[test]

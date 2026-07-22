@@ -18,6 +18,18 @@ export function createAccountWebCommands(postWebRpc: WebRpcCaller): Record<strin
       direct: (params, options) => exportAccountsViaBrowser(postWebRpc, asRecord(params), options),
     },
     service_account_warmup: { rpcMethod: "account/warmup" },
+    service_account_proxy_get: { rpcMethod: "account/proxy/get" },
+    service_account_proxy_set: { rpcMethod: "account/proxy/set" },
+    service_account_proxy_clear: { rpcMethod: "account/proxy/clear" },
+    service_account_proxy_test: { rpcMethod: "account/proxy/test" },
+    service_account_proxy_latency_test: { rpcMethod: "account/proxy/latency-test" },
+    service_account_proxy_speed_test: { rpcMethod: "account/proxy/speed-test" },
+    service_account_proxy_cloudflare_speed_test: { rpcMethod: "account/proxy/cloudflare-speed-test" },
+    service_account_proxy_test_job: { rpcMethod: "account/proxy/test-job" },
+    service_account_proxy_cancel_test: { rpcMethod: "account/proxy/cancel-test" },
+    service_account_proxy_speed_test_history: { rpcMethod: "account/proxy/speed-test-history" },
+    service_account_proxy_latency_test_history: { rpcMethod: "account/proxy/latency-test-history" },
+    service_account_proxy_diagnostics_history: { rpcMethod: "account/proxy/diagnostics-history" },
     service_account_manager_status: { rpcMethod: "accountManager/status" },
     service_account_manager_session_current: { rpcMethod: "accountManager/session/current" },
     service_account_manager_profile_update: { rpcMethod: "accountManager/profile/update" },
@@ -78,7 +90,14 @@ export function createAccountWebCommands(postWebRpc: WebRpcCaller): Record<strin
       rpcMethod: "dashboard/adminUsageSummary",
       mapParams: (params) => {
         const source = asRecord(params) ?? {};
-        return { startTs: source.start_ts ?? source.startTs, endTs: source.end_ts ?? source.endTs };
+        return {
+          startTs: source.start_ts ?? source.startTs,
+          endTs: source.end_ts ?? source.endTs,
+          includeBreakdowns: source.include_breakdowns ?? source.includeBreakdowns,
+          includeSeries: source.include_series ?? source.includeSeries,
+          seriesBucketSeconds:
+            source.series_bucket_seconds ?? source.seriesBucketSeconds,
+        };
       },
     },
     service_dashboard_token_activity: {
@@ -103,6 +122,8 @@ export function createAccountWebCommands(postWebRpc: WebRpcCaller): Record<strin
     service_usage_read: { rpcMethod: "account/usage/read" },
     service_usage_list: { rpcMethod: "account/usage/list" },
     service_usage_refresh: { rpcMethod: "account/usage/refresh" },
+    service_usage_reset_credits: { rpcMethod: "account/usage/resetCredits" },
+    service_usage_reset_credit_consume: { rpcMethod: "account/usage/resetCredit/consume" },
     service_usage_aggregate: { rpcMethod: "account/usage/aggregate" },
   };
 }

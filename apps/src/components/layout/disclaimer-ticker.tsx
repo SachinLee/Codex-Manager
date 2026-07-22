@@ -60,7 +60,7 @@ export function DisclaimerTicker() {
           <ShieldAlert className="h-3 w-3" />
         </div>
         <div className="min-w-0 flex-1 leading-none">
-          <div className="mb-0.5 font-mono text-[10px] font-medium uppercase text-muted-foreground/80 2xl:hidden">
+          <div className="mb-0.5 text-[11px] font-medium text-muted-foreground/80 2xl:hidden">
             {t("免责声明")}
           </div>
           <div className="truncate text-[11px] text-muted-foreground/90">

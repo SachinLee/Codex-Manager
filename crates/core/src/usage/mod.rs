@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const EXTRA_RATE_LIMITS_JSON_KEY: &str = "_codexmanager_extra_rate_limits";
+pub const RESET_CREDITS_JSON_KEY: &str = "rate_limit_reset_credits";
 
 #[derive(Debug, Clone)]
 pub struct UsageSnapshot {
@@ -11,6 +13,35 @@ pub struct UsageSnapshot {
     pub secondary_window_minutes: Option<i64>,
     pub secondary_resets_at: Option<i64>,
     pub credits_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCredit {
+    pub id: Option<String>,
+    pub status: Option<String>,
+    pub reset_type: Option<String>,
+    pub granted_at: Option<i64>,
+    pub expires_at: Option<i64>,
+    pub redeemed_at: Option<i64>,
+    pub raw_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCreditsSnapshot {
+    pub available_count: Option<i64>,
+    pub credits: Vec<ResetCredit>,
+    pub next_expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCreditConsumeResult {
+    pub consumed: bool,
+    pub usage_refreshed: bool,
+    pub snapshot: Option<ResetCreditsSnapshot>,
+    pub warning: Option<String>,
 }
 
 fn normalize_rate_limit_entry(source_key: Option<&str>, value: &Value) -> Option<Value> {
@@ -112,8 +143,9 @@ fn collect_extra_rate_limits(value: &Value) -> Vec<Value> {
 fn serialize_credits_payload(
     credits: Option<&Value>,
     extra_rate_limits: &[Value],
+    reset_credits: Option<&Value>,
 ) -> Option<String> {
-    if extra_rate_limits.is_empty() {
+    if extra_rate_limits.is_empty() && reset_credits.is_none_or(Value::is_null) {
         return credits.and_then(|value| (!value.is_null()).then(|| value.to_string()));
     }
 
@@ -130,6 +162,9 @@ fn serialize_credits_payload(
         EXTRA_RATE_LIMITS_JSON_KEY.to_string(),
         Value::Array(extra_rate_limits.to_vec()),
     );
+    if let Some(reset_credits) = reset_credits.filter(|value| !value.is_null()) {
+        payload.insert(RESET_CREDITS_JSON_KEY.to_string(), reset_credits.clone());
+    }
     Some(Value::Object(payload).to_string())
 }
 
@@ -171,6 +206,150 @@ pub fn usage_endpoint(base_url: &str) -> String {
         format!("{base}/wham/usage")
     } else {
         format!("{base}/api/codex/usage")
+    }
+}
+
+pub fn reset_credits_endpoint(base_url: &str) -> String {
+    let base = normalize_base_url(base_url);
+    if base.contains("/backend-api") {
+        format!("{base}/wham/rate-limit-reset-credits")
+    } else {
+        format!("{base}/api/codex/rate-limit-reset-credits")
+    }
+}
+
+pub fn reset_credits_consume_endpoint(base_url: &str) -> String {
+    format!("{}/consume", reset_credits_endpoint(base_url))
+}
+
+fn parse_reset_credit_timestamp(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(number) => {
+            let mut timestamp = number
+                .as_i64()
+                .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok()))?;
+            if timestamp > 1_000_000_000_000 {
+                timestamp /= 1000;
+            }
+            Some(timestamp)
+        }
+        Value::String(text) => text.trim().parse::<i64>().ok().or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(text.trim())
+                .ok()
+                .map(|value| value.timestamp())
+        }),
+        _ => None,
+    }
+}
+
+fn reset_credit_timestamp(record: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i64> {
+    keys.iter()
+        .find_map(|key| parse_reset_credit_timestamp(record.get(*key)))
+}
+
+fn reset_credit_string(record: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        record.get(*key).and_then(|value| match value {
+            Value::String(text) => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        })
+    })
+}
+
+fn parse_reset_credit(value: &Value) -> Option<ResetCredit> {
+    let record = value.as_object()?;
+    let raw_status = reset_credit_string(record, &["status", "state"]);
+    let expires_at = reset_credit_timestamp(record, &["expires_at", "expire_at", "expiresAt"]);
+    let status = raw_status
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .or_else(|| {
+            expires_at
+                .is_some_and(|timestamp| timestamp <= chrono::Utc::now().timestamp())
+                .then(|| "expired".to_string())
+        });
+
+    Some(ResetCredit {
+        id: reset_credit_string(record, &["id", "credit_id", "creditId"]),
+        status,
+        reset_type: reset_credit_string(record, &["type", "reset_type", "resetType"]),
+        granted_at: reset_credit_timestamp(record, &["granted_at", "created_at", "grantedAt"]),
+        expires_at,
+        redeemed_at: reset_credit_timestamp(
+            record,
+            &["redeemed_at", "used_at", "consumed_at", "redeemedAt"],
+        ),
+        raw_status,
+    })
+}
+
+fn reset_credit_is_available(credit: &ResetCredit, now: i64) -> bool {
+    let status = credit
+        .status
+        .as_deref()
+        .or(credit.raw_status.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if status != "available" {
+        return false;
+    }
+    credit
+        .expires_at
+        .map(|timestamp| timestamp > now)
+        .unwrap_or(true)
+}
+
+pub fn parse_reset_credits_snapshot(value: &Value) -> ResetCreditsSnapshot {
+    let credits = value
+        .get("credits")
+        .or_else(|| value.get("data").and_then(|data| data.get("credits")))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(parse_reset_credit)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    let available_count = value
+        .get("available_count")
+        .or_else(|| value.get("availableCount"))
+        .or_else(|| {
+            value.get("data").and_then(|data| {
+                data.get("available_count")
+                    .or_else(|| data.get("availableCount"))
+            })
+        })
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+        })
+        .map(|count| count.max(0))
+        .or_else(|| {
+            Some(
+                credits
+                    .iter()
+                    .filter(|credit| reset_credit_is_available(credit, now))
+                    .count() as i64,
+            )
+        });
+    let next_expires_at = credits
+        .iter()
+        .filter(|credit| reset_credit_is_available(credit, now))
+        .filter_map(|credit| credit.expires_at)
+        .min();
+
+    ResetCreditsSnapshot {
+        available_count,
+        credits,
+        next_expires_at,
     }
 }
 
@@ -234,7 +413,11 @@ pub fn parse_usage_snapshot(value: &Value) -> UsageSnapshot {
         .pointer("/rate_limit/secondary_window/reset_at")
         .and_then(Value::as_i64);
     let extra_rate_limits = collect_extra_rate_limits(value);
-    let credits_json = serialize_credits_payload(value.get("credits"), &extra_rate_limits);
+    let credits_json = serialize_credits_payload(
+        value.get("credits"),
+        &extra_rate_limits,
+        value.get(RESET_CREDITS_JSON_KEY),
+    );
 
     UsageSnapshot {
         used_percent,

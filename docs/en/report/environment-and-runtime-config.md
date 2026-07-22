@@ -56,6 +56,7 @@
 - `CODEXMANAGER_UPSTREAM_PROXY_BYPASS_HOSTS`
 - `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS`
 - `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS`
+- `CODEXMANAGER_SSE_KEEPALIVE_ENABLED`
 - `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS`
 - 后台任务相关轮询 / worker 变量
 
@@ -92,6 +93,7 @@
 - `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS`: gateway request total timeout in milliseconds. Default `0` means the service does not cut requests off by total duration.
 - `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS`
 - `CODEXMANAGER_USE_WEBSOCKET_UPSTREAM`: makes ChatGPT `/v1/responses` streaming upstream requests try WebSocket first. Default `0`. This is experimental; failures fall back to HTTP streaming and the path uses the configured upstream proxy and connect timeout.
+- `CODEXMANAGER_SSE_KEEPALIVE_ENABLED`: enables downstream SSE comment keepalives. Default `1`; set `0` to disable them without changing the configured interval. This applies only to streaming SSE responses; non-streaming Images JSON responses still rely on sufficiently long client and reverse-proxy read timeouts.
 - `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS`
 - `CODEXMANAGER_PROXY_LIST`
 - `CODEXMANAGER_ROUTE_STRATEGY`
@@ -197,6 +199,7 @@ CODEXMANAGER_SERVICE_ADDR=localhost:48760
 CODEXMANAGER_UPSTREAM_PROXY_URL=http://127.0.0.1:7890
 CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS=0
 CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS=600000
+CODEXMANAGER_SSE_KEEPALIVE_ENABLED=1
 CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS=15000
 ```
 
@@ -301,7 +304,7 @@ Safety note:
 
 1. Check whether `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS` is too short and ends long streaming requests early.
 2. Check whether `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS` is set to a short non-zero value and cuts requests off by total duration.
-3. Check whether `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS` is too long and lets an intermediate proxy treat SSE as idle.
+3. Check whether `CODEXMANAGER_SSE_KEEPALIVE_ENABLED` is disabled or `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS` is too long, letting an intermediate proxy treat SSE as idle.
 4. Check client-side timeout or proxy idle limits. In request logs, `120s/1.8s` means total duration / first-response duration; it does not necessarily mean the service total-timeout setting is `120s`.
 
 ### 本地回环请求异常

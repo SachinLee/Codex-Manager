@@ -57,6 +57,7 @@ export interface AccountImportResult {
   directoryPath?: string;
   contents?: string[];
   importedAccountIds?: string[];
+  usageRefreshAccountIds?: string[];
 }
 
 export interface AccountExportResult {
@@ -93,6 +94,10 @@ export interface AccountWarmupResult {
 
 export function readAccountImportResult(payload: unknown): AccountImportResult {
   const source = asRecord(payload);
+  const hasUsageRefreshAccountIds =
+    source != null &&
+    (Object.hasOwn(source, "usageRefreshAccountIds") ||
+      Object.hasOwn(source, "usage_refresh_account_ids"));
   const errors = Array.isArray(source?.errors)
     ? source.errors
         .map((item) => {
@@ -121,6 +126,11 @@ export function readAccountImportResult(payload: unknown): AccountImportResult {
     importedAccountIds: readStringArrayField(payload, "importedAccountIds").concat(
       readStringArrayField(payload, "imported_account_ids")
     ),
+    usageRefreshAccountIds: hasUsageRefreshAccountIds
+      ? readStringArrayField(payload, "usageRefreshAccountIds").concat(
+          readStringArrayField(payload, "usage_refresh_account_ids")
+        )
+      : undefined,
   };
 }
 

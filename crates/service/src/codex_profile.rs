@@ -2,7 +2,7 @@ use chrono::TimeZone;
 use codexmanager_core::auth::DEFAULT_CLIENT_ID;
 use codexmanager_core::storage::{
     now_ts, AccountCodexProfileCandidate, AccountDirectAuthProfile, AccountTokenCandidate,
-    ApiKeyCodexProfileCandidate, Token,
+    ApiKeyCodexProfileCandidate, Storage, Token,
 };
 use rusqlite::{backup::Backup, params, Connection};
 use serde::{Deserialize, Serialize};
@@ -14,12 +14,15 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{value as toml_value, DocumentMut, Item, Table};
 
+use crate::codex_runtime::CodexRuntimeReloadResult;
+
 const APP_SETTING_CODEX_HOME_KEY: &str = "codex_profile.codex_home";
 const APP_SETTING_STATE_KEY: &str = "codex_profile.state";
 const APP_SETTING_BACKUPS_KEY: &str = "codex_profile.backups";
 const MARKER_FILE: &str = ".codexmanager_profile.json";
 const MANAGED_PROFILE_ROOT_DIR: &str = "codex-profiles";
 const INTERNAL_MARKER_FILE: &str = "profile.json";
+const GATEWAY_MODEL_CATALOG_FILE: &str = "gateway-models.json";
 const INTERNAL_HISTORY_BACKUP_DIR: &str = "history-backups";
 const HISTORY_BACKUP_MANIFEST_FILE: &str = "backup.json";
 const MAX_HISTORY_BACKUPS_PER_PROFILE: usize = 3;
@@ -73,6 +76,7 @@ pub(crate) struct CodexProfileStatus {
     pub error: Option<String>,
     pub warnings: Vec<String>,
     pub history_repair: Option<CodexProfileHistoryRepairSummary>,
+    pub runtime_reload: Option<CodexRuntimeReloadResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +158,7 @@ struct SqliteRepairPlan {
 struct ManagedProfilePaths {
     root: PathBuf,
     marker_path: PathBuf,
+    gateway_model_catalog_path: PathBuf,
     history_backup_root: PathBuf,
     legacy_marker_path: PathBuf,
     legacy_history_backup_root: PathBuf,
@@ -187,6 +192,8 @@ struct ManagedState {
     api_key_id: Option<String>,
     gateway_base_url: Option<String>,
     provider_id: String,
+    #[serde(default)]
+    previous_model_catalog_json: Option<String>,
     updated_at: i64,
 }
 
@@ -215,6 +222,12 @@ struct MarkerFile {
     gateway_base_url: Option<String>,
     provider_id: String,
     updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct DetectedGatewayConfig {
+    provider_id: String,
+    base_url: String,
 }
 
 pub(crate) fn get_status(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
@@ -284,6 +297,7 @@ fn usable_account_token_candidates_by_account(
 pub(crate) fn apply_direct_account(
     account_id: Option<&str>,
     codex_home: Option<&str>,
+    reload_after_switch: bool,
 ) -> Result<CodexProfileStatus, String> {
     let account_id = normalize_required(account_id, "missing accountId")?;
     let profile_dir = resolve_profile_dir(codex_home)?;
@@ -319,7 +333,14 @@ pub(crate) fn apply_direct_account(
 
     ensure_backup(&profile_dir)?;
     let auth_json = build_direct_auth_json(&account, &token)?;
-    let config_toml = patch_config_for_direct(read_optional(&profile_dir.join(CONFIG_FILE))?)?;
+    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+    let paths = managed_profile_paths(&profile_dir)?;
+    let previous_model_catalog_json = previous_model_catalog_for_direct(&profile_dir);
+    let config_toml = patch_config_for_direct(
+        current_config,
+        &paths.gateway_model_catalog_path,
+        previous_model_catalog_json.as_deref(),
+    )?;
     write_profile_files(
         &profile_dir,
         &auth_json,
@@ -331,17 +352,23 @@ pub(crate) fn apply_direct_account(
             api_key_id: None,
             gateway_base_url: None,
             provider_id: PROVIDER_ID.to_string(),
+            previous_model_catalog_json: None,
             updated_at: now_ts(),
         },
     )?;
     persist_codex_home(&profile_dir)?;
-    status_for_profile_with_history_repair(&profile_dir, DEFAULT_HISTORY_PROVIDER_ID)
+    status_for_profile_after_apply(
+        &profile_dir,
+        DEFAULT_HISTORY_PROVIDER_ID,
+        reload_after_switch,
+    )
 }
 
 pub(crate) fn apply_gateway(
     api_key_id: Option<&str>,
     codex_home: Option<&str>,
     base_url: Option<&str>,
+    reload_after_switch: bool,
 ) -> Result<CodexProfileStatus, String> {
     let api_key_id = normalize_required(api_key_id, "missing apiKeyId")?;
     let profile_dir = resolve_profile_dir(codex_home)?;
@@ -365,10 +392,19 @@ pub(crate) fn apply_gateway(
     }
 
     ensure_backup(&profile_dir)?;
+    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+    let previous_model_catalog_json =
+        previous_model_catalog_for_gateway(&profile_dir, current_config.as_deref())?;
+    let paths = managed_profile_paths(&profile_dir)?;
+    crate::codex_model_catalog::write_gateway_model_catalog(
+        &storage,
+        &paths.gateway_model_catalog_path,
+    )?;
     let auth_json = build_gateway_auth_json(&secret)?;
     let config_toml = patch_config_for_gateway(
-        read_optional(&profile_dir.join(CONFIG_FILE))?,
+        current_config,
         &gateway_base_url,
+        &paths.gateway_model_catalog_path,
     )?;
     write_profile_files(
         &profile_dir,
@@ -381,11 +417,12 @@ pub(crate) fn apply_gateway(
             api_key_id: Some(gateway_auth.id),
             gateway_base_url: Some(gateway_base_url),
             provider_id: PROVIDER_ID.to_string(),
+            previous_model_catalog_json,
             updated_at: now_ts(),
         },
     )?;
     persist_codex_home(&profile_dir)?;
-    status_for_profile_with_history_repair(&profile_dir, PROVIDER_ID)
+    status_for_profile_after_apply(&profile_dir, PROVIDER_ID, reload_after_switch)
 }
 
 pub(crate) fn restore(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
@@ -541,6 +578,7 @@ fn managed_profile_paths(profile_dir: &Path) -> Result<ManagedProfilePaths, Stri
     let root = managed_profile_root(profile_dir)?;
     Ok(ManagedProfilePaths {
         marker_path: root.join(INTERNAL_MARKER_FILE),
+        gateway_model_catalog_path: root.join(GATEWAY_MODEL_CATALOG_FILE),
         history_backup_root: root.join(INTERNAL_HISTORY_BACKUP_DIR),
         legacy_marker_path: profile_dir.join(MARKER_FILE),
         legacy_history_backup_root: profile_dir.join(HISTORY_BACKUP_DIR),
@@ -669,6 +707,10 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
     let marker = read_marker(&paths.marker_path).ok();
     let persisted = settings.state.filter(|state| state.profile_dir == key);
     let detected_mode = detect_mode(&auth_path, &config_path, marker.as_ref());
+    let detected_gateway = read_optional(&config_path)
+        .ok()
+        .flatten()
+        .and_then(|content| detect_gateway_config(&content).ok().flatten());
     let state = marker
         .map(|marker| ManagedState {
             profile_dir: key.clone(),
@@ -677,9 +719,22 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             api_key_id: marker.api_key_id,
             gateway_base_url: marker.gateway_base_url,
             provider_id: marker.provider_id,
+            previous_model_catalog_json: None,
             updated_at: marker.updated_at,
         })
         .or(persisted);
+    let stale_non_gateway_state = detected_gateway.is_some()
+        && state
+            .as_ref()
+            .is_some_and(|state| !matches!(&state.mode, CodexProfileMode::Gateway));
+    let mode = if detected_gateway.is_some() {
+        CodexProfileMode::Gateway
+    } else {
+        state
+            .as_ref()
+            .map(|state| state.mode.clone())
+            .unwrap_or(detected_mode)
+    };
 
     Ok(CodexProfileStatus {
         codex_home: profile_dir.to_string_lossy().to_string(),
@@ -691,22 +746,40 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
         history_backup_count: stats.0,
         history_backup_bytes: stats.1,
         history_retention: default_history_retention(),
-        mode: state
+        mode,
+        selected_account_id: if stale_non_gateway_state {
+            None
+        } else {
+            state.as_ref().and_then(|state| state.account_id.clone())
+        },
+        selected_api_key_id: if stale_non_gateway_state {
+            None
+        } else {
+            state.as_ref().and_then(|state| state.api_key_id.clone())
+        },
+        gateway_base_url: detected_gateway
             .as_ref()
-            .map(|state| state.mode.clone())
-            .unwrap_or(detected_mode),
-        selected_account_id: state.as_ref().and_then(|state| state.account_id.clone()),
-        selected_api_key_id: state.as_ref().and_then(|state| state.api_key_id.clone()),
-        gateway_base_url: state
+            .map(|gateway| gateway.base_url.clone())
+            .or_else(|| {
+                state
+                    .as_ref()
+                    .and_then(|state| state.gateway_base_url.clone())
+            }),
+        provider_id: detected_gateway
             .as_ref()
-            .and_then(|state| state.gateway_base_url.clone()),
-        provider_id: PROVIDER_ID.to_string(),
+            .map(|gateway| gateway.provider_id.clone())
+            .unwrap_or_else(|| PROVIDER_ID.to_string()),
         has_backup: settings.backups.contains_key(&key),
-        last_applied_at: state.as_ref().map(|state| state.updated_at),
+        last_applied_at: if stale_non_gateway_state {
+            None
+        } else {
+            state.as_ref().map(|state| state.updated_at)
+        },
         profile_writable: profile_writable(profile_dir),
         error: None,
         warnings,
         history_repair: None,
+        runtime_reload: None,
     })
 }
 
@@ -720,10 +793,24 @@ fn status_for_profile_with_history_repair(
     Ok(status)
 }
 
+fn status_for_profile_after_apply(
+    profile_dir: &Path,
+    target_provider: &str,
+    reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    let mut status = status_for_profile_with_history_repair(profile_dir, target_provider)?;
+    status.runtime_reload = Some(if reload_after_switch {
+        crate::codex_runtime::reload_codex_app_servers(profile_dir)
+    } else {
+        CodexRuntimeReloadResult::skipped()
+    });
+    Ok(status)
+}
+
 fn target_history_provider_for_profile(profile_dir: &Path) -> Result<String, String> {
     let status = status_for_profile(profile_dir)?;
     match status.mode {
-        CodexProfileMode::Gateway => Ok(PROVIDER_ID.to_string()),
+        CodexProfileMode::Gateway => Ok(status.provider_id),
         CodexProfileMode::DirectAccount => Ok(DEFAULT_HISTORY_PROVIDER_ID.to_string()),
         CodexProfileMode::Missing
         | CodexProfileMode::Unmanaged
@@ -1586,20 +1673,20 @@ fn detect_mode(
     config_path: &Path,
     marker: Option<&MarkerFile>,
 ) -> CodexProfileMode {
-    if let Some(marker) = marker {
-        return marker.mode.clone();
-    }
     let auth = read_optional(auth_path).ok().flatten();
     let config = read_optional(config_path).ok().flatten();
-    if auth.is_none() && config.is_none() {
-        return CodexProfileMode::Missing;
-    }
     if auth.as_deref().is_some_and(auth_json_is_gateway)
         || config
             .as_deref()
-            .is_some_and(|content| config_uses_managed_provider(content).unwrap_or(false))
+            .is_some_and(|content| detect_gateway_config(content).ok().flatten().is_some())
     {
         return CodexProfileMode::Gateway;
+    }
+    if let Some(marker) = marker {
+        return marker.mode.clone();
+    }
+    if auth.is_none() && config.is_none() {
+        return CodexProfileMode::Missing;
     }
     if auth.as_deref().is_some_and(auth_json_has_tokens) {
         return CodexProfileMode::DirectAccount;
@@ -1644,12 +1731,100 @@ fn auth_json_has_tokens(content: &str) -> bool {
         })
 }
 
-fn config_uses_managed_provider(content: &str) -> Result<bool, String> {
+fn detect_gateway_config(content: &str) -> Result<Option<DetectedGatewayConfig>, String> {
     let doc = parse_config(content)?;
-    Ok(doc
+    let provider_id = doc
         .get("model_provider")
         .and_then(Item::as_str)
-        .is_some_and(|provider| provider == PROVIDER_ID))
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or(DEFAULT_HISTORY_PROVIDER_ID);
+    let root_base_url = doc
+        .get("base_url")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|base_url| !base_url.is_empty());
+    let provider_config = doc
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Item::as_table);
+    let provider_base_url = provider_config
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|base_url| !base_url.is_empty());
+    let effective_base_url = provider_base_url.or(root_base_url);
+
+    if provider_id == PROVIDER_ID {
+        return Ok(Some(DetectedGatewayConfig {
+            provider_id: provider_id.to_string(),
+            base_url: normalize_gateway_base_url(effective_base_url),
+        }));
+    }
+
+    let provider_bearer_token = provider_config
+        .and_then(|provider| provider.get("experimental_bearer_token"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    let root_bearer_token = doc
+        .get("experimental_bearer_token")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    if provider_bearer_token.or(root_bearer_token).is_none() {
+        return Ok(None);
+    }
+
+    let Some(base_url) = effective_base_url else {
+        return Ok(None);
+    };
+    let service_base_url = format!(
+        "http://{}",
+        crate::app_settings::current_saved_service_addr()
+    );
+    let service_base_url = normalize_gateway_base_url(Some(&service_base_url));
+    if !gateway_base_urls_match(base_url, &service_base_url) {
+        return Ok(None);
+    }
+
+    Ok(Some(DetectedGatewayConfig {
+        provider_id: provider_id.to_string(),
+        base_url: normalize_gateway_base_url(Some(base_url)),
+    }))
+}
+
+fn gateway_base_urls_match(candidate: &str, expected: &str) -> bool {
+    let Ok(candidate) = url::Url::parse(candidate.trim()) else {
+        return false;
+    };
+    let Ok(expected) = url::Url::parse(expected.trim()) else {
+        return false;
+    };
+    let Some(candidate_host) = candidate.host_str() else {
+        return false;
+    };
+    let Some(expected_host) = expected.host_str() else {
+        return false;
+    };
+
+    candidate.scheme().eq_ignore_ascii_case(expected.scheme())
+        && gateway_hosts_match(candidate_host, expected_host)
+        && candidate.port_or_known_default() == expected.port_or_known_default()
+        && candidate.path().trim_end_matches('/') == expected.path().trim_end_matches('/')
+}
+
+fn gateway_hosts_match(candidate: &str, expected: &str) -> bool {
+    candidate.eq_ignore_ascii_case(expected)
+        || (is_local_gateway_host(candidate) && is_local_gateway_host(expected))
+}
+
+fn is_local_gateway_host(host: &str) -> bool {
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "::"
+    )
 }
 
 fn ensure_profile_dir_valid(profile_dir: &Path) -> Result<(), String> {
@@ -1745,7 +1920,37 @@ fn build_gateway_auth_json(api_key: &str) -> Result<String, String> {
     .map_err(|err| format!("serialize auth.json failed: {err}"))
 }
 
-fn patch_config_for_direct(content: Option<String>) -> Result<String, String> {
+fn previous_model_catalog_for_direct(profile_dir: &Path) -> Option<String> {
+    load_state()
+        .filter(|state| {
+            state.profile_dir == profile_key(profile_dir)
+                && matches!(state.mode, CodexProfileMode::Gateway)
+        })
+        .and_then(|state| state.previous_model_catalog_json)
+}
+
+fn previous_model_catalog_for_gateway(
+    profile_dir: &Path,
+    config_toml: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(state) = load_state().filter(|state| {
+        state.profile_dir == profile_key(profile_dir)
+            && matches!(state.mode, CodexProfileMode::Gateway)
+    }) {
+        return Ok(state.previous_model_catalog_json);
+    }
+    let doc = parse_config(config_toml.unwrap_or(""))?;
+    Ok(doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .map(ToString::to_string))
+}
+
+fn patch_config_for_direct(
+    content: Option<String>,
+    managed_catalog_path: &Path,
+    previous_model_catalog_json: Option<&str>,
+) -> Result<String, String> {
     let mut doc = parse_config(content.as_deref().unwrap_or(""))?;
     if doc
         .get("model_provider")
@@ -1764,13 +1969,37 @@ fn patch_config_for_direct(content: Option<String>) -> Result<String, String> {
             doc.as_table_mut().remove("model_providers");
         }
     }
+    let managed_catalog_path = managed_catalog_path.to_string_lossy();
+    let catalog_is_managed = doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .is_some_and(|value| value == managed_catalog_path);
+    if catalog_is_managed {
+        match previous_model_catalog_json {
+            Some(previous) => {
+                doc.as_table_mut()
+                    .insert("model_catalog_json", toml_value(previous));
+            }
+            None => {
+                doc.as_table_mut().remove("model_catalog_json");
+            }
+        }
+    }
     Ok(doc.to_string())
 }
 
-fn patch_config_for_gateway(content: Option<String>, base_url: &str) -> Result<String, String> {
+fn patch_config_for_gateway(
+    content: Option<String>,
+    base_url: &str,
+    managed_catalog_path: &Path,
+) -> Result<String, String> {
     let mut doc = parse_config(content.as_deref().unwrap_or(""))?;
     doc.as_table_mut()
         .insert("model_provider", toml_value(PROVIDER_ID));
+    doc.as_table_mut().insert(
+        "model_catalog_json",
+        toml_value(managed_catalog_path.to_string_lossy().as_ref()),
+    );
 
     if doc.as_table().get("model_providers").is_none() {
         doc.as_table_mut()
@@ -1796,7 +2025,26 @@ fn patch_config_for_gateway(content: Option<String>, base_url: &str) -> Result<S
     provider.insert("name", toml_value("CodexManager"));
     provider.insert("base_url", toml_value(base_url));
     provider.insert("wire_api", toml_value("responses"));
+    provider.insert("supports_websockets", toml_value(true));
     Ok(doc.to_string())
+}
+
+pub(crate) fn sync_active_gateway_model_catalog_from_storage(
+    storage: &Storage,
+) -> Result<bool, String> {
+    let Some(state) = load_state() else {
+        return Ok(false);
+    };
+    if !matches!(state.mode, CodexProfileMode::Gateway) {
+        return Ok(false);
+    }
+    let profile_dir = PathBuf::from(state.profile_dir);
+    let paths = managed_profile_paths(&profile_dir)?;
+    crate::codex_model_catalog::write_gateway_model_catalog(
+        storage,
+        &paths.gateway_model_catalog_path,
+    )?;
+    Ok(true)
 }
 
 fn parse_config(content: &str) -> Result<DocumentMut, String> {

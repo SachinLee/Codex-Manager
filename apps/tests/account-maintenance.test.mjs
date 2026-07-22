@@ -46,6 +46,7 @@ test("readAccountImportResult 统一清洗导入结果与错误列表", () => {
     directoryPath: " C:/imports ",
     contents: [" a ", "b", 1],
     imported_account_ids: [" acc-1 ", "", 1],
+    usage_refresh_account_ids: [" acc-2 ", "", 1],
     errors: [{ index: "2", message: " invalid " }, null],
   });
 
@@ -56,7 +57,21 @@ test("readAccountImportResult 统一清洗导入结果与错误列表", () => {
   assert.equal(result.directoryPath, "C:/imports");
   assert.deepEqual(result.contents, ["a", "b"]);
   assert.deepEqual(result.importedAccountIds, ["acc-1"]);
+  assert.deepEqual(result.usageRefreshAccountIds, ["acc-2"]);
   assert.deepEqual(result.errors, [{ index: 2, message: "invalid" }]);
+});
+
+test("readAccountImportResult 保留旧服务缺少刷新账号字段的语义", () => {
+  const legacyResult = accountMaintenance.readAccountImportResult({
+    imported_account_ids: ["acc-1"],
+  });
+  const currentResult = accountMaintenance.readAccountImportResult({
+    imported_account_ids: ["acc-1"],
+    usage_refresh_account_ids: [],
+  });
+
+  assert.equal(legacyResult.usageRefreshAccountIds, undefined);
+  assert.deepEqual(currentResult.usageRefreshAccountIds, []);
 });
 
 test("readAccountExportResult 与 readDeleteUnavailableFreeResult 对齐数字字段", () => {

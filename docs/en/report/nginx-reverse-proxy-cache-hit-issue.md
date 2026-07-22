@@ -137,7 +137,7 @@ proxy_send_timeout 3600s;
 send_timeout 3600s;
 ```
 
-The repository's `docker/nginx/nginx.conf` now includes `location ^~ /v1/images/` and can be used as the image-generation deployment baseline.
+The repository's `docker/nginx/nginx.conf` now includes `location ^~ /v1/images/` in both the direct service and Web proxy server blocks, so either public entry point can be used as the image-generation deployment baseline. The Web entry point also gives the exact `/v1/responses` route the same 3600-second timeout for non-streaming `image_generation` tool calls.
 
 ## Recommended example config
 

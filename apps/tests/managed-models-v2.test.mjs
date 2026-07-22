@@ -29,6 +29,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(runnable).toString(
 const {
   managedModelV2ToModelInfo,
   serializeManagedModelV2ForCodexCache,
+  serializeManagedModelsV2ForCodexCache,
 } = await import(moduleUrl);
 
 function model(overrides = {}) {
@@ -54,6 +55,9 @@ function model(overrides = {}) {
       service_tiers: ["priority"],
       additional_speed_tiers: ["fast"],
       input_modalities: ["text", "image"],
+      output_modalities: ["text"],
+      supported_endpoints: ["/v1/responses", "/v1/chat/completions"],
+      supports_text_generation: true,
       prefer_websockets: true,
       supports_parallel_tool_calls: true,
       supports_reasoning_summaries: true,
@@ -79,16 +83,29 @@ function model(overrides = {}) {
     },
     instructionsMode: "passthrough",
     instructionsText: null,
-    builtinRevision: 3,
+    builtinRevision: 4,
     userEdited: false,
     price: {
-      priceStatus: "estimated",
-      priceSource: "test",
+      priceStatus: "official",
+      priceSource: "https://developers.openai.com/api/docs/models/compare",
       inputMicrousdPer1m: 5_000_000,
-      cachedInputMicrousdPer1m: 5_000_000,
+      cachedInputMicrousdPer1m: 500_000,
       outputMicrousdPer1m: 30_000_000,
     },
-    priceTiers: [],
+    priceTiers: [
+      {
+        minInputTokens: 0,
+        inputMicrousdPer1m: 5_000_000,
+        cachedInputMicrousdPer1m: 500_000,
+        outputMicrousdPer1m: 30_000_000,
+      },
+      {
+        minInputTokens: 272_000,
+        inputMicrousdPer1m: 10_000_000,
+        cachedInputMicrousdPer1m: 1_000_000,
+        outputMicrousdPer1m: 45_000_000,
+      },
+    ],
     routes: [],
     permissionGroupIds: [],
     createdAt: 0,
@@ -112,6 +129,12 @@ test("Codex cache export preserves GPT-5.6 Ultra runtime metadata without prompt
   assert.equal(exported.default_verbosity, "low");
   assert.equal(exported.apply_patch_tool_type, "freeform");
   assert.deepEqual(exported.additional_speed_tiers, ["fast"]);
+  assert.deepEqual(exported.output_modalities, ["text"]);
+  assert.deepEqual(exported.supported_endpoints, [
+    "/v1/responses",
+    "/v1/chat/completions",
+  ]);
+  assert.equal(exported.supports_text_generation, true);
   assert.equal(exported.base_instructions, "");
   assert.equal(exported.include_skills_usage_instructions, false);
   assert.equal("model_messages" in exported, false);
@@ -126,7 +149,66 @@ test("managed model adapter carries non-prompt Codex runtime metadata", () => {
   assert.equal(info.useResponsesLite, true);
   assert.equal(info.compHash, "3000");
   assert.deepEqual(info.additionalSpeedTiers, ["fast"]);
+  assert.deepEqual(info.outputModalities, ["text"]);
+  assert.deepEqual(info.supportedEndpoints, [
+    "/v1/responses",
+    "/v1/chat/completions",
+  ]);
+  assert.equal(info.supportsTextGeneration, true);
   assert.deepEqual(info.truncationPolicy, { mode: "tokens", limit: 10000 });
   assert.equal(info.baseInstructions, null);
   assert.equal(info.modelMessages, null);
+});
+
+test("managed model adapter accepts camelCase capability names and legacy defaults", () => {
+  const imageInfo = managedModelV2ToModelInfo(
+    model({
+      capabilities: {
+        outputModalities: ["image"],
+        supportedEndpoints: ["/v1/images/generations", "/v1/images/edits"],
+        supportsTextGeneration: false,
+      },
+    }),
+  );
+  const legacyInfo = managedModelV2ToModelInfo(model({ capabilities: {} }));
+
+  assert.deepEqual(imageInfo.outputModalities, ["image"]);
+  assert.deepEqual(imageInfo.supportedEndpoints, [
+    "/v1/images/generations",
+    "/v1/images/edits",
+  ]);
+  assert.equal(imageInfo.supportsTextGeneration, false);
+  assert.equal(legacyInfo.supportsTextGeneration, true);
+});
+
+test("Codex cache export excludes models without text generation support", () => {
+  const imageModel = model({
+    id: "builtin:gpt-image-2",
+    slug: "gpt-image-2",
+    displayName: "GPT Image 2",
+    sortOrder: 2,
+    capabilities: {
+      output_modalities: ["image"],
+      supported_endpoints: ["/v1/images/generations", "/v1/images/edits"],
+      supports_text_generation: false,
+    },
+  });
+  const legacyModel = model({
+    id: "custom:legacy-text-model",
+    slug: "legacy-text-model",
+    displayName: "Legacy Text Model",
+    sortOrder: 3,
+    capabilities: {},
+  });
+
+  const exported = serializeManagedModelsV2ForCodexCache([
+    imageModel,
+    legacyModel,
+    model(),
+  ]);
+
+  assert.deepEqual(
+    exported.map(({ slug }) => slug),
+    ["gpt-5.6-sol", "legacy-text-model"],
+  );
 });

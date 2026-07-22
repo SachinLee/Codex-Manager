@@ -192,7 +192,7 @@ export function ApiKeyModal({
     const catalog = models?.models || [];
     const selectedSlug = String(modelSlug || "").trim();
     const baseModels = catalog.filter((model) => {
-      if (model.supportedInApi) {
+      if (model.supportedInApi && model.supportsTextGeneration !== false) {
         return true;
       }
       return Boolean(selectedSlug) && model.slug === selectedModelInfo?.slug;

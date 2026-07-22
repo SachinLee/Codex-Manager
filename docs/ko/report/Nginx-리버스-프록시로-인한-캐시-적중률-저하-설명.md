@@ -112,7 +112,7 @@ proxy_send_timeout 3600s;
 send_timeout 3600s;
 ```
 
-현재 저장소의 `docker/nginx/nginx.conf` 는 `location ^~ /v1/images/` 블록을 포함하며 이미지 생성 배포 기준으로 사용할 수 있습니다.
+현재 저장소의 `docker/nginx/nginx.conf`는 direct service와 Web proxy server 블록 모두에 `location ^~ /v1/images/`를 포함하므로 두 공개 진입점 모두 이미지 생성 배포 기준으로 사용할 수 있습니다. Web 진입점은 비스트리밍 `image_generation` 도구 호출을 위해 정확한 `/v1/responses` 경로에도 동일한 3600초 제한 시간을 적용합니다.
 
 ## 권장 예시 설정
 

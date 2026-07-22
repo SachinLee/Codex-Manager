@@ -51,6 +51,7 @@ service_tier = "fast"
 name = "OpenAI"
 base_url = "http://localhost:48760/v1"
 wire_api = "responses"
+supports_websockets = true
 ```
 
 - If you changed the service port in Settings, update `base_url` accordingly.

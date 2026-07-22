@@ -21,6 +21,8 @@ export const ENV_DESCRIPTION_MAP: Record<string, string> = {
     "控制单次上游请求允许持续的最长时间，单位毫秒；超过后会主动结束请求并返回超时错误。",
   CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS:
     "控制流式上游请求允许持续的最长时间，单位毫秒；填 0 可关闭流式超时上限。",
+  CODEXMANAGER_SSE_KEEPALIVE_ENABLED:
+    "控制是否向下游补发 SSE keep-alive 帧；默认开启，关闭后不会发送连接心跳。",
   CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS:
     "控制向下游补发 SSE keep-alive 帧的间隔，单位毫秒；上游长时间安静时可避免客户端误判连接中断。",
   CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS:

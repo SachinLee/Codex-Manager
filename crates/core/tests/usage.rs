@@ -1,4 +1,7 @@
-use codexmanager_core::usage::{accounts_check_endpoint, parse_usage_snapshot, usage_endpoint};
+use codexmanager_core::usage::{
+    accounts_check_endpoint, parse_reset_credits_snapshot, parse_usage_snapshot,
+    reset_credits_consume_endpoint, reset_credits_endpoint, usage_endpoint,
+};
 use serde_json::json;
 
 /// 函数 `usage_snapshot_parsed`
@@ -51,7 +54,8 @@ fn usage_snapshot_parsed() {
                 }
             }
         ],
-        "credits": { "balance": 12.5 }
+        "credits": { "balance": 12.5 },
+        "rate_limit_reset_credits": { "available_count": 2 }
     });
 
     let snap = parse_usage_snapshot(&payload);
@@ -65,6 +69,7 @@ fn usage_snapshot_parsed() {
         serde_json::from_str(snap.credits_json.as_deref().expect("credits json"))
             .expect("parse credits json");
     assert_eq!(credits["balance"], 12.5);
+    assert_eq!(credits["rate_limit_reset_credits"]["available_count"], 2);
     let extras = credits["_codexmanager_extra_rate_limits"]
         .as_array()
         .expect("extra rate limits array");
@@ -85,4 +90,34 @@ fn usage_snapshot_parsed() {
         accounts_check_url,
         "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
     );
+
+    assert_eq!(
+        reset_credits_endpoint("https://chatgpt.com"),
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+    );
+    assert_eq!(
+        reset_credits_consume_endpoint("https://chatgpt.com"),
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+    );
+}
+
+#[test]
+fn reset_credit_snapshot_parses_compatible_fields() {
+    let future = chrono::Utc::now().timestamp() + 3600;
+    let past = chrono::Utc::now().timestamp() - 3600;
+    let snapshot = parse_reset_credits_snapshot(&json!({
+        "credits": [
+            { "creditId": "available", "state": "available", "expiresAt": future * 1000 },
+            { "id": "expired", "expires_at": past },
+            { "id": "used", "status": "redeemed", "redeemed_at": past },
+            { "id": "unknown", "status": "pending", "expires_at": future }
+        ]
+    }));
+
+    assert_eq!(snapshot.available_count, Some(1));
+    assert_eq!(snapshot.credits.len(), 4);
+    assert_eq!(snapshot.credits[0].id.as_deref(), Some("available"));
+    assert_eq!(snapshot.credits[0].expires_at, Some(future));
+    assert_eq!(snapshot.next_expires_at, Some(future));
+    assert_eq!(snapshot.credits[1].status.as_deref(), Some("expired"));
 }

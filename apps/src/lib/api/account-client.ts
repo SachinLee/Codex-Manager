@@ -25,6 +25,25 @@ import {
   normalizeAggregateApiCapabilityAttempts,
 } from "./aggregate-capabilities";
 import {
+  normalizeAccountProxyUrlTestListResult,
+  normalizeProxyDiagnosticTestListResult,
+  normalizeProxySpeedTestListResult,
+  normalizeProxyTestJobState,
+} from "./proxy-normalize";
+import {
+  type AccountProxySource,
+  readAccountProxySettings,
+  type AccountProxySettings,
+  type AccountProxySetPayload,
+  type AccountProxyTestPayload,
+} from "./account-proxy-settings";
+export type {
+  AccountProxySettings,
+  AccountProxySetPayload,
+  AccountProxySource,
+  AccountProxyTestPayload,
+};
+import {
   readChatgptAuthTokensRefreshAllResult,
   readChatgptAuthTokensRefreshResult,
   readCurrentAccessTokenAccountReadResult,
@@ -67,6 +86,10 @@ import {
   CurrentAccessTokenAccountReadResult,
   LoginStatusResult,
   LoginStartResult,
+  AccountProxyUrlTestListResult,
+  ProxyDiagnosticTestListResult,
+  ProxySpeedTestListResult,
+  ProxyTestJobState,
   UsageAggregateSummary,
   CapabilityRoutingMode,
   GatewayCapabilityOverrideState,
@@ -82,6 +105,37 @@ export interface AccountWarmupPayload {
   message?: string;
 }
 
+export interface AccountProxyLatencyTestPayload {
+  accountId: string;
+}
+
+export interface CfStyleConfig {
+  downloadPreset?: "all" | "100kb" | "1mb" | "10mb" | "25mb" | null;
+  uploadPreset?:
+    | "all"
+    | "100kb"
+    | "1mb"
+    | "10mb"
+    | "25mb"
+    | "50mb"
+    | null;
+  timeoutSecs?: number;
+  runUpload?: boolean | null;
+}
+
+export interface AccountProxyCloudflareSpeedTestPayload {
+  accountId: string;
+  config?: CfStyleConfig | null;
+}
+
+export interface AccountProxySpeedTestPayload {
+  accountId: string;
+  providerId?: string | null;
+  fileSizeId?: string | null;
+  diagnosticProviderId?: string | null;
+  diagnosticFileSizeId?: string | null;
+}
+
 export interface AccountDeleteByStatusesPayload {
   statuses: string[];
 }
@@ -89,6 +143,15 @@ export interface AccountDeleteByStatusesPayload {
 export interface AccountSortUpdatePayload {
   accountId: string;
   sort: number;
+}
+
+export interface AccountUsageRefreshResult {
+  ok: boolean;
+  source: string;
+  accountId: string | null;
+  processed: number;
+  total: number;
+  message: string | null;
 }
 
 interface LoginStartPayload {
@@ -242,6 +305,32 @@ function splitImportContents(contents: string[]): string[][] {
   return chunks;
 }
 
+function normalizeUsageRefreshResult(payload: unknown): AccountUsageRefreshResult {
+  const source =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  const toInteger = (value: unknown, fallback = 0) => {
+    const parsed =
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number.parseInt(value, 10)
+          : Number.NaN;
+    return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : fallback;
+  };
+  const toStringOrNull = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value.trim() : null;
+  return {
+    ok: source.ok === true,
+    source: toStringOrNull(source.source) || "manual",
+    accountId: toStringOrNull(source.accountId ?? source.account_id),
+    processed: toInteger(source.processed),
+    total: toInteger(source.total),
+    message: toStringOrNull(source.message),
+  };
+}
+
 /**
  * 函数 `mergeImportResult`
  *
@@ -277,6 +366,20 @@ function mergeImportResult(
       !target.importedAccountIds.includes(normalizedAccountId)
     ) {
       target.importedAccountIds.push(normalizedAccountId);
+    }
+  }
+  if (source.usageRefreshAccountIds !== undefined) {
+    if (!target.usageRefreshAccountIds) {
+      target.usageRefreshAccountIds = [];
+    }
+    for (const accountId of source.usageRefreshAccountIds) {
+      const normalizedAccountId = String(accountId || "").trim();
+      if (
+        normalizedAccountId &&
+        !target.usageRefreshAccountIds.includes(normalizedAccountId)
+      ) {
+        target.usageRefreshAccountIds.push(normalizedAccountId);
+      }
     }
   }
 
@@ -450,6 +553,150 @@ export const accountClient = {
       ),
     ),
 
+  getProxySettings: async (
+    accountId: string,
+  ): Promise<AccountProxySettings> =>
+    readAccountProxySettings(
+      await invoke<unknown>(
+        "service_account_proxy_get",
+        withAddr({ accountId }),
+      ),
+    ),
+  setProxySettings: async (
+    params: AccountProxySetPayload,
+  ): Promise<AccountProxySettings> =>
+    readAccountProxySettings(
+      await invoke<unknown>(
+        "service_account_proxy_set",
+        withAddr({
+          accountId: params.accountId,
+          enabled: params.enabled,
+          source: params.source ?? null,
+          proxyProfileId: params.proxyProfileId ?? null,
+          proxyUrl: params.proxyUrl ?? null,
+          status: params.status ?? null,
+          latencyMs: params.latencyMs ?? null,
+          lastError: params.lastError ?? null,
+          ip: params.ip ?? null,
+          countryCode: params.countryCode ?? null,
+          countryName: params.countryName ?? null,
+          regionName: params.regionName ?? null,
+          cityName: params.cityName ?? null,
+          geoCheckedAt: params.geoCheckedAt ?? null,
+          geoError: params.geoError ?? null,
+        }),
+      ),
+    ),
+  clearProxySettings: async (
+    accountId: string,
+  ): Promise<AccountProxySettings> =>
+    readAccountProxySettings(
+      await invoke<unknown>(
+        "service_account_proxy_clear",
+        withAddr({ accountId }),
+      ),
+    ),
+  testProxySettings: async (
+    params: AccountProxyTestPayload,
+  ): Promise<AccountProxySettings> =>
+    readAccountProxySettings(
+      await invoke<unknown>(
+        "service_account_proxy_test",
+        withAddr({
+          accountId: params.accountId,
+          enabled: params.enabled,
+          source: params.source ?? null,
+          proxyProfileId: params.proxyProfileId ?? null,
+          proxyUrl: params.proxyUrl ?? null,
+        }),
+      ),
+    ),
+  latencyTestProxy: async (
+    params: AccountProxyLatencyTestPayload,
+  ): Promise<ProxyTestJobState> =>
+    normalizeProxyTestJobState(
+      await invoke<unknown>(
+        "service_account_proxy_latency_test",
+        withAddr({ accountId: params.accountId }),
+      ),
+    ),
+  speedTestProxy: async (
+    params: AccountProxySpeedTestPayload,
+  ): Promise<ProxyTestJobState> =>
+    normalizeProxyTestJobState(
+      await invoke<unknown>(
+        "service_account_proxy_speed_test",
+        withAddr({
+          accountId: params.accountId,
+          providerId: params.providerId ?? null,
+          fileSizeId: params.fileSizeId ?? null,
+          diagnosticProviderId: params.diagnosticProviderId ?? null,
+          diagnosticFileSizeId: params.diagnosticFileSizeId ?? null,
+        }),
+      ),
+    ),
+  cloudflareSpeedTestProxy: async (
+    params: AccountProxyCloudflareSpeedTestPayload,
+  ): Promise<ProxyTestJobState> =>
+    normalizeProxyTestJobState(
+      await invoke<unknown>(
+        "service_account_proxy_cloudflare_speed_test",
+        withAddr({
+          accountId: params.accountId,
+          config: params.config ?? null,
+        }),
+      ),
+    ),
+  getProxyTestJob: async (
+    accountId: string,
+    jobId: string,
+  ): Promise<ProxyTestJobState> =>
+    normalizeProxyTestJobState(
+      await invoke<unknown>(
+        "service_account_proxy_test_job",
+        withAddr({ accountId, jobId }),
+      ),
+    ),
+  cancelProxyTestJob: async (
+    accountId: string,
+    jobId: string,
+  ): Promise<void> => {
+    await invoke<unknown>(
+      "service_account_proxy_cancel_test",
+      withAddr({ accountId, jobId }),
+    );
+  },
+  getAccountProxySpeedHistory: async (
+    accountId: string,
+    limit?: number,
+  ): Promise<ProxySpeedTestListResult> =>
+    normalizeProxySpeedTestListResult(
+      await invoke<unknown>(
+        "service_account_proxy_speed_test_history",
+        withAddr({ accountId, limit: limit ?? null }),
+      ),
+    ),
+  getAccountProxyLatencyHistory: async (
+    accountId: string,
+    limit?: number,
+  ): Promise<AccountProxyUrlTestListResult> =>
+    normalizeAccountProxyUrlTestListResult(
+      await invoke<unknown>(
+        "service_account_proxy_latency_test_history",
+        withAddr({ accountId, limit: limit ?? null }),
+      ),
+    ),
+  getAccountProxyDiagnosticsHistory: async (
+    accountId: string,
+    limit?: number,
+  ): Promise<ProxyDiagnosticTestListResult> =>
+    normalizeProxyDiagnosticTestListResult(
+      await invoke<unknown>(
+        "service_account_proxy_diagnostics_history",
+        withAddr({ accountId, limit: limit ?? null }),
+      ),
+    ),
+
   async getUsage(accountId: string): Promise<AccountUsage | null> {
     const result = await invoke<unknown>(
       "service_usage_read",
@@ -465,9 +712,9 @@ export const accountClient = {
     const result = await invoke<unknown>("service_usage_list", withAddr());
     return normalizeUsageList(result);
   },
-  refreshUsage: (accountId?: string) => {
+  async refreshUsage(accountId?: string): Promise<AccountUsageRefreshResult> {
     const targetAccountId = accountId?.trim();
-    return invoke(
+    const result = await invoke<unknown>(
       "service_usage_refresh",
       withAddr(
         targetAccountId
@@ -475,6 +722,7 @@ export const accountClient = {
           : {}
       )
     );
+    return normalizeUsageRefreshResult(result);
   },
   async aggregateUsage(): Promise<UsageAggregateSummary> {
     const result = await invoke<unknown>("service_usage_aggregate", withAddr());

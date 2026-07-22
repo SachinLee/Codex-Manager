@@ -2,13 +2,16 @@ use codexmanager_core::rpc::types::{JsonRpcMessage, JsonRpcRequest};
 
 mod account;
 mod account_identity;
+mod agent_identity;
 mod aggregate_api;
 mod aggregate_api_capabilities;
 mod apikey;
 pub(crate) mod app_settings;
 mod auth;
+mod codex_model_catalog;
 mod codex_profile;
 pub mod codex_session;
+mod codex_runtime;
 mod dashboard;
 mod errors;
 mod gateway;
@@ -18,6 +21,7 @@ mod logging;
 mod model_groups;
 mod models_v2;
 mod plugin;
+mod proxy_registry;
 mod quota;
 mod requestlog;
 mod rpc_actor;
@@ -36,6 +40,8 @@ pub(crate) use account::export as account_export;
 pub(crate) use account::import as account_import;
 pub(crate) use account::list as account_list;
 pub(crate) use account::plan as account_plan;
+pub(crate) use account::proxy as account_proxy;
+pub(crate) use account::proxy_testing::presets::proxy_test_presets;
 pub(crate) use account::status as account_status;
 pub(crate) use account::update as account_update;
 pub(crate) use account::warmup as account_warmup;
@@ -70,9 +76,18 @@ pub(crate) use model_groups::{
     resolve_api_key_model_group_access, set_model_group_models, set_model_group_users,
     upsert_model_group,
 };
+pub(crate) use proxy_registry::{
+    cancel_proxy_test_job, create_proxy_profile, delete_proxy_profile,
+    get_proxy_profile_diagnostics_history, get_proxy_profile_latency_test_history,
+    get_proxy_profile_speed_test_history, get_proxy_test_job, list_proxy_profiles,
+    test_proxy_profile, test_proxy_profile_cloudflare_style_speed, test_proxy_profile_latency,
+    test_proxy_profile_speed, update_proxy_profile,
+};
+
 pub(crate) use requestlog::account_daily_usage as requestlog_account_daily_usage;
 pub(crate) use requestlog::aggregate_api_daily_usage as requestlog_aggregate_api_daily_usage;
 pub(crate) use requestlog::aggregate_api_reasoning_guard as requestlog_aggregate_api_reasoning_guard;
+
 pub(crate) use requestlog::clear as requestlog_clear;
 pub(crate) use requestlog::list as requestlog_list;
 pub(crate) use requestlog::summary as requestlog_summary;
@@ -88,6 +103,7 @@ pub(crate) use usage::keepalive as usage_keepalive;
 pub(crate) use usage::list as usage_list;
 pub(crate) use usage::read as usage_read;
 pub(crate) use usage::refresh as usage_refresh;
+pub(crate) use usage::reset_credits as usage_reset_credits;
 pub(crate) use usage::scheduler as usage_scheduler;
 pub(crate) use usage::snapshot_store as usage_snapshot_store;
 pub(crate) use usage::token_refresh as usage_token_refresh;
@@ -99,7 +115,8 @@ pub use app_settings::{
     current_codex_cli_guide_dismissed, current_gateway_account_max_inflight,
     current_gateway_free_account_max_model, current_gateway_model_forward_rules,
     current_gateway_originator, current_gateway_request_compression_enabled,
-    current_gateway_residency_requirement, current_gateway_sse_keepalive_interval_ms,
+    current_gateway_residency_requirement, current_gateway_sse_keepalive_enabled,
+    current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
     current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
@@ -113,20 +130,21 @@ pub use app_settings::{
     set_gateway_account_max_inflight, set_gateway_background_tasks,
     set_gateway_free_account_max_model, set_gateway_model_forward_rules, set_gateway_originator,
     set_gateway_request_compression_enabled, set_gateway_residency_requirement,
-    set_gateway_route_strategy, set_gateway_sse_keepalive_interval_ms,
-    set_gateway_thread_aware_account_distribution_enabled, set_gateway_upstream_proxy_bypass_hosts,
-    set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
-    set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version,
-    set_lightweight_mode_on_close_to_tray_setting, set_saved_service_addr, set_service_bind_mode,
-    set_ui_appearance_preset, set_ui_low_transparency_enabled, set_ui_theme,
-    set_update_auto_check_enabled, sync_runtime_settings_from_storage, BackgroundTasksInput,
-    APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
-    APP_SETTING_DISTRIBUTION_ENABLED_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    set_gateway_route_strategy, set_gateway_sse_keepalive_enabled,
+    set_gateway_sse_keepalive_interval_ms, set_gateway_thread_aware_account_distribution_enabled,
+    set_gateway_upstream_proxy_bypass_hosts, set_gateway_upstream_proxy_url,
+    set_gateway_upstream_stream_timeout_ms, set_gateway_upstream_total_timeout_ms,
+    set_gateway_user_agent_version, set_lightweight_mode_on_close_to_tray_setting,
+    set_saved_service_addr, set_service_bind_mode, set_ui_appearance_preset,
+    set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
+    sync_runtime_settings_from_storage, BackgroundTasksInput, APP_SETTING_AUTO_START_ENABLED_KEY,
+    APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_DISTRIBUTION_ENABLED_KEY,
+    APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
+    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,

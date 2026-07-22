@@ -54,10 +54,9 @@ fn account(id: &str, sort: i64) -> Account {
 fn set_test_db(prefix: &str) -> (PathBuf, EnvGuard) {
     let dir = new_test_dir(prefix);
     let db_path = dir.join("codexmanager.db");
-    Storage::open(&db_path)
-        .expect("open db")
-        .init()
-        .expect("init db");
+    let storage = Storage::open(&db_path).expect("open test storage");
+    storage.init().expect("init test storage");
+    drop(storage);
     let guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     (db_path, guard)
 }
@@ -68,6 +67,7 @@ fn update_account_preferred_uses_existence_check_without_loading_account() {
     let (db_path, _guard) = set_test_db("account-update-preferred");
 
     let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
     storage
         .insert_account(&account("acc-preferred", 1))
         .expect("insert preferred");
@@ -114,6 +114,7 @@ fn update_account_sorts_updates_all_rows_and_records_events() {
     let (db_path, _guard) = set_test_db("account-update-sorts");
 
     let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
     storage
         .insert_account(&account("acc-sort-a", 1))
         .expect("insert first account");
@@ -182,6 +183,7 @@ fn update_account_sorts_rolls_back_when_any_account_is_missing() {
     let (db_path, _guard) = set_test_db("account-update-sorts-rollback");
 
     let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
     storage
         .insert_account(&account("acc-sort-rollback", 1))
         .expect("insert account");

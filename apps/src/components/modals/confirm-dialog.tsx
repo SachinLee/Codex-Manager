@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Dialog,
   DialogClose,
@@ -20,7 +21,7 @@ interface ConfirmDialogProps {
   confirmText?: string;
   cancelText?: string;
   confirmVariant?: "default" | "destructive";
-  onConfirm: () => void;
+  onConfirm: () => boolean | void | Promise<boolean | void>;
 }
 
 /**
@@ -47,8 +48,32 @@ export function ConfirmDialog({
   onConfirm,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
+  const [isConfirming, setIsConfirming] = useState(false);
+
+  const handleConfirm = async () => {
+    if (isConfirming) return;
+    setIsConfirming(true);
+    try {
+      const shouldClose = await onConfirm();
+      if (shouldClose !== false) onOpenChange(false);
+    } catch (error) {
+      console.error("confirm action failed", error);
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (isConfirming && !nextOpen) return;
+    onOpenChange(nextOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      disablePointerDismissal={isConfirming}
+    >
       <DialogContent
         showCloseButton={false}
         className="glass-card p-6 sm:max-w-[420px]"
@@ -62,15 +87,14 @@ export function ConfirmDialog({
           <DialogClose
             className={buttonVariants({ variant: "outline" })}
             type="button"
+            disabled={isConfirming}
           >
             {cancelText || t("取消")}
           </DialogClose>
           <Button
             variant={confirmVariant}
-            onClick={() => {
-              onConfirm();
-              onOpenChange(false);
-            }}
+            disabled={isConfirming}
+            onClick={() => void handleConfirm()}
           >
             {confirmText || t("确定")}
           </Button>

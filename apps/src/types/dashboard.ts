@@ -20,6 +20,18 @@ export interface DashboardDailyUsagePoint {
   usage: DashboardTokenUsage;
 }
 
+export interface DashboardUsageSeriesPoint {
+  bucketStartTs: number;
+  bucketEndTs: number;
+  usage: DashboardTokenUsage;
+}
+
+export interface DashboardModelUsageSeries {
+  model: string;
+  usage: DashboardTokenUsage;
+  points: DashboardUsageSeriesPoint[];
+}
+
 export interface DashboardUserUsageSummary {
   userId: string;
   username: string | null;
@@ -49,6 +61,9 @@ export interface DashboardAdminUsageSummary {
   totalUsage: DashboardTokenUsage;
   todayUsage: DashboardTokenUsage;
   dailyUsage: DashboardDailyUsagePoint[];
+  seriesBucketSeconds: number;
+  seriesUsage: DashboardUsageSeriesPoint[];
+  modelUsage: DashboardModelUsageSeries[];
   users: DashboardUserUsageSummary[];
   openaiAccounts: DashboardSourceUsageSummary[];
   aggregateApis: DashboardSourceUsageSummary[];

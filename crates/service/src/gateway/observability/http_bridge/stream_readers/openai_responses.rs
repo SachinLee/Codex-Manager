@@ -268,7 +268,11 @@ impl OpenAIResponsesPassthroughSseReader {
                     self.finished = true;
                     return Ok(Vec::new());
                 }
-                Ok(self.keepalive_frame.bytes().to_vec())
+                if crate::gateway::current_sse_keepalive_enabled() {
+                    Ok(self.keepalive_frame.bytes().to_vec())
+                } else {
+                    Ok(Vec::new())
+                }
             }
             Err(RecvTimeoutError::Disconnected) => {
                 self.drain_sidecar_with_deadline(OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT);

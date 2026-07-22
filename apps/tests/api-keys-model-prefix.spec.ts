@@ -189,14 +189,61 @@ async function mockApiKeyRpc(
             createdAt: 1770000000,
             updatedAt: 1770000000,
           },
+          {
+            id: "builtin:gpt-image-2",
+            slug: "gpt-image-2",
+            displayName: "GPT Image 2",
+            description: "State-of-the-art image generation and editing model.",
+            provider: "openai",
+            family: "gpt-image",
+            category: "image",
+            tags: ["image-generation", "image-editing"],
+            origin: "builtin",
+            enabled: true,
+            supportedInApi: true,
+            visibility: "list",
+            sortOrder: 44,
+            contextWindow: null,
+            maxContextWindow: null,
+            defaultReasoningEffort: null,
+            capabilities: {
+              reasoning_efforts: [],
+              service_tiers: [],
+              additional_speed_tiers: [],
+              input_modalities: ["text", "image"],
+              output_modalities: ["image"],
+              supported_endpoints: [
+                "/v1/images/generations",
+                "/v1/images/edits",
+              ],
+              supports_text_generation: false,
+            },
+            instructionsMode: "passthrough",
+            instructionsText: null,
+            builtinRevision: 5,
+            userEdited: false,
+            price: {
+              priceStatus: "official",
+              priceSource:
+                "https://developers.openai.com/api/docs/pricing#image-generation",
+              inputMicrousdPer1m: 8000000,
+              cachedInputMicrousdPer1m: 2000000,
+              outputMicrousdPer1m: 30000000,
+            },
+            priceTiers: [],
+            routes: [],
+            permissionGroupIds: [],
+            createdAt: 1770000000,
+            updatedAt: 1770000000,
+          },
         ],
         stats: {
-          total: 1,
-          enabled: 1,
-          builtin: 1,
+          total: 2,
+          enabled: 2,
+          builtin: 2,
           custom: 0,
           priceMissing: 0,
-          missingRoute: 1,
+          missingRoute: 2,
         },
       });
       return;
@@ -236,6 +283,73 @@ test("api key modal reuses prefix model metadata for long model slugs", async ({
   await expect(dialog.getByRole("heading", { name: "编辑平台密钥" })).toBeVisible();
   await dialog.getByText("GPT-5.3 Codex", { exact: true }).click();
   await expect(page.getByText("GPT-5.3 Codex", { exact: true })).toBeVisible();
+});
+
+test("api key modal hides image-only models when creating a key", async ({ page }) => {
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, { apiKeys: [] });
+
+  await page.goto("/apikeys/");
+  await page.getByRole("button", { name: "创建密钥" }).click();
+
+  const dialog = page.getByRole("dialog");
+  const modelSelect = dialog
+    .getByText("绑定模型 (可选)", { exact: true })
+    .locator("..")
+    .getByRole("combobox");
+  await modelSelect.click();
+
+  await expect(page.getByRole("option", { name: "GPT-5.3 Codex" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "GPT Image 2" })).toHaveCount(0);
+});
+
+test("api key modal can migrate an existing image-only binding to a text model", async ({
+  page,
+}) => {
+  const updatePayloads: Record<string, unknown>[] = [];
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [
+      {
+        id: "key-image",
+        name: "Image Key",
+        model_slug: "gpt-image-2",
+        reasoning_effort: "auto",
+        service_tier: "auto",
+        protocol_type: "openai_compat",
+        rotation_strategy: "account_rotation",
+        status: "enabled",
+        created_at: 1_770_000_002,
+      },
+    ],
+    onMethod: (method, payload) => {
+      if (method === "apikey/updateModel") {
+        updatePayloads.push(payload);
+        return { ok: true };
+      }
+      return undefined;
+    },
+  });
+
+  await page.goto("/apikeys/");
+  await page.locator("tr", { hasText: "Image Key" }).getByTitle("编辑配置").click();
+
+  const dialog = page.getByRole("dialog");
+  const modelSelect = dialog
+    .getByText("绑定模型 (可选)", { exact: true })
+    .locator("..")
+    .getByRole("combobox");
+  await expect(modelSelect).toContainText("GPT Image 2");
+  await modelSelect.click();
+  await expect(page.getByRole("option", { name: "GPT Image 2" })).toBeVisible();
+  await page.getByRole("option", { name: "GPT-5.3 Codex" }).click();
+  await expect(modelSelect).toContainText("GPT-5.3 Codex");
+
+  await dialog.getByRole("button", { name: "完成" }).click();
+
+  await expect.poll(() => updatePayloads.length).toBe(1);
+  const params = updatePayloads[0]?.params as Record<string, unknown>;
+  expect(params.modelSlug).toBe("gpt-5.3-codex");
 });
 
 test("api key modal displays and submits hybrid rotation", async ({ page }) => {

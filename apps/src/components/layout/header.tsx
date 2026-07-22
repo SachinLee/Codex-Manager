@@ -186,7 +186,7 @@ export function Header() {
           </div>
           <Badge
             variant={serviceStatus.connected ? "default" : "secondary"}
-            className="h-7 shrink-0 rounded-md border-primary/20 bg-primary/10 px-2.5 font-mono text-[11px] text-primary shadow-sm"
+            className="h-7 shrink-0 rounded-md border-primary/20 bg-primary/10 px-2.5 font-mono text-xs text-primary shadow-sm"
           >
             <span
               className={`mr-1.5 h-1.5 w-1.5 rounded-full ${

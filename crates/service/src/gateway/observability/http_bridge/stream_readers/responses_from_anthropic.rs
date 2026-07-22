@@ -1,7 +1,8 @@
 use super::{
-    append_output_text, json, mark_first_response_ms_on_usage, should_emit_keepalive,
-    stream_idle_timed_out, stream_wait_timeout, Arc, Cursor, Map, Mutex, Read, SseKeepAliveFrame,
-    UpstreamResponseUsage, UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
+    append_output_text, json, mark_first_response_ms_on_usage,
+    should_emit_keepalive_after_first_frame, stream_idle_timed_out, stream_wait_timeout, Arc,
+    Cursor, Map, Mutex, Read, SseKeepAliveFrame, UpstreamResponseUsage, UpstreamSseFramePump,
+    UpstreamSseFramePumpItem, Value,
 };
 use std::time::Instant;
 
@@ -127,8 +128,8 @@ impl ResponsesFromAnthropicSseReader {
                         }
                         return Ok(finished);
                     }
-                    if should_emit_keepalive(self.saw_upstream_frame) {
-                        return Ok(SseKeepAliveFrame::OpenAIResponses.bytes().to_vec());
+                    if should_emit_keepalive_after_first_frame(self.saw_upstream_frame) {
+                        return Ok(SseKeepAliveFrame::Comment.bytes().to_vec());
                     }
                 }
             }

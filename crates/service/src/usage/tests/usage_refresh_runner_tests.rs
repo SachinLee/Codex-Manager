@@ -41,3 +41,33 @@ fn warmup_cron_uses_earliest_pipe_separated_schedule() {
     assert_eq!(next.hour(), 10);
     assert_eq!(next.minute(), 30);
 }
+
+#[test]
+fn dynamic_poll_delay_recalculates_when_disabled() {
+    assert!(should_recalculate_dynamic_poll_delay(
+        false,
+        600,
+        600,
+        std::time::Duration::from_secs(1),
+    ));
+}
+
+#[test]
+fn dynamic_poll_delay_recalculates_when_interval_is_shortened_and_due() {
+    assert!(should_recalculate_dynamic_poll_delay(
+        true,
+        600,
+        60,
+        std::time::Duration::from_secs(60),
+    ));
+}
+
+#[test]
+fn dynamic_poll_delay_keeps_sleeping_when_interval_is_shortened_but_not_due() {
+    assert!(!should_recalculate_dynamic_poll_delay(
+        true,
+        600,
+        60,
+        std::time::Duration::from_secs(30),
+    ));
+}

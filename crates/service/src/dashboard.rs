@@ -3,13 +3,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::{apikey_list, requestlog_list, storage_helpers, time_bounds, RpcActor};
 use codexmanager_core::rpc::types::{
     ApiKeySummary, DashboardAdminUsageSummaryResult, DashboardDailyUsagePoint,
-    DashboardSourceUsageSummary, DashboardTokenUsageResult, DashboardUserUsageSummary,
-    MemberDashboardAlert, MemberDashboardApiKeySummary, MemberDashboardKeyUsage,
-    MemberDashboardModelUsage, MemberDashboardSummaryResult, MemberDashboardUsagePoint,
-    MemberDashboardUsageToday, MemberDashboardWalletResult, RequestLogListParams,
+    DashboardModelUsageSeries, DashboardSourceUsageSummary, DashboardTokenUsageResult,
+    DashboardUsageSeriesPoint, DashboardUserUsageSummary, MemberDashboardAlert,
+    MemberDashboardApiKeySummary, MemberDashboardKeyUsage, MemberDashboardModelUsage,
+    MemberDashboardSummaryResult, MemberDashboardUsagePoint, MemberDashboardUsageToday,
+    MemberDashboardWalletResult, RequestLogListParams,
 };
 use codexmanager_core::storage::{
-    DailyTokenUsageRollup, SourceTokenUsageRollup, TokenUsageRollup, UserTokenUsageRollup,
+    DailyTokenUsageRollup, ModelTokenUsageRollup, SourceTokenUsageRollup, TokenUsageRollup,
+    UserTokenUsageRollup,
 };
 
 const TREND_DAYS: i64 = 7;
@@ -21,6 +23,9 @@ const ADMIN_USAGE_RANGE_DAYS: i64 = 7;
 const ADMIN_TOP_USER_LIMIT: usize = 12;
 const ADMIN_TOP_SOURCE_LIMIT: usize = 12;
 const TOKEN_ACTIVITY_MAX_RANGE_DAYS: i64 = 365;
+const ADMIN_MODEL_SERIES_LIMIT: usize = 8;
+const ADMIN_HOURLY_SERIES_MAX_DAYS: i64 = 31;
+const HOUR_SECONDS: i64 = 3_600;
 
 pub(crate) fn read_token_activity(
     actor: &RpcActor,
@@ -62,6 +67,8 @@ pub(crate) fn read_admin_usage_summary(
     start_ts: Option<i64>,
     end_ts: Option<i64>,
     include_breakdowns: bool,
+    include_series: bool,
+    requested_series_bucket_seconds: Option<i64>,
 ) -> Result<DashboardAdminUsageSummaryResult, String> {
     if !actor.is_admin() {
         return Err("permission_denied: admin dashboard usage requires admin session".to_string());
@@ -89,6 +96,41 @@ pub(crate) fn read_admin_usage_summary(
             .next()
             .map(|item| item.usage)
             .unwrap_or_default(),
+    };
+    let series_bucket_seconds = normalize_admin_series_bucket_seconds(
+        requested_series_bucket_seconds,
+        range_start,
+        range_end,
+    );
+    let (series_usage, model_usage) = if include_series {
+        let raw_series_usage = if series_bucket_seconds == time_bounds::DAY_SECONDS {
+            raw_daily_usage.clone()
+        } else {
+            storage
+                .summarize_request_token_stats_daily(range_start, range_end, series_bucket_seconds)
+                .map_err(|err| format!("summarize usage series failed: {err}"))?
+        };
+        let series_usage = fill_usage_series(
+            range_start,
+            range_end,
+            series_bucket_seconds,
+            raw_series_usage,
+        );
+        let model_usage = build_dashboard_model_usage_series(
+            range_start,
+            range_end,
+            series_bucket_seconds,
+            storage
+                .summarize_request_token_stats_by_model_timeline(
+                    range_start,
+                    range_end,
+                    series_bucket_seconds,
+                )
+                .map_err(|err| format!("summarize model usage series failed: {err}"))?,
+        );
+        (series_usage, model_usage)
+    } else {
+        (Vec::new(), Vec::new())
     };
     let daily_usage = fill_daily_usage(
         range_start,
@@ -181,10 +223,28 @@ pub(crate) fn read_admin_usage_summary(
         total_usage: dashboard_usage(&total_usage),
         today_usage: dashboard_usage(&today_usage),
         daily_usage,
+        series_bucket_seconds,
+        series_usage,
+        model_usage,
         users,
         openai_accounts,
         aggregate_apis,
     })
+}
+
+fn normalize_admin_series_bucket_seconds(
+    requested: Option<i64>,
+    range_start: i64,
+    range_end: i64,
+) -> i64 {
+    let range_seconds = range_end.saturating_sub(range_start);
+    if requested == Some(HOUR_SECONDS)
+        && range_seconds <= ADMIN_HOURLY_SERIES_MAX_DAYS.saturating_mul(time_bounds::DAY_SECONDS)
+    {
+        HOUR_SECONDS
+    } else {
+        time_bounds::DAY_SECONDS
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -240,6 +300,122 @@ fn fill_daily_usage(
         cursor = next;
     }
     result
+}
+
+fn fill_usage_series(
+    start_ts: i64,
+    end_ts: i64,
+    bucket_seconds: i64,
+    items: Vec<DailyTokenUsageRollup>,
+) -> Vec<DashboardUsageSeriesPoint> {
+    let bucket_seconds = bucket_seconds.max(1);
+    let mut by_start = items
+        .into_iter()
+        .map(|item| (item.day_start_ts, item))
+        .collect::<BTreeMap<_, _>>();
+    let mut cursor = start_ts;
+    let mut result = Vec::new();
+    while cursor < end_ts {
+        let next = cursor.saturating_add(bucket_seconds).min(end_ts);
+        let usage = by_start
+            .remove(&cursor)
+            .map(|item| dashboard_usage(&item.usage))
+            .unwrap_or_default();
+        result.push(DashboardUsageSeriesPoint {
+            bucket_start_ts: cursor,
+            bucket_end_ts: next,
+            usage,
+        });
+        cursor = next;
+    }
+    result
+}
+
+fn add_token_usage(target: &mut TokenUsageRollup, usage: &TokenUsageRollup) {
+    target.input_tokens = target
+        .input_tokens
+        .saturating_add(usage.input_tokens.max(0));
+    target.cached_input_tokens = target
+        .cached_input_tokens
+        .saturating_add(usage.cached_input_tokens.max(0));
+    target.output_tokens = target
+        .output_tokens
+        .saturating_add(usage.output_tokens.max(0));
+    target.reasoning_output_tokens = target
+        .reasoning_output_tokens
+        .saturating_add(usage.reasoning_output_tokens.max(0));
+    target.total_tokens = target
+        .total_tokens
+        .saturating_add(usage.total_tokens.max(0));
+    target.estimated_cost_usd += usage.estimated_cost_usd.max(0.0);
+    target.request_count = target
+        .request_count
+        .saturating_add(usage.request_count.max(0));
+    target.success_count = target
+        .success_count
+        .saturating_add(usage.success_count.max(0));
+    target.error_count = target.error_count.saturating_add(usage.error_count.max(0));
+}
+
+fn build_dashboard_model_usage_series(
+    start_ts: i64,
+    end_ts: i64,
+    bucket_seconds: i64,
+    items: Vec<ModelTokenUsageRollup>,
+) -> Vec<DashboardModelUsageSeries> {
+    let mut totals = HashMap::<String, TokenUsageRollup>::new();
+    for item in &items {
+        add_token_usage(totals.entry(item.model.clone()).or_default(), &item.usage);
+    }
+    let mut ranked_models = totals.into_iter().collect::<Vec<_>>();
+    ranked_models.sort_by(|(left_model, left_usage), (right_model, right_usage)| {
+        right_usage
+            .total_tokens
+            .cmp(&left_usage.total_tokens)
+            .then_with(|| right_usage.request_count.cmp(&left_usage.request_count))
+            .then_with(|| left_model.cmp(right_model))
+    });
+    ranked_models.truncate(ADMIN_MODEL_SERIES_LIMIT);
+
+    let mut points_by_model = HashMap::<String, BTreeMap<i64, TokenUsageRollup>>::new();
+    let selected_models = ranked_models
+        .iter()
+        .map(|(model, _)| model.clone())
+        .collect::<HashSet<_>>();
+    for item in items {
+        if selected_models.contains(&item.model) {
+            points_by_model
+                .entry(item.model)
+                .or_default()
+                .insert(item.bucket_start_ts, item.usage);
+        }
+    }
+
+    ranked_models
+        .into_iter()
+        .map(|(model, usage)| {
+            let mut points_by_start = points_by_model.remove(&model).unwrap_or_default();
+            let mut points = Vec::new();
+            let mut cursor = start_ts;
+            while cursor < end_ts {
+                let next = cursor.saturating_add(bucket_seconds).min(end_ts);
+                points.push(DashboardUsageSeriesPoint {
+                    bucket_start_ts: cursor,
+                    bucket_end_ts: next,
+                    usage: points_by_start
+                        .remove(&cursor)
+                        .map(|item| dashboard_usage(&item))
+                        .unwrap_or_default(),
+                });
+                cursor = next;
+            }
+            DashboardModelUsageSeries {
+                model,
+                usage: dashboard_usage(&usage),
+                points,
+            }
+        })
+        .collect()
 }
 
 fn daily_usage_bucket(

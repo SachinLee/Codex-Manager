@@ -120,6 +120,8 @@ fn member_actor_cannot_call_admin_only_rpc() {
         "accountManager/users/list",
         "codexProfile/repairHistory",
         "codexProfile/pruneHistoryBackups",
+        "apikey/managedModelUpdateStateV2",
+        "apikey/managedModelBatchUpdateStateV2",
     ] {
         let req = JsonRpcRequest {
             id: 21.into(),
@@ -139,6 +141,92 @@ fn member_actor_cannot_call_admin_only_rpc() {
             .unwrap_or("");
         assert!(err.contains("permission_denied"), "{method}: {err}");
     }
+}
+
+#[test]
+fn admin_actor_can_update_managed_model_state_v2() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-managed-model-state-rpc");
+
+    let resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/managedModelUpdateStateV2",
+            serde_json::json!({
+                "slug": "gpt-5.4",
+                "enabled": false,
+                "visibility": "hide",
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert_eq!(
+        resp.result.get("slug").and_then(|value| value.as_str()),
+        Some("gpt-5.4")
+    );
+    assert_eq!(
+        resp.result.get("enabled").and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        resp.result
+            .get("visibility")
+            .and_then(|value| value.as_str()),
+        Some("hide")
+    );
+    assert_eq!(
+        resp.result
+            .get("userEdited")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let stored = storage_helpers::open_storage()
+        .expect("open storage")
+        .get_managed_model_v2("gpt-5.4")
+        .expect("read managed model")
+        .expect("managed model");
+    assert!(!stored.enabled);
+    assert_eq!(stored.visibility, "hide");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn admin_actor_can_batch_update_managed_model_state_v2() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-managed-model-batch-state-rpc");
+
+    let resp = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/managedModelBatchUpdateStateV2",
+            serde_json::json!({
+                "slugs": ["gpt-5.4", "gpt-5.4-mini"],
+                "enabled": false,
+                "visibility": "hide",
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    let updated = resp.result.as_array().expect("updated models");
+    assert_eq!(updated.len(), 2);
+    assert!(updated.iter().all(|model| {
+        model.get("enabled").and_then(|value| value.as_bool()) == Some(false)
+            && model.get("visibility").and_then(|value| value.as_str()) == Some("hide")
+            && model.get("userEdited").and_then(|value| value.as_bool()) == Some(true)
+    }));
+
+    let storage = storage_helpers::open_storage().expect("open storage");
+    for slug in ["gpt-5.4", "gpt-5.4-mini"] {
+        let stored = storage
+            .get_managed_model_v2(slug)
+            .expect("read managed model")
+            .expect("managed model");
+        assert!(!stored.enabled);
+        assert_eq!(stored.visibility, "hide");
+    }
+    drop(storage);
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]
@@ -410,6 +498,73 @@ fn setup_dashboard_test_db(name: &str) -> String {
         .expect("init test storage");
     std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
     db_path
+}
+
+#[test]
+fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-api-key-image-model");
+
+    let create_error = apikey_create::create_api_key(
+        Some("image key".to_string()),
+        Some("gpt-image-2".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect_err("image model must not be bound as a text primary model");
+    assert!(create_error.contains("image-only model"));
+
+    let created = apikey_create::create_api_key(
+        Some("external key".to_string()),
+        Some("external-model".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("unknown external model remains supported");
+    let update_error = apikey_update_model::update_api_key_model(
+        &created.id,
+        Some("must not persist".to_string()),
+        true,
+        Some("gpt-image-2".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .expect_err("image model update must be rejected");
+    assert!(update_error.contains("image-only model"));
+
+    let stored = storage_helpers::open_storage()
+        .expect("open storage")
+        .find_api_key_by_id(&created.id)
+        .expect("read api key")
+        .expect("api key");
+    assert_eq!(stored.name.as_deref(), Some("external key"));
+    assert_eq!(stored.model_slug.as_deref(), Some("external-model"));
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 fn rpc_request(method: &str, params: serde_json::Value) -> JsonRpcRequest {
@@ -1621,7 +1776,9 @@ fn admin_usage_summary_can_skip_breakdowns_for_light_dashboard() {
             serde_json::json!({
                 "startTs": day_start,
                 "endTs": day_end,
-                "includeBreakdowns": false
+                "includeBreakdowns": false,
+                "includeSeries": true,
+                "seriesBucketSeconds": 3_600
             }),
         ),
         RpcActor::system_admin(),
@@ -1635,6 +1792,21 @@ fn admin_usage_summary_can_skip_breakdowns_for_light_dashboard() {
     assert_eq!(
         admin_resp.result["dailyUsage"][0]["usage"]["totalTokens"],
         30
+    );
+    assert_eq!(admin_resp.result["seriesBucketSeconds"], 3_600);
+    assert_eq!(
+        admin_resp.result["seriesUsage"].as_array().unwrap().len(),
+        24
+    );
+    assert_eq!(
+        admin_resp.result["seriesUsage"][0]["usage"]["totalTokens"],
+        30
+    );
+    assert_eq!(admin_resp.result["modelUsage"].as_array().unwrap().len(), 1);
+    assert_eq!(admin_resp.result["modelUsage"][0]["model"], "gpt-5-mini");
+    assert_eq!(
+        admin_resp.result["modelUsage"][0]["points"][0]["usage"]["requestCount"],
+        1
     );
     assert_eq!(admin_resp.result["users"].as_array().unwrap().len(), 0);
     assert_eq!(

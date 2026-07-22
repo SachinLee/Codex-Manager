@@ -734,7 +734,7 @@ export function AccountInfoCell({
             {isPreferred ? (
               <Badge
                 variant="secondary"
-                className="h-4 shrink-0 bg-amber-500/15 px-1.5 text-[9px] text-amber-700 dark:text-amber-300"
+                className="h-4 shrink-0 bg-amber-500/15 px-1.5 text-[10px] text-amber-700 dark:text-amber-300"
               >
                 {t("优先")}
               </Badge>

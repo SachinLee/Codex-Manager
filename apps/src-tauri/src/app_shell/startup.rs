@@ -3,8 +3,11 @@ use crate::commands::settings::sync_window_runtime_state_from_settings;
 use super::state::TRAY_AVAILABLE;
 use super::window::{navigate_main_window_to_startup_app, request_show_main_window};
 
+#[cfg(debug_assertions)]
 const DEV_SERVER_STARTUP_URL: &str = "http://127.0.0.1:3005/startup.html";
+#[cfg(debug_assertions)]
 const DEV_SERVER_READY_TIMEOUT_MS: u64 = 60_000;
+#[cfg(debug_assertions)]
 const DEV_SERVER_READY_INTERVAL_MS: u64 = 500;
 
 /// 函数 `sync_startup_window_state`

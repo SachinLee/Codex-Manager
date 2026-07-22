@@ -5,6 +5,65 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 `gpt-image-2`（快照 `gpt-image-2-2026-04-21`），作为第 9 个 builtin、普通列表中的第 8 个模型。该目录项仅用于 `/v1/images/generations` 与 `/v1/images/edits`，不会作为文本生成、Chat Completions 或直接 Responses 主模型；目录价格元数据记录官方每 1M image input / cached input / output tokens 8 / 2 / 30 USD。
+
+### Fixed
+
+- 按 OpenAI 官方 API 价格修正 GPT-5.6 Sol、Terra、Luna 计费：缓存输入恢复 90% 折扣，并在 272K 输入阈值切换到 2 倍输入、1.5 倍输出的长上下文费率；旧版自动估算价格会迁移为官方价格，自定义价格保持不变。
+
+## [0.4.4] - 2026-07-20
+
+### Changed
+
+- 发布版本提升到 `0.4.4`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+- `release-all` 工作流支持推送 `v*` 标签自动触发发布，便于直接通过版本标签发版。
+
+### Fixed
+
+- 修复账号池“刷新用量”在账号缺少 token 或无可刷新目标时仍直接提示成功的问题；服务端现在返回结构化执行结果，前端会区分未执行、部分刷新和成功，并刷新账号列表与用量缓存。
+- 修复后台任务线程保存更短间隔或关闭开关后要等待旧休眠周期结束才生效的问题；用量轮询、网关保活和令牌刷新轮询会在等待中重新读取动态配置。
+
+## [0.4.3] - 2026-07-19
+
+### Added
+
+- 新增账号级代理管理（#314）：支持创建可复用的代理配置、为单个账号选择代理，并在账号请求、令牌刷新和用量刷新链路中使用对应代理。
+- 新增代理连通性、延迟、下载及上传测试，统一展示运行状态、出口 IP、国家/地区与测速结果；桌面端和 Web 服务模式均可配置和测试。
+- 模型目录新增多选批量路由分配：可将账号池或聚合 API 路由追加/更新到多个模型，也可选择替换所选模型的全部现有路由；上游模型名会按各模型标识自动填写。
+
+### Changed
+
+- 精简 AIXiamo 赞助说明，突出国内无海外银行卡用户的 ChatGPT、Claude、Codex 充值与售后保障信息。
+- 收紧 Codex 网关识别规则并优先使用当前供应商网关地址，避免将普通 OpenAI 兼容端点误判为 Codex；同时保留 compact、Gemini 及多候选回退行为（#346）。
+- 完善原生 Web Search、Image Generation、`/v1/models` 和 Responses WebSocket 的协议兼容，并支持有界解压 zstd 编码内容（#363）。
+- 发布版本提升到 `0.4.3`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
+### Fixed
+
+- 模型管理页的“批量分配路由”入口现在对管理员始终可见；未选择模型时会显示明确提示并保持禁用，避免功能被误认为缺失。
+- 修复部分 Responses 请求收到 400 后无法继续候选重试的问题；重试时会移除不适用的 session/thread 请求头，并正确保留加密内容容器。
+- 修复 hosted image tool 与 Codex image generation 命名空间冲突，以及旧 Responses 路径抑制范围过宽的问题。
+- 修复 Windows 托盘右键菜单可能立即关闭、点击时刷新引发回归，以及用量更新后菜单文案未及时刷新的问题（#362）。
+- 修复 Windows 玻璃效果下顶栏徽标文字模糊（#360），以及侧栏 Logo 和选中图标出现白色填充的问题（#361）。
+- 补全模型目录简体中文展示，统计项、筛选器、表头、来源、价格/指令/路由状态及内置模型说明不再混用英文。
+- 修复合并功能后的 release 编译、前端 lint/effect、端到端选择器及 Service 并行测试隔离问题，恢复完整发版验证。
+
+## [0.4.2] - 2026-07-19
+
+### Changed
+
+- 管理员仪表盘的用量指标卡合并展示今日总用量、缓存输入与推理输出用量。
+- 发布版本提升到 `0.4.2`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
+### Fixed
+
+- 修复已清空的请求日志重新出现的问题；计费记录会从操作日志查询中隐藏，同时保留不可变的用量与账单审计数据。
+- 修正聚合 API 的 Responses 连通性探针，改为发送 `input_text` 内容，保留上游错误详情，并在界面中展示测试失败详情。
+- 修复 `codexmanager-web` 的 `/v1/responses` WebSocket 握手被降级为普通 GET 并返回 405 的问题；Web 网关现在会在保留鉴权与 Codex 请求头的同时双向转发 WebSocket 帧，自动接管和首次引导配置也会显式启用 Responses WebSocket。
+- 将 README 的 Star History 远程曲线嵌入替换为仓库内图片，避免曲线无法显示。
+
 ## [0.4.1] - 2026-07-14
 
 ### Changed
@@ -351,7 +410,11 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/qxcnm/Codex-Manager/compare/v0.3.7...v0.3.8

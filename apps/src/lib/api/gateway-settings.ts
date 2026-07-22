@@ -1,3 +1,9 @@
+import type {
+  GatewayTransportPatch,
+  GatewayTransportValues,
+} from "@/types/settings";
+import { normalizeGatewayTransportValues } from "@/lib/gateway/transport-settings";
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -45,13 +51,22 @@ function readStringArrayField(payload: unknown, key: string): string[] {
     : [];
 }
 
-export interface GatewayTransportSettings {
-  sseKeepaliveIntervalMs: number;
-  upstreamStreamTimeoutMs: number;
-  upstreamTotalTimeoutMs: number;
+export interface GatewayTransportResponseMetadata {
   envKeys: string[];
   requiresRestart: boolean;
 }
+
+export type GatewayTransportSettings = GatewayTransportValues &
+  GatewayTransportResponseMetadata;
+
+export type GatewayTransportSettingsPatch = GatewayTransportPatch;
+
+export const GATEWAY_TRANSPORT_ENV_KEYS = [
+  "CODEXMANAGER_SSE_KEEPALIVE_ENABLED",
+  "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS",
+  "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS",
+  "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS",
+] as const;
 
 export interface GatewayUpstreamProxySettings {
   proxyUrl: string;
@@ -100,22 +115,10 @@ const DEFAULT_SERVICE_LISTEN_OPTIONS = ["loopback", "all_interfaces"];
 export function readGatewayTransportSettings(
   payload: unknown
 ): GatewayTransportSettings {
+  const envKeys = readStringArrayField(payload, "envKeys");
   return {
-    sseKeepaliveIntervalMs: readNumberField(payload, "sseKeepaliveIntervalMs", 15_000),
-    upstreamStreamTimeoutMs: readNumberField(
-      payload,
-      "upstreamStreamTimeoutMs",
-      300_000
-    ),
-    upstreamTotalTimeoutMs: readNumberField(payload, "upstreamTotalTimeoutMs", 0),
-    envKeys:
-      readStringArrayField(payload, "envKeys").length > 0
-        ? readStringArrayField(payload, "envKeys")
-        : [
-            "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS",
-            "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS",
-            "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS",
-          ],
+    ...normalizeGatewayTransportValues(payload),
+    envKeys: envKeys.length > 0 ? envKeys : [...GATEWAY_TRANSPORT_ENV_KEYS],
     requiresRestart: readBooleanField(payload, "requiresRestart", false),
   };
 }

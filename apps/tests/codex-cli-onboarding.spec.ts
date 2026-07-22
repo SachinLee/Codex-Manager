@@ -176,6 +176,21 @@ test("Codex CLI guide keeps its panels and footer from overlapping", async ({
     .locator("xpath=ancestor::section[1]");
   const scrollArea = dialog.getByTestId("codex-guide-scroll");
   const footer = dialog.locator('[data-slot="dialog-footer"]');
+  const stepTitles = dialog.getByTestId("codex-guide-step-title");
+
+  await expect(stepTitles).toHaveCount(3);
+  const titleOverflow = await stepTitles.evaluateAll((titles) =>
+    titles.map((title) => ({
+      clientWidth: title.clientWidth,
+      scrollWidth: title.scrollWidth,
+      whiteSpace: window.getComputedStyle(title).whiteSpace,
+    })),
+  );
+  for (const title of titleOverflow) {
+    expect(title.clientWidth).toBeGreaterThan(0);
+    expect(title.scrollWidth).toBeLessThanOrEqual(title.clientWidth + 1);
+    expect(title.whiteSpace).not.toBe("nowrap");
+  }
 
   const [desktopSteps, desktopConfig, desktopScroll, desktopFooter] =
     await Promise.all([

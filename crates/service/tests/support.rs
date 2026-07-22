@@ -26,6 +26,7 @@ pub fn test_env_guard() -> MutexGuard<'static, ()> {
 pub struct EnvGuard {
     key: &'static str,
     original: Option<OsString>,
+    test_db_dir_original: Option<Option<OsString>>,
 }
 
 impl EnvGuard {
@@ -44,7 +45,20 @@ impl EnvGuard {
     pub fn set(key: &'static str, value: &str) -> Self {
         let original = std::env::var_os(key);
         std::env::set_var(key, value);
-        Self { key, original }
+
+        let mut test_db_dir_original = None;
+        if key == "CODEXMANAGER_DB_PATH" {
+            if let Some(parent) = std::path::Path::new(value).parent() {
+                test_db_dir_original = Some(std::env::var_os("CODEXMANAGER_TEST_DB_DIR"));
+                std::env::set_var("CODEXMANAGER_TEST_DB_DIR", parent);
+            }
+        }
+
+        Self {
+            key,
+            original,
+            test_db_dir_original,
+        }
     }
 }
 
@@ -65,6 +79,14 @@ impl Drop for EnvGuard {
             std::env::set_var(self.key, value);
         } else {
             std::env::remove_var(self.key);
+        }
+
+        if let Some(extra) = &self.test_db_dir_original {
+            if let Some(value) = extra {
+                std::env::set_var("CODEXMANAGER_TEST_DB_DIR", value);
+            } else {
+                std::env::remove_var("CODEXMANAGER_TEST_DB_DIR");
+            }
         }
     }
 }

@@ -1,16 +1,12 @@
 use super::{Arc, Mutex, UpstreamResponseUsage};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const DEFAULT_SSE_KEEPALIVE_INTERVAL_MS: u64 = 15_000;
-const ENV_SSE_KEEPALIVE_INTERVAL_MS: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
 const UPSTREAM_SSE_FRAME_CHANNEL_CAPACITY: usize = 128;
 
-static SSE_KEEPALIVE_INTERVAL_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS);
 const STREAM_INCOMPLETE_FALLBACK_MESSAGE: &str = "连接中断（可能是网络波动或客户端主动取消）";
 const STREAM_READ_FAILED_FALLBACK_MESSAGE: &str = "上游中途断开，未返回具体错误信息";
 const STREAM_IDLE_TIMEOUT_FALLBACK_MESSAGE: &str = "上游流式空闲超时";
@@ -54,7 +50,6 @@ pub(super) fn mark_first_response_ms_on_usage(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SseKeepAliveFrame {
     Comment,
-    OpenAIResponses,
     Anthropic,
 }
 
@@ -73,7 +68,6 @@ impl SseKeepAliveFrame {
     pub(crate) fn bytes(self) -> &'static [u8] {
         match self {
             Self::Comment => b": keep-alive\n\n",
-            Self::OpenAIResponses => b"data: {\"type\":\"codexmanager.keepalive\"}\n\n",
             Self::Anthropic => b"event: ping\ndata: {\"type\":\"ping\"}\n\n",
         }
     }
@@ -168,27 +162,6 @@ impl UpstreamSseFramePump {
     }
 }
 
-/// 函数 `reload_from_env`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 无
-pub(super) fn reload_from_env() {
-    SSE_KEEPALIVE_INTERVAL_MS.store(
-        std::env::var(ENV_SSE_KEEPALIVE_INTERVAL_MS)
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS),
-        Ordering::Relaxed,
-    );
-}
-
 /// 函数 `sse_keepalive_interval`
 ///
 /// 作者: gaohongshun
@@ -201,8 +174,7 @@ pub(super) fn reload_from_env() {
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn sse_keepalive_interval() -> Duration {
-    let interval_ms = SSE_KEEPALIVE_INTERVAL_MS.load(Ordering::Relaxed);
-    Duration::from_millis(interval_ms.max(1))
+    Duration::from_millis(crate::gateway::current_sse_keepalive_interval_ms())
 }
 
 pub(super) fn stream_wait_timeout(last_upstream_activity: Instant) -> Duration {
@@ -230,43 +202,8 @@ pub(super) fn stream_idle_timeout_message() -> String {
     STREAM_IDLE_TIMEOUT_FALLBACK_MESSAGE.to_string()
 }
 
-pub(super) fn should_emit_keepalive(saw_upstream_frame: bool) -> bool {
-    saw_upstream_frame
-}
-
-/// 函数 `current_sse_keepalive_interval_ms`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 返回函数执行结果
-pub(super) fn current_sse_keepalive_interval_ms() -> u64 {
-    SSE_KEEPALIVE_INTERVAL_MS.load(Ordering::Relaxed).max(1)
-}
-
-/// 函数 `set_sse_keepalive_interval_ms`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 返回函数执行结果
-pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
-    if interval_ms == 0 {
-        return Err("SSE keepalive interval must be greater than 0".to_string());
-    }
-    SSE_KEEPALIVE_INTERVAL_MS.store(interval_ms, Ordering::Relaxed);
-    std::env::set_var(ENV_SSE_KEEPALIVE_INTERVAL_MS, interval_ms.to_string());
-    Ok(interval_ms)
+pub(super) fn should_emit_keepalive_after_first_frame(saw_upstream_frame: bool) -> bool {
+    crate::gateway::current_sse_keepalive_enabled() && saw_upstream_frame
 }
 
 /// 函数 `mark_collector_terminal_success`

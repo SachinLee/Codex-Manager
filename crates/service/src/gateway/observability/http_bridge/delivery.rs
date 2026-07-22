@@ -2408,18 +2408,6 @@ pub(crate) fn respond_with_stream_upstream(
     }
 }
 
-/// 函数 `resolve_stream_keepalive_frame`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - response_adapter: 参数 response_adapter
-/// - request_path: 参数 request_path
-///
-/// # 返回
-/// 返回函数执行结果
 fn resolve_stream_keepalive_frame(
     response_adapter: ResponseAdapter,
     request_path: &str,
@@ -2444,6 +2432,7 @@ fn resolve_stream_keepalive_frame(
         | ResponseAdapter::GeminiCliSse => SseKeepAliveFrame::Comment,
     }
 }
+
 
 #[cfg(test)]
 #[path = "delivery_tests.rs"]

@@ -1,5 +1,8 @@
 use tiny_http::Request;
 
+const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME: &str =
+    "x-openai-internal-codex-responses-lite";
+
 #[derive(Clone, Default)]
 pub(crate) struct IncomingHeaderSnapshot {
     authorization_present: bool,
@@ -77,7 +80,10 @@ impl IncomingHeaderSnapshot {
                 }
                 continue;
             }
-            if snapshot.session_id.is_none() && name.eq_ignore_ascii_case("session_id") {
+            if snapshot.session_id.is_none()
+                && (name.eq_ignore_ascii_case("session-id")
+                    || name.eq_ignore_ascii_case("session_id"))
+            {
                 if !value.is_empty() {
                     snapshot.session_id = Some(value.to_string());
                 }
@@ -176,7 +182,10 @@ impl IncomingHeaderSnapshot {
                 remember_passthrough_header(&mut snapshot.passthrough_codex_headers, name, value);
                 continue;
             }
-            if snapshot.conversation_id.is_none() && name.eq_ignore_ascii_case("conversation_id") {
+            if snapshot.conversation_id.is_none()
+                && (name.eq_ignore_ascii_case("thread-id")
+                    || name.eq_ignore_ascii_case("conversation_id"))
+            {
                 if !value.is_empty() {
                     snapshot.conversation_id = Some(value.to_string());
                 }
@@ -236,7 +245,9 @@ impl IncomingHeaderSnapshot {
                 }
                 continue;
             }
-            if snapshot.session_id.is_none() && header.field.equiv("session_id") {
+            if snapshot.session_id.is_none()
+                && (header.field.equiv("session-id") || header.field.equiv("session_id"))
+            {
                 let value = header.value.as_str().trim();
                 if !value.is_empty() {
                     snapshot.session_id = Some(value.to_string());
@@ -346,7 +357,9 @@ impl IncomingHeaderSnapshot {
                 }
                 continue;
             }
-            if snapshot.conversation_id.is_none() && header.field.equiv("conversation_id") {
+            if snapshot.conversation_id.is_none()
+                && (header.field.equiv("thread-id") || header.field.equiv("conversation_id"))
+            {
                 let value = header.value.as_str().trim();
                 if !value.is_empty() {
                     snapshot.conversation_id = Some(value.to_string());
@@ -711,10 +724,10 @@ impl IncomingHeaderSnapshot {
 }
 
 fn should_capture_passthrough_codex_header(name: &str) -> bool {
-    // 中文注释：Codex 上游只接受源码里明确构造的那组头；未知 x-codex-* 一律不做透传。
-    // 这里保留入口只是为了让调用点语义清晰，但当前实现不允许任何额外透传头。
-    let _ = name;
-    false
+    // Responses Lite changes the request and response wire shape, so the gateway
+    // must preserve this exact protocol-negotiation header. Other unknown headers
+    // remain blocked.
+    name.eq_ignore_ascii_case(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME)
 }
 
 fn remember_passthrough_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {

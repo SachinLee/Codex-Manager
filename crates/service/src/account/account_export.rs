@@ -1,4 +1,4 @@
-use codexmanager_core::storage::{now_ts, Account, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, AccountAgentIdentity, Storage, Token};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,8 @@ pub(crate) struct ExportAccountFile {
 struct ExportAccountPayload {
     tokens: ExportTokensPayload,
     meta: ExportMetaPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credentials: Option<ExportAgentIdentityPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +45,19 @@ struct ExportTokensPayload {
     id_token: String,
     refresh_token: String,
     account_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportAgentIdentityPayload {
+    auth_mode: String,
+    agent_runtime_id: String,
+    agent_private_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    chatgpt_user_id: String,
+    chatgpt_account_is_fedramp: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,6 +123,7 @@ pub(crate) fn export_accounts_to_directory(
     let accounts = select_accounts_for_export(&storage, selected_account_ids)?;
     let metadata = load_export_metadata(&storage, &accounts)?;
     let tokens = load_export_tokens(&storage, &accounts)?;
+    let agent_identities = load_export_agent_identities(&storage, &accounts)?;
     let total_accounts = accounts.len();
     let mut exported = 0usize;
     let mut skipped_missing_token = 0usize;
@@ -125,7 +141,12 @@ pub(crate) fn export_accounts_to_directory(
 
                 let file_path =
                     build_account_export_file_path(&output_path, &account, &mut file_name_counter);
-                let json = build_account_export_json(&account, token, metadata.get(&account.id))?;
+                let json = build_account_export_json(
+                    &account,
+                    token,
+                    metadata.get(&account.id),
+                    agent_identities.get(&account.id),
+                )?;
                 std::fs::write(&file_path, json).map_err(|err| {
                     format!("write export file failed ({}): {err}", file_path.display())
                 })?;
@@ -135,7 +156,8 @@ pub(crate) fn export_accounts_to_directory(
             }
         }
         AccountExportMode::SingleJson => {
-            let bundle = build_single_export_bundle_json(&accounts, &tokens, &metadata)?;
+            let bundle =
+                build_single_export_bundle_json(&accounts, &tokens, &metadata, &agent_identities)?;
             exported = bundle.exported;
             skipped_missing_token = bundle.skipped_missing_token;
             if let Some(content) = bundle.content {
@@ -177,6 +199,7 @@ pub(crate) fn export_accounts_data(
     let accounts = select_accounts_for_export(&storage, selected_account_ids)?;
     let metadata = load_export_metadata(&storage, &accounts)?;
     let tokens = load_export_tokens(&storage, &accounts)?;
+    let agent_identities = load_export_agent_identities(&storage, &accounts)?;
     let total_accounts = accounts.len();
     let mut exported = 0usize;
     let mut skipped_missing_token = 0usize;
@@ -198,7 +221,12 @@ pub(crate) fn export_accounts_data(
                     .and_then(|value| value.to_str())
                     .map(str::to_string)
                     .ok_or_else(|| "build export file name failed".to_string())?;
-                let json = build_account_export_json(&account, token, metadata.get(&account.id))?;
+                let json = build_account_export_json(
+                    &account,
+                    token,
+                    metadata.get(&account.id),
+                    agent_identities.get(&account.id),
+                )?;
                 let content = String::from_utf8(json)
                     .map_err(|err| format!("encode export utf8 failed: {err}"))?;
                 files.push(ExportAccountFile { file_name, content });
@@ -206,7 +234,8 @@ pub(crate) fn export_accounts_data(
             }
         }
         AccountExportMode::SingleJson => {
-            let bundle = build_single_export_bundle_json(&accounts, &tokens, &metadata)?;
+            let bundle =
+                build_single_export_bundle_json(&accounts, &tokens, &metadata, &agent_identities)?;
             exported = bundle.exported;
             skipped_missing_token = bundle.skipped_missing_token;
             if let Some(content) = bundle.content {
@@ -237,6 +266,7 @@ fn build_single_export_bundle_json(
     accounts: &[Account],
     tokens: &HashMap<String, Token>,
     metadata: &HashMap<String, codexmanager_core::storage::AccountMetadata>,
+    agent_identities: &HashMap<String, AccountAgentIdentity>,
 ) -> Result<SingleExportBundleResult, String> {
     let mut exported = 0usize;
     let mut skipped_missing_token = 0usize;
@@ -252,6 +282,7 @@ fn build_single_export_bundle_json(
             account,
             token,
             metadata.get(&account.id),
+            agent_identities.get(&account.id),
         ));
         exported += 1;
     }
@@ -334,6 +365,22 @@ fn load_export_metadata(
         })
 }
 
+fn load_export_agent_identities(
+    storage: &Storage,
+    accounts: &[Account],
+) -> Result<HashMap<String, AccountAgentIdentity>, String> {
+    let mut identities = HashMap::new();
+    for account in accounts {
+        if let Some(identity) = storage
+            .find_account_agent_identity(&account.id)
+            .map_err(|err| err.to_string())?
+        {
+            identities.insert(account.id.clone(), identity);
+        }
+    }
+    Ok(identities)
+}
+
 /// 函数 `build_account_export_file_path`
 ///
 /// 作者: gaohongshun
@@ -393,15 +440,22 @@ fn build_account_export_json(
     account: &Account,
     token: &Token,
     metadata: Option<&codexmanager_core::storage::AccountMetadata>,
+    agent_identity: Option<&AccountAgentIdentity>,
 ) -> Result<Vec<u8>, String> {
-    serde_json::to_vec_pretty(&build_account_export_payload(account, token, metadata))
-        .map_err(|err| format!("encode export json failed: {err}"))
+    serde_json::to_vec_pretty(&build_account_export_payload(
+        account,
+        token,
+        metadata,
+        agent_identity,
+    ))
+    .map_err(|err| format!("encode export json failed: {err}"))
 }
 
 fn build_account_export_payload(
     account: &Account,
     token: &Token,
     metadata: Option<&codexmanager_core::storage::AccountMetadata>,
+    agent_identity: Option<&AccountAgentIdentity>,
 ) -> ExportAccountPayload {
     ExportAccountPayload {
         tokens: ExportTokensPayload {
@@ -420,6 +474,15 @@ fn build_account_export_payload(
             chatgpt_account_id: account.chatgpt_account_id.clone(),
             exported_at: now_ts(),
         },
+        credentials: agent_identity.map(|identity| ExportAgentIdentityPayload {
+            auth_mode: identity.auth_mode.clone(),
+            agent_runtime_id: identity.agent_runtime_id.clone(),
+            agent_private_key: identity.agent_private_key.clone(),
+            task_id: identity.task_id.clone(),
+            chatgpt_user_id: identity.chatgpt_user_id.clone(),
+            chatgpt_account_is_fedramp: identity.chatgpt_account_is_fedramp,
+            workspace_id: identity.workspace_id.clone(),
+        }),
     }
 }
 

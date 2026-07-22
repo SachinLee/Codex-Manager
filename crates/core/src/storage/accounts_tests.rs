@@ -145,7 +145,7 @@ fn upsert_imported_account_bundle_merges_metadata_and_token_in_one_call() {
     token.refresh_token = "imported-refresh".to_string();
 
     storage
-        .upsert_imported_account_bundle(&updated, None, Some("new tag"), &token)
+        .upsert_imported_account_bundle(&updated, None, Some("new tag"), &token, None)
         .expect("upsert imported bundle");
 
     let found = storage
@@ -176,7 +176,7 @@ fn upsert_imported_account_bundle_rejects_mismatched_token_without_writing_accou
     let token = sample_token("acc-import-other", now);
 
     assert!(storage
-        .upsert_imported_account_bundle(&account, Some("note"), Some("tag"), &token)
+        .upsert_imported_account_bundle(&account, Some("note"), Some("tag"), &token, None)
         .is_err());
     assert!(storage
         .find_account_by_id(&account.id)
@@ -1655,6 +1655,9 @@ fn list_account_usage_refresh_token_targets_filters_blocked_latest_status_in_sql
     blocked.sort = 3;
     let mut no_access = sample_account("acc-no-access-token-target", "active", now);
     no_access.sort = 4;
+    let mut agent_identity = sample_account("acc-agent-identity-token-target", "active", now);
+    agent_identity.sort = 5;
+    agent_identity.workspace_id = Some("ws-agent-identity".to_string());
     let disabled = sample_account("acc-disabled-token-target", "disabled", now);
 
     for account in [
@@ -1663,6 +1666,7 @@ fn list_account_usage_refresh_token_targets_filters_blocked_latest_status_in_sql
         &region_blocked,
         &blocked,
         &no_access,
+        &agent_identity,
         &disabled,
     ] {
         storage.insert_account(account).expect("insert account");
@@ -1678,6 +1682,28 @@ fn list_account_usage_refresh_token_targets_filters_blocked_latest_status_in_sql
             ..sample_token(no_access.id.as_str(), now)
         })
         .expect("insert no access token");
+    storage
+        .insert_token(&Token {
+            id_token: String::new(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            ..sample_token(agent_identity.id.as_str(), now)
+        })
+        .expect("insert empty agent identity token");
+    storage
+        .upsert_account_agent_identity(&AccountAgentIdentity {
+            account_id: agent_identity.id.clone(),
+            agent_runtime_id: "agent-runtime-1".to_string(),
+            agent_private_key: "private-key-1".to_string(),
+            task_id: None,
+            chatgpt_user_id: "user-1".to_string(),
+            chatgpt_account_is_fedramp: false,
+            auth_mode: "agentIdentity".to_string(),
+            workspace_id: Some("ws-agent-identity".to_string()),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert agent identity");
 
     storage
         .insert_event(&Event {
@@ -1728,6 +1754,7 @@ fn list_account_usage_refresh_token_targets_filters_blocked_latest_status_in_sql
             "acc-recovered-token-target",
             "acc-ready-token-target",
             "acc-region-blocked-token-target",
+            "acc-agent-identity-token-target",
         ]
     );
     assert_eq!(targets[0].workspace_id.as_deref(), Some("ws-recovered"));
@@ -1738,6 +1765,12 @@ fn list_account_usage_refresh_token_targets_filters_blocked_latest_status_in_sql
         targets[2].token.account_id,
         "acc-region-blocked-token-target"
     );
+    assert_eq!(
+        targets[3].workspace_id.as_deref(),
+        Some("ws-agent-identity")
+    );
+    assert!(targets[3].token.access_token.is_empty());
+    assert!(targets[3].token.refresh_token.is_empty());
 }
 
 #[test]
@@ -1758,6 +1791,42 @@ fn usage_refresh_token_targets_scope_latest_status_to_target_accounts() {
         plan.contains("idx_events_account_status_lookup"),
         "expected scoped latest status lookup to use event account status index, got {plan}"
     );
+}
+
+#[test]
+fn usage_refresh_token_targets_ignore_non_agent_identity_auth_mode() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let now = now_ts();
+    let account = sample_account("acc-non-agent-identity-target", "active", now);
+    storage.insert_account(&account).expect("insert account");
+    storage
+        .insert_token(&Token {
+            id_token: String::new(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            ..sample_token(&account.id, now)
+        })
+        .expect("insert empty token");
+    storage
+        .upsert_account_agent_identity(&AccountAgentIdentity {
+            account_id: account.id.clone(),
+            agent_runtime_id: "agent-runtime-1".to_string(),
+            agent_private_key: "private-key-1".to_string(),
+            task_id: None,
+            chatgpt_user_id: "user-1".to_string(),
+            chatgpt_account_is_fedramp: false,
+            auth_mode: "oauth".to_string(),
+            workspace_id: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert non-agent identity row");
+
+    let targets = storage
+        .list_account_usage_refresh_token_targets_by_statuses(&["active".to_string()])
+        .expect("list usage refresh targets");
+    assert!(targets.is_empty());
 }
 
 #[test]

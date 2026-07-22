@@ -4,7 +4,10 @@ pub(crate) mod instructions;
 use codexmanager_core::rpc::types::{
     ModelInfo, ModelReasoningLevel, ModelServiceTier, ModelTruncationPolicy, ModelsResponse,
 };
-use codexmanager_core::storage::{ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats};
+use codexmanager_core::storage::{
+    ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
+    ManagedModelV2Upsert, ModelCatalogV2Stats,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -52,9 +55,33 @@ pub(crate) fn get(slug: &str) -> Result<ManagedModelV2, String> {
 pub(crate) fn upsert(input: ManagedModelV2Upsert) -> Result<ManagedModelV2, String> {
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    storage
+    let model = storage
         .upsert_managed_model_v2(&input)
-        .map_err(|err| format!("save managed model V2 failed: {err}"))
+        .map_err(|err| format!("save managed model V2 failed: {err}"))?;
+    sync_active_gateway_catalog_best_effort(&storage);
+    Ok(model)
+}
+
+pub(crate) fn update_state(input: ManagedModelStateV2Update) -> Result<ManagedModelV2, String> {
+    let storage =
+        crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let model = storage
+        .update_managed_model_state_v2(&input)
+        .map_err(|err| format!("update managed model V2 state failed: {err}"))?;
+    sync_active_gateway_catalog_best_effort(&storage);
+    Ok(model)
+}
+
+pub(crate) fn batch_update_state(
+    input: ManagedModelBatchStateV2Update,
+) -> Result<Vec<ManagedModelV2>, String> {
+    let storage =
+        crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let models = storage
+        .update_managed_models_state_v2(&input)
+        .map_err(|err| format!("batch update managed model V2 state failed: {err}"))?;
+    sync_active_gateway_catalog_best_effort(&storage);
+    Ok(models)
 }
 
 pub(crate) fn delete(slug: &str) -> Result<(), String> {
@@ -62,11 +89,54 @@ pub(crate) fn delete(slug: &str) -> Result<(), String> {
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     storage
         .delete_managed_model_v2(slug)
-        .map_err(|err| format!("delete managed model V2 failed: {err}"))
+        .map_err(|err| format!("delete managed model V2 failed: {err}"))?;
+    sync_active_gateway_catalog_best_effort(&storage);
+    Ok(())
+}
+
+pub(super) fn sync_active_gateway_catalog_best_effort(
+    storage: &codexmanager_core::storage::Storage,
+) {
+    if let Err(err) = crate::codex_profile::sync_active_gateway_model_catalog_from_storage(storage)
+    {
+        log::warn!("event=sync_active_gateway_model_catalog_failed error={err}");
+    }
 }
 
 fn capability<'a>(model: &'a ManagedModelV2, keys: &[&str]) -> Option<&'a Value> {
     keys.iter().find_map(|key| model.capabilities.get(*key))
+}
+
+pub(crate) fn supports_text_generation(model: &ManagedModelV2) -> bool {
+    capability(
+        model,
+        &["supports_text_generation", "supportsTextGeneration"],
+    )
+    .and_then(Value::as_bool)
+    .unwrap_or(true)
+}
+
+pub(crate) fn ensure_text_generation_model(
+    storage: &codexmanager_core::storage::Storage,
+    slug: Option<&str>,
+) -> Result<(), String> {
+    let Some(slug) = slug.map(str::trim).filter(|slug| !slug.is_empty()) else {
+        return Ok(());
+    };
+    let Some(model) = storage
+        .get_managed_model_v2(slug)
+        .map_err(|err| format!("read managed model V2 failed: {err}"))?
+    else {
+        // Preserve existing behavior for external or not-yet-cataloged model slugs.
+        return Ok(());
+    };
+    if supports_text_generation(&model) {
+        return Ok(());
+    }
+    Err(format!(
+        "图片专用模型不能作为文本主模型(image-only model cannot be used as a text-generation primary model): {}",
+        model.slug
+    ))
 }
 
 pub(crate) fn model_info(model: &ManagedModelV2) -> ModelInfo {
@@ -106,6 +176,22 @@ pub(crate) fn model_info(model: &ManagedModelV2) -> ModelInfo {
             limit,
             ..Default::default()
         });
+    let output_modalities = string_list(&["output_modalities", "outputModalities"]);
+    let supported_endpoints = string_list(&["supported_endpoints", "supportedEndpoints"]);
+    let extra = std::collections::BTreeMap::from([
+        (
+            "output_modalities".to_string(),
+            serde_json::json!(output_modalities),
+        ),
+        (
+            "supported_endpoints".to_string(),
+            serde_json::json!(supported_endpoints),
+        ),
+        (
+            "supports_text_generation".to_string(),
+            serde_json::json!(supports_text_generation(model)),
+        ),
+    ]);
     ModelInfo {
         slug: model.slug.clone(),
         display_name: model.display_name.clone(),
@@ -156,6 +242,7 @@ pub(crate) fn model_info(model: &ManagedModelV2) -> ModelInfo {
         input_modalities: string_list(&["input_modalities", "inputModalities"]),
         supports_search_tool: capability(model, &["supports_search_tool", "supportsSearchTool"])
             .and_then(Value::as_bool),
+        extra,
         ..Default::default()
     }
 }
@@ -172,4 +259,65 @@ pub(crate) fn models_response_with_storage(
             .collect(),
         extra: Default::default(),
     })
+}
+
+pub(crate) fn text_generation_models_response_with_storage(
+    storage: &codexmanager_core::storage::Storage,
+) -> Result<ModelsResponse, String> {
+    Ok(ModelsResponse {
+        models: storage
+            .list_api_models_v2()
+            .map_err(|err| format!("list API models V2 failed: {err}"))?
+            .iter()
+            .filter(|model| supports_text_generation(model))
+            .map(model_info)
+            .collect(),
+        extra: Default::default(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codexmanager_core::storage::Storage;
+
+    #[test]
+    fn image_model_is_exposed_with_capabilities_but_excluded_from_text_catalog() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+
+        let all = models_response_with_storage(&storage).expect("full models response");
+        let image = all
+            .models
+            .iter()
+            .find(|model| model.slug == "gpt-image-2")
+            .expect("image model");
+        assert_eq!(image.input_modalities, ["text", "image"]);
+        assert_eq!(
+            image.extra["output_modalities"],
+            serde_json::json!(["image"])
+        );
+        assert_eq!(
+            image.extra["supported_endpoints"],
+            serde_json::json!(["/v1/images/generations", "/v1/images/edits"])
+        );
+        assert_eq!(image.extra["supports_text_generation"], false);
+
+        let text = text_generation_models_response_with_storage(&storage)
+            .expect("text generation models response");
+        assert!(!text.models.iter().any(|model| model.slug == "gpt-image-2"));
+        assert_eq!(text.models.len() + 1, all.models.len());
+    }
+
+    #[test]
+    fn text_generation_validation_rejects_known_image_model_only() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+
+        assert!(ensure_text_generation_model(&storage, Some("gpt-5.4")).is_ok());
+        assert!(ensure_text_generation_model(&storage, Some("external-model")).is_ok());
+        let error = ensure_text_generation_model(&storage, Some("gpt-image-2"))
+            .expect_err("image model must be rejected");
+        assert!(error.contains("image-only model"));
+    }
 }

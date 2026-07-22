@@ -112,7 +112,7 @@ proxy_send_timeout 3600s;
 send_timeout 3600s;
 ```
 
-Текущий `docker/nginx/nginx.conf` уже содержит блок `location ^~ /v1/images/` и может использоваться как базовая конфигурация для image generation.
+Текущий `docker/nginx/nginx.conf` уже содержит блок `location ^~ /v1/images/` как для прямого service, так и для Web proxy, поэтому оба публичных входа могут использоваться как базовая конфигурация image generation. Для точного маршрута `/v1/responses` на Web-входе также задан тайм-аут 3600 секунд, чтобы поддержать нестриминговые вызовы инструмента `image_generation`.
 
 ## Рекомендуемый пример конфигурации
 

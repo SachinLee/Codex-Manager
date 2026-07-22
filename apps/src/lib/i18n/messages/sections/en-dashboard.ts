@@ -25,6 +25,18 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
   "区间输入 / 输出": "Range input / output",
   "启用 / 全部": "Enabled / total",
   图表区域支持鼠标滚轮缩放: "Use the mouse wheel over the chart to zoom",
+  时间粒度: "Time granularity",
+  指标: "Metric",
+  按天: "Daily",
+  按小时: "Hourly",
+  请求数: "Requests",
+  模型曲线: "Model series",
+  模型用量趋势图: "Model usage trend chart",
+  暂无模型用量数据: "No model usage data yet",
+  "滚轮缩放时间区间，点击模型切换曲线":
+    "Scroll to zoom the time range; select models to toggle their series",
+  "小时曲线最多支持 31 天区间":
+    "Hourly series are available for ranges up to 31 days",
   "已按排序权重展示前 {visible} 个，共 {total} 个模型；完整列表在模型管理页。":
     "Showing the first {visible} of {total} models by sort weight. The full list is on the model management page.",
   应用: "Apply",
@@ -42,6 +54,8 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
     "Summarize token usage by day, member, OpenAI account, and aggregate API.",
   "按天汇总 token、费用和请求量":
     "Summarize tokens, cost, and request volume by day.",
+  "按模型查看 token 和请求趋势，支持小时粒度":
+    "Compare token and request trends by model, with hourly granularity.",
   按模型管理中的排序权重展示: "Shown by model management sort weight",
   "按模型管理排序展示前 8 个": "Top 8 by model management order",
   无钱包: "No wallet",

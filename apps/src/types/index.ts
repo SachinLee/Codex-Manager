@@ -6,6 +6,7 @@ export * from "@/types/dashboard";
 export * from "@/types/model";
 export * from "@/types/model-v2";
 export * from "@/types/plugin";
+export * from "@/types/proxy-profile";
 export * from "@/types/request-log";
 export * from "@/types/quota";
 export * from "@/types/runtime";

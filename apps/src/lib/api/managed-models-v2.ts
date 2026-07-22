@@ -1,7 +1,9 @@
 import type {
+  ManagedModelBatchStateV2Update,
   ManagedModelImportPreviewV2Result,
   ManagedModelImportV2Params,
   ManagedModelListV2Result,
+  ManagedModelStateV2Update,
   ManagedModelV2,
   ManagedModelV2Upsert,
 } from "@/types/model-v2";
@@ -31,6 +33,22 @@ export const managedModelsV2Client = {
   upsert(input: ManagedModelV2Upsert): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_upsert_v2",
+      withAddr({ payload: input }),
+    );
+  },
+
+  updateState(input: ManagedModelStateV2Update): Promise<ManagedModelV2> {
+    return invoke<ManagedModelV2>(
+      "service_managed_model_update_state_v2",
+      withAddr({ payload: input }),
+    );
+  },
+
+  updateStates(
+    input: ManagedModelBatchStateV2Update,
+  ): Promise<ManagedModelV2[]> {
+    return invoke<ManagedModelV2[]>(
+      "service_managed_model_batch_update_state_v2",
       withAddr({ payload: input }),
     );
   },
@@ -198,6 +216,18 @@ export function managedModelV2ToModelInfo(model: ManagedModelV2): ModelInfo {
     inputModalities: stringList(
       capability(model, "inputModalities", "input_modalities"),
     ),
+    outputModalities: stringList(
+      capability(model, "outputModalities", "output_modalities"),
+    ),
+    supportedEndpoints: stringList(
+      capability(model, "supportedEndpoints", "supported_endpoints"),
+    ),
+    supportsTextGeneration: booleanCapability(
+      model,
+      true,
+      "supportsTextGeneration",
+      "supports_text_generation",
+    ),
     minimalClientVersion:
       capability(model, "minimalClientVersion", "minimal_client_version") ?? null,
     supportsSearchTool: booleanCapability(
@@ -234,6 +264,12 @@ export function serializeManagedModelV2ForCodexCache(
   );
   const inputModalities = stringList(
     capability(model, "inputModalities", "input_modalities"),
+  );
+  const outputModalities = stringList(
+    capability(model, "outputModalities", "output_modalities"),
+  );
+  const supportedEndpoints = stringList(
+    capability(model, "supportedEndpoints", "supported_endpoints"),
   );
   const additionalSpeedTiers = stringList(
     capability(model, "additionalSpeedTiers", "additional_speed_tiers"),
@@ -336,6 +372,14 @@ export function serializeManagedModelV2ForCodexCache(
     ),
     experimental_supported_tools: experimentalSupportedTools,
     input_modalities: inputModalities.length > 0 ? inputModalities : ["text", "image"],
+    output_modalities: outputModalities,
+    supported_endpoints: supportedEndpoints,
+    supports_text_generation: booleanCapability(
+      model,
+      true,
+      "supportsTextGeneration",
+      "supports_text_generation",
+    ),
     supports_search_tool: booleanCapability(
       model,
       false,
@@ -374,7 +418,15 @@ export function serializeManagedModelsV2ForCodexCache(
   return [...models]
     .filter(
       (model) =>
-        model.enabled && model.supportedInApi && model.visibility === "list",
+        model.enabled &&
+        model.supportedInApi &&
+        model.visibility === "list" &&
+        booleanCapability(
+          model,
+          true,
+          "supportsTextGeneration",
+          "supports_text_generation",
+        ),
     )
     .sort(
       (left, right) =>

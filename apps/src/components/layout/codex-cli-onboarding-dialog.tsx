@@ -89,6 +89,10 @@ const GUIDE_CONFIG_LINES = [
     comment: "使用 Responses 协议",
     line: 'wire_api = "responses"',
   },
+  {
+    comment: "启用 Responses WebSocket",
+    line: "supports_websockets = true",
+  },
 ] as const;
 export function CodexCliOnboardingDialog({
   open,
@@ -272,7 +276,7 @@ export function CodexCliOnboardingDialog({
                         variant="outline"
                         onClick={() => setCurrentStep(index)}
                         className={cn(
-                          "h-auto min-w-0 flex-col items-start justify-start gap-0 rounded-md px-3 py-2.5 text-left transition-colors",
+                          "codex-guide-step-button h-auto min-w-0 flex-col items-start justify-start gap-0 overflow-hidden rounded-md px-3 py-2.5 text-left whitespace-normal transition-colors",
                           index === currentStep
                             ? "border-primary/30 bg-primary/10 text-foreground shadow-sm"
                             : "border-border/60 bg-background/70 text-muted-foreground hover:bg-accent/50",
@@ -281,7 +285,10 @@ export function CodexCliOnboardingDialog({
                         <div className="text-xs font-semibold">
                           {t("步骤 {step}", { step: index + 1 })}
                         </div>
-                        <div className="mt-1 line-clamp-2 text-sm font-medium leading-6">
+                        <div
+                          data-testid="codex-guide-step-title"
+                          className="mt-1 line-clamp-2 w-full min-w-0 break-words text-left text-sm leading-6 font-medium whitespace-normal"
+                        >
                           {t(step.title)}
                         </div>
                       </Button>

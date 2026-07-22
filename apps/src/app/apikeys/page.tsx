@@ -810,7 +810,7 @@ export default function ApiKeysPage() {
                       <TableCell className="text-xs text-muted-foreground">
                         {formatLocalMinuteFromSeconds(key.lastUsedAt, t("从未调用"))}
                       </TableCell>
-                      <TableCell className="font-mono text-xs">
+                      <TableCell className="text-xs tabular-nums">
                         <div className="space-y-1.5">
                           <div>
                             <div className="text-[10px] font-normal text-muted-foreground">

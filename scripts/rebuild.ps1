@@ -11,6 +11,10 @@ param(
   [string]$WorkflowFile = "release-all.yml",
   [string]$GitRef,
   [string]$ReleaseTag,
+  [ValidateSet("build-and-publish", "build-artifacts", "publish-artifacts")]
+  [string]$ReleaseMode = "build-and-publish",
+  [string]$ArtifactsRunId,
+  [bool]$PublishContainers = $true,
   [ValidateSet("auto", "true", "false")]
   [string]$Prerelease = "auto",
   [bool]$DownloadArtifacts = $true,
@@ -349,6 +353,9 @@ function Invoke-AllPlatformBuild {
   if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
     throw "release tag required for -AllPlatforms. Pass -ReleaseTag (e.g. v0.0.6)."
   }
+  if ($ReleaseMode -eq "publish-artifacts" -and [string]::IsNullOrWhiteSpace($ArtifactsRunId)) {
+    throw "ArtifactsRunId is required when -ReleaseMode publish-artifacts is used."
+  }
 
   # Map legacy workflow names to the single release entry for backward compatibility.
   $workflowAlias = @{
@@ -376,15 +383,18 @@ function Invoke-AllPlatformBuild {
   $dispatchBody = @{
     ref = $GitRef
     inputs = @{
-      tag        = $ReleaseTag
-      ref        = $GitRef
-      prerelease = $prereleaseInput
+      mode               = $ReleaseMode
+      tag                = $ReleaseTag
+      ref                = $GitRef
+      prerelease         = $prereleaseInput
+      artifacts_run_id   = if ($ArtifactsRunId) { $ArtifactsRunId } else { "" }
+      publish_containers = if ($PublishContainers) { "true" } else { "false" }
     }
   }
 
   if ($DryRun) {
     Write-Step "DRY RUN: using workflow .github/workflows/$WorkflowFile"
-    Write-Step "DRY RUN: dispatch workflow $WorkflowFile on ref=$GitRef tag=$ReleaseTag prerelease=$prereleaseInput"
+    Write-Step "DRY RUN: dispatch workflow $WorkflowFile on ref=$GitRef tag=$ReleaseTag mode=$ReleaseMode prerelease=$prereleaseInput artifacts_run_id=$ArtifactsRunId publish_containers=$PublishContainers"
     Write-Step "DRY RUN: resolved target sha $resolvedSha"
     Write-Step "DRY RUN: POST $dispatchUri"
     Write-Step "DRY RUN: payload $($dispatchBody | ConvertTo-Json -Depth 10 -Compress)"
@@ -396,7 +406,7 @@ function Invoke-AllPlatformBuild {
 
   $workflow = Resolve-WorkflowDefinition -Repo $repo -Token $token -WorkflowFile $WorkflowFile
   Write-Step "using workflow: $($workflow.path)"
-  Write-Step "dispatching workflow: $WorkflowFile (ref=$GitRef tag=$ReleaseTag prerelease=$prereleaseInput)"
+  Write-Step "dispatching workflow: $WorkflowFile (ref=$GitRef tag=$ReleaseTag mode=$ReleaseMode prerelease=$prereleaseInput artifacts_run_id=$ArtifactsRunId publish_containers=$PublishContainers)"
   Invoke-GitHubApi -Method POST -Uri $dispatchUri -Token $token -Body $dispatchBody | Out-Null
 
   $deadline = (Get-Date).ToUniversalTime().AddMinutes($TimeoutMin)
@@ -439,6 +449,10 @@ function Invoke-AllPlatformBuild {
 
   if (-not $DownloadArtifacts) {
     Write-Step "workflow succeeded"
+    return
+  }
+  if ($ReleaseMode -eq "publish-artifacts") {
+    Write-Step "workflow succeeded; publish-artifacts mode reused artifacts from run $ArtifactsRunId and does not upload new artifacts"
     return
   }
 

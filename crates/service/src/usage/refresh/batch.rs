@@ -10,23 +10,13 @@ use crate::usage_account_meta::build_workspace_map_from_accounts;
 
 use super::{
     notify_usage_refresh_completed, open_storage, record_usage_refresh_failure,
-    record_usage_refresh_metrics, refresh_usage_for_token, DEFAULT_USAGE_POLL_BATCH_LIMIT,
-    DEFAULT_USAGE_POLL_CYCLE_BUDGET_SECS, ENV_USAGE_POLL_BATCH_LIMIT,
-    ENV_USAGE_POLL_CYCLE_BUDGET_SECS, USAGE_POLL_CURSOR, USAGE_REFRESH_WORKERS,
+    record_usage_refresh_metrics, refresh_usage_for_token, UsageRefreshRunResult,
+    DEFAULT_USAGE_POLL_BATCH_LIMIT, DEFAULT_USAGE_POLL_CYCLE_BUDGET_SECS,
+    ENV_USAGE_POLL_BATCH_LIMIT, ENV_USAGE_POLL_CYCLE_BUDGET_SECS, USAGE_POLL_CURSOR,
+    USAGE_REFRESH_WORKERS,
 };
 
-/// 函数 `refresh_usage_for_all_accounts`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 返回函数执行结果
-pub(crate) fn refresh_usage_for_all_accounts() -> Result<(), String> {
+pub(crate) fn refresh_usage_for_all_accounts_result() -> Result<UsageRefreshRunResult, String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
     let tasks = build_usage_refresh_tasks(
@@ -35,12 +25,26 @@ pub(crate) fn refresh_usage_for_all_accounts() -> Result<(), String> {
         &load_banned_account_ids(&storage, &accounts)?,
     );
     if tasks.is_empty() {
-        return Ok(());
+        return Ok(UsageRefreshRunResult {
+            ok: false,
+            source: "manual_all",
+            account_id: None,
+            processed: 0,
+            total: 0,
+            message: Some("no refreshable accounts found".to_string()),
+        });
     }
     let total = tasks.len();
     let processed = run_usage_refresh_tasks(tasks)?;
     notify_usage_refresh_completed("manual_all", processed, total);
-    Ok(())
+    Ok(UsageRefreshRunResult {
+        ok: processed > 0,
+        source: "manual_all",
+        account_id: None,
+        processed,
+        total,
+        message: None,
+    })
 }
 
 /// 函数 `refresh_usage_for_polling_batch`

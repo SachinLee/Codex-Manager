@@ -5,10 +5,22 @@ use super::tray_state::{
     effective_close_to_tray_requested, sync_window_runtime_state_from_settings, tray_available,
 };
 
-fn sync_auto_start_runtime_state_from_settings(
-    app: &tauri::AppHandle,
-    settings: &mut serde_json::Value,
-) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoStartSyncAction {
+    None,
+    Enable,
+    Disable,
+}
+
+fn auto_start_sync_action(configured: bool, runtime_enabled: bool) -> AutoStartSyncAction {
+    match (configured, runtime_enabled) {
+        (true, false) => AutoStartSyncAction::Enable,
+        (false, true) => AutoStartSyncAction::Disable,
+        _ => AutoStartSyncAction::None,
+    }
+}
+
+fn annotate_auto_start_settings(app: &tauri::AppHandle, settings: &mut serde_json::Value) {
     let result = app.autolaunch().is_enabled();
     if let Err(err) = &result {
         log::warn!("read autostart state failed: {}", err);
@@ -19,9 +31,7 @@ fn sync_auto_start_runtime_state_from_settings(
     object.insert("autoStartSupported".to_string(), result.is_ok().into());
     object.insert(
         "autoStartEnabled".to_string(),
-        result
-            .unwrap_or_else(|_| codexmanager_service::current_auto_start_enabled_setting())
-            .into(),
+        codexmanager_service::current_auto_start_enabled_setting().into(),
     );
 }
 
@@ -37,6 +47,22 @@ fn set_auto_start_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), S
             .map_err(|err| format!("disable autostart failed: {err}"))?;
     }
     Ok(())
+}
+
+pub(crate) fn sync_auto_start_runtime_state_from_settings(
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    let configured = codexmanager_service::current_auto_start_enabled_setting();
+    let runtime_enabled = app
+        .autolaunch()
+        .is_enabled()
+        .map_err(|err| format!("read autostart state failed: {err}"))?;
+
+    match auto_start_sync_action(configured, runtime_enabled) {
+        AutoStartSyncAction::None => Ok(()),
+        AutoStartSyncAction::Enable => set_auto_start_enabled(app, true),
+        AutoStartSyncAction::Disable => set_auto_start_enabled(app, false),
+    }
 }
 
 /// 函数 `app_close_to_tray_on_close_get`
@@ -106,7 +132,7 @@ pub async fn app_settings_get(app: tauri::AppHandle) -> Result<serde_json::Value
     .await
     .map_err(|err| format!("app_settings_get task failed: {err}"))??;
     sync_window_runtime_state_from_settings(&mut settings);
-    sync_auto_start_runtime_state_from_settings(&app, &mut settings);
+    annotate_auto_start_settings(&app, &mut settings);
     Ok(settings)
 }
 
@@ -128,7 +154,10 @@ pub async fn app_settings_set(
     patch: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     apply_runtime_storage_env(&app);
-    if let Some(enabled) = patch.get("autoStartEnabled").and_then(serde_json::Value::as_bool) {
+    if let Some(enabled) = patch
+        .get("autoStartEnabled")
+        .and_then(serde_json::Value::as_bool)
+    {
         set_auto_start_enabled(&app, enabled)?;
     }
     let mut settings = tauri::async_runtime::spawn_blocking(move || {
@@ -137,6 +166,39 @@ pub async fn app_settings_set(
     .await
     .map_err(|err| format!("app_settings_set task failed: {err}"))??;
     sync_window_runtime_state_from_settings(&mut settings);
-    sync_auto_start_runtime_state_from_settings(&app, &mut settings);
+    annotate_auto_start_settings(&app, &mut settings);
     Ok(settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{auto_start_sync_action, AutoStartSyncAction};
+
+    #[test]
+    fn auto_start_sync_enables_missing_runtime_entry_when_configured() {
+        assert_eq!(
+            auto_start_sync_action(true, false),
+            AutoStartSyncAction::Enable
+        );
+    }
+
+    #[test]
+    fn auto_start_sync_disables_unconfigured_runtime_entry() {
+        assert_eq!(
+            auto_start_sync_action(false, true),
+            AutoStartSyncAction::Disable
+        );
+    }
+
+    #[test]
+    fn auto_start_sync_keeps_matching_runtime_state() {
+        assert_eq!(
+            auto_start_sync_action(true, true),
+            AutoStartSyncAction::None
+        );
+        assert_eq!(
+            auto_start_sync_action(false, false),
+            AutoStartSyncAction::None
+        );
+    }
 }

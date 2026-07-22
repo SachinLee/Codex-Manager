@@ -371,19 +371,45 @@ fn is_openai_text_generation_path(normalized_path: &str) -> bool {
         || normalized_path.starts_with("/v1/responses")
 }
 
-fn ensure_codex_image_tool_model_not_used_for_text_request(
+fn ensure_non_text_model_not_used_for_text_request(
+    storage: &codexmanager_core::storage::Storage,
     normalized_path: &str,
     model: Option<&str>,
 ) -> Result<(), LocalValidationError> {
-    if !is_openai_text_generation_path(normalized_path) || !is_codex_image_tool_model(model) {
+    if !is_openai_text_generation_path(normalized_path) {
+        return Ok(());
+    }
+
+    let Some(model_slug) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+
+    if is_codex_image_tool_model(Some(model_slug)) {
+        return Err(LocalValidationError::new(
+            400,
+            crate::gateway::bilingual_error(
+                "gpt-image-2 只能用于图片接口",
+                "model gpt-image-2 is only supported on /v1/images/generations and /v1/images/edits",
+            ),
+        ));
+    }
+
+    let catalog_model = storage.get_managed_model_v2(model_slug).map_err(|err| {
+        LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
+    })?;
+    if catalog_model
+        .as_ref()
+        .is_none_or(crate::models_v2::supports_text_generation)
+    {
+        // Unknown slugs remain compatible with external or not-yet-cataloged models.
         return Ok(());
     }
 
     Err(LocalValidationError::new(
         400,
         crate::gateway::bilingual_error(
-            "gpt-image-2 只能用于图片接口",
-            "model gpt-image-2 is only supported on /v1/images/generations and /v1/images/edits",
+            format!("模型 {model_slug} 不支持文本生成"),
+            format!("model {model_slug} does not support text generation"),
         ),
     ))
 }
@@ -1853,12 +1879,15 @@ pub(super) fn build_local_validation_result(
         initial_request_meta.has_prompt_cache_key,
         native_codex_client,
     );
-    ensure_codex_image_tool_model_not_used_for_text_request(
+    ensure_non_text_model_not_used_for_text_request(
+        &storage,
         logical_path.as_str(),
-        initial_request_meta
-            .model
-            .as_deref()
-            .or(api_key.model_slug.as_deref()),
+        initial_request_meta.model.as_deref(),
+    )?;
+    ensure_non_text_model_not_used_for_text_request(
+        &storage,
+        logical_path.as_str(),
+        api_key.model_slug.as_deref(),
     )?;
 
     if api_key.rotation_strategy == ROTATION_AGGREGATE_API {

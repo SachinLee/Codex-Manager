@@ -20,6 +20,15 @@ pub(crate) struct GatewayByteStream {
 }
 
 impl GatewayByteStream {
+    pub(crate) fn from_bytes(body: Bytes) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<GatewayByteStreamItem>(2);
+        if !body.is_empty() {
+            let _ = tx.send(GatewayByteStreamItem::Chunk(body));
+        }
+        let _ = tx.send(GatewayByteStreamItem::Eof);
+        Self { rx }
+    }
+
     pub(crate) fn from_blocking_response(mut response: reqwest::blocking::Response) -> Self {
         let (tx, rx) = mpsc::sync_channel::<GatewayByteStreamItem>(GATEWAY_STREAM_CHANNEL_CAPACITY);
         thread::spawn(move || loop {
@@ -166,6 +175,23 @@ impl GatewayUpstreamResponse {
             Self::Blocking(response) => response.headers(),
             Self::Stream(response) => response.headers(),
         }
+    }
+
+    pub(crate) fn into_buffered(self) -> Result<(Bytes, Self), String> {
+        let status = self.status();
+        let headers = self.headers().clone();
+        let body = match self {
+            Self::Blocking(response) => response
+                .bytes()
+                .map_err(|err| format!("read upstream response body failed: {err}"))?,
+            Self::Stream(response) => response.read_all_bytes()?,
+        };
+        let rebuilt = Self::Stream(GatewayStreamResponse::new(
+            status,
+            headers,
+            GatewayByteStream::from_bytes(body.clone()),
+        ));
+        Ok((body, rebuilt))
     }
 }
 

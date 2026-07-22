@@ -18,6 +18,7 @@ const modulePaths = [
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "gateway.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "login.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "misc.ts"),
+  path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "proxy-profiles.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "quota.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "shared.ts"),
 ];
@@ -33,6 +34,7 @@ function rewriteImports(outputText) {
     .replaceAll('./transport-web-commands/gateway', './transport-web-commands/gateway.js')
     .replaceAll('./transport-web-commands/login', './transport-web-commands/login.js')
     .replaceAll('./transport-web-commands/misc', './transport-web-commands/misc.js')
+    .replaceAll('./transport-web-commands/proxy-profiles', './transport-web-commands/proxy-profiles.js')
     .replaceAll('./transport-web-commands/quota', './transport-web-commands/quota.js')
     .replaceAll('./transport-web-commands/shared', './transport-web-commands/shared.js')
     .replaceAll('./shared', './shared.js')
@@ -65,6 +67,11 @@ async function ensureRequestUtils(tempDir) {
 
 async function loadTransportWebCommandsModule() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codexmanager-transport-web-commands-"));
+  await fs.writeFile(
+    path.join(tempDir, "package.json"),
+    '{"type":"module"}\n',
+    "utf8",
+  );
   const tempFile = path.join(tempDir, "transport-web-commands.mjs");
   await writeCompiledModule(sourcePath, tempFile);
   for (const modulePath of modulePaths) {
@@ -77,6 +84,22 @@ async function loadTransportWebCommandsModule() {
 
 const transportWebCommands = await loadTransportWebCommandsModule();
 const commandMap = transportWebCommands.createWebCommandMap(async () => ({}));
+
+test("createWebCommandMap keeps app and gateway transport settings payloads aligned", () => {
+  const appSettingsSet = commandMap.app_settings_set;
+  assert.equal(appSettingsSet.rpcMethod, "appSettings/set");
+  assert.ok(appSettingsSet.mapParams);
+  assert.deepEqual(
+    appSettingsSet.mapParams({
+      patch: { sseKeepaliveEnabled: false },
+    }),
+    { sseKeepaliveEnabled: false }
+  );
+
+  assert.deepEqual(commandMap.service_gateway_transport_set, {
+    rpcMethod: "gateway/transport/set",
+  });
+});
 
 test("createWebCommandMap 复用 keyId 到 id 的参数映射", () => {
   const descriptor = commandMap.service_apikey_delete;
@@ -118,6 +141,15 @@ test("createWebCommandMap 为批量账号排序提供 Web RPC 映射", () => {
   });
 });
 
+test("createWebCommandMap 为额度重置查询和消费提供 Web RPC 映射", () => {
+  assert.deepEqual(commandMap.service_usage_reset_credits, {
+    rpcMethod: "account/usage/resetCredits",
+  });
+  assert.deepEqual(commandMap.service_usage_reset_credit_consume, {
+    rpcMethod: "account/usage/resetCredit/consume",
+  });
+});
+
 test("createWebCommandMap 为 Codex profile 管理提供 Web RPC 映射", () => {
   assert.deepEqual(commandMap.service_codex_profile_get, {
     rpcMethod: "codexProfile/get",
@@ -149,6 +181,45 @@ test("createWebCommandMap 为按状态清理账号提供 Web RPC 映射", () => 
   const cleanup = commandMap.service_account_delete_by_statuses;
   assert.deepEqual(cleanup, {
     rpcMethod: "account/deleteByStatuses",
+  });
+});
+
+test("createWebCommandMap 为 system proxy profiles 提供 Web RPC 映射", () => {
+  assert.deepEqual(commandMap.service_system_proxy_list, {
+    rpcMethod: "system/proxy/list",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_create, {
+    rpcMethod: "system/proxy/create",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_update, {
+    rpcMethod: "system/proxy/update",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_delete, {
+    rpcMethod: "system/proxy/delete",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_test_presets, {
+    rpcMethod: "system/proxy/test-presets",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_test_latency, {
+    rpcMethod: "system/proxy/test-latency",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_speed_test, {
+    rpcMethod: "system/proxy/speed-test",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_test_job, {
+    rpcMethod: "system/proxy/test-job",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_cancel_test, {
+    rpcMethod: "system/proxy/cancel-test",
+  });
+  assert.deepEqual(commandMap.service_system_proxy_cloudflare_speed_test, {
+    rpcMethod: "system/proxy/cloudflare-speed-test",
+  });
+});
+
+test("createWebCommandMap 为 account proxy cloudflare speed test 提供 Web RPC 映射", () => {
+  assert.deepEqual(commandMap.service_account_proxy_cloudflare_speed_test, {
+    rpcMethod: "account/proxy/cloudflare-speed-test",
   });
 });
 
@@ -190,10 +261,22 @@ test("createWebCommandMap 为管理员用量分析提供 Web RPC 映射", () => 
   const summary = commandMap.service_dashboard_admin_usage_summary;
   assert.equal(summary.rpcMethod, "dashboard/adminUsageSummary");
   assert.ok(summary.mapParams);
-  assert.deepEqual(summary.mapParams({ start_ts: 100, end_ts: 200 }), {
-    startTs: 100,
-    endTs: 200,
-  });
+  assert.deepEqual(
+    summary.mapParams({
+      start_ts: 100,
+      end_ts: 200,
+      include_breakdowns: false,
+      include_series: true,
+      series_bucket_seconds: 3_600,
+    }),
+    {
+      startTs: 100,
+      endTs: 200,
+      includeBreakdowns: false,
+      includeSeries: true,
+      seriesBucketSeconds: 3_600,
+    },
+  );
 });
 
 test("createWebCommandMap 为模型目录 V2 原子命令提供 Web RPC 映射", () => {
@@ -213,6 +296,38 @@ test("createWebCommandMap 为模型目录 V2 原子命令提供 Web RPC 映射",
   assert.deepEqual(
     upsert.mapParams({ payload: { previousSlug: null, model: { slug: "local-x" } } }),
     { previousSlug: null, model: { slug: "local-x" } },
+  );
+
+  const updateState = commandMap.service_managed_model_update_state_v2;
+  assert.equal(updateState.rpcMethod, "apikey/managedModelUpdateStateV2");
+  assert.ok(updateState.mapParams);
+  assert.deepEqual(
+    updateState.mapParams({
+      payload: { slug: "gpt-5.4", enabled: false, visibility: "hide" },
+    }),
+    { slug: "gpt-5.4", enabled: false, visibility: "hide" },
+  );
+
+  const batchUpdateState =
+    commandMap.service_managed_model_batch_update_state_v2;
+  assert.equal(
+    batchUpdateState.rpcMethod,
+    "apikey/managedModelBatchUpdateStateV2",
+  );
+  assert.ok(batchUpdateState.mapParams);
+  assert.deepEqual(
+    batchUpdateState.mapParams({
+      payload: {
+        slugs: ["gpt-5.4", "gpt-5.4-mini"],
+        enabled: true,
+        visibility: "list",
+      },
+    }),
+    {
+      slugs: ["gpt-5.4", "gpt-5.4-mini"],
+      enabled: true,
+      visibility: "list",
+    },
   );
 
   for (const command of [

@@ -12,9 +12,9 @@ mod rpc_client;
 mod service_runtime;
 
 use app_shell::{
-    handle_main_window_event, handle_run_event, load_env_from_exe_dir, request_show_main_window,
-    schedule_startup_main_window, setup_tray, sync_startup_window_state, CLOSE_TO_TRAY_ON_CLOSE,
-    TRAY_AVAILABLE,
+    handle_main_window_event, handle_run_event, load_env_from_exe_dir,
+    refresh_tray_menu_after_usage_update, request_show_main_window, schedule_startup_main_window,
+    setup_tray, sync_startup_window_state, CLOSE_TO_TRAY_ON_CLOSE, TRAY_AVAILABLE,
 };
 
 const USAGE_REFRESH_COMPLETED_EVENT: &str = "usage-refresh-completed";
@@ -124,6 +124,7 @@ pub fn run() {
             })?;
             let usage_refresh_event_app = app.handle().clone();
             codexmanager_service::set_usage_refresh_completed_handler(move |event| {
+                refresh_tray_menu_after_usage_update(&usage_refresh_event_app);
                 let payload = UsageRefreshCompletedPayload {
                     source: event.source,
                     processed: event.processed,
@@ -142,6 +143,14 @@ pub fn run() {
                 log::warn!("tray setup unavailable, continue without tray: {}", err);
             }
             codexmanager_service::sync_runtime_settings_from_storage();
+            if let Err(err) =
+                commands::settings::ui::sync_auto_start_runtime_state_from_settings(app.handle())
+            {
+                log::warn!(
+                    "sync autostart state from persisted settings failed: {}",
+                    err
+                );
+            }
             sync_startup_window_state();
             schedule_startup_main_window(app.handle());
             Ok(())

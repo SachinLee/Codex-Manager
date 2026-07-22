@@ -4,8 +4,6 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 use std::time::Instant;
 
 use crate::account_status::mark_account_unavailable_for_auth_error;
@@ -17,21 +15,7 @@ const DEFAULT_WARMUP_MESSAGE: &str = "hi";
 const FALLBACK_WARMUP_MESSAGE: &str = "你好";
 const WARMUP_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_WARMUP_MODEL: &str = "gpt-5.3-codex";
-const WARMUP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const WARMUP_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
-static WARMUP_HTTP_CLIENT: OnceLock<Mutex<Option<WarmupClientCacheEntry>>> = OnceLock::new();
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct WarmupClientConfig {
-    user_agent: String,
-    proxy_url: Option<String>,
-}
-
-#[derive(Clone)]
-struct WarmupClientCacheEntry {
-    config: WarmupClientConfig,
-    client: Client,
-}
+const X_OPENAI_FEDRAMP_HEADER_NAME: &str = "x-openai-fedramp";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +40,13 @@ struct AccountWarmupTarget {
     token: Token,
 }
 
+struct WarmupAuthorization {
+    value: String,
+    task_id: Option<String>,
+    is_fedramp: bool,
+    uses_agent_identity: bool,
+}
+
 /// 函数 `warmup_accounts`
 ///
 /// 作者: gaohongshun
@@ -78,17 +69,28 @@ pub(crate) fn warmup_accounts(
         return Err("no account available for warmup".to_string());
     }
 
-    let client = warmup_client()?;
     let warmup_message = normalize_warmup_message(message);
     let warmup_model = resolve_warmup_model_slug(&storage);
     let mut results = Vec::with_capacity(accounts.len());
     let mut succeeded = 0usize;
 
-    for account in accounts.drain(..) {
+    for target in accounts.drain(..) {
+        let client = match build_warmup_client_for_account(&target.account.id) {
+            Ok(client) => client,
+            Err(err) => {
+                results.push(AccountWarmupItemResult {
+                    account_id: target.account.id,
+                    account_name: target.account.label,
+                    ok: false,
+                    message: err,
+                });
+                continue;
+            }
+        };
         let item = warmup_single_account(
             &storage,
             &client,
-            account,
+            target,
             warmup_model.as_str(),
             warmup_message.as_str(),
         );
@@ -139,69 +141,13 @@ fn normalize_warmup_message(message: &str) -> String {
     }
 }
 
-fn current_warmup_client_config() -> WarmupClientConfig {
-    WarmupClientConfig {
-        user_agent: crate::gateway::current_codex_user_agent(),
-        proxy_url: crate::gateway::current_upstream_proxy_url(),
+fn build_warmup_client_for_account(account_id: &str) -> Result<Client, String> {
+    let normalized = account_id.trim();
+    if normalized.is_empty() {
+        return Err("build warmup client failed: missing account id".to_string());
     }
-}
-
-fn warmup_client() -> Result<Client, String> {
-    let config = current_warmup_client_config();
-    let cache = WARMUP_HTTP_CLIENT.get_or_init(|| Mutex::new(None));
-    let mut guard = cache
-        .lock()
-        .map_err(|_| "warmup client cache lock poisoned".to_string())?;
-    if let Some(entry) = guard.as_ref() {
-        if entry.config == config {
-            return Ok(entry.client.clone());
-        }
-    }
-    let client = build_warmup_client_for_config(&config)?;
-    *guard = Some(WarmupClientCacheEntry {
-        config,
-        client: client.clone(),
-    });
-    Ok(client)
-}
-
-fn build_warmup_client_for_config(config: &WarmupClientConfig) -> Result<Client, String> {
-    #[cfg(test)]
-    WARMUP_CLIENT_BUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-    let builder = Client::builder()
-        .connect_timeout(WARMUP_CONNECT_TIMEOUT)
-        .timeout(WARMUP_TOTAL_TIMEOUT)
-        .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(config.user_agent.as_str());
-    let builder = crate::gateway::apply_blocking_upstream_proxy(
-        builder,
-        config.proxy_url.as_deref(),
-        "warmup_http_proxy_invalid",
-    );
-    builder
-        .build()
+    crate::gateway::fresh_upstream_client_for_account(normalized)
         .map_err(|err| format!("build warmup client failed: {err}"))
-}
-
-#[cfg(test)]
-static WARMUP_CLIENT_BUILD_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(test)]
-fn reset_warmup_client_cache_for_test() {
-    if let Some(cache) = WARMUP_HTTP_CLIENT.get() {
-        if let Ok(mut guard) = cache.lock() {
-            *guard = None;
-        }
-    }
-    WARMUP_CLIENT_BUILD_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(test)]
-fn warmup_client_build_count_for_test() -> usize {
-    WARMUP_CLIENT_BUILD_COUNT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn warmup_single_account(
@@ -214,11 +160,30 @@ fn warmup_single_account(
     let AccountWarmupTarget { account, mut token } = target;
     let account_name = account.label.clone();
     let started_at = Instant::now();
-    let mut outcome =
-        send_warmup_request_with_fallback(client, &account, &token, model_slug, message);
+    let authorization = resolve_warmup_authorization(storage, client, &account, &token);
+    let uses_agent_identity = authorization
+        .as_ref()
+        .map(|authorization| authorization.uses_agent_identity)
+        .unwrap_or(false);
+    let failed_agent_task_id = authorization
+        .as_ref()
+        .ok()
+        .and_then(|authorization| authorization.task_id.clone());
+    let mut outcome = authorization.and_then(|authorization| {
+        send_warmup_request_with_fallback(client, &account, &authorization, model_slug, message)
+    });
 
     if let Err(err) = outcome.as_ref() {
-        if should_retry_warmup_with_refresh(&token, err) {
+        if uses_agent_identity && crate::agent_identity::is_agent_identity_task_invalid_error(err) {
+            outcome = recover_warmup_agent_identity_task(
+                storage,
+                client,
+                &account,
+                model_slug,
+                message,
+                failed_agent_task_id.as_deref(),
+            );
+        } else if !uses_agent_identity && should_retry_warmup_with_refresh(&token, err) {
             let issuer = std::env::var("CODEXMANAGER_ISSUER")
                 .unwrap_or_else(|_| codexmanager_core::auth::DEFAULT_ISSUER.to_string());
             let client_id = std::env::var("CODEXMANAGER_CLIENT_ID")
@@ -230,8 +195,15 @@ fn warmup_single_account(
                 &client_id,
                 token_refresh_ahead_secs(),
             )
-            .and_then(|_| {
-                send_warmup_request_with_fallback(client, &account, &token, model_slug, message)
+            .and_then(|_| resolve_warmup_authorization(storage, client, &account, &token))
+            .and_then(|authorization| {
+                send_warmup_request_with_fallback(
+                    client,
+                    &account,
+                    &authorization,
+                    model_slug,
+                    message,
+                )
             });
         }
     }
@@ -339,25 +311,101 @@ fn resolve_warmup_model_slug(storage: &Storage) -> String {
     storage
         .list_api_models_v2()
         .ok()
-        .and_then(|models| models.into_iter().next().map(|model| model.slug))
+        .and_then(|models| {
+            models
+                .into_iter()
+                .find(crate::models_v2::supports_text_generation)
+                .map(|model| model.slug)
+        })
         .filter(|slug| !slug.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string())
+}
+
+fn resolve_warmup_authorization(
+    storage: &Storage,
+    client: &Client,
+    account: &Account,
+    token: &Token,
+) -> Result<WarmupAuthorization, String> {
+    if let Some(authorization) =
+        crate::agent_identity::resolve_account_agent_identity_authorization(
+            storage,
+            client,
+            &account.id,
+        )?
+    {
+        return Ok(WarmupAuthorization {
+            value: authorization.value,
+            task_id: Some(authorization.task_id),
+            is_fedramp: authorization.is_fedramp,
+            uses_agent_identity: true,
+        });
+    }
+
+    let access_token = token.access_token.trim();
+    if access_token.is_empty() {
+        return Err("missing chatgpt access token".to_string());
+    }
+    Ok(WarmupAuthorization {
+        value: access_token.to_string(),
+        task_id: None,
+        is_fedramp: false,
+        uses_agent_identity: false,
+    })
+}
+
+fn recover_warmup_agent_identity_task(
+    storage: &Storage,
+    client: &Client,
+    account: &Account,
+    model_slug: &str,
+    message: &str,
+    failed_task_id: Option<&str>,
+) -> Result<String, String> {
+    let failed_task_id = failed_task_id
+        .map(str::trim)
+        .filter(|task_id| !task_id.is_empty())
+        .ok_or_else(|| "agent identity task_id is missing during warmup recovery".to_string())?;
+    let authorization = crate::agent_identity::recover_account_agent_identity_authorization(
+        storage,
+        client,
+        &account.id,
+        failed_task_id,
+    )?
+    .ok_or_else(|| "agent identity disappeared during warmup task recovery".to_string())?;
+    let authorization = WarmupAuthorization {
+        value: authorization.value,
+        task_id: Some(authorization.task_id),
+        is_fedramp: authorization.is_fedramp,
+        uses_agent_identity: true,
+    };
+    send_warmup_request(client, account, &authorization, model_slug, message)
+        .map(|_| "已发送预热消息".to_string())
 }
 
 fn send_warmup_request_with_fallback(
     client: &Client,
     account: &Account,
-    token: &Token,
+    authorization: &WarmupAuthorization,
     model_slug: &str,
     message: &str,
 ) -> Result<String, String> {
-    let primary = send_warmup_request(client, account, token, model_slug, message);
+    let primary = send_warmup_request(client, account, authorization, model_slug, message);
     match primary {
         Ok(()) => Ok("已发送预热消息".to_string()),
-        Err(primary_err) if message == DEFAULT_WARMUP_MESSAGE => {
-            send_warmup_request(client, account, token, model_slug, FALLBACK_WARMUP_MESSAGE)
-                .map(|_| "已发送预热消息".to_string())
-                .map_err(|fallback_err| format!("{primary_err}; fallback={fallback_err}"))
+        Err(primary_err)
+            if message == DEFAULT_WARMUP_MESSAGE
+                && !crate::agent_identity::is_agent_identity_task_invalid_error(&primary_err) =>
+        {
+            send_warmup_request(
+                client,
+                account,
+                authorization,
+                model_slug,
+                FALLBACK_WARMUP_MESSAGE,
+            )
+            .map(|_| "已发送预热消息".to_string())
+            .map_err(|fallback_err| format!("{primary_err}; fallback={fallback_err}"))
         }
         Err(err) => Err(err),
     }
@@ -378,7 +426,7 @@ fn should_retry_warmup_with_refresh(token: &Token, err: &str) -> bool {
 fn send_warmup_request(
     client: &Client,
     account: &Account,
-    token: &Token,
+    authorization: &WarmupAuthorization,
     model_slug: &str,
     message: &str,
 ) -> Result<(), String> {
@@ -397,7 +445,11 @@ fn send_warmup_request(
         "store": false
     });
 
-    let headers = build_warmup_headers(account, token.access_token.as_str())?;
+    let headers = build_warmup_headers(
+        account,
+        authorization.value.as_str(),
+        authorization.is_fedramp,
+    )?;
     let response = client
         .post(WARMUP_UPSTREAM_URL)
         .headers(headers)
@@ -542,11 +594,17 @@ fn summarize_warmup_stream_error(value: &serde_json::Value) -> String {
 #[path = "account_warmup_tests.rs"]
 mod tests;
 
-fn build_warmup_headers(account: &Account, bearer: &str) -> Result<HeaderMap, String> {
+fn build_warmup_headers(
+    account: &Account,
+    auth_token: &str,
+    is_fedramp: bool,
+) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        header_value(&format!("Bearer {bearer}"))?,
+        header_value(&crate::agent_identity::format_upstream_authorization(
+            auth_token,
+        ))?,
     );
     headers.insert(
         reqwest::header::ACCEPT,
@@ -577,6 +635,12 @@ fn build_warmup_headers(account: &Account, bearer: &str) -> Result<HeaderMap, St
             header_value(&account_header)?,
         );
     }
+    if is_fedramp {
+        headers.insert(
+            HeaderName::from_static(X_OPENAI_FEDRAMP_HEADER_NAME),
+            HeaderValue::from_static("true"),
+        );
+    }
 
     Ok(headers)
 }
@@ -586,13 +650,18 @@ fn header_value(value: &str) -> Result<HeaderValue, String> {
 }
 
 fn summarize_warmup_error(status: u16, headers: &HeaderMap, body: &str) -> String {
-    let body_hint =
+    let invalid_agent_task =
+        crate::agent_identity::is_agent_identity_task_invalid_response(status, body.as_bytes());
+    let body_hint = if invalid_agent_task {
+        "invalid_task_id".to_string()
+    } else {
         crate::gateway::summarize_upstream_error_hint_from_body(status, body.as_bytes())
             .or_else(|| {
                 let trimmed = body.trim();
                 (!trimmed.is_empty()).then(|| trimmed.to_string())
             })
-            .unwrap_or_else(|| "unknown error".to_string());
+            .unwrap_or_else(|| "unknown error".to_string())
+    };
 
     let request_id = first_header(headers, &["x-request-id", "x-oai-request-id"]);
     let auth_error = first_header(headers, &["x-openai-authorization-error"]);
@@ -602,11 +671,16 @@ fn summarize_warmup_error(status: u16, headers: &HeaderMap, body: &str) -> Strin
     if let Some(value) = request_id {
         details.push(format!("request id: {value}"));
     }
-    if let Some(value) = auth_error {
-        details.push(format!("auth error: {value}"));
+    if !invalid_agent_task {
+        if let Some(value) = auth_error {
+            details.push(format!("auth error: {value}"));
+        }
     }
     if let Some(value) = cf_ray {
         details.push(format!("cf-ray: {value}"));
+    }
+    if invalid_agent_task {
+        details.push("agent identity task error: invalid_task_id".to_string());
     }
 
     if details.is_empty() {

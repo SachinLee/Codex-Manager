@@ -2,6 +2,7 @@
 
 mod auth;
 mod embedded_ui;
+mod gateway_websocket;
 mod service_gateway;
 mod ui_assets;
 

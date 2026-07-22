@@ -1,5 +1,7 @@
 "use client";
 
+import { normalizeAccountProxySummaryFields } from "./account-proxy-normalize";
+
 import {
   Account,
   AccountDailyUsageStat,
@@ -63,6 +65,7 @@ import {
   toNullableNumber,
 } from "@/lib/utils/usage";
 import { readBillingModeLock } from "./billing-mode-lock";
+import { normalizeGatewayTransportValues } from "@/lib/gateway/transport-settings";
 
 const DEFAULT_BACKGROUND_TASKS: BackgroundTaskSettings = {
   usagePollingEnabled: true,
@@ -588,6 +591,7 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
     primaryRemainPercent: usageBuckets.primaryRemainPercent,
     secondaryRemainPercent: usageBuckets.secondaryRemainPercent,
     usage: usage ?? null,
+    ...normalizeAccountProxySummaryFields(source),
   };
 }
 
@@ -779,6 +783,16 @@ function normalizeModelInfo(payload: unknown): ModelInfo | null {
       source.experimental_supported_tools ?? source.experimentalSupportedTools,
     ).map((item) => asString(item)),
     inputModalities: asArray(rawInputModalities).map((item) => asString(item)),
+    outputModalities: asArray(
+      source.output_modalities ?? source.outputModalities,
+    ).map((item) => asString(item)),
+    supportedEndpoints: asArray(
+      source.supported_endpoints ?? source.supportedEndpoints,
+    ).map((item) => asString(item)),
+    supportsTextGeneration: asBoolean(
+      source.supports_text_generation ?? source.supportsTextGeneration,
+      true,
+    ),
     minimalClientVersion:
       source.minimal_client_version ?? source.minimalClientVersion ?? null,
     supportsSearchTool: toNullableBoolean(
@@ -2210,9 +2224,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     ),
     upstreamProxyUrl: asString(source.upstreamProxyUrl),
     upstreamProxyBypassHosts: asString(source.upstreamProxyBypassHosts),
-    upstreamStreamTimeoutMs: asInteger(source.upstreamStreamTimeoutMs, 300_000, 0),
-    upstreamTotalTimeoutMs: asInteger(source.upstreamTotalTimeoutMs, 0, 0),
-    sseKeepaliveIntervalMs: asInteger(source.sseKeepaliveIntervalMs, 15_000, 1),
+    ...normalizeGatewayTransportValues(source),
     backgroundTasks: normalizeBackgroundTasks(source.backgroundTasks),
     runtimeTimeZone: normalizeRuntimeTimeZone(source.runtimeTimeZone),
     envOverrides: normalizeStringRecord(source.envOverrides),

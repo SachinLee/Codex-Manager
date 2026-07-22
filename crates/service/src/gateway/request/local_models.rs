@@ -35,6 +35,8 @@ fn serialize_models_response_body(models: &ModelsResponse) -> String {
     serde_json::to_string(&CompatibleModelsResponse {
         object: "list",
         data,
+        // Codex CLI consumes the private `models` catalog while generic OpenAI
+        // clients consume `data`, so both representations must stay populated.
         models: &models.models,
     })
     .unwrap_or_else(|_| "{\"object\":\"list\",\"data\":[],\"models\":[]}".to_string())

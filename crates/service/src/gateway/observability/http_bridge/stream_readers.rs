@@ -33,9 +33,10 @@ mod responses_from_anthropic;
 pub(crate) use anthropic::AnthropicSseReader;
 pub(crate) use chat_completions::ChatCompletionsFromResponsesSseReader;
 use common::{
-    classify_upstream_stream_read_error, mark_first_response_ms, should_emit_keepalive,
-    stream_idle_timed_out, stream_idle_timeout_message, stream_reader_disconnected_message,
-    stream_wait_timeout, upstream_hint_or_stream_incomplete_message,
+    classify_upstream_stream_read_error, mark_first_response_ms,
+    should_emit_keepalive_after_first_frame, stream_idle_timed_out, stream_idle_timeout_message,
+    stream_reader_disconnected_message, stream_wait_timeout,
+    upstream_hint_or_stream_incomplete_message,
 };
 use common::{mark_collector_terminal_success, mark_first_response_ms_on_usage};
 pub(crate) use common::{
@@ -47,47 +48,43 @@ pub(crate) use openai_responses::OpenAIResponsesPassthroughSseReader;
 pub(crate) use passthrough::PassthroughSseUsageReader;
 pub(crate) use responses_from_anthropic::ResponsesFromAnthropicSseReader;
 
-/// 函数 `reload_from_env`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 无
-pub(super) fn reload_from_env() {
-    common::reload_from_env();
+#[cfg(test)]
+struct SseKeepaliveRuntimeGuard {
+    enabled_env: Option<std::ffi::OsString>,
+    interval_env: Option<std::ffi::OsString>,
 }
 
-/// 函数 `current_sse_keepalive_interval_ms`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 返回函数执行结果
-pub(super) fn current_sse_keepalive_interval_ms() -> u64 {
-    common::current_sse_keepalive_interval_ms()
+#[cfg(test)]
+impl SseKeepaliveRuntimeGuard {
+    fn enabled_with_interval(interval_ms: u64) -> Self {
+        const ENABLED_ENV: &str = "CODEXMANAGER_SSE_KEEPALIVE_ENABLED";
+        const INTERVAL_ENV: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
+        let guard = Self {
+            enabled_env: std::env::var_os(ENABLED_ENV),
+            interval_env: std::env::var_os(INTERVAL_ENV),
+        };
+        std::env::set_var(ENABLED_ENV, "1");
+        std::env::set_var(INTERVAL_ENV, interval_ms.to_string());
+        crate::gateway::reload_runtime_config_from_env();
+        guard
+    }
 }
 
-/// 函数 `set_sse_keepalive_interval_ms`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - super: 参数 super
-///
-/// # 返回
-/// 返回函数执行结果
-pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
-    common::set_sse_keepalive_interval_ms(interval_ms)
+#[cfg(test)]
+impl Drop for SseKeepaliveRuntimeGuard {
+    fn drop(&mut self) {
+        const ENABLED_ENV: &str = "CODEXMANAGER_SSE_KEEPALIVE_ENABLED";
+        const INTERVAL_ENV: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
+        if let Some(value) = &self.enabled_env {
+            std::env::set_var(ENABLED_ENV, value);
+        } else {
+            std::env::remove_var(ENABLED_ENV);
+        }
+        if let Some(value) = &self.interval_env {
+            std::env::set_var(INTERVAL_ENV, value);
+        } else {
+            std::env::remove_var(INTERVAL_ENV);
+        }
+        let _ = std::panic::catch_unwind(crate::gateway::reload_runtime_config_from_env);
+    }
 }

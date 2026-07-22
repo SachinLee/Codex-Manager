@@ -2,7 +2,7 @@ use super::{
     build_socks5_connect_request, build_upstream_websocket_request, infer_ws_terminal_status,
     inspect_ws_terminal_event, is_previous_response_not_found_terminal, merge_client_metadata,
     parse_websocket_target, parse_ws_usage, proxy_basic_auth_header, rewrite_client_frame,
-    strip_previous_response_id_from_ws_text, WsRequestContext,
+    strip_previous_response_id_from_ws_text, WsRequestContext, WsUpstreamAuthorization,
 };
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{Account, ApiKey};
@@ -43,6 +43,15 @@ fn sample_account() -> Account {
         status: "active".to_string(),
         created_at: 0,
         updated_at: 0,
+    }
+}
+
+fn websocket_bearer_authorization(value: &str) -> WsUpstreamAuthorization {
+    WsUpstreamAuthorization {
+        value: value.to_string(),
+        task_id: None,
+        uses_agent_identity: false,
+        is_fedramp: false,
     }
 }
 
@@ -126,6 +135,18 @@ fn websocket_connect_error_preserves_http_unauthorized_status() {
 
     assert!(err.is_unauthorized());
     assert_eq!(err.status_code, Some(401));
+}
+
+#[test]
+fn websocket_connect_error_detects_invalid_agent_identity_task_body() {
+    let mut response =
+        super::WsClientResponse::new(Some(br#"{"error":{"code":"task_expired"}}"#.to_vec()));
+    *response.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+    let err = super::WsConnectError::from_tungstenite(tokio_tungstenite::tungstenite::Error::Http(
+        Box::new(response),
+    ));
+
+    assert!(err.is_agent_identity_task_invalid());
 }
 
 #[test]
@@ -230,11 +251,12 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
         prefer_raw_errors: false,
     };
     let account = sample_account();
+    let authorization = websocket_bearer_authorization("bearer-ws");
 
     let request = build_upstream_websocket_request(
         "wss://chatgpt.com/backend-api/codex/v1/responses",
         &account,
-        "bearer-ws",
+        &authorization,
         &context,
     )
     .unwrap_or_else(|err| panic!("build upstream websocket request failed: {}", err.message));
@@ -252,6 +274,54 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
             .get("openai-beta")
             .and_then(|value| value.to_str().ok()),
         Some(super::RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE)
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer bearer-ws")
+    );
+    assert!(request.headers().get("x-openai-fedramp").is_none());
+}
+
+#[test]
+fn upstream_websocket_request_preserves_agent_assertion_and_fedramp() {
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::default(),
+        prompt_cache_key: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let authorization = WsUpstreamAuthorization {
+        value: "AgentAssertion encoded-envelope".to_string(),
+        task_id: Some("task-1".to_string()),
+        uses_agent_identity: true,
+        is_fedramp: true,
+    };
+
+    let request = build_upstream_websocket_request(
+        "wss://chatgpt.com/backend-api/codex/v1/responses",
+        &sample_account(),
+        &authorization,
+        &context,
+    )
+    .unwrap_or_else(|err| panic!("build upstream websocket request failed: {}", err.message));
+
+    assert_eq!(
+        request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("AgentAssertion encoded-envelope")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("x-openai-fedramp")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
     );
 }
 

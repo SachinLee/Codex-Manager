@@ -5,6 +5,7 @@ import {
   readGatewayManualAccountId,
   GatewayRouteStrategySettings,
   GatewayTransportSettings,
+  GatewayTransportSettingsPatch,
   GatewayUpstreamProxySettings,
   ServiceListenConfig,
   readGatewayConcurrencyRecommendation,
@@ -88,7 +89,7 @@ export const serviceClient = {
     return readGatewayTransportSettings(result);
   },
   async setGatewayTransport(
-    settings: Record<string, unknown>
+    settings: GatewayTransportSettingsPatch
   ): Promise<GatewayTransportSettings> {
     const result = await invoke<unknown>(
       "service_gateway_transport_set",

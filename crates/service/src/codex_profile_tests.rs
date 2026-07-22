@@ -40,6 +40,15 @@ impl Drop for EnvGuard {
     }
 }
 
+fn set_test_db(dir: &Path) -> EnvGuard {
+    fs::create_dir_all(dir).expect("create test db dir");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open test storage");
+    storage.init().expect("init test storage");
+    drop(storage);
+    EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref())
+}
+
 fn test_account(id: &str, status: &str) -> Account {
     Account {
         id: id.to_string(),
@@ -125,7 +134,9 @@ name = "Other"
 base_url = "https://example.test/v1"
 "#;
 
-    let output = patch_config_for_direct(Some(input.to_string())).expect("patch direct");
+    let managed_catalog = PathBuf::from("/tmp/codexmanager/gateway-models.json");
+    let output = patch_config_for_direct(Some(input.to_string()), &managed_catalog, None)
+        .expect("patch direct");
 
     assert!(!output.contains("model_provider = \"cm\""));
     assert!(!output.contains("[model_providers.cm]"));
@@ -142,19 +153,60 @@ model = "gpt-5.4"
 name = "Other"
 "#;
 
-    let output = patch_config_for_gateway(Some(input.to_string()), "http://127.0.0.1:48770/v1")
-        .expect("patch gateway");
+    let managed_catalog = PathBuf::from("/tmp/codexmanager/gateway-models.json");
+    let output = patch_config_for_gateway(
+        Some(input.to_string()),
+        "http://127.0.0.1:48770/v1",
+        &managed_catalog,
+    )
+    .expect("patch gateway");
 
     assert!(output.contains("model_provider = \"cm\""));
     assert!(output.contains("[model_providers.cm]"));
     assert!(output.contains("base_url = \"http://127.0.0.1:48770/v1\""));
     assert!(output.contains("wire_api = \"responses\""));
+    assert!(output.contains("supports_websockets = true"));
+    assert!(output.contains("model_catalog_json = \"/tmp/codexmanager/gateway-models.json\""));
     assert!(output.contains("[model_providers.other]"));
 }
 
 #[test]
+fn direct_config_only_removes_manager_owned_catalog() {
+    let managed_catalog = PathBuf::from("/tmp/codexmanager/gateway-models.json");
+    let managed = format!(
+        "model_catalog_json = {:?}\n",
+        managed_catalog.to_string_lossy()
+    );
+
+    let removed = patch_config_for_direct(Some(managed), &managed_catalog, None)
+        .expect("remove managed catalog");
+    assert!(!removed.contains("model_catalog_json"));
+
+    let restored = patch_config_for_direct(
+        Some(format!(
+            "model_catalog_json = {:?}\n",
+            managed_catalog.to_string_lossy()
+        )),
+        &managed_catalog,
+        Some("/home/test/custom-models.json"),
+    )
+    .expect("restore prior catalog");
+    assert!(restored.contains("model_catalog_json = \"/home/test/custom-models.json\""));
+
+    let custom = "model_catalog_json = \"/home/test/owned-by-user.json\"\n";
+    let preserved = patch_config_for_direct(Some(custom.to_string()), &managed_catalog, None)
+        .expect("preserve user catalog");
+    assert!(preserved.contains("/home/test/owned-by-user.json"));
+}
+
+#[test]
 fn invalid_toml_is_rejected() {
-    assert!(patch_config_for_gateway(Some("bad = [".to_string()), "http://x/v1").is_err());
+    assert!(patch_config_for_gateway(
+        Some("bad = [".to_string()),
+        "http://x/v1",
+        Path::new("/tmp/gateway-models.json"),
+    )
+    .is_err());
 }
 
 #[test]
@@ -207,9 +259,10 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
     let dir = temp_profile("codex-profile-candidates");
     fs::create_dir_all(&dir).expect("mkdir temp dir");
     let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
     let storage = Storage::open(&db_path).expect("open storage");
     storage.init().expect("init storage");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let mut active = test_account("acc-active-candidate", "active");
     active.label = "Active Candidate".to_string();
     active.group_name = Some("candidate-group".to_string());
@@ -295,17 +348,259 @@ fn auth_json_shapes_match_codex_modes() {
     assert!(auth_json_is_gateway(&gateway));
 }
 
+fn detect_login_mode_for_config(name: &str, config: &str) -> CodexProfileMode {
+    let _env_lock = crate::test_env_guard();
+    let _service_addr = EnvGuard::set("CODEXMANAGER_SERVICE_ADDR", "127.0.0.1:48760");
+    let dir = temp_profile(name);
+    fs::create_dir_all(&dir).expect("mkdir profile");
+    fs::write(
+        dir.join(AUTH_FILE),
+        r#"{"OPENAI_API_KEY":null,"tokens":{"access_token":"access-token"}}"#,
+    )
+    .expect("write auth");
+    fs::write(dir.join(CONFIG_FILE), config).expect("write config");
+
+    let mode = detect_mode(&dir.join(AUTH_FILE), &dir.join(CONFIG_FILE), None);
+    cleanup_profile(&dir);
+    mode
+}
+
+#[test]
+fn experimental_gateway_base_without_token_keeps_login_mode_direct() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-without-token",
+        r#"
+model_provider = "default"
+base_url = "http://localhost:48760/v1"
+
+[model_providers.default]
+base_url = "http://localhost:48760/v1"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::DirectAccount));
+}
+
+#[test]
+fn experimental_gateway_blank_token_keeps_login_mode_direct() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-blank-token",
+        r#"
+model_provider = "default"
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "   "
+
+[model_providers.default]
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "\t"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::DirectAccount));
+}
+
+#[test]
+fn experimental_gateway_ignores_token_from_other_provider() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-other-provider-token",
+        r#"
+model_provider = "default"
+base_url = "http://localhost:48760/v1"
+
+[model_providers.default]
+base_url = "http://localhost:48760/v1"
+
+[model_providers.other]
+base_url = "https://example.test/v1"
+experimental_bearer_token = "other-provider-key"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::DirectAccount));
+}
+
+#[test]
+fn experimental_gateway_accepts_top_level_token() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-top-level-token",
+        r#"
+model_provider = "default"
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "top-level-key"
+
+[model_providers.default]
+base_url = "http://localhost:48760/v1"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::Gateway));
+}
+
+#[test]
+fn experimental_gateway_accepts_current_provider_token() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-current-provider-token",
+        r#"
+model_provider = "default"
+base_url = "http://localhost:48760/v1"
+
+[model_providers.default]
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "provider-key"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::Gateway));
+}
+
+#[test]
+fn experimental_gateway_prefers_current_provider_external_base_url_over_stale_local_root() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-provider-external-root-local",
+        r#"
+model_provider = "default"
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "top-level-key"
+
+[model_providers.default]
+base_url = "https://example.test/v1"
+experimental_bearer_token = "provider-key"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::DirectAccount));
+}
+
+#[test]
+fn experimental_gateway_prefers_current_provider_local_base_url_over_stale_external_root() {
+    let mode = detect_login_mode_for_config(
+        "experimental-gateway-provider-local-root-external",
+        r#"
+model_provider = "default"
+base_url = "https://example.test/v1"
+experimental_bearer_token = "top-level-key"
+
+[model_providers.default]
+base_url = "http://127.0.0.1:48760/v1"
+experimental_bearer_token = "provider-key"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::Gateway));
+}
+
+#[test]
+fn managed_gateway_provider_does_not_require_experimental_token() {
+    let mode = detect_login_mode_for_config(
+        "managed-gateway-without-experimental-token",
+        r#"
+model_provider = "cm"
+
+[model_providers.cm]
+base_url = "http://localhost:48760/v1"
+wire_api = "responses"
+"#,
+    );
+
+    assert!(matches!(mode, CodexProfileMode::Gateway));
+}
+
+#[test]
+fn experimental_gateway_config_overrides_login_tokens_and_stale_direct_marker() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("experimental-gateway-detection");
+    let _db_guard = set_test_db(&dir);
+    fs::create_dir_all(&dir).expect("mkdir profile");
+    fs::write(
+        dir.join(AUTH_FILE),
+        r#"{"OPENAI_API_KEY":null,"tokens":{"access_token":"access-token"}}"#,
+    )
+    .expect("write auth");
+    fs::write(
+        dir.join(CONFIG_FILE),
+        r#"
+model_provider = "default"
+wire_api = "responses"
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "cm-key"
+
+[model_providers.default]
+name = "OpenAI"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://localhost:48760/v1"
+experimental_bearer_token = "cm-key"
+"#,
+    )
+    .expect("write config");
+    let marker = MarkerFile {
+        writer: "codexmanager".to_string(),
+        mode: CodexProfileMode::DirectAccount,
+        account_id: Some("acc-1".to_string()),
+        api_key_id: None,
+        gateway_base_url: None,
+        provider_id: PROVIDER_ID.to_string(),
+        updated_at: now_ts(),
+    };
+
+    let mode = detect_mode(&dir.join(AUTH_FILE), &dir.join(CONFIG_FILE), Some(&marker));
+
+    assert!(matches!(mode, CodexProfileMode::Gateway));
+    fs::write(
+        dir.join(MARKER_FILE),
+        serde_json::to_string_pretty(&marker).expect("marker json"),
+    )
+    .expect("write stale marker");
+    let status = status_for_profile(&dir).expect("profile status");
+    assert!(matches!(status.mode, CodexProfileMode::Gateway));
+    assert_eq!(status.provider_id, "default");
+    assert_eq!(
+        status.gateway_base_url.as_deref(),
+        Some("http://localhost:48760/v1")
+    );
+    assert_eq!(status.selected_account_id, None);
+    assert_eq!(status.last_applied_at, None);
+    assert_eq!(
+        target_history_provider_for_profile(&dir).expect("history provider"),
+        "default"
+    );
+    cleanup_profile(&dir);
+}
+
+#[test]
+fn experimental_non_gateway_base_url_keeps_login_mode_direct() {
+    let dir = temp_profile("experimental-non-gateway-detection");
+    fs::create_dir_all(&dir).expect("mkdir profile");
+    fs::write(
+        dir.join(AUTH_FILE),
+        r#"{"OPENAI_API_KEY":null,"tokens":{"access_token":"access-token"}}"#,
+    )
+    .expect("write auth");
+    fs::write(
+        dir.join(CONFIG_FILE),
+        r#"
+model_provider = "default"
+base_url = "http://localhost:12345/v1"
+experimental_bearer_token = "other-key"
+
+[model_providers.default]
+base_url = "http://localhost:12345/v1"
+experimental_bearer_token = "other-key"
+"#,
+    )
+    .expect("write config");
+
+    let mode = detect_mode(&dir.join(AUTH_FILE), &dir.join(CONFIG_FILE), None);
+
+    assert!(matches!(mode, CodexProfileMode::DirectAccount));
+    cleanup_profile(&dir);
+}
+
 #[test]
 fn write_profile_files_uses_internal_marker() {
-    let _lock = crate::test_env_guard();
+    let _env_lock = crate::test_env_guard();
     let dir = temp_profile("internal-marker");
-    fs::create_dir_all(&dir).expect("mkdir profile");
-    let db_path = dir.join("codexmanager.db");
-    Storage::open(&db_path)
-        .expect("open storage")
-        .init()
-        .expect("init storage");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _db_guard = set_test_db(&dir);
     let state = ManagedState {
         profile_dir: profile_key(&dir),
         mode: CodexProfileMode::Gateway,
@@ -313,6 +608,7 @@ fn write_profile_files_uses_internal_marker() {
         api_key_id: Some("key-1".to_string()),
         gateway_base_url: Some("http://localhost:48760/v1".to_string()),
         provider_id: PROVIDER_ID.to_string(),
+        previous_model_catalog_json: None,
         updated_at: now_ts(),
     };
 
@@ -332,7 +628,9 @@ fn write_profile_files_uses_internal_marker() {
 
 #[test]
 fn legacy_marker_migrates_to_internal_marker() {
+    let _env_lock = crate::test_env_guard();
     let dir = temp_profile("legacy-marker");
+    let _db_guard = set_test_db(&dir);
     fs::create_dir_all(&dir).expect("mkdir profile");
     let marker = MarkerFile {
         writer: "codexmanager".to_string(),
@@ -360,7 +658,9 @@ fn legacy_marker_migrates_to_internal_marker() {
 
 #[test]
 fn legacy_history_backups_migrate_and_are_pruned() {
+    let _env_lock = crate::test_env_guard();
     let dir = temp_profile("legacy-history-backups");
+    let _db_guard = set_test_db(&dir);
     let legacy_root = dir.join(HISTORY_BACKUP_DIR);
     fs::create_dir_all(&legacy_root).expect("mkdir legacy root");
     for index in 0..5 {

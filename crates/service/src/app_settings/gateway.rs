@@ -33,6 +33,7 @@ use super::{
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
     APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
@@ -638,7 +639,7 @@ pub fn set_gateway_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, St
     let applied = gateway::set_sse_keepalive_interval_ms(interval_ms)?;
     save_persisted_app_setting(
         APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
-        Some(&applied.to_string()),
+        Some(&interval_ms.to_string()),
     )?;
     Ok(applied)
 }
@@ -656,6 +657,16 @@ pub fn set_gateway_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, St
 /// 返回函数执行结果
 pub fn current_gateway_sse_keepalive_interval_ms() -> u64 {
     gateway::current_sse_keepalive_interval_ms()
+}
+
+pub fn set_gateway_sse_keepalive_enabled(enabled: bool) -> Result<bool, String> {
+    let applied = gateway::set_sse_keepalive_enabled(enabled);
+    save_persisted_bool_setting(APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY, enabled)?;
+    Ok(applied)
+}
+
+pub fn current_gateway_sse_keepalive_enabled() -> bool {
+    gateway::current_sse_keepalive_enabled()
 }
 
 /// 函数 `set_gateway_background_tasks`

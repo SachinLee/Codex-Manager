@@ -1,9 +1,16 @@
 use super::{
     adapt_openai_images_edits_body_to_responses, adapt_openai_images_generations_body_to_responses,
-    ensure_codex_image_tool_model_not_used_for_text_request,
+    ensure_non_text_model_not_used_for_text_request,
 };
 use crate::gateway::ResponseAdapter;
+use codexmanager_core::storage::{ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, Storage};
 use serde_json::json;
+
+fn storage() -> Storage {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    storage
+}
 
 #[test]
 fn images_generation_request_builds_responses_image_generation_tool() {
@@ -173,7 +180,9 @@ fn images_edits_multipart_request_builds_data_urls() {
 
 #[test]
 fn rejects_gpt_image_model_on_text_generation_paths() {
-    let err = ensure_codex_image_tool_model_not_used_for_text_request(
+    let storage = storage();
+    let err = ensure_non_text_model_not_used_for_text_request(
+        &storage,
         "/v1/chat/completions",
         Some("gpt-image-2"),
     )
@@ -185,14 +194,61 @@ fn rejects_gpt_image_model_on_text_generation_paths() {
 
 #[test]
 fn allows_gpt_image_model_on_images_paths() {
-    assert!(ensure_codex_image_tool_model_not_used_for_text_request(
+    let storage = storage();
+    assert!(ensure_non_text_model_not_used_for_text_request(
+        &storage,
         "/v1/images/generations",
         Some("gpt-image-2"),
     )
     .is_ok());
-    assert!(ensure_codex_image_tool_model_not_used_for_text_request(
+    assert!(ensure_non_text_model_not_used_for_text_request(
+        &storage,
         "/v1/images/edits",
         Some("gpt-image-2"),
+    )
+    .is_ok());
+}
+
+#[test]
+fn rejects_catalog_non_text_model_on_text_generation_paths() {
+    let storage = storage();
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            model: ManagedModelV2 {
+                slug: "custom-image-model".to_string(),
+                display_name: "Custom Image Model".to_string(),
+                origin: "custom".to_string(),
+                enabled: true,
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                capabilities: json!({
+                    "supports_text_generation": false,
+                    "output_modalities": ["image"]
+                }),
+                instructions_mode: "passthrough".to_string(),
+                price: ModelPriceV2 {
+                    price_status: "missing".to_string(),
+                    ..Default::default()
+                },
+                ..ManagedModelV2::default()
+            },
+            ..ManagedModelV2Upsert::default()
+        })
+        .expect("save custom image model");
+
+    let err = ensure_non_text_model_not_used_for_text_request(
+        &storage,
+        "/v1/responses",
+        Some("custom-image-model"),
+    )
+    .expect_err("catalog non-text model should be rejected");
+    assert_eq!(err.status_code, 400);
+    assert!(err.message.contains("does not support text generation"));
+
+    assert!(ensure_non_text_model_not_used_for_text_request(
+        &storage,
+        "/v1/responses",
+        Some("external-unknown-model"),
     )
     .is_ok());
 }

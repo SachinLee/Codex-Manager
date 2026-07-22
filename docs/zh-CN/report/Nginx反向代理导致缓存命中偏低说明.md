@@ -157,7 +157,7 @@ proxy_send_timeout 3600s;
 send_timeout 3600s;
 ```
 
-当前仓库里的 `docker/nginx/nginx.conf` 已经包含 `location ^~ /v1/images/`，可直接作为图片生成部署基线。
+当前仓库里的 `docker/nginx/nginx.conf` 已在直连 service 与 Web 代理两个 server 块中都包含 `location ^~ /v1/images/`，两个公网入口都可直接作为图片生成部署基线。Web 入口还为精确 `/v1/responses` 配置了同样的 3600 秒超时，用于覆盖非流式 `image_generation` 工具调用。
 
 ## 推荐示例配置
 

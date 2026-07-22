@@ -68,6 +68,7 @@ import { EnvTabContent } from "@/app/settings/components/env-tab-content";
 import { GatewayTabContent } from "@/app/settings/components/gateway-tab-content";
 import { ThemePreviewSwatch } from "@/app/settings/components/theme-preview-swatch";
 import {
+  AboutCodexManagerCard,
   AccessControlCard,
   ServiceListenCard,
 } from "@/app/settings/components/general-tab-cards";
@@ -1375,7 +1376,9 @@ function AdminSettingsPage() {
         </TabsList>
 
         <TabsContent value="general" className="space-y-6">
-                    <GeneralBasicsCard
+          <AboutCodexManagerCard t={t} />
+
+          <GeneralBasicsCard
             t={t}
             updateActionLabel={updateActionLabel}
             updateActionDescription={updateActionDescription}
@@ -1411,7 +1414,6 @@ function AdminSettingsPage() {
             webAuthModeLabel={webAuthModeLabel}
             onOpen={() => setWebPasswordModalOpen(true)}
           />
-
         </TabsContent>
 
         <TabsContent value="appearance" className="space-y-6">

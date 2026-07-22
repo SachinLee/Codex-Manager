@@ -54,6 +54,23 @@ const EMPTY_PREVIEW: ManagedModelImportPreviewV2Result = {
   committed: 0,
 };
 
+const CONFLICT_STRATEGY_LABELS: Record<
+  ManagedModelImportConflictStrategyV2,
+  string
+> = {
+  keep_existing: "保留现有模型",
+  replace_custom: "替换自定义模型",
+};
+
+function conflictStrategyLabel(
+  strategy: ManagedModelImportConflictStrategyV2,
+  t: (message: string) => string,
+): string {
+  return t(
+    CONFLICT_STRATEGY_LABELS[strategy] || CONFLICT_STRATEGY_LABELS.keep_existing,
+  );
+}
+
 function PreviewGroup({
   label,
   items,
@@ -197,10 +214,24 @@ export function ModelImportModal({
                   setPreview(EMPTY_PREVIEW);
                 }}
               >
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger>
+                  <SelectValue>
+                    {(value) =>
+                      conflictStrategyLabel(
+                        (value ||
+                          "keep_existing") as ManagedModelImportConflictStrategyV2,
+                        t,
+                      )
+                    }
+                  </SelectValue>
+                </SelectTrigger>
                 <SelectContent><SelectGroup>
-                  <SelectItem value="keep_existing">keep_existing</SelectItem>
-                  <SelectItem value="replace_custom">replace_custom</SelectItem>
+                  <SelectItem value="keep_existing">
+                    {conflictStrategyLabel("keep_existing", t)}
+                  </SelectItem>
+                  <SelectItem value="replace_custom">
+                    {conflictStrategyLabel("replace_custom", t)}
+                  </SelectItem>
                 </SelectGroup></SelectContent>
               </Select>
             </div>

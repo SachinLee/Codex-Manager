@@ -3,6 +3,14 @@ use super::{
     stream_reader_disconnected_message,
 };
 
+#[test]
+fn comment_keepalive_is_not_a_semantic_event() {
+    let frame = super::SseKeepAliveFrame::Comment.bytes();
+    assert_eq!(frame, b": keep-alive\n\n");
+    assert!(!frame.starts_with(b"data:"));
+    assert!(!String::from_utf8_lossy(frame).contains("codexmanager.keepalive"));
+}
+
 /// 函数 `classify_upstream_stream_read_error_maps_body_error`
 ///
 /// 作者: gaohongshun

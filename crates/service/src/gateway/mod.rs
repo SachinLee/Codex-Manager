@@ -432,9 +432,10 @@ pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
+pub(crate) use runtime_config::invalidate_account_proxy_client_cache as invalidate_account_proxy_cache;
 pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
-use runtime_config::{
+pub(crate) use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
     fresh_upstream_client_for_account, prepare_upstream_client_for_account,
     request_gate_wait_timeout, trace_body_preview_max_bytes, upstream_client_for_account,
@@ -945,14 +946,6 @@ pub(crate) fn upstream_client_for_aggregate_url(url: &str) -> reqwest::blocking:
     runtime_config::upstream_client_for_aggregate_url(url)
 }
 
-pub(crate) fn apply_blocking_upstream_proxy(
-    builder: reqwest::blocking::ClientBuilder,
-    proxy_url: Option<&str>,
-    invalid_event: &str,
-) -> reqwest::blocking::ClientBuilder {
-    runtime_config::apply_blocking_upstream_proxy(builder, proxy_url, invalid_event)
-}
-
 pub(crate) fn apply_async_upstream_proxy(
     builder: reqwest::ClientBuilder,
     proxy_url: Option<&str>,
@@ -1037,7 +1030,23 @@ pub(crate) fn set_upstream_total_timeout_ms(timeout_ms: u64) -> u64 {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn current_sse_keepalive_interval_ms() -> u64 {
-    http_bridge::current_sse_keepalive_interval_ms()
+    runtime_config::current_sse_keepalive_interval_ms()
+}
+
+pub(crate) fn current_sse_keepalive_enabled() -> bool {
+    runtime_config::current_sse_keepalive_enabled()
+}
+
+pub(crate) fn sse_keepalive_enabled_is_env_overridden() -> bool {
+    runtime_config::sse_keepalive_enabled_is_env_overridden()
+}
+
+pub(crate) fn sse_keepalive_interval_is_env_overridden() -> bool {
+    runtime_config::sse_keepalive_interval_is_env_overridden()
+}
+
+pub(crate) fn set_sse_keepalive_enabled(enabled: bool) -> bool {
+    runtime_config::set_sse_keepalive_enabled(enabled)
 }
 
 /// 函数 `set_sse_keepalive_interval_ms`
@@ -1052,7 +1061,7 @@ pub(crate) fn current_sse_keepalive_interval_ms() -> u64 {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
-    http_bridge::set_sse_keepalive_interval_ms(interval_ms)
+    runtime_config::set_sse_keepalive_interval_ms(interval_ms)
 }
 
 /// 函数 `manual_preferred_account`

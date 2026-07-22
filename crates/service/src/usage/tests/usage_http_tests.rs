@@ -2,9 +2,11 @@ use super::{
     build_usage_request_headers, summarize_usage_error_response, usage_http_client,
     CHATGPT_ACCOUNT_ID_HEADER_NAME,
 };
+use codexmanager_core::storage::{now_ts, Account, Storage};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use reqwest::StatusCode;
+use std::path::PathBuf;
 use std::sync::MutexGuard;
 use std::thread;
 use std::time::Duration;
@@ -19,6 +21,313 @@ struct RecordedSubscriptionRequest {
     origin: Option<String>,
     referer: Option<String>,
     accept: Option<String>,
+}
+
+struct EnvVarRestore {
+    key: &'static str,
+    value: Option<String>,
+}
+
+impl EnvVarRestore {
+    fn set(key: &'static str, value: &str) -> Self {
+        let restore = Self {
+            key,
+            value: std::env::var(key).ok(),
+        };
+        std::env::set_var(key, value);
+        restore
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let restore = Self {
+            key,
+            value: std::env::var(key).ok(),
+        };
+        std::env::remove_var(key);
+        restore
+    }
+}
+
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        match self.value.as_deref() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+struct TestDbGuard {
+    previous_db_path: Option<String>,
+    db_path: PathBuf,
+}
+
+impl TestDbGuard {
+    fn new(label: &str) -> Self {
+        let db_path = std::env::temp_dir().join(format!(
+            "codexmanager-usage-http-{label}-{}-{}.sqlite",
+            std::process::id(),
+            codexmanager_core::storage::now_ts()
+        ));
+        let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
+        std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
+        let storage = Storage::open(&db_path).expect("open test storage");
+        storage.init().expect("init test storage");
+        Self {
+            previous_db_path,
+            db_path,
+        }
+    }
+}
+
+impl Drop for TestDbGuard {
+    fn drop(&mut self) {
+        match self.previous_db_path.as_deref() {
+            Some(value) => std::env::set_var("CODEXMANAGER_DB_PATH", value),
+            None => std::env::remove_var("CODEXMANAGER_DB_PATH"),
+        }
+        let _ = std::fs::remove_file(&self.db_path);
+    }
+}
+
+fn seed_account_proxy(db_path: &PathBuf, account_id: &str, enabled: bool, proxy_url: Option<&str>) {
+    let storage = Storage::open(db_path).expect("reopen test storage");
+    let now = now_ts();
+    storage
+        .insert_account(&Account {
+            id: account_id.to_string(),
+            label: account_id.to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("seed account");
+    storage
+        .upsert_account_proxy_settings(
+            account_id,
+            enabled,
+            Some("custom"),
+            None,
+            proxy_url,
+            "unchecked",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("seed account proxy");
+    crate::gateway::invalidate_account_proxy_cache(account_id);
+}
+
+fn spawn_recording_http_proxy(
+    response_body: &'static str,
+    content_type: &'static str,
+) -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock HTTP proxy");
+    let proxy_addr = listener.local_addr().expect("mock HTTP proxy addr");
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
+        let (mut client, _) = listener.accept().expect("accept proxy client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set proxy read timeout");
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = client.read(&mut buf).expect("read proxy request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+        }
+        let request_text = String::from_utf8_lossy(request.as_slice()).to_string();
+        request_tx.send(request_text).expect("send proxy request");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+            response_body.len()
+        );
+        client
+            .write_all(response.as_bytes())
+            .expect("write proxy response");
+        client.flush().expect("flush proxy response");
+    });
+    (format!("http://{proxy_addr}"), request_rx, handle)
+}
+
+fn spawn_delayed_success_server() -> (
+    String,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+    thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind delayed response server");
+    let server_addr = listener.local_addr().expect("delayed response server addr");
+    let (headers_sent_tx, headers_sent_rx) = std::sync::mpsc::channel();
+    let (release_body_tx, release_body_rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
+        let (mut client, _) = listener.accept().expect("accept delayed response client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set delayed response read timeout");
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = client
+                .read(&mut buf)
+                .expect("read delayed response request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+        }
+        client
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{",
+            )
+            .expect("write delayed response headers");
+        client.flush().expect("flush delayed response headers");
+        headers_sent_tx.send(()).expect("signal response headers");
+        release_body_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("wait to release response body");
+        client
+            .write_all(b"\"ok\":true}")
+            .expect("write delayed response body");
+        client.flush().expect("flush delayed response body");
+    });
+    (
+        format!("http://{server_addr}"),
+        headers_sent_rx,
+        release_body_tx,
+        handle,
+    )
+}
+
+fn spawn_truncated_success_server() -> (String, thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind truncated response server");
+    let server_addr = listener
+        .local_addr()
+        .expect("truncated response server addr");
+    let handle = thread::spawn(move || {
+        let (mut client, _) = listener.accept().expect("accept truncated response client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set truncated response read timeout");
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = client
+                .read(&mut buf)
+                .expect("read truncated response request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+        }
+        client
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{",
+            )
+            .expect("write truncated response");
+        client.flush().expect("flush truncated response");
+    });
+    (format!("http://{server_addr}"), handle)
+}
+
+fn spawn_timeout_recording_http_proxy(
+    response_body: &'static str,
+    content_type: &'static str,
+    accept_timeout: Duration,
+) -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind timeout HTTP proxy");
+    listener
+        .set_nonblocking(true)
+        .expect("set timeout proxy nonblocking");
+    let proxy_addr = listener.local_addr().expect("timeout HTTP proxy addr");
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
+        let started_at = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((mut client, _)) => {
+                    client
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .expect("set timeout proxy read timeout");
+                    let mut request = Vec::new();
+                    let mut buf = [0_u8; 1024];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = client.read(&mut buf).expect("read timeout proxy request");
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buf[..read]);
+                    }
+                    let request_text = String::from_utf8_lossy(request.as_slice()).to_string();
+                    request_tx
+                        .send(request_text)
+                        .expect("send timeout proxy request");
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                        response_body.len()
+                    );
+                    client
+                        .write_all(response.as_bytes())
+                        .expect("write timeout proxy response");
+                    client.flush().expect("flush timeout proxy response");
+                    return;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if started_at.elapsed() >= accept_timeout {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(err) => panic!("accept timeout proxy client failed: {err}"),
+            }
+        }
+    });
+    (format!("http://{proxy_addr}"), request_rx, handle)
 }
 
 /// 函数 `usage_header_runtime_scope`
@@ -487,7 +796,7 @@ fn usage_http_default_headers_follow_gateway_runtime_profile() {
 /// 无
 #[test]
 fn usage_request_headers_use_official_chatgpt_account_header_name() {
-    let headers = build_usage_request_headers(Some("workspace_123"));
+    let headers = build_usage_request_headers(Some("workspace_123"), false);
 
     assert_eq!(
         headers
@@ -496,6 +805,68 @@ fn usage_request_headers_use_official_chatgpt_account_header_name() {
         Some("workspace_123")
     );
     assert_eq!(headers.len(), 1);
+}
+
+#[test]
+fn usage_request_headers_include_fedramp_context_when_enabled() {
+    let headers = build_usage_request_headers(Some("workspace_123"), true);
+
+    assert_eq!(
+        headers
+            .get("x-openai-fedramp")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+    assert_eq!(headers.len(), 2);
+}
+
+#[test]
+fn reset_credit_headers_follow_configured_usage_origin() {
+    let cases = [
+        (
+            "https://chat.openai.com/backend-api",
+            "https://chat.openai.com",
+            "https://chat.openai.com/",
+        ),
+        (
+            "http://127.0.0.1:58438/backend-api",
+            "http://127.0.0.1:58438",
+            "http://127.0.0.1:58438/",
+        ),
+    ];
+
+    for (base_url, expected_origin, expected_referer) in cases {
+        let headers = super::reset_credit_request_headers(base_url, Some("workspace_123"))
+            .expect("build reset credit headers");
+        assert_eq!(
+            headers
+                .get(reqwest::header::ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_origin)
+        );
+        assert_eq!(
+            headers
+                .get(reqwest::header::REFERER)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_referer)
+        );
+        assert_eq!(
+            headers
+                .get(CHATGPT_ACCOUNT_ID_HEADER_NAME)
+                .and_then(|value| value.to_str().ok()),
+            Some("workspace_123")
+        );
+    }
+}
+
+#[test]
+fn reset_credit_headers_reject_unsupported_scheme() {
+    let error = super::reset_credit_request_headers("file:///tmp/chatgpt", None)
+        .expect_err("file URL must be rejected");
+
+    assert!(error
+        .message
+        .contains("unsupported reset credit URL scheme: file"));
 }
 
 /// 函数 `subscription_request_uses_only_authorization_without_custom_usage_headers`
@@ -733,6 +1104,363 @@ fn refresh_access_token_mock_region_blocked_response_surfaces_marker() {
     assert!(super::is_refresh_token_region_blocked_error_message(&err));
 }
 
+#[test]
+fn fetch_usage_snapshot_with_explicit_proxy_uses_explicit_proxy_before_global_proxy() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
+    super::reload_usage_http_client_from_env();
+    let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":12.5,"windowMinutes":180}}"#,
+        "application/json",
+    );
+
+    let snapshot = super::fetch_usage_snapshot_with_explicit_proxy(
+        "http://chatgpt.test",
+        "token_123",
+        Some("workspace_123"),
+        proxy_url.as_str(),
+    )
+    .expect("fetch usage snapshot");
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture usage proxy request");
+    proxy_handle.join().expect("join usage proxy");
+    let request = request.to_ascii_lowercase();
+
+    assert!(request.starts_with("get http://chatgpt.test/"));
+    assert!(request.contains("authorization: bearer token_123"));
+    assert!(request.contains("chatgpt-account-id: workspace_123"));
+    assert_eq!(snapshot["gpt4"]["usedPercent"], 12.5);
+}
+
+#[test]
+fn fetch_usage_snapshot_preserves_agent_assertion_authorization() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    super::reload_usage_http_client_from_env();
+    let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":8.0,"windowMinutes":180}}"#,
+        "application/json",
+    );
+
+    let snapshot = super::fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
+        "http://chatgpt.test",
+        "AgentAssertion encoded-value",
+        Some("workspace-agent"),
+        true,
+        proxy_url.as_str(),
+    )
+    .expect("fetch agent identity usage snapshot");
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture agent identity usage request");
+    proxy_handle
+        .join()
+        .expect("join agent identity usage proxy");
+    let request = request.to_ascii_lowercase();
+
+    assert!(request.contains("authorization: agentassertion encoded-value"));
+    assert!(request.contains("chatgpt-account-id: workspace-agent"));
+    assert!(request.contains("x-openai-fedramp: true"));
+    assert_eq!(snapshot["gpt4"]["usedPercent"], 8.0);
+}
+
+#[test]
+fn fetch_reset_credits_with_explicit_proxy_uses_account_route_and_dynamic_headers() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
+    super::reload_usage_http_client_from_env();
+    let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
+        r#"{"credits":[{"id":"credit-1","status":"available"}]}"#,
+        "application/json",
+    );
+
+    let snapshot = super::fetch_reset_credits_snapshot_with_explicit_proxy(
+        "http://chatgpt.test/backend-api",
+        "token_123",
+        Some("workspace_123"),
+        proxy_url.as_str(),
+    )
+    .expect("fetch reset credits");
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture reset credit proxy request");
+    proxy_handle.join().expect("join reset credit proxy");
+    let request = request.to_ascii_lowercase();
+
+    assert!(
+        request.starts_with("get http://chatgpt.test/backend-api/wham/rate-limit-reset-credits")
+    );
+    assert!(request.contains("authorization: bearer token_123"));
+    assert!(request.contains("chatgpt-account-id: workspace_123"));
+    assert!(request.contains("origin: http://chatgpt.test"));
+    assert!(request.contains("referer: http://chatgpt.test/"));
+    assert_eq!(snapshot.available_count, Some(1));
+}
+
+#[test]
+fn consume_reset_credit_with_explicit_proxy_uses_account_route() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
+    super::reload_usage_http_client_from_env();
+    let (proxy_url, request_rx, proxy_handle) =
+        spawn_recording_http_proxy(r#"{"ok":true}"#, "application/json");
+
+    super::consume_reset_credit_request_with_explicit_proxy(
+        "http://chatgpt.test/backend-api",
+        "token_123",
+        Some("workspace_123"),
+        "redeem-request-123",
+        proxy_url.as_str(),
+    )
+    .expect("consume reset credit");
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture reset credit consume proxy request");
+    proxy_handle
+        .join()
+        .expect("join reset credit consume proxy");
+    let request = request.to_ascii_lowercase();
+
+    assert!(request
+        .starts_with("post http://chatgpt.test/backend-api/wham/rate-limit-reset-credits/consume"));
+    assert!(request.contains("authorization: bearer token_123"));
+    assert!(request.contains("chatgpt-account-id: workspace_123"));
+    assert!(request.contains("origin: http://chatgpt.test"));
+}
+
+#[test]
+fn consume_reset_credit_waits_for_success_response_body() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    super::reload_usage_http_client_from_env();
+    let (base_url, headers_sent_rx, release_body_tx, server_handle) =
+        spawn_delayed_success_server();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let client_handle = thread::spawn(move || {
+        result_tx
+            .send(super::consume_reset_credit_request(
+                &base_url,
+                "token_123",
+                Some("workspace_123"),
+                "redeem-request-123",
+            ))
+            .expect("send consume result");
+    });
+
+    headers_sent_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive response header signal");
+    assert!(result_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    release_body_tx.send(()).expect("release response body");
+    result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive consume result")
+        .expect("consume reset credit");
+    client_handle.join().expect("join consume client");
+    server_handle.join().expect("join delayed response server");
+}
+
+#[test]
+fn success_body_read_failure_does_not_reclassify_redeem_as_failed() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    super::reload_usage_http_client_from_env();
+    let (base_url, server_handle) = spawn_truncated_success_server();
+
+    super::consume_reset_credit_request(
+        &base_url,
+        "token_123",
+        Some("workspace_123"),
+        "redeem-request-123",
+    )
+    .expect("2xx status already confirms redeem success");
+    server_handle
+        .join()
+        .expect("join truncated response server");
+}
+
+#[test]
+fn fetch_account_subscription_with_explicit_proxy_uses_explicit_proxy_before_global_proxy() {
+    let _guard = crate::test_env_guard();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
+    super::reload_usage_http_client_from_env();
+    let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
+        r#"{"accounts":{"acct-chatgpt":{"account":{"plan_type":"pro","is_default":true},"entitlement":{"subscription_plan":"plus","has_active_subscription":true}}}}"#,
+        "application/json",
+    );
+
+    let snapshot = super::fetch_account_subscription_with_explicit_proxy(
+        "http://chatgpt.test",
+        "token_123",
+        "acct-chatgpt",
+        Some("workspace_123"),
+        proxy_url.as_str(),
+    )
+    .expect("fetch subscription");
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture subscription proxy request");
+    proxy_handle.join().expect("join subscription proxy");
+    let request = request.to_ascii_lowercase();
+
+    assert!(request.starts_with("get http://chatgpt.test/"));
+    assert!(request.contains("authorization: bearer token_123"));
+    assert!(request.contains("origin: https://chatgpt.com"));
+    assert!(!request.contains("user-agent:"));
+    assert!(snapshot.has_subscription);
+    assert_eq!(snapshot.account_plan_type.as_deref(), Some("pro"));
+}
+
+#[test]
+fn refresh_access_token_with_explicit_proxy_fails_for_invalid_proxy_url() {
+    let _guard = crate::test_env_guard();
+    let _override_restore = EnvVarRestore::remove("CODEX_REFRESH_TOKEN_URL_OVERRIDE");
+
+    let err = match super::refresh_access_token_with_explicit_proxy(
+        "https://auth.openai.com",
+        "client-id",
+        "refresh-token",
+        "http://",
+    ) {
+        Ok(_) => panic!("invalid explicit proxy should fail closed"),
+        Err(err) => err,
+    };
+
+    assert!(err.contains("explicit account proxy URL is invalid and fail-closed"));
+}
+
+#[test]
+fn refresh_access_token_with_explicit_proxy_fails_closed_for_empty_proxy_url() {
+    let _guard = crate::test_env_guard();
+
+    let err = match super::refresh_access_token_with_explicit_proxy(
+        "https://auth.openai.com",
+        "client-id",
+        "refresh-token",
+        "   ",
+    ) {
+        Ok(_) => panic!("empty explicit proxy should fail closed"),
+        Err(err) => err,
+    };
+
+    assert!(err.contains("explicit account proxy URL is required and fail-closed"));
+}
+
+#[test]
+fn legacy_subscription_request_ignores_proxy_pool_when_account_proxy_is_disabled() {
+    let _guard = crate::test_env_guard();
+    let db = TestDbGuard::new("subscription-disabled-proxy-pool");
+    seed_account_proxy(
+        &db.db_path,
+        "acc-disabled-subscription",
+        false,
+        Some("http://127.0.0.1:7891"),
+    );
+    let server = Server::http("127.0.0.1:0").expect("start legacy subscription server");
+    let addr = format!("http://{}", server.server_addr());
+    let (proxy_url, proxy_rx, proxy_handle) = spawn_timeout_recording_http_proxy(
+        r#"{"accounts":{"acct-chatgpt":{"account":{"plan_type":"pro","is_default":true},"entitlement":{"subscription_plan":"plus","has_active_subscription":true}}}}"#,
+        "application/json",
+        Duration::from_millis(400),
+    );
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let _pool_proxy = EnvVarRestore::set("CODEXMANAGER_PROXY_LIST", proxy_url.as_str());
+    super::reload_usage_http_client_from_env();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(5))
+            .expect("subscription server timeout")
+            .expect("receive legacy subscription request");
+        tx.send(request.url().to_string())
+            .expect("send legacy subscription path");
+        let response = Response::from_string(
+            r#"{"accounts":{"acct-chatgpt":{"account":{"plan_type":"pro","is_default":true},"entitlement":{"subscription_plan":"plus","has_active_subscription":true}}}}"#,
+        )
+        .with_status_code(TinyStatusCode(200))
+        .with_header(
+            Header::from_bytes("Content-Type", "application/json")
+                .expect("content-type header"),
+        );
+        request
+            .respond(response)
+            .expect("respond legacy subscription");
+    });
+
+    let snapshot = super::fetch_account_subscription(
+        &addr,
+        "token_123",
+        "acct-chatgpt",
+        Some("workspace_123"),
+    )
+    .expect("fetch legacy subscription");
+
+    assert!(snapshot.has_subscription);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("receive legacy subscription path"),
+        "/accounts/check/v4-2023-04-27"
+    );
+    assert!(proxy_rx.recv_timeout(Duration::from_millis(300)).is_err());
+    handle.join().expect("join legacy subscription server");
+    proxy_handle.join().expect("join unused proxy");
+}
+
+#[test]
+fn legacy_usage_request_ignores_proxy_pool_when_account_proxy_is_disabled() {
+    let _guard = crate::test_env_guard();
+    let db = TestDbGuard::new("usage-disabled-proxy-pool");
+    seed_account_proxy(
+        &db.db_path,
+        "acc-disabled-usage",
+        false,
+        Some("http://127.0.0.1:7891"),
+    );
+    let server = Server::http("127.0.0.1:0").expect("start legacy usage server");
+    let addr = format!("http://{}", server.server_addr());
+    let (proxy_url, proxy_rx, proxy_handle) = spawn_timeout_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":99.0,"windowMinutes":180}}"#,
+        "application/json",
+        Duration::from_millis(400),
+    );
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let _pool_proxy = EnvVarRestore::set("CODEXMANAGER_PROXY_LIST", proxy_url.as_str());
+    super::reload_usage_http_client_from_env();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(5))
+            .expect("usage server timeout")
+            .expect("receive legacy usage request");
+        tx.send(request.url().to_string())
+            .expect("send legacy usage path");
+        let response =
+            Response::from_string(r#"{"gpt4":{"usedPercent":99.0,"windowMinutes":180}}"#)
+                .with_status_code(TinyStatusCode(200))
+                .with_header(
+                    Header::from_bytes("Content-Type", "application/json")
+                        .expect("content-type header"),
+                );
+        request.respond(response).expect("respond legacy usage");
+    });
+
+    let snapshot = super::fetch_usage_snapshot(&addr, "token_123", Some("workspace_123"))
+        .expect("fetch legacy usage");
+
+    assert_eq!(snapshot["gpt4"]["usedPercent"], 99.0);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("receive legacy usage path"),
+        "/api/codex/usage"
+    );
+    assert!(proxy_rx.recv_timeout(Duration::from_millis(300)).is_err());
+    handle.join().expect("join legacy usage server");
+    proxy_handle.join().expect("join unused proxy");
+}
+
 /// 函数 `summarize_usage_error_response_stabilizes_html_and_debug_headers`
 ///
 /// 作者: gaohongshun
@@ -771,6 +1499,36 @@ fn summarize_usage_error_response_stabilizes_html_and_debug_headers() {
     assert!(summary.contains("cf-ray: cf_usage_123"));
     assert!(summary.contains("auth error: missing_authorization_header"));
     assert!(summary.contains("identity error code: token_expired"));
+}
+
+#[test]
+fn summarize_usage_error_response_redacts_invalid_agent_task_details() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-openai-authorization-error",
+        HeaderValue::from_static("task-secret-from-header"),
+    );
+    headers.insert(
+        "x-error-json",
+        HeaderValue::from_static(
+            "{\"details\":{\"identity_error_code\":\"task-secret-from-identity-header\"}}",
+        ),
+    );
+
+    let summary = summarize_usage_error_response(
+        StatusCode::UNAUTHORIZED,
+        &headers,
+        r#"{"error":{"code":"task_expired","message":"task-secret-from-body"}}"#,
+        false,
+    );
+
+    assert!(summary.contains("invalid_task_id"));
+    assert!(crate::agent_identity::is_agent_identity_task_invalid_error(
+        &summary
+    ));
+    assert!(!summary.contains("task-secret-from-body"));
+    assert!(!summary.contains("task-secret-from-header"));
+    assert!(!summary.contains("task-secret-from-identity-header"));
 }
 
 /// 函数 `summarize_usage_error_response_accepts_raw_error_json_header`

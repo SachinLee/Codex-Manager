@@ -1,0 +1,46 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const appsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function readSource(relativePath) {
+  return fs.readFile(path.join(appsRoot, relativePath), "utf8");
+}
+
+test("管理员用量查询显式请求模型序列和时间粒度", async () => {
+  const [clientSource, hookSource, pageSource] = await Promise.all([
+    readSource("src/lib/api/dashboard-client.ts"),
+    readSource("src/hooks/useDashboardAdminUsageSummary.ts"),
+    readSource("src/app/page.tsx"),
+  ]);
+
+  assert.match(clientSource, /includeSeries: params\?\.includeSeries \?\? null/);
+  assert.match(clientSource, /seriesBucketSeconds: params\?\.seriesBucketSeconds \?\? null/);
+  assert.match(hookSource, /params\?\.seriesBucketSeconds \?\? null/);
+  assert.match(pageSource, /includeSeries: true/);
+  assert.match(
+    pageSource,
+    /seriesBucketSeconds: adminUsageGranularity === "hour" \? 3_600 : 86_400/,
+  );
+});
+
+test("模型曲线保留原日曲线回退并提供可访问交互", async () => {
+  const [pageSource, chartSource] = await Promise.all([
+    readSource("src/app/page.tsx"),
+    readSource("src/components/dashboard/admin-usage-trend-chart.tsx"),
+  ]);
+
+  assert.match(
+    pageSource,
+    /summary\.seriesUsage\.length > 0[\s\S]*<AdminUsageTrendChart[\s\S]*<DailyTokenLineChart/,
+  );
+  assert.match(chartSource, /type AdminUsageMetric = "tokens" \| "requests"/);
+  assert.match(chartSource, /export type AdminUsageGranularity = "day" \| "hour"/);
+  assert.match(chartSource, /aria-pressed=\{granularity === value\}/);
+  assert.match(chartSource, /aria-pressed=\{isSelected\}/);
+  assert.match(chartSource, /MAX_SELECTED_MODELS = MODEL_SERIES_COLORS\.length/);
+  assert.match(chartSource, /accessibilityLayer/);
+});

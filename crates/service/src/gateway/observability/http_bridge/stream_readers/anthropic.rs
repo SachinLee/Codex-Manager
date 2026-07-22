@@ -1,8 +1,8 @@
 use super::{
     append_output_text, collect_output_text_from_event_fields, collect_response_output_text, json,
-    mark_first_response_ms_on_usage, should_emit_keepalive, stream_idle_timed_out,
-    stream_wait_timeout, Arc, Cursor, Map, Mutex, Read, SseKeepAliveFrame, UpstreamResponseUsage,
-    UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
+    mark_first_response_ms_on_usage, should_emit_keepalive_after_first_frame,
+    stream_idle_timed_out, stream_wait_timeout, Arc, Cursor, Map, Mutex, Read, SseKeepAliveFrame,
+    UpstreamResponseUsage, UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
 };
 use std::time::Instant;
 
@@ -154,7 +154,7 @@ impl AnthropicSseReader {
                         }
                         return Ok(finished);
                     }
-                    if should_emit_keepalive(self.saw_upstream_frame) {
+                    if should_emit_keepalive_after_first_frame(self.saw_upstream_frame) {
                         return Ok(SseKeepAliveFrame::Anthropic.bytes().to_vec());
                     }
                     continue;

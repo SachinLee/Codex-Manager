@@ -3,9 +3,11 @@ import { normalizeModelCatalog, normalizeRequestLogs } from "./normalize";
 import type {
   DashboardAdminUsageSummary,
   DashboardDailyUsagePoint,
+  DashboardModelUsageSeries,
   DashboardSourceUsageSummary,
   DashboardTokenActivity,
   DashboardTokenUsage,
+  DashboardUsageSeriesPoint,
   DashboardUserUsageSummary,
   MemberDashboardAlert,
   MemberDashboardApiKeySummary,
@@ -80,6 +82,26 @@ function readDailyUsagePoint(value: unknown): DashboardDailyUsagePoint {
   };
 }
 
+function readUsageSeriesPoint(value: unknown): DashboardUsageSeriesPoint {
+  const source = asRecord(value);
+  return {
+    bucketStartTs: asNumber(source.bucketStartTs ?? source.bucket_start_ts),
+    bucketEndTs: asNumber(source.bucketEndTs ?? source.bucket_end_ts),
+    usage: readTokenUsage(source.usage),
+  };
+}
+
+function readModelUsageSeries(value: unknown): DashboardModelUsageSeries | null {
+  const source = asRecord(value);
+  const model = asString(source.model).trim();
+  if (!model) return null;
+  return {
+    model,
+    usage: readTokenUsage(source.usage),
+    points: asArray(source.points).map(readUsageSeriesPoint),
+  };
+}
+
 function readUserUsageSummary(value: unknown): DashboardUserUsageSummary | null {
   const source = asRecord(value);
   const userId = asString(source.userId ?? source.user_id);
@@ -126,6 +148,16 @@ function readAdminUsageSummary(value: unknown): DashboardAdminUsageSummary {
     dailyUsage: asArray(source.dailyUsage ?? source.daily_usage).map(
       readDailyUsagePoint,
     ),
+    seriesBucketSeconds: asNumber(
+      source.seriesBucketSeconds ?? source.series_bucket_seconds,
+      86_400,
+    ),
+    seriesUsage: asArray(source.seriesUsage ?? source.series_usage).map(
+      readUsageSeriesPoint,
+    ),
+    modelUsage: asArray(source.modelUsage ?? source.model_usage)
+      .map(readModelUsageSeries)
+      .filter((item): item is DashboardModelUsageSeries => Boolean(item)),
     users: asArray(source.users)
       .map(readUserUsageSummary)
       .filter((item): item is DashboardUserUsageSummary => Boolean(item)),
@@ -295,6 +327,8 @@ export const dashboardClient = {
     startTs?: number | null;
     endTs?: number | null;
     includeBreakdowns?: boolean;
+    includeSeries?: boolean;
+    seriesBucketSeconds?: number | null;
   }): Promise<DashboardAdminUsageSummary> {
     const result = await invoke<unknown>(
       "service_dashboard_admin_usage_summary",
@@ -302,6 +336,8 @@ export const dashboardClient = {
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
         includeBreakdowns: params?.includeBreakdowns ?? null,
+        includeSeries: params?.includeSeries ?? null,
+        seriesBucketSeconds: params?.seriesBucketSeconds ?? null,
       }),
     );
     return readAdminUsageSummary(result);

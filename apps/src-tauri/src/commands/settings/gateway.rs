@@ -273,20 +273,26 @@ pub async fn service_gateway_transport_get(
 ///
 /// # 参数
 /// - addr: 参数 addr
+/// - sse_keepalive_enabled: 参数 sse_keepalive_enabled
 /// - sse_keepalive_interval_ms: 参数 sse_keepalive_interval_ms
 /// - upstream_stream_timeout_ms: 参数 upstream_stream_timeout_ms
+/// - upstream_total_timeout_ms: 参数 upstream_total_timeout_ms
 ///
 /// # 返回
 /// 返回函数执行结果
 #[tauri::command]
 pub async fn service_gateway_transport_set(
     addr: Option<String>,
+    sse_keepalive_enabled: Option<bool>,
     sse_keepalive_interval_ms: Option<u64>,
     upstream_stream_timeout_ms: Option<u64>,
+    upstream_total_timeout_ms: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
+      "sseKeepaliveEnabled": sse_keepalive_enabled,
       "sseKeepaliveIntervalMs": sse_keepalive_interval_ms,
-      "upstreamStreamTimeoutMs": upstream_stream_timeout_ms
+      "upstreamStreamTimeoutMs": upstream_stream_timeout_ms,
+      "upstreamTotalTimeoutMs": upstream_total_timeout_ms
     });
     rpc_call_in_background("gateway/transport/set", addr, Some(params)).await
 }

@@ -7,38 +7,17 @@ use super::super::attempt_flow::transport::send_upstream_request;
 use super::super::attempt_flow::transport::UpstreamRequestContext;
 use super::super::GatewayUpstreamResponse;
 
-fn value_contains_codex(value: Option<&str>) -> bool {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some_and(|value| value.to_ascii_lowercase().contains("codex"))
-}
-
-fn looks_like_native_codex_client(
-    incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-) -> bool {
-    value_contains_codex(incoming_headers.user_agent())
-        || value_contains_codex(incoming_headers.originator())
-        || incoming_headers.client_request_id().is_some()
-        || incoming_headers.subagent().is_some()
-        || incoming_headers.beta_features().is_some()
-        || incoming_headers.window_id().is_some()
-        || incoming_headers.turn_metadata().is_some()
-        || incoming_headers.turn_state().is_some()
-        || incoming_headers.parent_thread_id().is_some()
-}
-
-fn should_skip_codex_v1_alt_for_api_client(
+fn should_skip_codex_v1_alt_for_responses(
     request_ctx: UpstreamRequestContext<'_>,
-    incoming_headers: &super::super::super::IncomingHeaderSnapshot,
     alt_url: &str,
 ) -> bool {
     request_ctx.protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
-        && request_ctx.request_path.starts_with("/v1/responses")
-        && alt_url
-            .to_ascii_lowercase()
-            .contains("/backend-api/codex/v1/")
-        && !looks_like_native_codex_client(incoming_headers)
+        && reqwest::Url::parse(alt_url).ok().is_some_and(|url| {
+            url.path()
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+                .ends_with("/backend-api/codex/v1/responses")
+        })
 }
 
 pub(in super::super) enum AltPathRetryResult {
@@ -86,9 +65,9 @@ where
     if !matches!(status.as_u16(), 400 | 404) {
         return AltPathRetryResult::NotTriggered;
     }
-    if should_skip_codex_v1_alt_for_api_client(request_ctx, incoming_headers, alt_url) {
+    if should_skip_codex_v1_alt_for_responses(request_ctx, alt_url) {
         log::warn!(
-            "event=gateway_upstream_alt_retry_skipped path={} status={} reason=api_client_codex_v1_alt_blocked upstream_url={}",
+            "event=gateway_upstream_alt_retry_skipped path={} status={} reason=responses_codex_v1_alt_blocked upstream_url={}",
             request_ctx.request_path,
             status.as_u16(),
             alt_url

@@ -2,6 +2,7 @@ use codexmanager_core::auth::{extract_token_exp, DEFAULT_CLIENT_ID, DEFAULT_ISSU
 use codexmanager_core::storage::{now_ts, Account, AccountTokenRefreshIssuer, Storage, Token};
 use codexmanager_core::usage::parse_usage_snapshot;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -14,7 +15,12 @@ use crate::usage_account_meta::{
     clean_header_value, derive_account_meta, patch_account_meta, patch_account_meta_cached,
     resolve_workspace_id_for_account,
 };
-use crate::usage_http::{fetch_account_subscription, fetch_usage_snapshot};
+use crate::usage_http::{
+    fetch_account_subscription, fetch_account_subscription_with_explicit_proxy,
+    fetch_usage_snapshot, fetch_usage_snapshot_with_auth_context,
+    fetch_usage_snapshot_with_auth_context_and_explicit_proxy,
+    fetch_usage_snapshot_with_explicit_proxy, log_account_data_route,
+};
 use crate::usage_keepalive::{is_keepalive_error_ignorable, run_gateway_keepalive_once};
 use crate::usage_scheduler::{
     parse_interval_secs, DEFAULT_GATEWAY_KEEPALIVE_FAILURE_BACKOFF_MAX_SECS,
@@ -145,6 +151,17 @@ pub struct UsageRefreshCompletedEvent {
     pub completed_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageRefreshRunResult {
+    pub ok: bool,
+    pub source: &'static str,
+    pub account_id: Option<String>,
+    pub processed: usize,
+    pub total: usize,
+    pub message: Option<String>,
+}
+
 type UsageRefreshCompletedHandler = Arc<dyn Fn(UsageRefreshCompletedEvent) + Send + Sync>;
 
 static USAGE_REFRESH_COMPLETED_HANDLER: OnceLock<Mutex<Option<UsageRefreshCompletedHandler>>> =
@@ -154,7 +171,7 @@ static USAGE_REFRESH_COMPLETED_SUBSCRIBERS: OnceLock<
 > = OnceLock::new();
 
 use self::batch::refresh_usage_and_aggregate_balances_for_polling_cycle;
-pub(crate) use self::batch::refresh_usage_for_all_accounts;
+pub(crate) use self::batch::refresh_usage_for_all_accounts_result;
 #[cfg(test)]
 use self::batch::{next_usage_poll_cursor, usage_poll_batch_indices};
 use self::errors::{
@@ -467,15 +484,30 @@ fn load_token_refresh_issuers_for_tokens(
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<(), String> {
+pub(crate) fn refresh_usage_for_account_result(
+    account_id: &str,
+) -> Result<UsageRefreshRunResult, String> {
     // 刷新单个账号用量
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return Err("account_id is required".to_string());
+    }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let token = match storage
         .find_token_by_account_id(account_id)
         .map_err(|e| e.to_string())?
     {
         Some(token) => token,
-        None => return Ok(()),
+        None => {
+            return Ok(UsageRefreshRunResult {
+                ok: false,
+                source: "single",
+                account_id: Some(account_id.to_string()),
+                processed: 0,
+                total: 0,
+                message: Some("account token not found".to_string()),
+            });
+        }
     };
 
     let workspace_id = resolve_workspace_id_for_account(&storage, account_id);
@@ -491,7 +523,24 @@ pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<(), String> 
     }
     record_usage_refresh_metrics(true, started_at);
     notify_usage_refresh_completed("single", 1, 1);
-    Ok(())
+    Ok(UsageRefreshRunResult {
+        ok: true,
+        source: "single",
+        account_id: Some(account_id.to_string()),
+        processed: 1,
+        total: 1,
+        message: None,
+    })
+}
+
+pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<(), String> {
+    let result = refresh_usage_for_account_result(account_id)?;
+    if result.ok || result.total == 0 {
+        return Ok(());
+    }
+    Err(result
+        .message
+        .unwrap_or_else(|| "usage refresh did not run".to_string()))
 }
 
 /// 函数 `record_usage_refresh_metrics`
@@ -543,6 +592,14 @@ fn refresh_usage_for_token(
 
     let mut current = token.clone();
     let mut resolved_workspace_id = workspace_id.map(|v| v.to_string());
+    let agent_identity = storage
+        .find_account_agent_identity(&current.account_id)
+        .map_err(|err| format!("load agent identity failed: {err}"))?;
+    if resolved_workspace_id.is_none() {
+        resolved_workspace_id = agent_identity
+            .as_ref()
+            .and_then(|identity| identity.workspace_id.clone());
+    }
     let (derived_chatgpt_id, derived_workspace_id) = derive_account_meta(&current);
 
     if resolved_workspace_id.is_none() {
@@ -571,6 +628,59 @@ fn refresh_usage_for_token(
     let resolved_workspace_id = clean_header_value(resolved_workspace_id);
     let resolved_subscription_account_id =
         clean_header_value(derived_chatgpt_id.or_else(|| resolved_workspace_id.clone()));
+
+    if agent_identity.is_some() {
+        let registration_client = crate::gateway::upstream_client_for_account(&current.account_id)
+            .map_err(|err| format!("build agent task registration client failed: {err}"))?;
+        let authorization = crate::agent_identity::resolve_account_agent_identity_authorization(
+            storage,
+            &registration_client,
+            &current.account_id,
+        )?
+        .ok_or_else(|| "agent identity disappeared before usage refresh".to_string())?;
+        let failed_task_id = authorization.task_id.clone();
+        let first = refresh_account_snapshot(
+            storage,
+            &current.account_id,
+            &base_url,
+            &authorization.value,
+            resolved_workspace_id.as_deref(),
+            None,
+            authorization.is_fedramp,
+        );
+        let outcome = match first {
+            Err(err) if crate::agent_identity::is_agent_identity_task_invalid_error(&err) => {
+                let recovered =
+                    crate::agent_identity::recover_account_agent_identity_authorization(
+                        storage,
+                        &registration_client,
+                        &current.account_id,
+                        &failed_task_id,
+                    )?
+                    .ok_or_else(|| {
+                        "agent identity disappeared during usage task recovery".to_string()
+                    })?;
+                refresh_account_snapshot(
+                    storage,
+                    &current.account_id,
+                    &base_url,
+                    &recovered.value,
+                    resolved_workspace_id.as_deref(),
+                    None,
+                    recovered.is_fedramp,
+                )
+            }
+            other => other,
+        };
+        return match outcome {
+            Ok(status) => Ok(UsageRefreshResult { _status: status }),
+            Err(err) => {
+                mark_usage_unreachable_if_needed(storage, &current.account_id, &err);
+                Err(err)
+            }
+        };
+    }
+
     let bearer = current.access_token.clone();
 
     match refresh_account_snapshot(
@@ -580,6 +690,7 @@ fn refresh_usage_for_token(
         &bearer,
         resolved_workspace_id.as_deref(),
         resolved_subscription_account_id.as_deref(),
+        false,
     ) {
         Ok(status) => Ok(UsageRefreshResult { _status: status }),
         Err(err) if should_retry_usage_refresh_with_token(&current, &err) => {
@@ -622,6 +733,7 @@ fn refresh_usage_for_token(
                 &bearer,
                 refreshed_workspace_id.as_deref(),
                 refreshed_subscription_account_id.as_deref(),
+                false,
             ) {
                 Ok(status) => Ok(UsageRefreshResult { _status: status }),
                 Err(err) => {
@@ -644,10 +756,34 @@ fn refresh_account_snapshot(
     bearer: &str,
     workspace_id: Option<&str>,
     subscription_account_id: Option<&str>,
+    is_fedramp: bool,
 ) -> Result<UsageAvailabilityStatus, String> {
+    let proxy_mode = crate::account_proxy::resolve_account_proxy_mode(account_id);
     if let Some(subscription_account_id) = subscription_account_id {
-        let subscription =
-            fetch_account_subscription(base_url, bearer, subscription_account_id, workspace_id)?;
+        log_account_data_route(
+            "subscription",
+            account_id,
+            &proxy_mode,
+            "accounts_check",
+            false,
+        );
+        let subscription = match &proxy_mode {
+            crate::account_proxy::AccountProxyMode::Disabled => {
+                fetch_account_subscription(base_url, bearer, subscription_account_id, workspace_id)?
+            }
+            crate::account_proxy::AccountProxyMode::Explicit { proxy_url, .. } => {
+                fetch_account_subscription_with_explicit_proxy(
+                    base_url,
+                    bearer,
+                    subscription_account_id,
+                    workspace_id,
+                    proxy_url,
+                )?
+            }
+            crate::account_proxy::AccountProxyMode::Invalid { error, .. } => {
+                return Err(error.clone());
+            }
+        };
         storage
             .upsert_account_subscription(
                 account_id,
@@ -660,7 +796,30 @@ fn refresh_account_snapshot(
             .map_err(|err| format!("store account subscription failed: {err}"))?;
     }
 
-    let value = fetch_usage_snapshot(base_url, bearer, workspace_id)?;
+    log_account_data_route("usage", account_id, &proxy_mode, "usage", true);
+    let value = match &proxy_mode {
+        crate::account_proxy::AccountProxyMode::Disabled if is_fedramp => {
+            fetch_usage_snapshot_with_auth_context(base_url, bearer, workspace_id, is_fedramp)?
+        }
+        crate::account_proxy::AccountProxyMode::Disabled => {
+            fetch_usage_snapshot(base_url, bearer, workspace_id)?
+        }
+        crate::account_proxy::AccountProxyMode::Explicit { proxy_url, .. } if is_fedramp => {
+            fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
+                base_url,
+                bearer,
+                workspace_id,
+                is_fedramp,
+                proxy_url,
+            )?
+        }
+        crate::account_proxy::AccountProxyMode::Explicit { proxy_url, .. } => {
+            fetch_usage_snapshot_with_explicit_proxy(base_url, bearer, workspace_id, proxy_url)?
+        }
+        crate::account_proxy::AccountProxyMode::Invalid { error, .. } => {
+            return Err(error.clone());
+        }
+    };
     let status = classify_usage_status_from_snapshot_value(&value);
     store_usage_snapshot(storage, account_id, value)?;
     Ok(status)

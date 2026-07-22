@@ -1,12 +1,33 @@
 use super::{
-    build_warmup_headers, consume_warmup_stream, reset_warmup_client_cache_for_test,
-    resolve_target_accounts, resolve_warmup_model_slug, should_retry_warmup_with_refresh,
-    warmup_client, warmup_client_build_count_for_test, DEFAULT_WARMUP_MODEL,
+    build_warmup_headers, consume_warmup_stream, resolve_target_accounts,
+    resolve_warmup_model_slug, should_retry_warmup_with_refresh, summarize_warmup_error,
+    DEFAULT_WARMUP_MODEL,
 };
 use codexmanager_core::storage::{
     now_ts, Account, ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, Storage, Token,
 };
 use std::io::Cursor;
+
+#[test]
+fn summarize_warmup_error_redacts_invalid_agent_task_details() {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-openai-authorization-error",
+        reqwest::header::HeaderValue::from_static("task-secret-from-header"),
+    );
+    let summary = summarize_warmup_error(
+        401,
+        &headers,
+        r#"{"error":{"code":"task_expired","message":"task-secret-from-body"}}"#,
+    );
+
+    assert!(summary.contains("invalid_task_id"));
+    assert!(crate::agent_identity::is_agent_identity_task_invalid_error(
+        &summary
+    ));
+    assert!(!summary.contains("task-secret-from-body"));
+    assert!(!summary.contains("task-secret-from-header"));
+}
 
 fn make_model(slug: &str, sort_order: i64, supported_in_api: bool) -> ManagedModelV2Upsert {
     ManagedModelV2Upsert {
@@ -51,8 +72,14 @@ fn resolve_warmup_model_slug_uses_first_supported_model_from_catalog_order() {
     disable_seed_models(&storage);
     let mut hidden = make_model("gpt-hidden", 0, true);
     hidden.model.visibility = "hide".to_string();
+    let mut image = make_model("gpt-image-only", 0, true);
+    image.model.capabilities = serde_json::json!({
+        "supports_text_generation": false,
+        "output_modalities": ["image"]
+    });
     for model in [
         hidden,
+        image,
         make_model("gpt-unsupported", 1, false),
         make_model("gpt-latest", 1, true),
         make_model("gpt-older", 2, true),
@@ -71,16 +98,6 @@ fn resolve_warmup_model_slug_falls_back_when_catalog_missing() {
     storage.init().expect("init in-memory storage");
     disable_seed_models(&storage);
     assert_eq!(resolve_warmup_model_slug(&storage), DEFAULT_WARMUP_MODEL);
-}
-
-#[test]
-fn warmup_client_reuses_cached_client_for_stable_config() {
-    reset_warmup_client_cache_for_test();
-
-    let _first = warmup_client().expect("first warmup client");
-    let _second = warmup_client().expect("second warmup client");
-
-    assert_eq!(warmup_client_build_count_for_test(), 1);
 }
 
 #[test]
@@ -183,12 +200,58 @@ fn build_warmup_headers_omits_non_codex_headers() {
         updated_at: 0,
     };
 
-    let headers = build_warmup_headers(&account, "bearer-token").expect("build warmup headers");
+    let headers =
+        build_warmup_headers(&account, "bearer-token", false).expect("build warmup headers");
 
     assert!(headers.get("version").is_none());
     assert!(headers.get("openai-organization").is_none());
     assert!(headers.get("openai-project").is_none());
     assert!(headers.get("client_version").is_none());
+    assert_eq!(
+        headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer bearer-token")
+    );
+    assert!(headers.get("x-openai-fedramp").is_none());
+}
+
+#[test]
+fn build_warmup_headers_preserves_agent_assertion_and_fedramp_context() {
+    let account = Account {
+        id: "acc-agent".to_string(),
+        label: "acc-agent".to_string(),
+        issuer: "issuer".to_string(),
+        chatgpt_account_id: Some("workspace-agent".to_string()),
+        workspace_id: Some("workspace-agent".to_string()),
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    let headers = build_warmup_headers(&account, "AgentAssertion encoded", true)
+        .expect("build agent warmup headers");
+
+    assert_eq!(
+        headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("AgentAssertion encoded")
+    );
+    assert_eq!(
+        headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("workspace-agent")
+    );
+    assert_eq!(
+        headers
+            .get("x-openai-fedramp")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
 }
 
 #[test]

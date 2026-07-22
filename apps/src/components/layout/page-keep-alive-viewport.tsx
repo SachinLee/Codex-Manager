@@ -46,6 +46,7 @@ const LAZY_PAGE_COMPONENTS: Record<
   "/codex-launcher": lazy(() => import("@/app/codex-launcher/page")),
   "/logs": lazy(() => import("@/app/logs/page")),
   "/settings": lazy(() => import("@/app/settings/page")),
+  "/proxy-settings": lazy(() => import("@/app/proxy-settings/page")),
   "/author": lazy(() => import("@/app/author/page")),
 };
 

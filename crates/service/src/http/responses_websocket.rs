@@ -61,18 +61,30 @@ struct PendingWsRequestState {
     forwarded_upstream_event: bool,
 }
 
+type UpstreamWebsocketStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+
 struct ConnectedUpstreamWebsocket {
-    stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    stream: UpstreamWebsocketStream,
     account_id: String,
     upstream_url: String,
     route_strategy: &'static str,
     route_source: &'static str,
 }
 
+#[derive(Clone)]
+struct WsUpstreamAuthorization {
+    value: String,
+    task_id: Option<String>,
+    uses_agent_identity: bool,
+    is_fedramp: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct WsConnectError {
     message: String,
     status_code: Option<u16>,
+    response_body: Vec<u8>,
 }
 
 impl WsConnectError {
@@ -80,24 +92,34 @@ impl WsConnectError {
         Self {
             message: message.into(),
             status_code: None,
+            response_body: Vec::new(),
         }
     }
 
     fn from_tungstenite(err: tokio_tungstenite::tungstenite::Error) -> Self {
-        let status_code = match &err {
-            tokio_tungstenite::tungstenite::Error::Http(response) => {
-                Some(response.status().as_u16())
-            }
-            _ => None,
+        let (status_code, response_body) = match &err {
+            tokio_tungstenite::tungstenite::Error::Http(response) => (
+                Some(response.status().as_u16()),
+                response.body().as_deref().unwrap_or_default().to_vec(),
+            ),
+            _ => (None, Vec::new()),
         };
         Self {
             message: err.to_string(),
             status_code,
+            response_body,
         }
     }
 
     fn is_unauthorized(&self) -> bool {
         self.status_code == Some(401)
+    }
+
+    fn is_agent_identity_task_invalid(&self) -> bool {
+        crate::agent_identity::is_agent_identity_task_invalid_response(
+            self.status_code.unwrap_or_default(),
+            &self.response_body,
+        ) || crate::agent_identity::is_agent_identity_task_invalid_error(&self.message)
     }
 }
 
@@ -892,35 +914,13 @@ async fn connect_upstream_websocket(
             "no available upstream accounts",
         ));
     }
+    drop(storage);
 
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
     let mut last_error = None;
-    ensure_rustls_crypto_provider();
-    for (account, mut token) in routed.candidates {
-        let bearer = match resolve_bearer_token_for_websocket(account.clone(), token).await {
-            Ok((bearer, resolved_token)) => {
-                token = resolved_token;
-                bearer
-            }
-            Err(err) => {
-                last_error = Some(format!(
-                    "resolve bearer token for account {} failed: {err}",
-                    account.id
-                ));
-                continue;
-            }
-        };
-        let request =
-            build_upstream_websocket_request(ws_url.as_str(), &account, bearer.as_str(), context)?;
-        let proxy_url = crate::gateway::current_upstream_proxy_url_for_account(account.id.as_str());
-        match connect_upstream_websocket_request_detailed(
-            request,
-            ws_url.as_str(),
-            proxy_url.as_deref(),
-        )
-        .await
-        {
-            Ok((stream, _)) => {
+    for (account, token) in routed.candidates {
+        match connect_account_upstream_websocket(context, &account, token, ws_url.as_str()).await {
+            Ok(stream) => {
                 return Ok(ConnectedUpstreamWebsocket {
                     stream,
                     account_id: account.id,
@@ -930,60 +930,6 @@ async fn connect_upstream_websocket(
                 });
             }
             Err(err) => {
-                if err.is_unauthorized() {
-                    match try_refresh_websocket_bearer(&storage, context, &account, &mut token) {
-                        Ok(Some(refreshed_bearer)) => {
-                            log::warn!(
-                                "event=responses_ws_unauthorized_refresh_retry account_id={}",
-                                account.id
-                            );
-                            let retry_request = build_upstream_websocket_request(
-                                ws_url.as_str(),
-                                &account,
-                                refreshed_bearer.as_str(),
-                                context,
-                            )?;
-                            match connect_upstream_websocket_request_detailed(
-                                retry_request,
-                                ws_url.as_str(),
-                                proxy_url.as_deref(),
-                            )
-                            .await
-                            {
-                                Ok((stream, _)) => {
-                                    return Ok(ConnectedUpstreamWebsocket {
-                                        stream,
-                                        account_id: account.id,
-                                        upstream_url: ws_url.clone(),
-                                        route_strategy: routed.route_strategy,
-                                        route_source: routed.route_source,
-                                    });
-                                }
-                                Err(retry_err) => {
-                                    last_error = Some(format!(
-                                        "connect upstream websocket for account {} failed after token refresh: {retry_err}",
-                                        account.id
-                                    ));
-                                    continue;
-                                }
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(refresh_err) => {
-                            let _ =
-                                crate::account_status::mark_account_unavailable_for_refresh_token_error(
-                                    &storage,
-                                    &account.id,
-                                    &refresh_err,
-                                );
-                            log::warn!(
-                                "event=responses_ws_unauthorized_refresh_failed account_id={} err={}",
-                                account.id,
-                                refresh_err
-                            );
-                        }
-                    }
-                }
                 last_error = Some(format!(
                     "connect upstream websocket for account {} failed: {err}",
                     account.id
@@ -998,36 +944,189 @@ async fn connect_upstream_websocket(
     ))
 }
 
-async fn resolve_bearer_token_for_websocket(
+async fn connect_account_upstream_websocket(
+    context: &WsRequestContext,
+    account: &codexmanager_core::storage::Account,
+    token: codexmanager_core::storage::Token,
+    ws_url: &str,
+) -> Result<UpstreamWebsocketStream, String> {
+    let (authorization, token) =
+        resolve_upstream_authorization_for_websocket(account.clone(), token).await?;
+    let request = build_upstream_websocket_request(ws_url, account, &authorization, context)
+        .map_err(|err| err.message)?;
+    let proxy_url = crate::gateway::current_upstream_proxy_url_for_account(account.id.as_str());
+    let first_error =
+        match connect_upstream_websocket_request_detailed(request, ws_url, proxy_url.as_deref())
+            .await
+        {
+            Ok((stream, _)) => return Ok(stream),
+            Err(err) => err,
+        };
+    if !first_error.is_unauthorized() {
+        return Err(first_error.to_string());
+    }
+
+    let retry_authorization = if authorization.uses_agent_identity {
+        if !first_error.is_agent_identity_task_invalid() {
+            return Err(first_error.to_string());
+        }
+        let failed_task_id = authorization
+            .task_id
+            .as_deref()
+            .ok_or_else(|| "agent identity websocket authorization omitted task_id".to_string())?;
+        let recovered = recover_agent_identity_authorization_for_websocket(
+            account.id.clone(),
+            failed_task_id.to_string(),
+        )
+        .await?
+        .ok_or_else(|| "agent identity disappeared during websocket task recovery".to_string())?;
+        log::warn!(
+            "event=responses_ws_agent_identity_task_recovery_retry account_id={} recovery=success",
+            account.id
+        );
+        recovered
+    } else {
+        let Some(refreshed_bearer) = refresh_websocket_bearer(
+            account.clone(),
+            token,
+            context.effective_upstream_base.clone(),
+        )
+        .await?
+        else {
+            return Err(first_error.to_string());
+        };
+        log::warn!(
+            "event=responses_ws_unauthorized_refresh_retry account_id={}",
+            account.id
+        );
+        WsUpstreamAuthorization {
+            value: refreshed_bearer,
+            task_id: None,
+            uses_agent_identity: false,
+            is_fedramp: false,
+        }
+    };
+
+    let retry_request =
+        build_upstream_websocket_request(ws_url, account, &retry_authorization, context)
+            .map_err(|err| err.message)?;
+    connect_upstream_websocket_request_detailed(retry_request, ws_url, proxy_url.as_deref())
+        .await
+        .map(|(stream, _)| stream)
+        .map_err(|err| format!("{err} (after websocket authorization recovery)"))
+}
+
+async fn resolve_upstream_authorization_for_websocket(
     account: codexmanager_core::storage::Account,
     token: codexmanager_core::storage::Token,
-) -> Result<(String, codexmanager_core::storage::Token), String> {
-    let join_result = tokio::task::spawn_blocking(move || {
+) -> Result<(WsUpstreamAuthorization, codexmanager_core::storage::Token), String> {
+    let join_result = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let storage = open_storage()
             .ok_or_else(|| crate::gateway::bilingual_error("存储不可用", "storage unavailable"))?;
+        let client = crate::gateway::upstream_client_for_account(account.id.as_str())?;
+        if let Some(resolved) = crate::agent_identity::resolve_account_agent_identity_authorization(
+            &storage,
+            &client,
+            &account.id,
+        )? {
+            return Ok((
+                WsUpstreamAuthorization {
+                    value: resolved.value,
+                    task_id: Some(resolved.task_id),
+                    uses_agent_identity: true,
+                    is_fedramp: resolved.is_fedramp,
+                },
+                token,
+            ));
+        }
         let mut token = token;
         let bearer =
             crate::gateway::gateway_resolve_openai_bearer_token(&storage, &account, &mut token)?;
-        Ok((bearer, token))
+        Ok((
+            WsUpstreamAuthorization {
+                value: bearer,
+                task_id: None,
+                uses_agent_identity: false,
+                is_fedramp: false,
+            },
+            token,
+        ))
     })
     .await;
 
     match join_result {
         Ok(result) => result,
         Err(err) => Err(crate::gateway::bilingual_error(
-            "Bearer Token 任务合并失败",
-            format!("bearer token task join failed: {err}"),
+            "上游鉴权任务合并失败",
+            format!("upstream authorization task join failed: {err}"),
         )),
     }
 }
 
+async fn recover_agent_identity_authorization_for_websocket(
+    account_id: String,
+    failed_task_id: String,
+) -> Result<Option<WsUpstreamAuthorization>, String> {
+    tokio::task::spawn_blocking(move || {
+        let storage = open_storage()
+            .ok_or_else(|| crate::gateway::bilingual_error("存储不可用", "storage unavailable"))?;
+        let client = crate::gateway::upstream_client_for_account(account_id.as_str())?;
+        crate::agent_identity::recover_account_agent_identity_authorization(
+            &storage,
+            &client,
+            &account_id,
+            &failed_task_id,
+        )
+        .map(|resolved| {
+            resolved.map(|resolved| WsUpstreamAuthorization {
+                value: resolved.value,
+                task_id: Some(resolved.task_id),
+                uses_agent_identity: true,
+                is_fedramp: resolved.is_fedramp,
+            })
+        })
+    })
+    .await
+    .map_err(|err| format!("agent identity recovery task join failed: {err}"))?
+}
+
+async fn refresh_websocket_bearer(
+    account: codexmanager_core::storage::Account,
+    token: codexmanager_core::storage::Token,
+    effective_upstream_base: String,
+) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let storage = open_storage()
+            .ok_or_else(|| crate::gateway::bilingual_error("存储不可用", "storage unavailable"))?;
+        let mut token = token;
+        match try_refresh_websocket_bearer(
+            &storage,
+            effective_upstream_base.as_str(),
+            &account,
+            &mut token,
+        ) {
+            Ok(bearer) => Ok(bearer),
+            Err(err) => {
+                let _ = crate::account_status::mark_account_unavailable_for_refresh_token_error(
+                    &storage,
+                    &account.id,
+                    &err,
+                );
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(|err| format!("websocket bearer refresh task join failed: {err}"))?
+}
+
 fn try_refresh_websocket_bearer(
     storage: &codexmanager_core::storage::Storage,
-    context: &WsRequestContext,
+    effective_upstream_base: &str,
     account: &codexmanager_core::storage::Account,
     token: &mut codexmanager_core::storage::Token,
 ) -> Result<Option<String>, String> {
-    if crate::gateway::gateway_is_openai_api_base(context.effective_upstream_base.as_str()) {
+    if crate::gateway::gateway_is_openai_api_base(effective_upstream_base) {
         return Ok(None);
     }
     if token.refresh_token.trim().is_empty() {
@@ -1394,7 +1493,7 @@ async fn read_exact_discard(stream: &mut TcpStream, len: usize) -> Result<(), St
 fn build_upstream_websocket_request(
     ws_url: &str,
     account: &codexmanager_core::storage::Account,
-    bearer_token: &str,
+    authorization: &WsUpstreamAuthorization,
     context: &WsRequestContext,
 ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, WsSessionError> {
     let mut request = ws_url.into_client_request().map_err(|err| {
@@ -1404,7 +1503,14 @@ fn build_upstream_websocket_request(
         )
     })?;
     let headers = request.headers_mut();
-    insert_header(headers, "Authorization", &format!("Bearer {bearer_token}"))?;
+    insert_header(
+        headers,
+        "Authorization",
+        &crate::agent_identity::format_upstream_authorization(&authorization.value),
+    )?;
+    if authorization.is_fedramp {
+        insert_header(headers, "x-openai-fedramp", "true")?;
+    }
     if let Some(account_id) = account
         .chatgpt_account_id
         .as_deref()
@@ -1733,49 +1839,17 @@ async fn try_rotate_ws_upstream_after_terminal(
     else {
         return false;
     };
+    drop(storage);
 
-    let bearer = match resolve_bearer_token_for_websocket(account.clone(), token).await {
-        Ok((bearer, _token)) => bearer,
-        Err(err) => {
-            log::warn!(
-                "event=responses_ws_failover_bearer_failed account_id={} next_account_id={} status={} err={}",
-                current_account_id,
-                account.id,
-                status_code,
-                err
-            );
-            return false;
-        }
-    };
-    let request = match build_upstream_websocket_request(
-        upstream.upstream_url.as_str(),
-        &account,
-        bearer.as_str(),
+    let replacement = match connect_account_upstream_websocket(
         context,
-    ) {
-        Ok(request) => request,
-        Err(err) => {
-            log::warn!(
-                "event=responses_ws_failover_request_failed account_id={} next_account_id={} status={} err={}",
-                current_account_id,
-                account.id,
-                status_code,
-                err.message
-            );
-            return false;
-        }
-    };
-
-    ensure_rustls_crypto_provider();
-    let proxy_url = crate::gateway::current_upstream_proxy_url_for_account(account.id.as_str());
-    let replacement = match connect_upstream_websocket_request(
-        request,
+        &account,
+        token,
         upstream.upstream_url.as_str(),
-        proxy_url.as_deref(),
     )
     .await
     {
-        Ok((stream, _)) => ConnectedUpstreamWebsocket {
+        Ok(stream) => ConnectedUpstreamWebsocket {
             stream,
             account_id: account.id,
             upstream_url: upstream.upstream_url.clone(),

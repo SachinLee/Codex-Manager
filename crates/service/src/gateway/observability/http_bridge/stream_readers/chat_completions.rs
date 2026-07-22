@@ -2,7 +2,7 @@ use super::{
     chat_image_payload, classify_upstream_stream_read_error, collect_image_generation_data_urls,
     collect_output_text_from_event_fields, collect_response_output_text,
     collect_response_reasoning_summary_text, mark_first_response_ms, merge_usage,
-    should_emit_keepalive, stream_idle_timed_out, stream_idle_timeout_message,
+    should_emit_keepalive_after_first_frame, stream_idle_timed_out, stream_idle_timeout_message,
     stream_reader_disconnected_message, stream_wait_timeout,
     upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex, PassthroughSseCollector, Read,
     SseKeepAliveFrame, UpstreamSseFramePump, UpstreamSseFramePumpItem,
@@ -557,7 +557,7 @@ impl ChatCompletionsFromResponsesSseReader {
                         self.finished = true;
                         return Ok(Vec::new());
                     }
-                    if should_emit_keepalive(self.saw_upstream_frame) {
+                    if should_emit_keepalive_after_first_frame(self.saw_upstream_frame) {
                         return Ok(SseKeepAliveFrame::Comment.bytes().to_vec());
                     }
                     continue;

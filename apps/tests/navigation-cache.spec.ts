@@ -137,7 +137,7 @@ test("revisiting visited routes stays responsive after idle time", async ({ page
   await expect(aggregateHeader).toBeVisible();
   await expect(page.getByText("正在准备环境")).not.toBeVisible();
 
-  await page.getByRole("link", { name: "设置" }).click();
+  await page.getByRole("link", { name: "系统设置", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/$/);
   await expect(settingsSectionTitle).toBeVisible({ timeout: 5_000 });
 
@@ -148,7 +148,7 @@ test("revisiting visited routes stays responsive after idle time", async ({ page
   await page.waitForTimeout(1_200);
 
   const revisitSettingsStartedAt = Date.now();
-  await page.getByRole("link", { name: "设置" }).click();
+  await page.getByRole("link", { name: "系统设置", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/$/);
   await expect(settingsSectionTitle).toBeVisible({ timeout: 1_500 });
   expect(Date.now() - revisitSettingsStartedAt).toBeLessThan(1_500);

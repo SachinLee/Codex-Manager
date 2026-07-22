@@ -3,6 +3,7 @@ export type ModelPriceStatusV2 = "official" | "estimated" | "custom" | "missing"
 export type ModelInstructionsModeV2 = "passthrough" | "fallback" | "override";
 export type ModelVisibilityV2 = "list" | "hide";
 export type ModelRouteSourceKindV2 = "account_pool" | "aggregate_api";
+export type ModelRouteBatchModeV2 = "merge" | "replace";
 export type ManagedModelImportConflictStrategyV2 = "keep_existing" | "replace_custom";
 
 export interface ModelPriceTierV2 {
@@ -28,6 +29,24 @@ export interface ModelRouteV2 {
   enabled: boolean;
   priority: number;
   weight: number;
+}
+
+export interface ModelRouteBatchTemplateV2 {
+  sourceKind: ModelRouteSourceKindV2;
+  sourceId: string;
+  priority: number;
+  weight: number;
+}
+
+export interface ManagedModelBatchRouteAssignmentV2 {
+  slugs: string[];
+  mode: ModelRouteBatchModeV2;
+  routes: ModelRouteBatchTemplateV2[];
+}
+
+export interface ManagedModelBatchRouteResultV2 {
+  updated: string[];
+  failed: Array<{ slug: string; reason: string }>;
 }
 
 export interface ManagedModelV2 {
@@ -77,6 +96,18 @@ export interface ManagedModelListV2Result {
 export interface ManagedModelV2Upsert {
   previousSlug?: string | null;
   model: ManagedModelV2;
+}
+
+export interface ManagedModelStateV2Update {
+  slug: string;
+  enabled: boolean;
+  visibility: ModelVisibilityV2;
+}
+
+export interface ManagedModelBatchStateV2Update {
+  slugs: string[];
+  enabled: boolean;
+  visibility: ModelVisibilityV2;
 }
 
 export interface ManagedModelImportV2Params {

@@ -22,7 +22,7 @@ CodexManager는 Codex 워크플로를 위한 로컬 desktop + service-process �
 - 플랫폼 Key: 생성, 비활성화, 삭제, 모델 바인딩, 추론 등급, 서비스 등급.
 - Aggregate API: 서드파티 릴레이 업스트림 생성/수정/연결 테스트, 공급자명, 우선순위.
 - 플러그인 센터: 내장/사설/커스텀 소스 모드, 작업/로그 화면, Rhai 연동.
-- 로컬 서비스 + 게이트웨이: 바인드/리스닝 설정, 업스트림 프록시, 요청 전체 타임아웃, 스트리밍 idle 타임아웃, SSE keepalive, 통합 호환 엔드포인트.
+- 로컬 서비스 + 게이트웨이: 바인드/리스닝 설정, 업스트림 프록시, 요청 전체 타임아웃, 스트리밍 idle 타임아웃, SSE keepalive, 통합 호환 엔드포인트. SSE keepalive는 기본적으로 활성화되며, 비활성화하려면 `CODEXMANAGER_SSE_KEEPALIVE_ENABLED=0`(또는 `false`)으로 설정합니다.
 - 이미지 생성: 기본적으로 `/v1/responses`에 공식 Codex `image_generation` tool을 자동 주입하고, 명시적으로 전달된 tool은 그대로 전달하며, `/v1/images/generations` 및 `/v1/images/edits` 호환 엔드포인트를 지원합니다. 기본 이미지 tool 모델은 `gpt-image-2`입니다.
 
 ## 빠른 시작
@@ -64,7 +64,7 @@ CodexManager를 후원해 주신 다음 스폰서께 감사드립니다.
       </a>
     </td>
     <td valign="top">
-      <strong>AI夏末 AIXiamo</strong> 의 프로젝트 후원에 감사드립니다! <strong>AIXiamo</strong> 는 Codex CLI, Claude Code, Gemini CLI 등 개발자 사용 장면을 대상으로 ChatGPT Pro 5x / 20x, ChatGPT Plus, Claude Max, Gemini Pro, Grok 등 AI 멤버십 개통과 사후 지원을 제공합니다. Alipay / WeChat Pay 결제, 자동 충전, 주문 조회, 튜토리얼 안내와 사후 지원을 지원합니다. AI 코딩, 코드 생성, 문서 처리, 고빈도 대화를 안정적으로 사용해야 하는 개발자에게 적합합니다. CodexManager 사용자는 Pro / Codex / Claude / Gemini 플랜 선택을 우선 상담할 수 있습니다. 서비스는 <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">공식 사이트</a>에서 확인할 수 있습니다.
+      <strong>AI夏末 AIXiamo</strong> 의 프로젝트 후원에 감사드립니다! 해외 결제 카드 없이 ChatGPT, Claude, Codex 등 AI 서비스를 충전하려는 중국 사용자에게 추천합니다. Alipay / WeChat Pay를 지원하며 정식 충전 대행과 사후 지원을 제공합니다. 서비스는 <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">공식 사이트</a>에서 확인할 수 있습니다.
     </td>
   </tr>
 

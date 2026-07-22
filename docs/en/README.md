@@ -22,7 +22,7 @@ CodexManager is a local desktop + service-process account pool manager and gatew
 - Platform keys: create, disable, delete, model binding, reasoning tier, and service tier.
 - Aggregate API: create/edit/test third-party relay upstreams with supplier naming and priority ordering.
 - Plugin center: built-in, private, and custom source modes with task/log views and Rhai integration.
-- Local service + gateway: custom bind/listen settings, upstream proxy, total request timeout, stream idle timeout, SSE keepalive, and a unified compatible endpoint.
+- Local service + gateway: custom bind/listen settings, upstream proxy, total request timeout, stream idle timeout, SSE keepalive, and a unified compatible endpoint. SSE keepalive is enabled by default; set `CODEXMANAGER_SSE_KEEPALIVE_ENABLED=0` (or `false`) to disable it.
 - Image generation: automatically injects the official Codex `image_generation` tool for `/v1/responses` by default, forwards explicit tools unchanged, and exposes compatible `/v1/images/generations` and `/v1/images/edits` endpoints with `gpt-image-2` as the default image tool model.
 
 ## Quick Start
@@ -64,7 +64,7 @@ Thanks to the following sponsors for supporting CodexManager.
       </a>
     </td>
     <td valign="top">
-      Thanks to <strong>AI夏末 AIXiamo</strong> for sponsoring this project! <strong>AIXiamo</strong> serves developer workflows such as Codex CLI, Claude Code, and Gemini CLI, providing AI membership activation and after-sales assistance for ChatGPT Pro 5x / 20x, ChatGPT Plus, Claude Max, Gemini Pro, Grok, and more. It supports Alipay and WeChat Pay, automatic top-ups, order lookup, tutorials, and after-sales support. It is suitable for developers who need stable access for AI programming, code generation, document processing, and frequent conversations. CodexManager users can get priority consultation for Pro / Codex / Claude / Gemini plan selection. Visit the <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">official site</a> to view services.
+      Thanks to <strong>AI夏末 AIXiamo</strong> for sponsoring this project! Recommended for users in China without an international bank card who need ChatGPT, Claude, Codex, or other AI services. It supports Alipay / WeChat Pay with top-up assistance and reliable after-sales support. Visit the <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">official site</a> to view services.
     </td>
   </tr>
   <tr>

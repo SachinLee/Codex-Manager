@@ -307,6 +307,7 @@ pub(crate) fn commit_import(
     storage
         .upsert_managed_models_v2(&writes)
         .map_err(|err| format!("commit model import failed: {err}"))?;
+    super::sync_active_gateway_catalog_best_effort(&storage);
     preview.committed = writes.len();
     Ok(preview)
 }

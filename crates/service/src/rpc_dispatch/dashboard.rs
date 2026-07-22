@@ -8,11 +8,15 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             let start_ts = super::i64_param(req, "startTs");
             let end_ts = super::i64_param(req, "endTs");
             let include_breakdowns = super::bool_param(req, "includeBreakdowns").unwrap_or(true);
+            let include_series = super::bool_param(req, "includeSeries").unwrap_or(false);
+            let series_bucket_seconds = super::i64_param(req, "seriesBucketSeconds");
             super::value_or_error(dashboard::read_admin_usage_summary(
                 actor,
                 start_ts,
                 end_ts,
                 include_breakdowns,
+                include_series,
+                series_bucket_seconds,
             ))
         }
         "dashboard/tokenActivity" => {

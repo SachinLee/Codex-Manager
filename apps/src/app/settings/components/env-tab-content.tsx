@@ -209,9 +209,13 @@ export function EnvTabContent({
                   />
                   <p className="text-[10px] text-muted-foreground">
                     {t("默认值:")}{" "}
-                    <span className="font-mono italic">
-                      {selectedEnvItem?.defaultValue || t("空")}
-                    </span>
+                    {selectedEnvItem?.defaultValue ? (
+                      <span className="font-mono italic">
+                        {selectedEnvItem.defaultValue}
+                      </span>
+                    ) : (
+                      <span>{t("空")}</span>
+                    )}
                   </p>
                 </div>
 

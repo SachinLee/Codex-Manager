@@ -73,3 +73,29 @@ pub async fn service_usage_refresh(
     let params = account_id.map(|id| serde_json::json!({ "accountId": id }));
     rpc_call_in_background("account/usage/refresh", addr, params).await
 }
+
+#[tauri::command]
+pub async fn service_usage_reset_credits(
+    addr: Option<String>,
+    account_id: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "account/usage/resetCredits",
+        addr,
+        Some(serde_json::json!({ "accountId": account_id })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_usage_reset_credit_consume(
+    addr: Option<String>,
+    account_id: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "account/usage/resetCredit/consume",
+        addr,
+        Some(serde_json::json!({ "accountId": account_id })),
+    )
+    .await
+}

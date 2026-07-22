@@ -37,7 +37,15 @@ pub(super) fn execute<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
-    let client = super::super::super::upstream_client_for_account(account.id.as_str());
+    let client = match super::super::super::upstream_client_for_account(account.id.as_str()) {
+        Ok(client) => client,
+        Err(err) => {
+            return CandidateUpstreamDecision::Terminal {
+                status_code: 502,
+                message: err,
+            };
+        }
+    };
 
     if deadline::is_expired(request_deadline) {
         return CandidateUpstreamDecision::Terminal {
@@ -80,7 +88,22 @@ where
         }
     }
 
-    let (upstream, auth_token) = match run_primary_upstream_flow(
+    let allow_openai_fallback = if allow_openai_fallback {
+        match storage.find_account_agent_identity(&account.id) {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(err) => {
+                return CandidateUpstreamDecision::Terminal {
+                    status_code: 500,
+                    message: format!("load agent identity failed: {err}"),
+                };
+            }
+        }
+    } else {
+        false
+    };
+
+    let (upstream, authorization) = match run_primary_upstream_flow(
         &client,
         storage,
         method,
@@ -103,8 +126,8 @@ where
     ) {
         PrimaryFlowDecision::Continue {
             upstream,
-            auth_token,
-        } => (upstream, auth_token),
+            authorization,
+        } => (upstream, authorization),
         PrimaryFlowDecision::RespondUpstream(resp) => {
             return CandidateUpstreamDecision::RespondUpstream(resp);
         }
@@ -131,11 +154,11 @@ where
         primary_url,
         alt_url,
         request_deadline,
-        request_ctx,
+        request_ctx.with_fedramp(authorization.is_fedramp),
         incoming_headers,
         body,
         is_stream,
-        auth_token.as_str(),
+        &authorization,
         account,
         token,
         upstream_fallback_base,

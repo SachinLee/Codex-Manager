@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, type MouseEvent } from "react";
 import {
   ArrowUpRight,
   CheckCircle2,
@@ -79,6 +80,8 @@ function QuotaLine({ label, value, resetsAt, emptyResetText, tone }: QuotaLinePr
 
 export default function TrayPreviewPage() {
   const { t } = useI18n();
+  const [isOpenButtonHovered, setIsOpenButtonHovered] = useState(false);
+  const [isOpenButtonFocused, setIsOpenButtonFocused] = useState(false);
   const {
     stats,
     currentAccount,
@@ -94,12 +97,16 @@ export default function TrayPreviewPage() {
     includeAccountDetails: false,
   });
 
-  const openMainWindow = async () => {
+  const openMainWindow = async (event: MouseEvent<HTMLButtonElement>) => {
+    setIsOpenButtonHovered(false);
+    setIsOpenButtonFocused(false);
+    event.currentTarget.blur();
     await appClient.showMainWindow();
   };
 
   const statusText = isServiceReady ? t("本地服务已连接") : t("等待本地服务");
   const usageBuckets = getUsageDisplayBuckets(currentAccount?.usage);
+  const isOpenButtonActive = isOpenButtonHovered || isOpenButtonFocused;
 
   return (
     <div className="h-screen overflow-hidden bg-transparent font-sans text-foreground">
@@ -126,8 +133,16 @@ export default function TrayPreviewPage() {
               type="button"
               size="sm"
               variant="ghost"
-              className="h-8 shrink-0 rounded-full px-2.5 text-[12px] text-foreground/80 hover:bg-accent/70"
-              onClick={() => void openMainWindow()}
+              className={cn(
+                "tray-preview-open-button h-8 shrink-0 rounded-full bg-transparent px-2.5 text-[12px] text-foreground/80 shadow-none hover:bg-transparent hover:shadow-none",
+                isOpenButtonActive &&
+                  "tray-preview-open-button-active bg-accent/70 text-foreground",
+              )}
+              onPointerEnter={() => setIsOpenButtonHovered(true)}
+              onPointerLeave={() => setIsOpenButtonHovered(false)}
+              onFocus={() => setIsOpenButtonFocused(true)}
+              onBlur={() => setIsOpenButtonFocused(false)}
+              onClick={(event) => void openMainWindow(event)}
             >
               <ArrowUpRight className="h-3.5 w-3.5" />
               {t("打开")}

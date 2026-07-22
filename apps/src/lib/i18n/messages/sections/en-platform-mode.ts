@@ -100,4 +100,15 @@ export const EN_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   "最多 {count} 份，最多 {days} 天，至少保留最新 {min} 份":
     "Keep up to {count} backups, keep them for up to {days} days, and always retain the latest {min} backups.",
   "恢复接管前配置": "Restore pre-managed configuration",
+  "切换后重载 Codex 后台": "Reload Codex background services after switching",
+  "开启后只向使用当前 Codex profile 的 app-server 发送重载信号，不会终止前台 Codex CLI；关闭后，现有进程会在下次启动时读取新配置。":
+    "When enabled, only app-server processes using the current Codex profile receive a reload signal; foreground Codex CLI sessions are not terminated. When disabled, running processes read the new configuration on their next start.",
+  "配置已切换；现有 Codex 进程将在下次启动时生效":
+    "Configuration switched; running Codex processes will pick it up on their next start",
+  "配置已切换，但 Codex 后台重载有警告":
+    "Configuration switched, but the Codex background reload reported a warning",
+  "已请求重载 {count} 个 Codex 后台进程":
+    "Requested reload for {count} Codex background process(es)",
+  "未发现需要重载的 Codex 后台进程":
+    "No Codex background process needed reloading",
 };

@@ -4,8 +4,8 @@ use super::super::images::{
 use super::{
     build_images_api_response, classify_upstream_stream_read_error,
     collect_image_generation_results, image_generation_result_payload, images_usage_value,
-    mark_first_response_ms, merge_usage, should_emit_keepalive, stream_idle_timed_out,
-    stream_idle_timeout_message, stream_reader_disconnected_message, stream_wait_timeout,
+    mark_first_response_ms, merge_usage, stream_idle_timed_out, stream_idle_timeout_message,
+    stream_reader_disconnected_message, stream_wait_timeout,
     upstream_hint_or_stream_incomplete_message, Arc, Cursor, ImagesResponseFormat, Mutex,
     PassthroughSseCollector, Read, SseKeepAliveFrame, UpstreamSseFramePump,
     UpstreamSseFramePumpItem,
@@ -20,7 +20,6 @@ pub(crate) struct ImagesFromResponsesSseReader {
     request_started_at: Instant,
     last_upstream_activity: Instant,
     response_format: ImagesResponseFormat,
-    saw_upstream_frame: bool,
     finished: bool,
 }
 
@@ -38,7 +37,6 @@ impl ImagesFromResponsesSseReader {
             request_started_at,
             last_upstream_activity: Instant::now(),
             response_format,
-            saw_upstream_frame: false,
             finished: false,
         }
     }
@@ -200,7 +198,6 @@ impl ImagesFromResponsesSseReader {
             {
                 Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
                     self.last_upstream_activity = Instant::now();
-                    self.saw_upstream_frame = true;
                     mark_first_response_ms(&self.usage_collector, self.request_started_at);
                     if let Some(chunk) = self.handle_frame(&frame) {
                         return Ok(chunk);
@@ -238,7 +235,7 @@ impl ImagesFromResponsesSseReader {
                         self.finished = true;
                         return Ok(Vec::new());
                     }
-                    if should_emit_keepalive(self.saw_upstream_frame) {
+                    if crate::gateway::current_sse_keepalive_enabled() {
                         return Ok(SseKeepAliveFrame::Comment.bytes().to_vec());
                     }
                     continue;

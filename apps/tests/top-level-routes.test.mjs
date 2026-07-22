@@ -58,7 +58,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
       ["/models", "/model-groups"],
       ["/account-manager"],
       ["/logs"],
-      ["/settings", "/plugins", "/codex-launcher"],
+      ["/settings", "/proxy-settings", "/plugins", "/codex-launcher", "/author"],
     ]
   );
   assert.equal(
@@ -87,6 +87,7 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
         "/models",
         "/logs",
         "/settings",
+        "/proxy-settings",
         "/plugins",
         "/codex-launcher",
         "/author",

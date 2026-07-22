@@ -3,6 +3,7 @@ use rusqlite::{params_from_iter, types::Value, OptionalExtension, Result, Row};
 use super::account_metadata::delete_account_metadata_for_account_sql;
 use super::account_subscriptions::delete_account_subscription_for_account_sql;
 use super::accounts_sql::*;
+use super::agent_identities::delete_account_agent_identity_for_account_sql;
 use super::conversation_bindings::delete_conversation_bindings_for_account_sql;
 use super::events::delete_events_for_account_sql;
 use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
@@ -10,7 +11,7 @@ use super::tokens::delete_token_for_account_sql;
 use super::usage::delete_usage_snapshots_for_account_sql;
 
 use super::{
-    now_ts, Account, AccountAuthRefreshTarget, AccountCleanupCandidate,
+    now_ts, Account, AccountAgentIdentity, AccountAuthRefreshTarget, AccountCleanupCandidate,
     AccountCodexProfileCandidate, AccountDashboardSourceMetadata, AccountDirectAuthProfile,
     AccountImportSnapshot, AccountListSummaryRow, AccountQuotaOverviewStats,
     AccountQuotaPoolSource, AccountQuotaSourceSummary, AccountStatusCount,
@@ -90,6 +91,7 @@ impl Storage {
         note: Option<&str>,
         tags: Option<&str>,
         token: &Token,
+        agent_identity: Option<&AccountAgentIdentity>,
     ) -> Result<()> {
         if account.id != token.account_id {
             return Err(rusqlite::Error::InvalidParameterName(
@@ -198,6 +200,57 @@ impl Storage {
                 token.last_refresh,
             ),
         )?;
+        if let Some(identity) = agent_identity {
+            if identity.account_id != account.id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "account id and agent identity account id do not match".to_string(),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO account_agent_identities (
+                    account_id,
+                    agent_runtime_id,
+                    agent_private_key,
+                    task_id,
+                    chatgpt_user_id,
+                    chatgpt_account_is_fedramp,
+                    auth_mode,
+                    workspace_id,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(account_id) DO UPDATE SET
+                    agent_runtime_id = excluded.agent_runtime_id,
+                    agent_private_key = excluded.agent_private_key,
+                    task_id = excluded.task_id,
+                    chatgpt_user_id = excluded.chatgpt_user_id,
+                    chatgpt_account_is_fedramp = excluded.chatgpt_account_is_fedramp,
+                    auth_mode = excluded.auth_mode,
+                    workspace_id = excluded.workspace_id,
+                    updated_at = excluded.updated_at",
+                (
+                    &identity.account_id,
+                    &identity.agent_runtime_id,
+                    &identity.agent_private_key,
+                    &identity.task_id,
+                    &identity.chatgpt_user_id,
+                    if identity.chatgpt_account_is_fedramp {
+                        1
+                    } else {
+                        0
+                    },
+                    &identity.auth_mode,
+                    &identity.workspace_id,
+                    identity.created_at,
+                    identity.updated_at,
+                ),
+            )?;
+        } else {
+            tx.execute(
+                delete_account_agent_identity_for_account_sql(),
+                [&account.id],
+            )?;
+        }
         tx.commit()
     }
 
@@ -1185,10 +1238,30 @@ impl Storage {
         let tx = self.conn.transaction()?;
         tx.execute(delete_account_metadata_for_account_sql(), [account_id])?;
         tx.execute(delete_account_subscription_for_account_sql(), [account_id])?;
+        tx.execute(
+            delete_account_agent_identity_for_account_sql(),
+            [account_id],
+        )?;
         tx.execute(delete_token_for_account_sql(), [account_id])?;
         tx.execute(delete_usage_snapshots_for_account_sql(), [account_id])?;
         tx.execute(delete_events_for_account_sql(), [account_id])?;
         tx.execute(delete_conversation_bindings_for_account_sql(), [account_id])?;
+        tx.execute(
+            "DELETE FROM account_proxy_settings WHERE account_id = ?1",
+            [account_id],
+        )?;
+        tx.execute(
+            "DELETE FROM account_proxy_url_tests WHERE account_id = ?1",
+            [account_id],
+        )?;
+        tx.execute(
+            "DELETE FROM proxy_speed_tests WHERE account_id = ?1",
+            [account_id],
+        )?;
+        tx.execute(
+            "DELETE FROM proxy_diagnostics_history WHERE account_id = ?1",
+            [account_id],
+        )?;
         tx.execute(delete_account_by_id_sql(), [account_id])?;
         tx.commit()?;
         Ok(())
@@ -1205,6 +1278,7 @@ impl Storage {
         for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
             delete_accounts_from_table(&tx, "account_metadata", "account_id", chunk)?;
             delete_accounts_from_table(&tx, "account_subscriptions", "account_id", chunk)?;
+            delete_accounts_from_table(&tx, "account_agent_identities", "account_id", chunk)?;
             delete_accounts_from_table(&tx, "tokens", "account_id", chunk)?;
             delete_accounts_from_table(&tx, "usage_snapshots", "account_id", chunk)?;
             delete_accounts_from_table(&tx, "events", "account_id", chunk)?;
@@ -1822,9 +1896,20 @@ fn usage_refresh_token_targets_by_status_sql(status_condition: &str) -> String {
                 t.last_refresh
             FROM accounts a
             INNER JOIN tokens t ON t.account_id = a.id
+            LEFT JOIN account_agent_identities ai ON ai.account_id = a.id
             WHERE {status_condition}
-              AND TRIM(COALESCE(t.access_token, '')) <> ''
-              AND TRIM(COALESCE(t.refresh_token, '')) <> ''
+              AND (
+                    (
+                        TRIM(COALESCE(t.access_token, '')) <> ''
+                        AND TRIM(COALESCE(t.refresh_token, '')) <> ''
+                    )
+                    OR (
+                        ai.account_id IS NOT NULL
+                        AND LOWER(TRIM(COALESCE(ai.auth_mode, ''))) = 'agentidentity'
+                        AND TRIM(COALESCE(ai.agent_runtime_id, '')) <> ''
+                        AND TRIM(COALESCE(ai.agent_private_key, '')) <> ''
+                    )
+              )
         ),
         latest_status AS (
             SELECT

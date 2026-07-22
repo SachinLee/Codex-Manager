@@ -1,4 +1,4 @@
-import { Globe, ShieldCheck } from "lucide-react";
+import { Info, Globe, ShieldCheck } from "lucide-react";
 import { AppSettings } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,44 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { inferServiceBindPreview, SERVICE_LISTEN_MODE_LABELS } from "@/app/settings/settings-page-helpers";
+import packageInfo from "../../../../package.json";
+
+const APP_VERSION = packageInfo.version || "0.0.0";
+
+export function AboutCodexManagerCard({ t }: { t: (value: string) => string }) {
+  return (
+    <Card className="glass-card mission-panel shadow-sm">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Info className="h-4 w-4 text-primary" />
+          <CardTitle className="text-base">{t("关于 CodexManager")}</CardTitle>
+        </div>
+        <CardDescription>
+          {t("查看软件名称、功能简介和当前版本信息")}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Card size="sm">
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-base font-semibold text-foreground">
+                CodexManager
+              </span>
+              <Badge variant="secondary" className="font-mono">
+                v{APP_VERSION}
+              </Badge>
+            </div>
+            <p className="leading-6 text-muted-foreground">
+              {t(
+                "CodexManager 用于统一管理 Codex CLI 账号、本地网关、平台密钥、请求日志和用量统计，让 Codex 接入与运维更集中可控。",
+              )}
+            </p>
+          </CardContent>
+        </Card>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function ServiceListenCard({
   t,

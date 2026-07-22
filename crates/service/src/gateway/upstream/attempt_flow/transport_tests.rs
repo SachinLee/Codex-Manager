@@ -1,5 +1,6 @@
 use super::{
-    apply_gemini_codex_compat_header_profile, encode_request_body, resolve_request_compression,
+    apply_final_upstream_header_policy, apply_gemini_codex_compat_header_profile,
+    encode_request_body, is_session_scoped_header, resolve_request_compression,
     resolve_request_compression_with_flag, send_async_stream_request,
     should_retry_transport_without_compression, should_wrap_upstream_as_stream_response,
     strip_compact_service_tier_for_transport, RequestCompression, CPA_GEMINI_CODEX_USER_AGENT,
@@ -52,6 +53,35 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
         .iter()
         .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
         .map(|(_, value)| value.as_str())
+}
+
+#[test]
+fn explicit_stateless_mode_targets_only_session_scoped_headers() {
+    for name in [
+        "session-id",
+        "thread-id",
+        "x-client-request-id",
+        "x-codex-window-id",
+        "x-codex-turn-state",
+        "session_id",
+    ] {
+        assert!(
+            is_session_scoped_header(name),
+            "expected {name} to be removed"
+        );
+    }
+    assert!(!is_session_scoped_header("x-codex-parent-thread-id"));
+    assert!(!is_session_scoped_header("authorization"));
+}
+
+#[test]
+fn explicit_stateless_mode_removes_session_id_added_by_gemini_profile() {
+    let mut headers = vec![("session-id".to_string(), "incoming-session".to_string())];
+
+    apply_final_upstream_header_policy(&mut headers, true, None, true);
+
+    assert_eq!(header_value(&headers, "session-id"), None);
+    assert_eq!(header_value(&headers, "session_id"), None);
 }
 
 fn spawn_raw_http_response(
@@ -333,6 +363,8 @@ fn gemini_codex_compat_header_profile_matches_cpa_executor_shape() {
             "parent-thread".to_string(),
         ),
         ("x-openai-subagent".to_string(), "subagent".to_string()),
+        ("session-id".to_string(), "session-current".to_string()),
+        ("thread-id".to_string(), "thread-current".to_string()),
     ];
 
     apply_gemini_codex_compat_header_profile(&mut headers, None);
@@ -347,6 +379,8 @@ fn gemini_codex_compat_header_profile_matches_cpa_executor_shape() {
     assert_eq!(header_value(&headers, "x-codex-turn-state"), None);
     assert_eq!(header_value(&headers, "x-codex-parent-thread-id"), None);
     assert_eq!(header_value(&headers, "x-openai-subagent"), None);
+    assert_eq!(header_value(&headers, "session-id"), None);
+    assert_eq!(header_value(&headers, "thread-id"), None);
     assert_eq!(header_value(&headers, "session_id").map(str::len), Some(36));
 }
 
