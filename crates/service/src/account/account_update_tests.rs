@@ -79,6 +79,8 @@ fn update_account_preferred_uses_existence_check_without_loading_account() {
         None,
         None,
         None,
+        false,
+        None,
         None,
         None,
         None,
@@ -100,12 +102,73 @@ fn update_account_preferred_uses_existence_check_without_loading_account() {
         None,
         None,
         None,
+        false,
+        None,
         None,
         None,
         None,
     )
     .expect_err("missing account should fail");
     assert_eq!(err, "account not found");
+}
+
+#[test]
+fn update_account_group_name_trims_and_clears_explicitly() {
+    let _lock = crate::test_env_guard();
+    let (db_path, _guard) = set_test_db("account-update-group-name");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage
+        .insert_account(&account("acc-grouped", 1))
+        .expect("insert grouped account");
+
+    update_account(
+        "acc-grouped",
+        None,
+        None,
+        None,
+        None,
+        Some("  team-a  "),
+        true,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("set group");
+    assert_eq!(
+        Storage::open(&db_path)
+            .expect("reopen db")
+            .find_account_by_id("acc-grouped")
+            .expect("read account")
+            .expect("account exists")
+            .group_name
+            .as_deref(),
+        Some("team-a")
+    );
+
+    update_account(
+        "acc-grouped",
+        None,
+        None,
+        None,
+        None,
+        Some("   "),
+        true,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("clear group");
+    assert_eq!(
+        Storage::open(&db_path)
+            .expect("reopen db")
+            .find_account_by_id("acc-grouped")
+            .expect("read account")
+            .expect("account exists")
+            .group_name,
+        None
+    );
 }
 
 #[test]

@@ -641,6 +641,66 @@ fn start_mock_device_login_server() -> (
     (addr, rx, handle)
 }
 
+fn start_mock_pending_device_login_server() -> (
+    String,
+    std::sync::mpsc::Receiver<RecordedRequest>,
+    std::sync::mpsc::Sender<()>,
+    thread::JoinHandle<()>,
+) {
+    let server = Server::http("127.0.0.1:0").expect("start pending device server");
+    let addr = format!("http://{}", server.server_addr());
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || loop {
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+        let Some(mut request) = server
+            .recv_timeout(Duration::from_millis(100))
+            .expect("pending device server receive")
+        else {
+            continue;
+        };
+        let path = request.url().to_string();
+        let mut body = String::new();
+        request
+            .as_reader()
+            .read_to_string(&mut body)
+            .expect("read pending device request body");
+        request_tx
+            .send(RecordedRequest {
+                path: path.clone(),
+                body,
+            })
+            .expect("record pending device request");
+
+        let (status, response_body) = match path.as_str() {
+            "/api/accounts/deviceauth/usercode" => (
+                200,
+                serde_json::json!({
+                    "device_auth_id": "device-auth-pending",
+                    "user_code": "WAIT-1234",
+                    "interval": 60
+                })
+                .to_string(),
+            ),
+            "/api/accounts/deviceauth/token" => (403, "{}".to_string()),
+            other => panic!("unexpected pending device login path: {other}"),
+        };
+        request
+            .respond(
+                Response::from_string(response_body)
+                    .with_status_code(StatusCode(status))
+                    .with_header(
+                        Header::from_bytes("Content-Type", "application/json")
+                            .expect("content-type header"),
+                    ),
+            )
+            .expect("respond pending device request");
+    });
+    (addr, request_rx, stop_tx, handle)
+}
+
 fn start_mock_proxy_response_server(
     response: &'static str,
 ) -> (
@@ -2474,7 +2534,7 @@ fn rpc_account_update_status_toggles_manual_enable_disable() {
 /// 无
 #[test]
 fn rpc_login_start_returns_url() {
-    let _ctx = RpcTestContext::new("rpc-login-start");
+    let ctx = RpcTestContext::new("rpc-login-start");
     let _login_addr_guard = EnvGuard::set("CODEXMANAGER_LOGIN_ADDR", "127.0.0.1:0");
     let server = codexmanager_service::start_one_shot_server().expect("start server");
 
@@ -2492,6 +2552,26 @@ fn rpc_login_start_returns_url() {
     let login_id = result.get("loginId").and_then(|v| v.as_str()).unwrap();
     assert!(auth_url.contains("oauth/authorize"));
     assert!(!login_id.is_empty());
+
+    let conn = rusqlite::Connection::open(ctx.db_path()).expect("open login event db");
+    let event_message: String = conn
+        .query_row(
+            "SELECT message FROM events WHERE type = 'login_start' ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read login start event");
+    assert!(
+        !event_message.contains("code_verifier"),
+        "login event must not persist a PKCE verifier: {event_message}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&event_message)
+            .expect("login event json")
+            .get("login_type")
+            .and_then(|value| value.as_str()),
+        Some("chatgpt")
+    );
 }
 
 /// 函数 `rpc_login_start_returns_api_key_variant`
@@ -2538,7 +2618,7 @@ fn rpc_login_start_returns_api_key_variant() {
 /// 无
 #[test]
 fn rpc_login_start_chatgpt_device_code_returns_user_code() {
-    let _ctx = RpcTestContext::new("rpc-login-device-code");
+    let ctx = RpcTestContext::new("rpc-login-device-code");
     let (issuer, request_rx, request_join) = start_mock_device_login_server();
     let _issuer_guard = EnvGuard::set("CODEXMANAGER_ISSUER", &issuer);
 
@@ -2601,7 +2681,7 @@ fn rpc_login_start_chatgpt_device_code_returns_user_code() {
     let status_req = JsonRpcRequest {
         id: 5.into(),
         method: "account/login/status".to_string(),
-        params: Some(serde_json::json!({ "loginId": login_id })),
+        params: Some(serde_json::json!({ "loginId": &login_id })),
         trace: None,
     };
     let status_json = serde_json::to_string(&status_req).expect("serialize status");
@@ -2612,7 +2692,7 @@ fn rpc_login_start_chatgpt_device_code_returns_user_code() {
         Some("success")
     );
 
-    let storage = Storage::open(_ctx.db_path()).expect("open db");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
     let accounts = storage.list_accounts().expect("list accounts");
     assert!(
         accounts
@@ -2620,6 +2700,240 @@ fn rpc_login_start_chatgpt_device_code_returns_user_code() {
             .any(|account| account.id.contains("sub-device")),
         "device login should persist an account: {accounts:?}"
     );
+    let session = storage
+        .get_login_session(&login_id)
+        .expect("load device login session")
+        .expect("device login session exists");
+    assert_eq!(session.status, "success");
+    assert!(
+        session.code_verifier.is_empty(),
+        "terminal login session must clear its verifier"
+    );
+    drop(storage);
+
+    let conn = rusqlite::Connection::open(ctx.db_path()).expect("open device event db");
+    let event_message: String = conn
+        .query_row(
+            "SELECT message FROM events WHERE type = 'login_start' ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read device login start event");
+    assert!(
+        !event_message.contains("code_verifier"),
+        "device login event must not persist a verifier: {event_message}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&event_message)
+            .expect("device login event json")
+            .get("login_type")
+            .and_then(|value| value.as_str()),
+        Some("chatgptDeviceCode")
+    );
+}
+
+#[test]
+fn rpc_device_login_cancel_stops_pending_worker_without_persisting_account() {
+    let ctx = RpcTestContext::new("rpc-device-login-cancel");
+    let (issuer, request_rx, stop_tx, request_join) = start_mock_pending_device_login_server();
+    let _issuer_guard = EnvGuard::set("CODEXMANAGER_ISSUER", &issuer);
+
+    let start_server = codexmanager_service::start_one_shot_server().expect("start server");
+    let start_response = post_rpc_method(
+        &start_server.addr,
+        63,
+        "account/login/start",
+        Some(serde_json::json!({
+            "type": "chatgptDeviceCode",
+            "openBrowser": false
+        })),
+    );
+    let login_id = start_response["result"]["loginId"]
+        .as_str()
+        .expect("device login id")
+        .to_string();
+
+    let usercode_request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive device usercode request");
+    assert_eq!(usercode_request.path, "/api/accounts/deviceauth/usercode");
+    let token_request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive first pending token request");
+    assert_eq!(token_request.path, "/api/accounts/deviceauth/token");
+
+    let cancel_server = codexmanager_service::start_one_shot_server().expect("start server");
+    let cancel_response = post_rpc_method(
+        &cancel_server.addr,
+        64,
+        "account/login/cancel",
+        Some(serde_json::json!({ "loginId": &login_id })),
+    );
+    assert_eq!(cancel_response["result"]["cancelled"], true);
+    assert_eq!(cancel_response["result"]["status"], "cancelled");
+
+    thread::sleep(Duration::from_millis(750));
+    stop_tx.send(()).expect("stop pending device server");
+    request_join.join().expect("join pending device server");
+    let late_requests = request_rx.try_iter().collect::<Vec<_>>();
+    assert!(
+        late_requests.is_empty(),
+        "cancelled worker must not continue polling or exchange tokens: {late_requests:?}"
+    );
+
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    let session = storage
+        .get_login_session(&login_id)
+        .expect("load cancelled device login")
+        .expect("cancelled device login exists");
+    assert_eq!(session.status, "cancelled");
+    assert!(session.code_verifier.is_empty());
+    assert!(
+        storage.list_accounts().expect("list accounts").is_empty(),
+        "cancelled device login must not persist an account"
+    );
+}
+
+#[test]
+fn rpc_login_cancel_marks_pending_session_cancelled_and_clears_verifier() {
+    let ctx = RpcTestContext::new("rpc-login-cancel");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    storage
+        .insert_login_session(&codexmanager_core::storage::LoginSession {
+            login_id: "login-to-cancel".to_string(),
+            code_verifier: "sensitive-verifier".to_string(),
+            state: "login-to-cancel".to_string(),
+            status: "pending".to_string(),
+            error: None,
+            workspace_id: None,
+            note: None,
+            tags: None,
+            group_name: None,
+            created_at: now_ts(),
+            updated_at: now_ts(),
+        })
+        .expect("insert pending login session");
+    drop(storage);
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let response = post_rpc_method(
+        &server.addr,
+        61,
+        "account/login/cancel",
+        Some(serde_json::json!({ "loginId": "login-to-cancel" })),
+    );
+    let result = response.get("result").expect("cancel result");
+    assert_eq!(
+        result.get("cancelled").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        result.get("status").and_then(|value| value.as_str()),
+        Some("cancelled")
+    );
+
+    let storage = Storage::open(ctx.db_path()).expect("reopen db");
+    let session = storage
+        .get_login_session("login-to-cancel")
+        .expect("load cancelled login session")
+        .expect("cancelled login session exists");
+    assert_eq!(session.status, "cancelled");
+    assert!(session.code_verifier.is_empty());
+}
+
+#[test]
+fn rpc_login_status_expires_stale_pending_session_and_clears_verifier() {
+    let ctx = RpcTestContext::new("rpc-login-expired");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    let stale_at = now_ts() - 15 * 60 - 1;
+    storage
+        .insert_login_session(&codexmanager_core::storage::LoginSession {
+            login_id: "stale-login".to_string(),
+            code_verifier: "stale-verifier".to_string(),
+            state: "stale-login".to_string(),
+            status: "pending".to_string(),
+            error: None,
+            workspace_id: None,
+            note: None,
+            tags: None,
+            group_name: None,
+            created_at: stale_at,
+            updated_at: stale_at,
+        })
+        .expect("insert stale login session");
+    drop(storage);
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let response = post_rpc_method(
+        &server.addr,
+        62,
+        "account/login/status",
+        Some(serde_json::json!({ "loginId": "stale-login" })),
+    );
+    let result = response.get("result").expect("status result");
+    assert_eq!(
+        result.get("status").and_then(|value| value.as_str()),
+        Some("expired")
+    );
+
+    let storage = Storage::open(ctx.db_path()).expect("reopen db");
+    let session = storage
+        .get_login_session("stale-login")
+        .expect("load expired login session")
+        .expect("expired login session exists");
+    assert_eq!(session.status, "expired");
+    assert!(session.code_verifier.is_empty());
+}
+
+#[test]
+fn rpc_login_status_expires_abandoned_completion_and_clears_verifier() {
+    let ctx = RpcTestContext::new("rpc-login-stale-completion");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    let stale_at = now_ts() - 5 * 60 - 1;
+    storage
+        .insert_login_session(&codexmanager_core::storage::LoginSession {
+            login_id: "stale-completion".to_string(),
+            code_verifier: "stale-completion-verifier".to_string(),
+            state: "stale-completion".to_string(),
+            status: "completing".to_string(),
+            error: None,
+            workspace_id: None,
+            note: None,
+            tags: None,
+            group_name: None,
+            created_at: stale_at,
+            updated_at: stale_at,
+        })
+        .expect("insert stale completion");
+    drop(storage);
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let response = post_rpc_method(
+        &server.addr,
+        65,
+        "account/login/status",
+        Some(serde_json::json!({ "loginId": "stale-completion" })),
+    );
+    let result = response.get("result").expect("status result");
+    assert_eq!(
+        result.get("status").and_then(|value| value.as_str()),
+        Some("expired")
+    );
+
+    let storage = Storage::open(ctx.db_path()).expect("reopen db");
+    let session = storage
+        .get_login_session("stale-completion")
+        .expect("load expired completion")
+        .expect("expired completion exists");
+    assert_eq!(session.status, "expired");
+    assert_eq!(
+        session.error.as_deref(),
+        Some("login completion expired after 5 minutes without progress")
+    );
+    assert!(session.code_verifier.is_empty());
 }
 
 /// 函数 `rpc_chatgpt_auth_tokens_login_read_logout_roundtrip`

@@ -1,7 +1,18 @@
+export type LoginStatus =
+  | "pending"
+  | "completing"
+  | "success"
+  | "failed"
+  | "cancelled"
+  | "expired"
+  | "unknown";
+
 export interface LoginStatusResult {
-  status: string;
+  status: LoginStatus;
   error: string;
 }
+
+export type LoginType = "chatgpt" | "chatgptDeviceCode";
 
 export interface DeviceAuthInfo {
   userCodeUrl: string;
@@ -10,13 +21,22 @@ export interface DeviceAuthInfo {
   redirectUri: string;
 }
 
-export interface LoginStartResult {
-  type: string;
-  authUrl?: string | null;
+export interface ChatgptLoginStartResult {
+  type: "chatgpt";
   loginId: string;
-  verificationUrl?: string | null;
-  userCode?: string | null;
+  authUrl: string;
 }
+
+export interface ChatgptDeviceCodeLoginStartResult {
+  type: "chatgptDeviceCode";
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
+}
+
+export type LoginStartResult =
+  | ChatgptLoginStartResult
+  | ChatgptDeviceCodeLoginStartResult;
 
 export interface CurrentAccessTokenAccount {
   type: string;

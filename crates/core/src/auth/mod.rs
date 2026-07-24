@@ -18,6 +18,8 @@ pub struct IdTokenClaims {
     pub workspace_id: Option<String>,
     #[serde(rename = "https://api.openai.com/auth", default)]
     pub auth: Option<AuthClaims>,
+    #[serde(rename = "https://api.openai.com/profile", default)]
+    pub profile: Option<ProfileClaims>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +32,38 @@ pub struct AuthClaims {
     pub chatgpt_user_id: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProfileClaims {
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl IdTokenClaims {
+    pub fn resolved_email(&self) -> Option<&str> {
+        self.email
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.profile
+                    .as_ref()
+                    .and_then(|profile| profile.email.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
+    }
+
+    pub fn resolved_name(&self) -> Option<&str> {
+        self.profile
+            .as_ref()
+            .and_then(|profile| profile.name.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
 }
 
 #[derive(Debug, Clone)]

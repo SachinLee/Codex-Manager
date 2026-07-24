@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { accountClient } from "@/lib/api/account-client";
+import { aggregateApiUsesIncomingPath } from "@/lib/aggregate-api-provider";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
@@ -37,11 +38,13 @@ import { AggregateApi } from "@/types";
 const AGGREGATE_API_PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
   claude: "Claude",
+  compatible: "Codex + Claude",
 };
 
 const AGGREGATE_API_URL_PLACEHOLDERS: Record<string, string> = {
   codex: "例如：https://api.openai.com/v1",
   claude: "例如：https://api.anthropic.com/v1",
+  compatible: "例如：https://example.com/v1",
 };
 
 type BalanceQueryTemplate = "generic" | "new_api" | "custom";
@@ -166,6 +169,7 @@ export function AggregateApiModal({
   const unavailableMessage = canAccessManagementRpc
     ? t("服务未连接，聚合 API 暂不可编辑；连接恢复后可继续操作。")
     : t("当前运行环境暂不支持聚合 API 管理。");
+  const usesIncomingPath = aggregateApiUsesIncomingPath(providerType);
 
   useEffect(() => {
     if (!open) return;
@@ -442,8 +446,9 @@ export function AggregateApiModal({
           authType,
           authCustomEnabled,
           authParams,
-          actionCustomEnabled,
-          action: actionCustomEnabled ? action.trim() : null,
+          actionCustomEnabled: usesIncomingPath ? false : actionCustomEnabled,
+          action:
+            !usesIncomingPath && actionCustomEnabled ? action.trim() : null,
           modelOverride: modelOverride.trim(),
           costMultiplier: parsedCostMultiplier,
           dailySpendLimitUsd: parsedDailySpendLimit,
@@ -477,8 +482,8 @@ export function AggregateApiModal({
         authType,
         authCustomEnabled,
         authParams,
-        actionCustomEnabled,
-        action: actionCustomEnabled ? action.trim() : null,
+        actionCustomEnabled: usesIncomingPath ? false : actionCustomEnabled,
+        action: !usesIncomingPath && actionCustomEnabled ? action.trim() : null,
         modelOverride: modelOverride.trim(),
         costMultiplier: parsedCostMultiplier,
         dailySpendLimitUsd: parsedDailySpendLimit,
@@ -610,23 +615,37 @@ export function AggregateApiModal({
                     onValueChange={(value) => {
                       if (!value) return;
                       setProviderType(value);
+                      if (aggregateApiUsesIncomingPath(value)) {
+                        setActionCustomEnabled(false);
+                      }
                     }}
                   >
                     <SelectTrigger id="aggregate-api-provider" className="w-full">
                       <SelectValue>
                         {(value) =>
-                          AGGREGATE_API_PROVIDER_LABELS[String(value || "")] ||
-                          "Codex"
+                          String(value || "") === "compatible"
+                            ? t("通用兼容（Codex + Claude）")
+                            : AGGREGATE_API_PROVIDER_LABELS[
+                                String(value || "")
+                              ] || "Codex"
                         }
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="codex">Codex</SelectItem>
-                      <SelectItem value="claude">Claude</SelectItem>
+                      <SelectGroup>
+                        <SelectItem value="codex">Codex</SelectItem>
+                        <SelectItem value="claude">Claude</SelectItem>
+                        <SelectItem value="compatible">
+                          {t("通用兼容（Codex + Claude）")}
+                        </SelectItem>
                       </SelectGroup>
                     </SelectContent>
                   </Select>
+                  {providerType === "compatible" ? (
+                    <p className="text-[11px] leading-4 text-muted-foreground">
+                      {t("按请求路径原样转发 Codex 与 Claude 协议；自定义 action 会自动关闭。")}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-2">
@@ -886,14 +905,14 @@ export function AggregateApiModal({
                       </p>
                     </div>
                     <Switch
-                      checked={actionCustomEnabled}
-                      disabled={!isServiceReady}
+                      checked={usesIncomingPath ? false : actionCustomEnabled}
+                      disabled={!isServiceReady || usesIncomingPath}
                       onCheckedChange={(checked) =>
                         setActionCustomEnabled(Boolean(checked))
                       }
                     />
                   </div>
-                  {actionCustomEnabled ? (
+                  {!usesIncomingPath && actionCustomEnabled ? (
                     <div className="grid gap-2">
                       <Label className="text-xs">{t("action path")}</Label>
                       <Input

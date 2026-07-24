@@ -1,6 +1,13 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { appClient } from "@/lib/api/app-client";
 import { getAppErrorMessage } from "@/lib/api/transport";
@@ -43,7 +50,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     [locale],
   );
 
-  const setLocale = async (nextLocale: AppLocale) => {
+  const setLocale = useCallback(async (nextLocale: AppLocale) => {
     const normalizedLocale = normalizeLocale(nextLocale);
     if (normalizedLocale === locale) {
       return;
@@ -64,7 +71,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsSwitchingLocale(false);
     }
-  };
+  }, [locale, setAppSettings]);
 
   const value = useMemo<I18nContextValue>(
     () => ({
@@ -74,7 +81,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       setLocale,
       t,
     }),
-    [isSwitchingLocale, locale, localeOptions, t],
+    [isSwitchingLocale, locale, localeOptions, setLocale, t],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

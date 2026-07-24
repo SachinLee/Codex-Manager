@@ -6,6 +6,8 @@ use std::sync::{
 pub(crate) static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub(crate) static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 pub(crate) static CLOSE_TO_TRAY_ON_CLOSE: AtomicBool = AtomicBool::new(false);
+pub(crate) static KEEP_WINDOW_UI_MOUNTED: AtomicBool =
+    AtomicBool::new(!cfg!(target_os = "windows"));
 pub(crate) static LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
 pub(crate) static KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE: AtomicBool = AtomicBool::new(false);
 pub(crate) static SKIP_NEXT_UNSAVED_SETTINGS_WINDOW_CLOSE_CONFIRM: AtomicBool =

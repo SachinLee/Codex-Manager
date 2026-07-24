@@ -6,7 +6,6 @@ import {
   normalizeProxyTestJobState,
   normalizeProxySpeedTestListResult,
   normalizeProxyDiagnosticTestListResult,
-  normalizeAccountProxyUrlTestListResult,
   normalizeProxyProfileUrlTestListResult,
 } from "./proxy-normalize";
 import type {

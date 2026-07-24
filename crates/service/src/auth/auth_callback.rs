@@ -184,10 +184,7 @@ fn update_login_session_failed(state: Option<&str>, error: &str) {
     let Some(storage) = open_storage() else {
         return;
     };
-    let exists = storage.get_login_session(state).ok().flatten().is_some();
-    if exists {
-        let _ = storage.update_login_session_status(state, "failed", Some(error));
-    }
+    let _ = storage.fail_pending_login_session(state, Some(error));
 }
 
 /// 函数 `is_missing_codex_entitlement_error`

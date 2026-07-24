@@ -16,6 +16,7 @@ mod apikey;
 mod app_settings;
 mod codex_profile;
 mod codex_session;
+mod codex_skills;
 mod dashboard;
 mod gateway;
 mod model_groups;
@@ -294,7 +295,7 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
         return JsonRpcMessage::Response(response(&req, value_or_error::<()>(Err(err))));
     }
 
-    if let Some(resp) = account::try_handle(&req) {
+    if let Some(resp) = account::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = account_manager::try_handle(&req, &actor) {
@@ -310,6 +311,9 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = codex_profile::try_handle(&req) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = codex_skills::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = dashboard::try_handle(&req, &actor) {

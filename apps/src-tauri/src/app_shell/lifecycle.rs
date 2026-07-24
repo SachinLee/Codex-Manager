@@ -15,12 +15,15 @@ use super::state::{
     mark_skip_next_unsaved_settings_window_close_confirm, should_keep_alive_for_lightweight_close,
     take_skip_next_unsaved_settings_exit_confirm,
     take_skip_next_unsaved_settings_window_close_confirm, APP_EXIT_REQUESTED,
-    CLOSE_TO_TRAY_ON_CLOSE, KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE, LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY,
+    CLOSE_TO_TRAY_ON_CLOSE, KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE, KEEP_WINDOW_UI_MOUNTED,
     TRAY_AVAILABLE,
 };
 #[cfg(target_os = "macos")]
 use super::window::request_show_main_window;
-use super::window::{hide_tray_preview_window, MAIN_WINDOW_LABEL, TRAY_PREVIEW_WINDOW_LABEL};
+use super::window::{
+    dismiss_tray_preview_window, release_tray_preview_window, MAIN_WINDOW_LABEL,
+    TRAY_PREVIEW_WINDOW_LABEL,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainWindowCloseMode {
@@ -45,15 +48,15 @@ enum MainWindowCloseMode {
 fn resolve_main_window_close_mode(
     close_to_tray_on_close: bool,
     tray_available: bool,
-    lightweight_tray_close: bool,
+    keep_window_ui_mounted: bool,
 ) -> MainWindowCloseMode {
     if !close_to_tray_on_close || !tray_available {
         return MainWindowCloseMode::AllowWindowClose;
     }
-    if cfg!(target_os = "windows") || lightweight_tray_close {
-        return MainWindowCloseMode::CloseForLightweightTray;
+    if keep_window_ui_mounted {
+        return MainWindowCloseMode::HideToTray;
     }
-    MainWindowCloseMode::HideToTray
+    MainWindowCloseMode::CloseForLightweightTray
 }
 
 /// 函数 `should_confirm_unsaved_settings_before_window_close`
@@ -110,7 +113,7 @@ fn should_confirm_unsaved_settings_before_app_exit(
 pub(crate) fn handle_main_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if window.label() == TRAY_PREVIEW_WINDOW_LABEL {
         if let tauri::WindowEvent::Focused(false) = event {
-            hide_tray_preview_window(window.app_handle());
+            dismiss_tray_preview_window(window.app_handle());
         }
         return;
     }
@@ -124,11 +127,11 @@ pub(crate) fn handle_main_window_event(window: &tauri::Window, event: &tauri::Wi
 
         let close_to_tray_on_close = CLOSE_TO_TRAY_ON_CLOSE.load(Ordering::Relaxed);
         let tray_available = TRAY_AVAILABLE.load(Ordering::Relaxed);
-        let lightweight_tray_close = LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY.load(Ordering::Relaxed);
+        let keep_window_ui_mounted = KEEP_WINDOW_UI_MOUNTED.load(Ordering::Relaxed);
         let close_mode = resolve_main_window_close_mode(
             close_to_tray_on_close,
             tray_available,
-            lightweight_tray_close,
+            keep_window_ui_mounted,
         );
         let skip_unsaved_settings_window_close_confirm =
             take_skip_next_unsaved_settings_window_close_confirm();
@@ -161,6 +164,7 @@ pub(crate) fn handle_main_window_event(window: &tauri::Window, event: &tauri::Wi
 
         match close_mode {
             MainWindowCloseMode::AllowWindowClose => {
+                release_tray_preview_window(window.app_handle());
                 if close_to_tray_on_close && !tray_available {
                     CLOSE_TO_TRAY_ON_CLOSE.store(false, Ordering::Relaxed);
                 }
@@ -266,19 +270,13 @@ mod tests {
             resolve_main_window_close_mode(true, false, false),
             MainWindowCloseMode::AllowWindowClose
         );
-        #[cfg(not(target_os = "windows"))]
-        assert_eq!(
-            resolve_main_window_close_mode(true, true, false),
-            MainWindowCloseMode::HideToTray
-        );
-        #[cfg(target_os = "windows")]
         assert_eq!(
             resolve_main_window_close_mode(true, true, false),
             MainWindowCloseMode::CloseForLightweightTray
         );
         assert_eq!(
             resolve_main_window_close_mode(true, true, true),
-            MainWindowCloseMode::CloseForLightweightTray
+            MainWindowCloseMode::HideToTray
         );
     }
 

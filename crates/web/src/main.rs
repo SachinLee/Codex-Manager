@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::{net::Ipv4Addr, net::ToSocketAddrs};
 
 use axum::body::{to_bytes, Body, Bytes};
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -514,7 +514,12 @@ async fn async_main() {
     });
 
     let mut protected_app = Router::new()
-        .route("/api/rpc", post(service_gateway::rpc_proxy))
+        .route(
+            "/api/rpc",
+            post(service_gateway::rpc_proxy).layer(DefaultBodyLimit::max(
+                codexmanager_service::RPC_BODY_LIMIT_BYTES,
+            )),
+        )
         .route(
             "/api/events/usage-refresh",
             get(service_gateway::usage_refresh_events),

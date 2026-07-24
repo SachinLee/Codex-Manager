@@ -97,6 +97,7 @@ pub(crate) enum LowQuotaCandidateMode {
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn collect_gateway_candidates(
     storage: &Storage,
 ) -> Result<Vec<(Account, Token)>, String> {
@@ -114,6 +115,16 @@ pub(crate) fn collect_gateway_candidates_with_low_quota_mode(
     let candidates = collect_gateway_candidates_uncached(storage, low_quota_mode, None)?;
     write_candidate_cache(low_quota_mode, candidates.clone());
     Ok(candidates)
+}
+
+pub(crate) fn collect_gateway_candidates_for_account_ids_with_low_quota_mode(
+    storage: &Storage,
+    account_ids: &[String],
+    low_quota_mode: LowQuotaCandidateMode,
+) -> Result<Vec<(Account, Token)>, String> {
+    // Restricted pools deliberately bypass the global snapshot cache. The quota guard must be
+    // evaluated inside the authorized pool so an unrelated account cannot suppress its fallback.
+    collect_gateway_candidates_uncached(storage, low_quota_mode, Some(account_ids))
 }
 
 /// 函数 `collect_gateway_candidates_uncached`

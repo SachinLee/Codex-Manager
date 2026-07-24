@@ -3,7 +3,7 @@ use super::{
     CandidateSkipReason,
 };
 use codexmanager_core::storage::{
-    now_ts, Account, ModelSourceMapping, ModelSourceModel, Storage, Token,
+    now_ts, Account, ModelSourceMapping, ModelSourceModel, Storage, Token, UsageSnapshotRecord,
 };
 
 fn insert_active_account_with_token(storage: &Storage, account_id: &str, sort: i64) {
@@ -33,6 +33,143 @@ fn insert_active_account_with_token(storage: &Storage, account_id: &str, sort: i
         })
         .expect("insert token");
     crate::gateway::invalidate_candidate_cache();
+}
+
+fn set_account_group(storage: &Storage, account_id: &str, group_name: &str) {
+    storage
+        .update_account_group_name(account_id, Some(group_name))
+        .expect("set account group");
+    crate::gateway::invalidate_candidate_cache();
+}
+
+fn insert_usage_snapshot(
+    storage: &Storage,
+    account_id: &str,
+    used_percent: f64,
+    plan_type: Option<&str>,
+) {
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account_id.to_string(),
+            used_percent: Some(used_percent),
+            window_minutes: Some(300),
+            resets_at: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            credits_json: plan_type.map(|plan| format!(r#"{{"planType":"{plan}"}}"#)),
+            captured_at: now_ts(),
+        })
+        .expect("insert usage snapshot");
+    crate::gateway::invalidate_candidate_cache();
+}
+
+struct QuotaGuardReset(crate::gateway::QuotaGuardConfig);
+
+impl Drop for QuotaGuardReset {
+    fn drop(&mut self) {
+        crate::gateway::set_quota_guard_config(self.0);
+    }
+}
+
+#[test]
+fn account_group_filter_limits_initial_and_failover_candidate_pool() {
+    let _guard = crate::test_env_guard();
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    for (id, sort, group) in [
+        ("acc-team-a-first", 0, "team-a"),
+        ("acc-team-a-second", 1, " team-a "),
+        ("acc-team-b", 2, "team-b"),
+    ] {
+        insert_active_account_with_token(&storage, id, sort);
+        set_account_group(&storage, id, group);
+    }
+
+    let candidates = super::prepare_gateway_candidates(
+        &storage,
+        Some("gpt-5.4"),
+        Some("team-a"),
+        None,
+        crate::gateway::LowQuotaCandidateMode::NormalOnly,
+    )
+    .expect("prepare restricted candidates");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|(account, _)| account.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acc-team-a-first", "acc-team-a-second"]
+    );
+
+    let case_mismatch = super::prepare_gateway_candidates(
+        &storage,
+        Some("gpt-5.4"),
+        Some("TEAM-A"),
+        None,
+        crate::gateway::LowQuotaCandidateMode::NormalOnly,
+    )
+    .expect("prepare case-sensitive candidates");
+    assert!(case_mismatch.is_empty());
+}
+
+#[test]
+fn account_group_and_plan_filters_form_an_intersection() {
+    let _guard = crate::test_env_guard();
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    for (id, sort, group, plan) in [
+        ("acc-a-plus", 0, "team-a", "plus"),
+        ("acc-a-free", 1, "team-a", "free"),
+        ("acc-b-plus", 2, "team-b", "plus"),
+    ] {
+        insert_active_account_with_token(&storage, id, sort);
+        set_account_group(&storage, id, group);
+        insert_usage_snapshot(&storage, id, 10.0, Some(plan));
+    }
+
+    let candidates = super::prepare_gateway_candidates(
+        &storage,
+        None,
+        Some("team-a"),
+        Some("plus"),
+        crate::gateway::LowQuotaCandidateMode::NormalOnly,
+    )
+    .expect("prepare intersected candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].0.id, "acc-a-plus");
+}
+
+#[test]
+fn quota_fallback_is_evaluated_inside_restricted_group() {
+    let _guard = crate::test_env_guard();
+    let previous = crate::gateway::current_quota_guard_config();
+    let _reset = QuotaGuardReset(previous);
+    crate::gateway::set_quota_guard_config(crate::gateway::QuotaGuardConfig {
+        enabled: true,
+        primary_min_remaining_percent: 5.0,
+        secondary_min_remaining_percent: 0.0,
+        allow_all_low_quota_fallback: true,
+    });
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    insert_active_account_with_token(&storage, "acc-team-a-low", 0);
+    set_account_group(&storage, "acc-team-a-low", "team-a");
+    insert_usage_snapshot(&storage, "acc-team-a-low", 99.0, None);
+    insert_active_account_with_token(&storage, "acc-team-b-healthy", 1);
+    set_account_group(&storage, "acc-team-b-healthy", "team-b");
+    insert_usage_snapshot(&storage, "acc-team-b-healthy", 10.0, None);
+
+    let candidates = super::prepare_gateway_candidates(
+        &storage,
+        None,
+        Some("team-a"),
+        None,
+        crate::gateway::LowQuotaCandidateMode::NormalOnly,
+    )
+    .expect("prepare restricted low quota candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].0.id, "acc-team-a-low");
 }
 
 fn upsert_account_source_model(storage: &Storage, account_id: &str, upstream_model: &str) {
@@ -103,6 +240,7 @@ fn prepare_gateway_candidates_accepts_direct_upstream_model_without_platform_map
         &storage,
         Some("gpt-5.4-mini"),
         None,
+        None,
         crate::gateway::LowQuotaCandidateMode::NormalOnly,
     )
     .expect("prepare candidates");
@@ -151,6 +289,7 @@ fn prepare_gateway_candidates_uses_account_pool_despite_legacy_aggregate_mapping
     let candidates = super::prepare_gateway_candidates(
         &storage,
         Some("gpt-aggregate-owned"),
+        None,
         None,
         crate::gateway::LowQuotaCandidateMode::NormalOnly,
     )
@@ -203,6 +342,7 @@ fn prepare_gateway_candidates_ignores_legacy_per_account_mapping() {
     let candidates = super::prepare_gateway_candidates(
         &storage,
         Some("gpt-hybrid-route"),
+        None,
         None,
         crate::gateway::LowQuotaCandidateMode::NormalOnly,
     )
@@ -257,6 +397,7 @@ fn prepare_gateway_candidates_reuses_complete_account_pool_cache() {
         &storage,
         Some("gpt-scoped-route"),
         None,
+        None,
         crate::gateway::LowQuotaCandidateMode::NormalOnly,
     )
     .expect("prepare scoped candidates");
@@ -300,6 +441,7 @@ fn prepare_gateway_candidates_does_not_filter_account_pool_by_legacy_mapping() {
     let candidates = super::prepare_gateway_candidates(
         &storage,
         Some("gpt-5.5"),
+        None,
         None,
         crate::gateway::LowQuotaCandidateMode::NormalOnly,
     )

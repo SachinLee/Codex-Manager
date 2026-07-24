@@ -254,7 +254,10 @@ export function useAccounts() {
   const startupSnapshot =
     startupSnapshotQuery.data ||
     queryClient.getQueryData<StartupSnapshot>(startupSnapshotQueryKey);
-  const startupAccounts = startupSnapshot?.accounts || [];
+  const startupAccounts = useMemo(
+    () => startupSnapshot?.accounts ?? [],
+    [startupSnapshot?.accounts],
+  );
   const startupUsages = startupSnapshot?.usageSnapshots || [];
   const hasStartupAccountSnapshot = startupAccounts.length > 0;
   const startupAccountList = useMemo(
@@ -801,6 +804,7 @@ export function useAccounts() {
     mutationFn: ({
       accountId,
       label,
+      groupName,
       note,
       tags,
       sort,
@@ -809,6 +813,7 @@ export function useAccounts() {
     }: {
       accountId: string;
       label?: string | null;
+      groupName?: string | null;
       note?: string | null;
       tags?: string[] | string | null;
       sort?: number | null;
@@ -817,6 +822,7 @@ export function useAccounts() {
     }) =>
       accountClient.updateProfile(accountId, {
         label,
+        groupName,
         note,
         tags,
         sort,
@@ -1170,6 +1176,7 @@ export function useAccounts() {
       accountId: string,
       params: {
         label?: string | null;
+        groupName?: string | null;
         note?: string | null;
         tags?: string[] | string | null;
         sort?: number | null;

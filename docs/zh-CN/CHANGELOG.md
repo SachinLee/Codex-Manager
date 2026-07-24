@@ -5,12 +5,27 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-23
+
 ### Added
 
+- 账号授权新增 `chatgpt.com` Device Code 登录，支持展示/复制验证码、打开验证页、自动轮询、取消会话和过期处理；浏览器授权及其手动回调解析保持可用（#370）。
+- `/skills/` 现按“Skills 安装 / Codex 插件安装”分栏：Skills 可从内置或自定义 GitHub 技能仓库、skills.sh 搜索结果、ZIP 和已有目录单独安装，并支持仓库后台刷新与安全卸载；Codex 原生 Marketplace 继续提供标准插件整包安装，`.system` 内置 Skill 只读（#126）。
 - 新增 `gpt-image-2`（快照 `gpt-image-2-2026-04-21`），作为第 9 个 builtin、普通列表中的第 8 个模型。该目录项仅用于 `/v1/images/generations` 与 `/v1/images/edits`，不会作为文本生成、Chat Completions 或直接 Responses 主模型；目录价格元数据记录官方每 1M image input / cached input / output tokens 8 / 2 / 30 USD。
+
+### Changed
+
+- 发布版本提升到 `0.5.0`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+- 清理前端 lint 错误与警告，恢复干净的发布前质量检查。
 
 ### Fixed
 
+- 修复混合轮转下模型仅配置聚合 API 路由时仍优先请求本地账号池的问题；现在仅聚合路由会直接走已绑定的聚合 API，双路由保持账号优先、聚合兜底，仅账号池路由也不会误用聚合 API（#381）。
+- 修复 Windows 托盘预览窗口未可靠应用最新尺寸的问题；窗口创建或复用时都会重新应用 `360 × 430` 的逻辑尺寸和固定约束，避免内容裁切或沿用旧窗口大小（#380）。
+- 修复 Responses WebSocket 在上游先发送 `response.created`、随后以嵌套 `response.failed` 报告额度耗尽时无法自动换号的问题；现在会暂存无内容的生命周期事件，正确识别嵌套错误，立即将耗尽账号标记为受限，并在下一可用账号上静默重放当前请求。
+- 聚合 API 新增 `compatible` 通用兼容类型：同一条 URL 和密钥可同时承接 Codex/OpenAI 与 Claude 原生协议请求，按客户端请求路径原样转发，无需重复创建供应商记录（#359）。
+- 修复仅从 ChatGPT `/api/auth/session` 导入 `accessToken` 的账号调用 Codex 上游时返回 401：HTTP、Responses WebSocket 与账号预热会按需注册和持久化 AgentIdentity，校验账号绑定后使用 AgentAssertion，并兼容官方嵌套 snake_case / camelCase AgentIdentity 格式（#376）。
+- 修复 `/api/auth/session` 账号显示为“导入账号000x”的问题；现在会从 accessToken 的 OpenAI profile 或会话用户信息解析显示名，并在不覆盖手工名称的前提下修复旧占位显示名。
 - 按 OpenAI 官方 API 价格修正 GPT-5.6 Sol、Terra、Luna 计费：缓存输入恢复 90% 折扣，并在 272K 输入阈值切换到 2 倍输入、1.5 倍输出的长上下文费率；旧版自动估算价格会迁移为官方价格，自定义价格保持不变。
 
 ## [0.4.4] - 2026-07-20
@@ -410,7 +425,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.1...v0.4.2

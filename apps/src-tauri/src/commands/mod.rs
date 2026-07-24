@@ -6,6 +6,8 @@ pub mod aggregate_api;
 pub mod apikey;
 pub mod codex_launcher;
 pub mod codex_profile;
+pub mod codex_projects;
+pub mod codex_skills;
 pub mod dashboard;
 pub mod login;
 pub mod plugin;

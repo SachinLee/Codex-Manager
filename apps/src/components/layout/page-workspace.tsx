@@ -45,7 +45,7 @@ export function PageWorkspace({ children, className }: PageWorkspaceProps) {
   return (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-[1680px] flex-col gap-4 animate-in fade-in duration-300",
+        "mx-auto flex w-full max-w-[1680px] flex-col gap-4",
         className,
       )}
     >

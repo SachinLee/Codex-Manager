@@ -125,6 +125,7 @@ export interface AccountEditorState {
   accountId: string;
   accountName: string;
   currentLabel: string;
+  currentGroupName: string;
   currentTags: string;
   currentNote: string;
   currentSort: number;
@@ -700,6 +701,7 @@ export function AccountInfoCell({
   const statusReasonCode = getAccountStatusReasonCode(account);
   const statusReasonLabel = formatAccountStatusReasonLabel(account, t);
   const tagsText = formatAccountTags(account.tags);
+  const groupName = String(account.groupName || "").trim();
   const noteText = String(account.note || "").trim();
 
   return (
@@ -737,6 +739,15 @@ export function AccountInfoCell({
                 className="h-4 shrink-0 bg-amber-500/15 px-1.5 text-[10px] text-amber-700 dark:text-amber-300"
               >
                 {t("优先")}
+              </Badge>
+            ) : null}
+            {groupName ? (
+              <Badge
+                variant="outline"
+                className="h-4 max-w-full shrink px-1.5 text-[9px] text-muted-foreground"
+                title={groupName}
+              >
+                <span className="truncate">{groupName}</span>
               </Badge>
             ) : null}
           </div>
@@ -809,6 +820,10 @@ export function AccountInfoCell({
                 {formatTsFromSeconds(account.subscriptionRenewsAt, t("未知"))}
               </div>
             </div>
+          </div>
+          <div className="space-y-0.5">
+            <div className="text-[10px] text-muted-foreground">{t("账号分组")}</div>
+            <div className="break-words">{groupName || t("未分组")}</div>
           </div>
           <div className="space-y-0.5">
             <div className="text-[10px] text-muted-foreground">{t("标签")}</div>

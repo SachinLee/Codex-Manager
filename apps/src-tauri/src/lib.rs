@@ -14,7 +14,8 @@ mod service_runtime;
 use app_shell::{
     handle_main_window_event, handle_run_event, load_env_from_exe_dir,
     refresh_tray_menu_after_usage_update, request_show_main_window, schedule_startup_main_window,
-    setup_tray, sync_startup_window_state, CLOSE_TO_TRAY_ON_CLOSE, TRAY_AVAILABLE,
+    setup_tray, sync_startup_window_state, sync_window_ui_mount_state, CLOSE_TO_TRAY_ON_CLOSE,
+    TRAY_AVAILABLE,
 };
 
 const USAGE_REFRESH_COMPLETED_EVENT: &str = "usage-refresh-completed";
@@ -152,6 +153,7 @@ pub fn run() {
                 );
             }
             sync_startup_window_state();
+            sync_window_ui_mount_state(app.handle());
             schedule_startup_main_window(app.handle());
             Ok(())
         })

@@ -110,6 +110,71 @@ fn update_api_key_last_used_at_by_id_updates_recent_call_time() {
 }
 
 #[test]
+fn api_key_account_group_filter_migrates_defaults_updates_and_clears() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let migration_count: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM schema_migrations WHERE version = ?1",
+            ["123_api_keys_account_group_filter"],
+            |row| row.get(0),
+        )
+        .expect("query migration marker");
+    assert_eq!(migration_count, 1);
+
+    let key = make_test_api_key(1);
+    storage
+        .insert_api_key(&key)
+        .expect("insert legacy-shaped key");
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&key.id)
+            .expect("read default group filter"),
+        None
+    );
+
+    storage
+        .update_api_key_account_group_filter(&key.id, Some("TEAM_A"))
+        .expect("set group filter");
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&key.id)
+            .expect("read group filter")
+            .as_deref(),
+        Some("TEAM_A")
+    );
+
+    let summaries = storage
+        .list_api_key_summaries()
+        .expect("list key summaries");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].account_group_filter.as_deref(), Some("TEAM_A"));
+
+    storage
+        .insert_api_key(&key)
+        .expect("update legacy-shaped key without clearing group filter");
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&key.id)
+            .expect("read preserved group filter")
+            .as_deref(),
+        Some("TEAM_A")
+    );
+
+    storage
+        .update_api_key_account_group_filter(&key.id, None)
+        .expect("clear group filter");
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&key.id)
+            .expect("read cleared group filter"),
+        None
+    );
+}
+
+#[test]
 fn large_key_sets_are_chunked_for_api_key_summary_queries() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");

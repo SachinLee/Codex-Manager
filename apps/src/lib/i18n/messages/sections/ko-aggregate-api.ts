@@ -14,6 +14,10 @@ export const KO_AGGREGATE_API_MESSAGES: MessageCatalog = {
   上游连接: "업스트림 연결",
   "连通性测试只使用已配置路由对应的模型。":
     "연결 테스트는 설정된 라우트에 연결된 모델만 사용합니다.",
+  "通用兼容（Codex + Claude）": "호환 모드 (Codex + Claude)",
+  "按请求路径原样转发 Codex 与 Claude 协议；自定义 action 会自动关闭。":
+    "요청 경로를 그대로 사용해 Codex 및 Claude 프로토콜을 전달합니다. 사용자 지정 action은 자동으로 꺼집니다.",
+  "例如：https://example.com/v1": "예: https://example.com/v1",
   模型路由: "모델 라우트",
   供应商: "공급자",
   连通性: "연결 상태",

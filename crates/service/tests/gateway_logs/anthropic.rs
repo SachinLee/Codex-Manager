@@ -156,7 +156,7 @@ fn gateway_claude_protocol_rewrites_messages_path_with_sticky_prompt_cache_key()
 }
 
 #[test]
-fn gateway_aggregate_messages_passthrough_accepts_message_stop_for_non_claude_provider() {
+fn gateway_aggregate_compatible_messages_passthrough_accepts_message_stop() {
     let _lock = test_env_guard();
     let dir = new_test_dir("codexmanager-gateway-aggregate-message-stop");
     let db_path: PathBuf = dir.join("codexmanager.db");
@@ -190,12 +190,12 @@ fn gateway_aggregate_messages_passthrough_accepts_message_stop_for_non_claude_pr
     storage.init().expect("init db");
     seed_model_catalog_models(&storage, &["claude-3-5-sonnet-20241022"]);
     let now = now_ts();
-    let aggregate_id = "agg_non_claude_messages_sse";
+    let aggregate_id = "agg_compatible_messages_sse";
     storage
         .insert_aggregate_api(&AggregateApi {
             id: aggregate_id.to_string(),
-            provider_type: "codex".to_string(),
-            supplier_name: Some("non-claude-anthropic-compatible".to_string()),
+            provider_type: "compatible".to_string(),
+            supplier_name: Some("compatible-messages".to_string()),
             sort: 0,
             url: format!("http://{upstream_addr}"),
             auth_type: "apikey".to_string(),
@@ -233,20 +233,20 @@ fn gateway_aggregate_messages_passthrough_accepts_message_stop_for_non_claude_pr
         10,
     );
 
-    let platform_key = "pk_non_claude_messages_sse";
+    let platform_key = "pk_compatible_messages_sse";
     storage
         .insert_api_key(&ApiKey {
-            id: "gk_non_claude_messages_sse".to_string(),
-            name: Some("non-claude-messages-sse".to_string()),
+            id: "gk_compatible_messages_sse".to_string(),
+            name: Some("compatible-messages-sse".to_string()),
             model_slug: Some("claude-3-5-sonnet-20241022".to_string()),
             reasoning_effort: None,
             service_tier: None,
             rotation_strategy: "aggregate_api_rotation".to_string(),
-            aggregate_api_id: Some(aggregate_id.to_string()),
+            aggregate_api_id: None,
             account_plan_filter: None,
             aggregate_api_url: None,
             client_type: "codex".to_string(),
-            protocol_type: "openai_compat".to_string(),
+            protocol_type: "anthropic_native".to_string(),
             auth_scheme: "x_api_key".to_string(),
             upstream_base_url: None,
             static_headers_json: None,
@@ -288,11 +288,23 @@ fn gateway_aggregate_messages_passthrough_accepts_message_stop_for_non_claude_pr
         Some("Bearer upstream-secret")
     );
     assert_eq!(captured.headers.get("x-api-key").map(String::as_str), None);
+    assert_eq!(
+        captured
+            .headers
+            .get("anthropic-version")
+            .map(String::as_str),
+        Some("2023-06-01")
+    );
+    let upstream_payload: serde_json::Value =
+        serde_json::from_slice(&captured.body).expect("parse passthrough messages payload");
+    assert_eq!(upstream_payload["messages"][0]["role"], "user");
+    assert_eq!(upstream_payload["messages"][0]["content"], "hello");
+    assert!(upstream_payload.get("input").is_none());
 
     let mut matched = None;
     for _ in 0..40 {
         let logs = storage
-            .list_request_logs(Some("key:=gk_non_claude_messages_sse"), 20)
+            .list_request_logs(Some("key:=gk_compatible_messages_sse"), 20)
             .expect("list request logs");
         matched = logs
             .into_iter()

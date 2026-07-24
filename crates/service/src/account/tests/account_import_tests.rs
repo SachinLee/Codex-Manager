@@ -3,7 +3,7 @@ use super::{
     resolve_logical_account_id, ExistingAccountIndex, ImportTokenPayload,
 };
 use crate::account_identity::build_account_storage_id;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use ed25519_dalek::pkcs8::EncodePrivateKey;
@@ -27,6 +27,12 @@ fn test_agent_private_key(seed: u8) -> String {
             .expect("encode test agent key")
             .as_bytes(),
     )
+}
+
+fn test_jwt(payload: serde_json::Value) -> String {
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
+    format!("{header}.{payload}.signature")
 }
 
 /// 函数 `payload`
@@ -297,6 +303,266 @@ fn extract_token_payload_supports_sub2api_agent_identity_credentials() {
     assert_eq!(identity.chatgpt_user_id, "user-agent");
     assert_eq!(identity.workspace_id.as_deref(), Some("workspace-agent"));
     assert!(!identity.chatgpt_account_is_fedramp);
+}
+
+#[test]
+fn extract_token_payload_supports_official_agent_identity_record() {
+    let value = json!({
+        "auth_mode": "chatgpt",
+        "agent_identity": {
+            "agent_runtime_id": "official-runtime",
+            "agent_private_key": "official-private-key",
+            "account_id": "official-account",
+            "chatgpt_user_id": "official-user",
+            "email": "official@example.com",
+            "plan_type": "plus",
+            "chatgpt_account_is_fedramp": true,
+            "task_id": "official-task"
+        }
+    });
+
+    let payload = extract_token_payload(&value).expect("parse official agent identity record");
+    assert!(payload.access_token.is_empty());
+    assert!(payload.id_token.is_empty());
+    assert!(payload.refresh_token.is_empty());
+    assert_eq!(payload.account_id_hint.as_deref(), Some("official-account"));
+    assert_eq!(
+        payload.chatgpt_account_id_hint.as_deref(),
+        Some("official-account")
+    );
+    let identity = payload.agent_identity.expect("agent identity");
+    assert_eq!(identity.agent_runtime_id, "official-runtime");
+    assert_eq!(identity.agent_private_key, "official-private-key");
+    assert_eq!(identity.task_id.as_deref(), Some("official-task"));
+    assert_eq!(identity.chatgpt_user_id, "official-user");
+    assert!(identity.chatgpt_account_is_fedramp);
+    assert_eq!(identity.auth_mode, "agentIdentity");
+    assert_eq!(identity.workspace_id.as_deref(), Some("official-account"));
+}
+
+#[test]
+fn extract_token_payload_supports_camel_case_agent_identity_record() {
+    let value = json!({
+        "authMode": "agentIdentity",
+        "agentIdentity": {
+            "agentRuntimeId": "camel-runtime",
+            "agentPrivateKey": "camel-private-key",
+            "accountId": "camel-account",
+            "chatgptUserId": "camel-user",
+            "chatgptAccountIsFedramp": false,
+            "taskId": "camel-task",
+            "workspaceId": "camel-workspace"
+        }
+    });
+
+    let payload = extract_token_payload(&value).expect("parse camel agent identity record");
+    assert_eq!(payload.account_id_hint.as_deref(), Some("camel-account"));
+    assert_eq!(
+        payload.chatgpt_account_id_hint.as_deref(),
+        Some("camel-account")
+    );
+    let identity = payload.agent_identity.expect("agent identity");
+    assert_eq!(identity.agent_runtime_id, "camel-runtime");
+    assert_eq!(identity.agent_private_key, "camel-private-key");
+    assert_eq!(identity.task_id.as_deref(), Some("camel-task"));
+    assert_eq!(identity.chatgpt_user_id, "camel-user");
+    assert_eq!(identity.workspace_id.as_deref(), Some("camel-workspace"));
+}
+
+#[test]
+fn extract_token_payload_rejects_agent_identity_jwt_storage() {
+    let value = json!({
+        "auth_mode": "agentIdentity",
+        "agent_identity": "header.payload.signature"
+    });
+
+    let error =
+        extract_token_payload(&value).expect_err("JWT storage must not be trusted as a record");
+    assert!(error.contains("agent_runtime_id"));
+}
+
+#[test]
+fn extract_token_payload_ignores_stale_nested_identity_for_non_agent_mode() {
+    let value = json!({
+        "auth_mode": "personalAccessToken",
+        "tokens": {
+            "access_token": "at-personal-token",
+            "account_id": "real-account",
+            "chatgpt_account_id": "real-chatgpt-account"
+        },
+        "agent_identity": {
+            "agent_runtime_id": "stale-runtime",
+            "agent_private_key": "stale-private-key",
+            "account_id": "stale-account",
+            "chatgpt_user_id": "stale-user"
+        }
+    });
+
+    let payload = extract_token_payload(&value).expect("parse personal access token payload");
+    assert!(payload.agent_identity.is_none());
+    assert_eq!(payload.account_id_hint.as_deref(), Some("real-account"));
+    assert_eq!(
+        payload.chatgpt_account_id_hint.as_deref(),
+        Some("real-chatgpt-account")
+    );
+}
+
+#[test]
+fn import_official_agent_identity_record_persists_identity_and_scope() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let private_key = test_agent_private_key(21);
+    let content = json!({
+        "auth_mode": "chatgpt",
+        "agent_identity": {
+            "agent_runtime_id": "official-runtime",
+            "agent_private_key": private_key,
+            "account_id": "official-account",
+            "chatgpt_user_id": "official-user",
+            "email": "official@example.com",
+            "plan_type": "plus",
+            "chatgpt_account_is_fedramp": true,
+            "task_id": "official-task"
+        }
+    })
+    .to_string();
+
+    let result = import_account_auth_json_with_storage(&storage, vec![content], false)
+        .expect("import official agent identity record");
+    assert_eq!(result.total, 1);
+    assert_eq!(result.created, 1);
+    assert_eq!(result.updated, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(
+        result.usage_refresh_account_ids,
+        result.imported_account_ids
+    );
+
+    let account = storage
+        .list_accounts()
+        .expect("list accounts")
+        .into_iter()
+        .next()
+        .expect("stored account");
+    assert_eq!(account.label, "official@example.com");
+    assert_eq!(account.status, "active");
+    assert_eq!(
+        account.chatgpt_account_id.as_deref(),
+        Some("official-account")
+    );
+    assert_eq!(account.workspace_id.as_deref(), Some("official-account"));
+
+    let token = storage
+        .find_token_by_account_id(&account.id)
+        .expect("find token")
+        .expect("stored token");
+    assert!(token.access_token.is_empty());
+    assert!(token.id_token.is_empty());
+    assert!(token.refresh_token.is_empty());
+
+    let identity = storage
+        .find_account_agent_identity(&account.id)
+        .expect("find identity")
+        .expect("stored identity");
+    assert_eq!(identity.agent_runtime_id, "official-runtime");
+    assert_eq!(identity.agent_private_key, private_key);
+    assert_eq!(identity.task_id.as_deref(), Some("official-task"));
+    assert_eq!(identity.chatgpt_user_id, "official-user");
+    assert!(identity.chatgpt_account_is_fedramp);
+    assert_eq!(identity.auth_mode, "agentIdentity");
+    assert_eq!(identity.workspace_id.as_deref(), Some("official-account"));
+}
+
+#[test]
+fn import_auth_session_access_token_uses_profile_email_as_label() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let access_token = test_jwt(json!({
+        "sub": "session-subject",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "session-account",
+            "chatgpt_user_id": "session-user",
+            "chatgpt_plan_type": "plus"
+        },
+        "https://api.openai.com/profile": {
+            "email": "session@example.com",
+            "name": "Session User"
+        }
+    }));
+    let content = json!({
+        "user": { "name": "ChatGPT Session User" },
+        "accessToken": access_token
+    })
+    .to_string();
+
+    let result = import_account_auth_json_with_storage(&storage, vec![content], false)
+        .expect("import auth session");
+    assert_eq!(result.created, 1);
+    assert_eq!(result.failed, 0);
+
+    let account = storage
+        .list_accounts()
+        .expect("list accounts")
+        .into_iter()
+        .next()
+        .expect("stored account");
+    assert_eq!(account.label, "session@example.com");
+    assert_eq!(
+        account.chatgpt_account_id.as_deref(),
+        Some("session-account")
+    );
+    assert_eq!(account.workspace_id.as_deref(), Some("session-account"));
+}
+
+#[test]
+fn reimport_replaces_generated_label_but_preserves_account_identity() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let token_without_profile = test_jwt(json!({
+        "sub": "session-subject",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "session-account",
+            "chatgpt_user_id": "session-user"
+        }
+    }));
+    let first = import_account_auth_json_with_storage(
+        &storage,
+        vec![json!({ "accessToken": token_without_profile }).to_string()],
+        false,
+    )
+    .expect("initial import");
+    assert_eq!(first.created, 1);
+    let account_id = first.imported_account_ids[0].clone();
+    assert_eq!(
+        storage.list_accounts().expect("list accounts")[0].label,
+        "导入账号0001"
+    );
+
+    let token_with_profile = test_jwt(json!({
+        "sub": "session-subject",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "session-account",
+            "chatgpt_user_id": "session-user"
+        },
+        "https://api.openai.com/profile": {
+            "email": "upgraded@example.com"
+        }
+    }));
+    let second = import_account_auth_json_with_storage(
+        &storage,
+        vec![json!({ "accessToken": token_with_profile }).to_string()],
+        false,
+    )
+    .expect("reimport auth session");
+    assert_eq!(second.created, 0);
+    assert_eq!(second.updated, 1);
+    assert_eq!(second.imported_account_ids, vec![account_id.clone()]);
+
+    let account = storage
+        .find_account_by_id(&account_id)
+        .expect("find account")
+        .expect("stored account");
+    assert_eq!(account.label, "upgraded@example.com");
 }
 
 #[test]

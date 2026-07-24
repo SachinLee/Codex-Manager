@@ -45,6 +45,7 @@ struct WarmupAuthorization {
     task_id: Option<String>,
     is_fedramp: bool,
     uses_agent_identity: bool,
+    account_scope_id: Option<String>,
 }
 
 /// 函数 `warmup_accounts`
@@ -179,6 +180,7 @@ fn warmup_single_account(
                 storage,
                 client,
                 &account,
+                &token,
                 model_slug,
                 message,
                 failed_agent_task_id.as_deref(),
@@ -327,19 +329,29 @@ fn resolve_warmup_authorization(
     account: &Account,
     token: &Token,
 ) -> Result<WarmupAuthorization, String> {
-    if let Some(authorization) =
-        crate::agent_identity::resolve_account_agent_identity_authorization(
-            storage,
-            client,
-            &account.id,
-        )?
-    {
-        return Ok(WarmupAuthorization {
-            value: authorization.value,
-            task_id: Some(authorization.task_id),
-            is_fedramp: authorization.is_fedramp,
-            uses_agent_identity: true,
-        });
+    match crate::agent_identity::resolve_or_bootstrap_account_agent_identity_authorization(
+        storage, client, account, token,
+    ) {
+        Ok(Some(authorization)) => {
+            return Ok(WarmupAuthorization {
+                value: authorization.value,
+                task_id: Some(authorization.task_id),
+                is_fedramp: authorization.is_fedramp,
+                uses_agent_identity: true,
+                account_scope_id: authorization.account_scope_id,
+            });
+        }
+        Ok(None) => {}
+        Err(err) => {
+            if token.access_token.trim().is_empty() {
+                return Err(err);
+            }
+            log::warn!(
+                "event=account_warmup_agent_identity_resolution_failed account_id={} error={}",
+                account.id,
+                err
+            );
+        }
     }
 
     let access_token = token.access_token.trim();
@@ -351,6 +363,7 @@ fn resolve_warmup_authorization(
         task_id: None,
         is_fedramp: false,
         uses_agent_identity: false,
+        account_scope_id: None,
     })
 }
 
@@ -358,6 +371,7 @@ fn recover_warmup_agent_identity_task(
     storage: &Storage,
     client: &Client,
     account: &Account,
+    token: &Token,
     model_slug: &str,
     message: &str,
     failed_task_id: Option<&str>,
@@ -369,7 +383,8 @@ fn recover_warmup_agent_identity_task(
     let authorization = crate::agent_identity::recover_account_agent_identity_authorization(
         storage,
         client,
-        &account.id,
+        account,
+        token,
         failed_task_id,
     )?
     .ok_or_else(|| "agent identity disappeared during warmup task recovery".to_string())?;
@@ -378,6 +393,7 @@ fn recover_warmup_agent_identity_task(
         task_id: Some(authorization.task_id),
         is_fedramp: authorization.is_fedramp,
         uses_agent_identity: true,
+        account_scope_id: authorization.account_scope_id,
     };
     send_warmup_request(client, account, &authorization, model_slug, message)
         .map(|_| "已发送预热消息".to_string())
@@ -445,11 +461,7 @@ fn send_warmup_request(
         "store": false
     });
 
-    let headers = build_warmup_headers(
-        account,
-        authorization.value.as_str(),
-        authorization.is_fedramp,
-    )?;
+    let headers = build_warmup_headers(account, authorization)?;
     let response = client
         .post(WARMUP_UPSTREAM_URL)
         .headers(headers)
@@ -596,14 +608,13 @@ mod tests;
 
 fn build_warmup_headers(
     account: &Account,
-    auth_token: &str,
-    is_fedramp: bool,
+    authorization: &WarmupAuthorization,
 ) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
         header_value(&crate::agent_identity::format_upstream_authorization(
-            auth_token,
+            &authorization.value,
         ))?,
     );
     headers.insert(
@@ -629,13 +640,17 @@ fn build_warmup_headers(
             header_value(&residency_requirement)?,
         );
     }
-    if let Some(account_header) = workspace_header_for_account(account) {
+    if let Some(account_header) = authorization
+        .account_scope_id
+        .clone()
+        .or_else(|| workspace_header_for_account(account))
+    {
         headers.insert(
             HeaderName::from_static("chatgpt-account-id"),
             header_value(&account_header)?,
         );
     }
-    if is_fedramp {
+    if authorization.is_fedramp {
         headers.insert(
             HeaderName::from_static(X_OPENAI_FEDRAMP_HEADER_NAME),
             HeaderValue::from_static("true"),

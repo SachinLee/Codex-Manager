@@ -125,6 +125,32 @@ fn insert_account_update_preserves_existing_token() {
 }
 
 #[test]
+fn update_account_group_name_sets_and_clears_group() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let account = sample_account("acc-group-update", "active", now_ts());
+    storage.insert_account(&account).expect("insert account");
+
+    storage
+        .update_account_group_name(&account.id, Some("TEAM_A"))
+        .expect("set account group");
+    let grouped = storage
+        .find_account_by_id(&account.id)
+        .expect("find grouped account")
+        .expect("grouped account exists");
+    assert_eq!(grouped.group_name.as_deref(), Some("TEAM_A"));
+
+    storage
+        .update_account_group_name(&account.id, None)
+        .expect("clear account group");
+    let cleared = storage
+        .find_account_by_id(&account.id)
+        .expect("find cleared account")
+        .expect("cleared account exists");
+    assert_eq!(cleared.group_name, None);
+}
+
+#[test]
 fn upsert_imported_account_bundle_merges_metadata_and_token_in_one_call() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");

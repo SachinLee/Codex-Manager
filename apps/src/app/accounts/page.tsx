@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
@@ -8,7 +8,6 @@ import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { proxyProfilesClient } from "@/lib/api/proxy-profiles";
 import {
-  accountClient,
   type AccountProxySettings,
   type AccountProxySource,
 } from "@/lib/api/account-client";
@@ -24,7 +23,7 @@ import {
 } from "@/app/accounts/accounts-page-helpers";
 import { AccountsPageView } from "@/app/accounts/accounts-page-view";
 import { isBannedAccount, isLimitedAccount } from "@/lib/utils/usage";
-import type { Account, ProxyProfile, ProxyTestJobState } from "@/types";
+import type { Account, ProxyProfile } from "@/types";
 
 type CleanupStatus =
   | "unavailable"
@@ -114,6 +113,7 @@ export default function AccountsPage() {
   );
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [labelDraft, setLabelDraft] = useState("");
+  const [groupNameDraft, setGroupNameDraft] = useState("");
   const [tagsDraft, setTagsDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [sortDraft, setSortDraft] = useState("");
@@ -160,6 +160,7 @@ export default function AccountsPage() {
       const matchSearch =
         !search ||
         account.name.toLowerCase().includes(search.toLowerCase()) ||
+        account.groupName.toLowerCase().includes(search.toLowerCase()) ||
         account.id.toLowerCase().includes(search.toLowerCase());
       const matchPlan =
         planFilter === "all" || normalizeAccountPlanKey(account) === planFilter;
@@ -579,6 +580,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       accountId: account.id,
       accountName: account.name,
       currentLabel: account.label,
+      currentGroupName: account.groupName,
       currentTags: account.tags.join(", "),
       currentNote: account.note || "",
       currentSort: account.priority,
@@ -586,6 +588,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       currentQuotaSecondaryWindowTokens: account.quotaCapacitySecondaryWindowTokens,
     });
     setLabelDraft(account.label);
+    setGroupNameDraft(account.groupName);
     setTagsDraft(account.tags.join(", "));
     setNoteDraft(account.note || "");
     setSortDraft(String(account.priority));
@@ -678,6 +681,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
     if (!accountEditorState) return;
 
     const nextLabel = labelDraft.trim();
+    const nextGroupName = groupNameDraft.trim();
     const nextTags = normalizeTagsDraft(tagsDraft);
     const nextTagsText = nextTags.join(", ");
     const nextNote = noteDraft.trim();
@@ -715,6 +719,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
     const nextSort = Math.max(0, Math.trunc(parsed));
     if (
       nextLabel === accountEditorState.currentLabel &&
+      nextGroupName === accountEditorState.currentGroupName &&
       nextTagsText === accountEditorState.currentTags &&
       nextNote === accountEditorState.currentNote &&
       nextSort === accountEditorState.currentSort &&
@@ -728,6 +733,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
     try {
       await updateAccountProfile(accountEditorState.accountId, {
         label: nextLabel,
+        groupName: nextGroupName,
         note: nextNote || null,
         tags: nextTags,
         sort: nextSort,
@@ -792,6 +798,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       proxyUrlDraft={proxyUrlDraft}
       currentEditingAccount={currentEditingAccount}
       labelDraft={labelDraft}
+      groupNameDraft={groupNameDraft}
       tagsDraft={tagsDraft}
       noteDraft={noteDraft}
       sortDraft={sortDraft}
@@ -828,6 +835,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       setProxyUrlDraft={setProxyUrlDraft}
       setAccountEditorState={setAccountEditorState}
       setLabelDraft={setLabelDraft}
+      setGroupNameDraft={setGroupNameDraft}
       setTagsDraft={setTagsDraft}
       setNoteDraft={setNoteDraft}
       setSortDraft={setSortDraft}

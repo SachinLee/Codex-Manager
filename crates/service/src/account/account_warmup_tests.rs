@@ -1,7 +1,7 @@
 use super::{
     build_warmup_headers, consume_warmup_stream, resolve_target_accounts,
     resolve_warmup_model_slug, should_retry_warmup_with_refresh, summarize_warmup_error,
-    DEFAULT_WARMUP_MODEL,
+    WarmupAuthorization, DEFAULT_WARMUP_MODEL,
 };
 use codexmanager_core::storage::{
     now_ts, Account, ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, Storage, Token,
@@ -200,8 +200,14 @@ fn build_warmup_headers_omits_non_codex_headers() {
         updated_at: 0,
     };
 
-    let headers =
-        build_warmup_headers(&account, "bearer-token", false).expect("build warmup headers");
+    let authorization = WarmupAuthorization {
+        value: "bearer-token".to_string(),
+        task_id: None,
+        is_fedramp: false,
+        uses_agent_identity: false,
+        account_scope_id: None,
+    };
+    let headers = build_warmup_headers(&account, &authorization).expect("build warmup headers");
 
     assert!(headers.get("version").is_none());
     assert!(headers.get("openai-organization").is_none());
@@ -231,8 +237,15 @@ fn build_warmup_headers_preserves_agent_assertion_and_fedramp_context() {
         updated_at: 0,
     };
 
-    let headers = build_warmup_headers(&account, "AgentAssertion encoded", true)
-        .expect("build agent warmup headers");
+    let authorization = WarmupAuthorization {
+        value: "AgentAssertion encoded".to_string(),
+        task_id: Some("task-agent".to_string()),
+        is_fedramp: true,
+        uses_agent_identity: true,
+        account_scope_id: Some("agent-bound-scope".to_string()),
+    };
+    let headers =
+        build_warmup_headers(&account, &authorization).expect("build agent warmup headers");
 
     assert_eq!(
         headers
@@ -244,7 +257,7 @@ fn build_warmup_headers_preserves_agent_assertion_and_fedramp_context() {
         headers
             .get("chatgpt-account-id")
             .and_then(|value| value.to_str().ok()),
-        Some("workspace-agent")
+        Some("agent-bound-scope")
     );
     assert_eq!(
         headers

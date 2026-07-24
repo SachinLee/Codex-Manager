@@ -219,6 +219,7 @@ fn select_or_create_api_key(
         None,
         None,
         None,
+        None,
     )?;
     Ok(SelectedApiKey {
         id: created.id,

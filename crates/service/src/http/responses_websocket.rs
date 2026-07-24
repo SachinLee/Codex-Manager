@@ -6,7 +6,7 @@ use axum::http::{Request as HttpRequest, Response, StatusCode};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::IpAddr;
 use std::time::Instant;
@@ -29,6 +29,7 @@ use crate::storage_helpers::{hash_platform_key, open_storage};
 
 const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
 const RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
+const MAX_BUFFERED_WS_PREAMBLE_EVENTS: usize = 16;
 
 #[derive(Clone)]
 struct WsRequestContext {
@@ -59,6 +60,9 @@ struct PendingWsRequestState {
     log: PendingWsRequestLog,
     prepared: PreparedClientFrame,
     forwarded_upstream_event: bool,
+    buffered_upstream_preamble: Vec<String>,
+    buffer_retry_preamble: bool,
+    attempted_account_ids: HashSet<String>,
 }
 
 type UpstreamWebsocketStream =
@@ -67,6 +71,7 @@ type UpstreamWebsocketStream =
 struct ConnectedUpstreamWebsocket {
     stream: UpstreamWebsocketStream,
     account_id: String,
+    candidate_account_ids: HashSet<String>,
     upstream_url: String,
     route_strategy: &'static str,
     route_source: &'static str,
@@ -78,6 +83,7 @@ struct WsUpstreamAuthorization {
     task_id: Option<String>,
     uses_agent_identity: bool,
     is_fedramp: bool,
+    account_scope_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -282,6 +288,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                 return;
             }
         };
+    let first_attempted_account_ids = HashSet::from([upstream.account_id.clone()]);
     let first_pending = PendingWsRequestState {
         log: begin_ws_request_log(
             &context,
@@ -291,6 +298,12 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         ),
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
+        buffered_upstream_preamble: Vec::new(),
+        buffer_retry_preamble: has_unattempted_ws_failover_candidate(
+            &upstream,
+            &first_attempted_account_ids,
+        ),
+        attempted_account_ids: first_attempted_account_ids,
     };
 
     if let Err(err) = upstream
@@ -350,6 +363,12 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         )),
                                     );
                                 }
+                                let attempted_account_ids =
+                                    HashSet::from([upstream.account_id.clone()]);
+                                let buffer_retry_preamble = has_unattempted_ws_failover_candidate(
+                                    &upstream,
+                                    &attempted_account_ids,
+                                );
                                 let current_pending = PendingWsRequestState {
                                     log: begin_ws_request_log(
                                         &context,
@@ -359,6 +378,9 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     ),
                                     prepared,
                                     forwarded_upstream_event: false,
+                                    buffered_upstream_preamble: Vec::new(),
+                                    buffer_retry_preamble,
+                                    attempted_account_ids,
                                 };
                                 if let Err(err) = upstream.stream.send(UpstreamMessage::Text(
                                     current_pending.prepared.text.clone().into(),
@@ -440,9 +462,10 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                 match upstream_result {
                     Ok(UpstreamMessage::Text(text)) => {
                         if let Some(terminal) = inspect_ws_terminal_event(text.as_str()) {
-                            let retry_model = pending_request
-                                .as_ref()
-                                .and_then(|pending| pending.prepared.model.clone());
+                            apply_ws_terminal_account_follow_up(
+                                upstream.account_id.as_str(),
+                                &terminal,
+                            );
                             let retry_succeeded = if let Some(pending) = pending_request.as_mut() {
                                 if !pending.forwarded_upstream_event {
                                     try_retry_ws_request_after_terminal(&context, &mut upstream, pending, &terminal).await
@@ -457,6 +480,10 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             }
 
                             if let Some(mut pending) = pending_request.take() {
+                                if let Err(err) = flush_ws_upstream_preamble(&mut socket, &mut pending).await {
+                                    log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
+                                    break;
+                                }
                                 mark_ws_first_response(&mut pending);
                                 finalize_ws_request_log(
                                     &context,
@@ -475,11 +502,25 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 log::warn!("event=responses_ws_client_send_terminal_failed err={err}");
                                 break;
                             }
-                            let _ = retry_model;
                             continue;
                         }
 
                         if let Some(pending) = pending_request.as_mut() {
+                            let should_buffer_preamble = pending.buffer_retry_preamble
+                                && should_buffer_ws_upstream_preamble(
+                                text.as_str(),
+                                pending.buffered_upstream_preamble.len(),
+                            );
+                            if should_buffer_preamble {
+                                pending
+                                    .buffered_upstream_preamble
+                                    .push(text.to_string());
+                                continue;
+                            }
+                            if let Err(err) = flush_ws_upstream_preamble(&mut socket, pending).await {
+                                log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
+                                break;
+                            }
                             mark_ws_first_response(pending);
                         }
                         if let Err(err) = socket
@@ -491,6 +532,13 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         }
                     }
                     Ok(UpstreamMessage::Binary(bytes)) => {
+                        if let Some(pending) = pending_request.as_mut() {
+                            if let Err(err) = flush_ws_upstream_preamble(&mut socket, pending).await {
+                                log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
+                                break;
+                            }
+                            mark_ws_first_response(pending);
+                        }
                         if let Err(err) = socket.send(Message::Binary(bytes)).await {
                             log::warn!("event=responses_ws_client_send_binary_failed err={err}");
                             break;
@@ -914,6 +962,11 @@ async fn connect_upstream_websocket(
             "no available upstream accounts",
         ));
     }
+    let candidate_account_ids = routed
+        .candidates
+        .iter()
+        .map(|(account, _)| account.id.clone())
+        .collect::<HashSet<_>>();
     drop(storage);
 
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
@@ -924,6 +977,7 @@ async fn connect_upstream_websocket(
                 return Ok(ConnectedUpstreamWebsocket {
                     stream,
                     account_id: account.id,
+                    candidate_account_ids,
                     upstream_url: ws_url.clone(),
                     route_strategy: routed.route_strategy,
                     route_source: routed.route_source,
@@ -975,7 +1029,8 @@ async fn connect_account_upstream_websocket(
             .as_deref()
             .ok_or_else(|| "agent identity websocket authorization omitted task_id".to_string())?;
         let recovered = recover_agent_identity_authorization_for_websocket(
-            account.id.clone(),
+            account.clone(),
+            token.clone(),
             failed_task_id.to_string(),
         )
         .await?
@@ -1004,6 +1059,7 @@ async fn connect_account_upstream_websocket(
             task_id: None,
             uses_agent_identity: false,
             is_fedramp: false,
+            account_scope_id: None,
         }
     };
 
@@ -1024,20 +1080,32 @@ async fn resolve_upstream_authorization_for_websocket(
         let storage = open_storage()
             .ok_or_else(|| crate::gateway::bilingual_error("存储不可用", "storage unavailable"))?;
         let client = crate::gateway::upstream_client_for_account(account.id.as_str())?;
-        if let Some(resolved) = crate::agent_identity::resolve_account_agent_identity_authorization(
-            &storage,
-            &client,
-            &account.id,
-        )? {
-            return Ok((
-                WsUpstreamAuthorization {
-                    value: resolved.value,
-                    task_id: Some(resolved.task_id),
-                    uses_agent_identity: true,
-                    is_fedramp: resolved.is_fedramp,
-                },
-                token,
-            ));
+        match crate::agent_identity::resolve_or_bootstrap_account_agent_identity_authorization(
+            &storage, &client, &account, &token,
+        ) {
+            Ok(Some(resolved)) => {
+                return Ok((
+                    WsUpstreamAuthorization {
+                        value: resolved.value,
+                        task_id: Some(resolved.task_id),
+                        uses_agent_identity: true,
+                        is_fedramp: resolved.is_fedramp,
+                        account_scope_id: resolved.account_scope_id,
+                    },
+                    token,
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if token.access_token.trim().is_empty() {
+                    return Err(err);
+                }
+                log::warn!(
+                    "event=responses_ws_agent_identity_resolution_failed account_id={} error={}",
+                    account.id,
+                    err
+                );
+            }
         }
         let mut token = token;
         let bearer =
@@ -1048,6 +1116,7 @@ async fn resolve_upstream_authorization_for_websocket(
                 task_id: None,
                 uses_agent_identity: false,
                 is_fedramp: false,
+                account_scope_id: None,
             },
             token,
         ))
@@ -1064,17 +1133,19 @@ async fn resolve_upstream_authorization_for_websocket(
 }
 
 async fn recover_agent_identity_authorization_for_websocket(
-    account_id: String,
+    account: codexmanager_core::storage::Account,
+    token: codexmanager_core::storage::Token,
     failed_task_id: String,
 ) -> Result<Option<WsUpstreamAuthorization>, String> {
     tokio::task::spawn_blocking(move || {
         let storage = open_storage()
             .ok_or_else(|| crate::gateway::bilingual_error("存储不可用", "storage unavailable"))?;
-        let client = crate::gateway::upstream_client_for_account(account_id.as_str())?;
+        let client = crate::gateway::upstream_client_for_account(account.id.as_str())?;
         crate::agent_identity::recover_account_agent_identity_authorization(
             &storage,
             &client,
-            &account_id,
+            &account,
+            &token,
             &failed_task_id,
         )
         .map(|resolved| {
@@ -1083,6 +1154,7 @@ async fn recover_agent_identity_authorization_for_websocket(
                 task_id: Some(resolved.task_id),
                 uses_agent_identity: true,
                 is_fedramp: resolved.is_fedramp,
+                account_scope_id: resolved.account_scope_id,
             })
         })
     })
@@ -1511,9 +1583,11 @@ fn build_upstream_websocket_request(
     if authorization.is_fedramp {
         insert_header(headers, "x-openai-fedramp", "true")?;
     }
-    if let Some(account_id) = account
-        .chatgpt_account_id
+    if let Some(account_id) = authorization
+        .account_scope_id
         .as_deref()
+        .or(account.workspace_id.as_deref())
+        .or(account.chatgpt_account_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
@@ -1653,6 +1727,47 @@ fn begin_ws_request_log(
     }
 }
 
+fn should_buffer_ws_upstream_preamble(text: &str, buffered_count: usize) -> bool {
+    if buffered_count >= MAX_BUFFERED_WS_PREAMBLE_EVENTS {
+        return false;
+    }
+    let event_type = serde_json::from_str::<Value>(text).ok().and_then(|value| {
+        value
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_ascii_lowercase)
+    });
+    matches!(
+        event_type.as_deref(),
+        Some("response.created" | "response.queued" | "response.in_progress")
+    )
+}
+
+fn has_unattempted_ws_failover_candidate(
+    upstream: &ConnectedUpstreamWebsocket,
+    attempted_account_ids: &HashSet<String>,
+) -> bool {
+    upstream
+        .candidate_account_ids
+        .iter()
+        .any(|account_id| !attempted_account_ids.contains(account_id))
+}
+
+async fn flush_ws_upstream_preamble(
+    socket: &mut WebSocket,
+    pending: &mut PendingWsRequestState,
+) -> Result<(), String> {
+    let buffered = std::mem::take(&mut pending.buffered_upstream_preamble);
+    for text in buffered {
+        socket
+            .send(Message::Text(text.into()))
+            .await
+            .map_err(|err| err.to_string())?;
+        mark_ws_first_response(pending);
+    }
+    Ok(())
+}
+
 fn mark_ws_first_response(pending: &mut PendingWsRequestState) {
     if pending.log.first_response_ms.is_none() {
         pending.log.first_response_ms = Some(
@@ -1665,6 +1780,7 @@ fn mark_ws_first_response(pending: &mut PendingWsRequestState) {
         );
     }
     pending.forwarded_upstream_event = true;
+    pending.buffer_retry_preamble = false;
 }
 
 fn finalize_ws_request_log(
@@ -1729,10 +1845,37 @@ struct WsTerminalEvent {
     status_code: u16,
     usage: crate::gateway::RequestLogUsage,
     error: Option<String>,
+    is_usage_limit: bool,
 }
 
 fn should_rotate_ws_upstream(status_code: u16) -> bool {
     matches!(status_code, 401 | 403 | 404 | 408 | 409 | 429)
+}
+
+fn apply_ws_terminal_account_follow_up(account_id: &str, terminal: &WsTerminalEvent) {
+    if !should_rotate_ws_upstream(terminal.status_code) {
+        return;
+    }
+    crate::gateway::gateway_mark_account_cooldown_for_status(account_id, terminal.status_code);
+    if terminal.status_code == 429 {
+        let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(account_id);
+    }
+    if !terminal.is_usage_limit {
+        return;
+    }
+    let Some(storage) = open_storage() else {
+        return;
+    };
+    let usage_limit_error = terminal
+        .error
+        .as_deref()
+        .filter(|message| crate::account_status::usage_limit_reason_from_message(message).is_some())
+        .unwrap_or("The usage limit has been reached");
+    let _ = crate::account_status::mark_account_unavailable_for_gateway_error(
+        &storage,
+        account_id,
+        usage_limit_error,
+    );
 }
 
 async fn try_retry_ws_request_after_terminal(
@@ -1756,7 +1899,8 @@ async fn try_retry_ws_request_after_terminal(
             context,
             upstream,
             pending.prepared.model.as_deref(),
-            terminal.status_code,
+            terminal,
+            &mut pending.attempted_account_ids,
         )
         .await
         {
@@ -1777,6 +1921,9 @@ async fn try_retry_ws_request_after_terminal(
         Ok(()) => {
             pending.prepared.text = retry_text;
             pending.forwarded_upstream_event = false;
+            pending.buffered_upstream_preamble.clear();
+            pending.buffer_retry_preamble =
+                has_unattempted_ws_failover_candidate(upstream, &pending.attempted_account_ids);
             pending.log.first_response_ms = None;
             true
         }
@@ -1796,21 +1943,16 @@ async fn try_rotate_ws_upstream_after_terminal(
     context: &WsRequestContext,
     upstream: &mut ConnectedUpstreamWebsocket,
     model: Option<&str>,
-    status_code: u16,
+    terminal: &WsTerminalEvent,
+    attempted_account_ids: &mut HashSet<String>,
 ) -> bool {
+    let status_code = terminal.status_code;
     if !should_rotate_ws_upstream(status_code) {
         return false;
     }
 
     let current_account_id = upstream.account_id.clone();
-    crate::gateway::gateway_mark_account_cooldown_for_status(
-        current_account_id.as_str(),
-        status_code,
-    );
-    if status_code == 429 {
-        let _ =
-            crate::usage_refresh::enqueue_usage_refresh_for_account(current_account_id.as_str());
-    }
+    attempted_account_ids.insert(current_account_id.clone());
 
     let storage = match open_storage() {
         Some(storage) => storage,
@@ -1832,45 +1974,54 @@ async fn try_rotate_ws_upstream_after_terminal(
             return false;
         }
     };
-    let Some((account, token)) = routed
-        .candidates
-        .into_iter()
-        .find(|(account, _)| account.id != current_account_id)
-    else {
-        return false;
-    };
+    let route_strategy = routed.route_strategy;
+    let route_source = routed.route_source;
+    let candidates = routed.candidates;
+    let candidate_account_ids = candidates
+        .iter()
+        .map(|(account, _)| account.id.clone())
+        .collect::<HashSet<_>>();
     drop(storage);
 
-    let replacement = match connect_account_upstream_websocket(
-        context,
-        &account,
-        token,
-        upstream.upstream_url.as_str(),
-    )
-    .await
-    {
-        Ok(stream) => ConnectedUpstreamWebsocket {
-            stream,
-            account_id: account.id,
-            upstream_url: upstream.upstream_url.clone(),
-            route_strategy: routed.route_strategy,
-            route_source: routed.route_source,
-        },
-        Err(err) => {
-            log::warn!(
-                "event=responses_ws_failover_connect_failed account_id={} status={} err={}",
-                current_account_id,
-                status_code,
-                err
-            );
-            return false;
+    for (account, token) in candidates {
+        if !attempted_account_ids.insert(account.id.clone()) {
+            continue;
         }
-    };
+        match connect_account_upstream_websocket(
+            context,
+            &account,
+            token,
+            upstream.upstream_url.as_str(),
+        )
+        .await
+        {
+            Ok(stream) => {
+                let replacement = ConnectedUpstreamWebsocket {
+                    stream,
+                    account_id: account.id,
+                    candidate_account_ids,
+                    upstream_url: upstream.upstream_url.clone(),
+                    route_strategy,
+                    route_source,
+                };
+                crate::gateway::gateway_record_failover_attempt();
+                let _ = upstream.stream.close(None).await;
+                *upstream = replacement;
+                return true;
+            }
+            Err(err) => {
+                log::warn!(
+                    "event=responses_ws_failover_connect_failed from_account_id={} candidate_account_id={} status={} err={}",
+                    current_account_id,
+                    account.id,
+                    status_code,
+                    err
+                );
+            }
+        }
+    }
 
-    crate::gateway::gateway_record_failover_attempt();
-    let _ = upstream.stream.close(None).await;
-    *upstream = replacement;
-    true
+    false
 }
 
 fn inspect_ws_terminal_event(text: &str) -> Option<WsTerminalEvent> {
@@ -1880,25 +2031,55 @@ fn inspect_ws_terminal_event(text: &str) -> Option<WsTerminalEvent> {
         .and_then(Value::as_str)?
         .trim()
         .to_ascii_lowercase();
+    let error = extract_ws_error_message(&value);
+    let error_code = extract_ws_error_code(&value);
+    let usage_limit_signal = matches!(
+        event_type.as_str(),
+        "response.failed" | "response.incomplete" | "error"
+    )
+    .then(|| {
+        error
+            .as_deref()
+            .filter(|message| {
+                crate::account_status::usage_limit_reason_from_message(message).is_some()
+            })
+            .map(str::to_string)
+            .or_else(|| {
+                error_code
+                    .as_deref()
+                    .filter(|code| {
+                        crate::account_status::usage_limit_reason_from_message(code).is_some()
+                    })
+                    .map(str::to_string)
+            })
+    })
+    .flatten();
+    if let Some(usage_limit_signal) = usage_limit_signal {
+        return Some(WsTerminalEvent {
+            status_code: 429,
+            usage: parse_ws_usage(&value),
+            error: error.or(Some(usage_limit_signal)),
+            is_usage_limit: true,
+        });
+    }
     match event_type.as_str() {
         "response.completed" | "response.done" => Some(WsTerminalEvent {
             status_code: 200,
             usage: parse_ws_usage(&value),
             error: None,
+            is_usage_limit: false,
         }),
-        "response.failed" | "error" => {
-            let error = extract_ws_error_message(&value);
-            Some(WsTerminalEvent {
-                status_code: infer_ws_terminal_status(&value, error.as_deref()),
-                usage: parse_ws_usage(&value),
-                error,
-            })
-        }
+        "response.failed" | "error" => Some(WsTerminalEvent {
+            status_code: infer_ws_terminal_status(&value, error.as_deref()),
+            usage: parse_ws_usage(&value),
+            error: error.or(error_code),
+            is_usage_limit: false,
+        }),
         "response.incomplete" => Some(WsTerminalEvent {
             status_code: 502,
             usage: parse_ws_usage(&value),
-            error: extract_ws_error_message(&value)
-                .or_else(|| Some("连接中断（可能是网络波动或客户端主动取消）".to_string())),
+            error: error.or_else(|| Some("连接中断（可能是网络波动或客户端主动取消）".to_string())),
+            is_usage_limit: false,
         }),
         _ => None,
     }
@@ -2030,7 +2211,7 @@ fn parse_ws_usage(value: &Value) -> crate::gateway::RequestLogUsage {
 fn extract_ws_error_message(value: &Value) -> Option<String> {
     value
         .get("error")
-        .and_then(|error| error.get("message"))
+        .and_then(|error| error.get("message").or(Some(error)))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|message| !message.is_empty())
@@ -2046,14 +2227,50 @@ fn extract_ws_error_message(value: &Value) -> Option<String> {
         .or_else(|| {
             value
                 .get("response")
-                .and_then(|response| response.get("status_details"))
-                .and_then(|details| details.get("error"))
-                .and_then(|error| error.get("message"))
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message").or(Some(error)))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|message| !message.is_empty())
                 .map(str::to_string)
         })
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("status_details"))
+                .and_then(|details| details.get("error"))
+                .and_then(|error| error.get("message").or(Some(error)))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn extract_ws_error_code(value: &Value) -> Option<String> {
+    value
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("code").and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("status_details"))
+                .and_then(|details| details.get("error"))
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .map(str::to_string)
 }
 
 fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), WsSessionError> {

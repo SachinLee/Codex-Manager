@@ -665,6 +665,23 @@ html.tray-preview-mode [data-slot="button"].tray-preview-open-button.tray-previe
   box-shadow: none;
 }
 
+[data-appearance='modern'] [data-slot="button"].update-dialog-later-button,
+[data-slot="button"].update-dialog-later-button {
+  box-shadow: none;
+}
+
+[data-appearance='modern'] [data-slot="button"].update-dialog-later-button:hover,
+[data-slot="button"].update-dialog-later-button:hover {
+  border-color: rgb(var(--primary-rgb) / 0.24);
+  box-shadow: none;
+}
+
+[data-slot="button"].update-dialog-later-button:focus-visible {
+  outline: 1px solid rgb(var(--primary-rgb) / 0.34);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
 .codex-guide-step-button,
 .codex-guide-step-button * {
   white-space: normal;
@@ -877,6 +894,48 @@ body.low-transparency .sonner-toast {
   border: 1px solid var(--border) !important;
   box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25) !important;
   border-radius: 0.5rem !important;
+}
+
+.skills-marketplace-install-error-toast {
+  align-items: flex-start !important;
+  width: min(26rem, calc(100vw - 2rem)) !important;
+  max-height: min(26rem, calc(100dvh - 2rem));
+  overflow: hidden !important;
+}
+
+.skills-marketplace-install-error-toast [data-description] {
+  max-height: min(20rem, calc(100dvh - 8rem));
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.skills-marketplace-scrollbar {
+  inset-block: 8px !important;
+  inset-inline-end: 5px !important;
+  z-index: 30;
+  width: 12px !important;
+  height: auto !important;
+  padding: 2px !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--foreground) 16%, var(--background));
+  border: 1px solid color-mix(in srgb, var(--foreground) 24%, transparent) !important;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--background) 45%, transparent);
+}
+
+.skills-marketplace-scrollbar-thumb {
+  min-height: 52px;
+  background: color-mix(in srgb, var(--foreground) 72%, var(--primary)) !important;
+  border-radius: 9999px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.28);
+}
+
+.skills-marketplace-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--foreground) 86%, var(--primary)) !important;
 }
 
 .no-scrollbar::-webkit-scrollbar { display: none; }

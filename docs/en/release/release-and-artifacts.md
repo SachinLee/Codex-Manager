@@ -13,11 +13,13 @@ Current release workflow:
 
 Trigger mode:
 
-- `workflow_dispatch` only
-- It does not run automatically on push or pull request
+- Pushing a `v*` tag automatically runs `build-and-publish`
+- `workflow_dispatch` supports manual `build-and-publish`, `build-artifacts`, and `publish-artifacts` modes
+- Ordinary branch pushes and pull requests do not trigger it
 
 Key inputs:
 
+- `mode`: `build-and-publish | build-artifacts | publish-artifacts`
 - `tag`: required
 - `ref`: build baseline branch or commit, default `main`
 - `prerelease`: `auto | true | false`

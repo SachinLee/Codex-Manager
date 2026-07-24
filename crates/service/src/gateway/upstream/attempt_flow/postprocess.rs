@@ -383,6 +383,9 @@ pub(in crate::gateway::upstream) fn process_upstream_post_retry_flow<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
+    let scoped_account =
+        super::primary_flow::account_with_authorization_scope(account, authorization);
+    let account = &scoped_account;
     let mut current_auth_token = authorization.value.clone();
     let mut current_request_ctx = request_ctx.with_fedramp(authorization.is_fedramp);
     let mut status = upstream.status();
@@ -413,7 +416,8 @@ where
                 match crate::agent_identity::recover_account_agent_identity_authorization(
                     storage,
                     client,
-                    &account.id,
+                    account,
+                    token,
                     failed_task_id,
                 ) {
                     Ok(Some(recovered)) => {

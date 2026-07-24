@@ -10,6 +10,8 @@ const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const RPC_DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_BULK_USAGE_REFRESH_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_ACCOUNT_IMPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
+const RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT: Duration = Duration::from_secs(600);
+const RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 函数 `rpc_io_timeout`
 ///
@@ -26,6 +28,27 @@ const RPC_ACCOUNT_IMPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
 fn rpc_io_timeout(method: &str, params: Option<&serde_json::Value>) -> Duration {
     if method == "account/import" {
         return RPC_ACCOUNT_IMPORT_IO_TIMEOUT;
+    }
+
+    // Skills repository, registry, and Marketplace mutations can include bounded network and
+    // filesystem work. Keep the desktop RPC socket open for the complete transaction.
+    if method.starts_with("codexSkills/marketplace")
+        || matches!(
+            method,
+            "codexSkills/installZip"
+                | "codexSkills/importDirectory"
+                | "codexSkills/delete"
+                | "codexSkills/repositoryAdd"
+                | "codexSkills/repositoryRefresh"
+                | "codexSkills/repositoryInstall"
+                | "codexSkills/registryInstall"
+        )
+    {
+        return RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT;
+    }
+
+    if method == "codexSkills/registrySearch" {
+        return RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT;
     }
 
     if method == "account/usage/refresh"
@@ -209,7 +232,10 @@ pub(crate) fn rpc_call(
 
 #[cfg(test)]
 mod tests {
-    use super::{rpc_io_timeout, RPC_BULK_USAGE_REFRESH_IO_TIMEOUT, RPC_DEFAULT_IO_TIMEOUT};
+    use super::{
+        rpc_io_timeout, RPC_BULK_USAGE_REFRESH_IO_TIMEOUT, RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT,
+        RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT, RPC_DEFAULT_IO_TIMEOUT,
+    };
 
     /// 函数 `bulk_usage_refresh_uses_extended_timeout`
     ///
@@ -246,6 +272,68 @@ mod tests {
             Some(&serde_json::json!({ "accountId": "acc-1" })),
         );
         assert_eq!(timeout, RPC_DEFAULT_IO_TIMEOUT);
+    }
+
+    #[test]
+    fn codex_marketplace_rpcs_use_extended_timeout() {
+        for method in [
+            "codexSkills/marketplaceList",
+            "codexSkills/marketplaceAdd",
+            "codexSkills/marketplaceRefresh",
+            "codexSkills/marketplacePluginInstall",
+        ] {
+            assert_eq!(
+                rpc_io_timeout(method, None),
+                RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT,
+                "unexpected timeout for {method}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_skill_file_mutations_use_extended_timeout() {
+        for method in [
+            "codexSkills/installZip",
+            "codexSkills/importDirectory",
+            "codexSkills/delete",
+        ] {
+            assert_eq!(
+                rpc_io_timeout(method, None),
+                RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT,
+                "unexpected timeout for {method}"
+            );
+        }
+        assert_eq!(rpc_io_timeout("codexSkills/list", None), RPC_DEFAULT_IO_TIMEOUT);
+    }
+
+    #[test]
+    fn codex_skill_repository_and_registry_timeouts_match_operation_cost() {
+        for method in [
+            "codexSkills/repositoryAdd",
+            "codexSkills/repositoryRefresh",
+            "codexSkills/repositoryInstall",
+            "codexSkills/registryInstall",
+        ] {
+            assert_eq!(
+                rpc_io_timeout(method, None),
+                RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT,
+                "unexpected timeout for {method}"
+            );
+        }
+        for method in [
+            "codexSkills/repositoryList",
+            "codexSkills/repositoryDelete",
+        ] {
+            assert_eq!(
+                rpc_io_timeout(method, None),
+                RPC_DEFAULT_IO_TIMEOUT,
+                "unexpected timeout for {method}"
+            );
+        }
+        assert_eq!(
+            rpc_io_timeout("codexSkills/registrySearch", None),
+            RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT
+        );
     }
 
     /// 函数 `unrelated_rpc_keeps_default_timeout`

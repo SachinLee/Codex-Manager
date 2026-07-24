@@ -1,13 +1,16 @@
 use super::{
     build_callback_error_page, build_callback_success_page, ensure_login_server_with_addr,
-    html_response, oauth_callback_error_message, resolve_redirect_uri, LOGIN_SERVER_STATE,
+    html_response, oauth_callback_error_message, resolve_redirect_uri, update_login_session_failed,
+    LOGIN_SERVER_STATE,
 };
+use codexmanager_core::storage::{now_ts, LoginSession, Storage};
 use std::net::TcpListener;
 use url::Url;
 
 #[path = "../support.rs"]
 mod support;
-use support::test_env_guard;
+use crate::test_env_guard;
+use support::EnvGuard;
 
 /// 函数 `reset_login_server_state`
 ///
@@ -220,6 +223,58 @@ fn oauth_callback_error_message_maps_missing_entitlement() {
         Some("missing_codex_entitlement for workspace"),
     );
     assert!(message.contains("Codex is not enabled"));
+}
+
+#[test]
+fn callback_error_does_not_override_claimed_login_completion() {
+    let _guard = test_env_guard();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let db_path = std::env::temp_dir().join(format!(
+        "codexmanager-callback-race-{}-{unique}.db",
+        std::process::id()
+    ));
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open(&db_path).expect("open callback race database");
+    storage.init().expect("init callback race database");
+    storage
+        .insert_login_session(&LoginSession {
+            login_id: "claimed-callback-login".to_string(),
+            code_verifier: "claimed-verifier".to_string(),
+            state: "claimed-callback-login".to_string(),
+            status: "pending".to_string(),
+            error: None,
+            workspace_id: None,
+            note: None,
+            tags: None,
+            group_name: None,
+            created_at: now_ts(),
+            updated_at: now_ts(),
+        })
+        .expect("insert callback race session");
+    assert!(storage
+        .claim_login_session_for_completion("claimed-callback-login")
+        .expect("claim callback race session"));
+
+    update_login_session_failed(Some("claimed-callback-login"), "access denied");
+
+    let completing = storage
+        .get_login_session("claimed-callback-login")
+        .expect("load callback race session")
+        .expect("callback race session exists");
+    assert_eq!(completing.status, "completing");
+    assert_eq!(completing.code_verifier, "claimed-verifier");
+    assert!(completing.error.is_none());
+    assert!(storage
+        .finish_login_session("claimed-callback-login", "success", None)
+        .expect("finish callback race session"));
+    drop(storage);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
 }
 
 /// 函数 `login_start_fails_when_login_server_cannot_bind`

@@ -37,10 +37,11 @@ use super::{
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
-    APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
-    APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY, APP_SETTING_SERVICE_ADDR_KEY,
-    APP_SETTING_UI_APPEARANCE_PRESET_KEY, APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
-    APP_SETTING_UI_LOCALE_KEY, APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
+    APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY, APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+    APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
+    APP_SETTING_SERVICE_ADDR_KEY, APP_SETTING_UI_APPEARANCE_PRESET_KEY,
+    APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY, APP_SETTING_UI_LOCALE_KEY,
+    APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
     APP_SETTING_UPDATE_AUTO_CHECK_KEY, SERVICE_BIND_MODE_ALL_INTERFACES,
     SERVICE_BIND_MODE_LOOPBACK, SERVICE_BIND_MODE_SETTING_KEY,
 };
@@ -164,11 +165,23 @@ fn current_app_settings_value_inner(
     let persisted_close_to_tray =
         setting_bool(&settings, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, false);
     let close_to_tray = close_to_tray_on_close.unwrap_or(persisted_close_to_tray);
-    let lightweight_mode_on_close_to_tray = setting_bool(
+    let persisted_lightweight_mode_on_close_to_tray = setting_bool(
         &settings,
         APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
         false,
     );
+    let keep_window_ui_mounted = if settings.contains_key(APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY) {
+        setting_bool(
+            &settings,
+            APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY,
+            !cfg!(target_os = "windows"),
+        )
+    } else if cfg!(target_os = "windows") {
+        false
+    } else {
+        !persisted_lightweight_mode_on_close_to_tray
+    };
+    let lightweight_mode_on_close_to_tray = !keep_window_ui_mounted;
     let codex_cli_guide_dismissed = setting_bool(
         &settings,
         APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
@@ -258,6 +271,7 @@ fn current_app_settings_value_inner(
             update_auto_check,
             auto_start_enabled,
             persisted_close_to_tray,
+            keep_window_ui_mounted,
             lightweight_mode_on_close_to_tray,
             codex_cli_guide_dismissed,
             low_transparency,
@@ -365,6 +379,10 @@ fn current_app_settings_value_inner(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "keepWindowUiMounted".to_string(),
+            serde_json::json!(keep_window_ui_mounted),
+        );
         object.insert("autoStartEnabled".to_string(), auto_start_enabled.into());
         object.insert("autoStartSupported".to_string(), false.into());
         object.insert(
@@ -573,6 +591,7 @@ fn persist_current_snapshot(
     update_auto_check: bool,
     auto_start_enabled: bool,
     persisted_close_to_tray: bool,
+    keep_window_ui_mounted: bool,
     lightweight_mode_on_close_to_tray: bool,
     codex_cli_guide_dismissed: bool,
     low_transparency: bool,
@@ -609,6 +628,10 @@ fn persist_current_snapshot(
     let _ = save_persisted_bool_setting(
         APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
         persisted_close_to_tray,
+    );
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY,
+        keep_window_ui_mounted,
     );
     let _ = save_persisted_bool_setting(
         APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,

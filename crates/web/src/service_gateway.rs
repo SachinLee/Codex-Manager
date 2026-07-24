@@ -299,6 +299,9 @@ pub(super) async fn rpc_proxy(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if body.len() > codexmanager_service::RPC_BODY_LIMIT_BYTES {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "{}").into_response();
+    }
     if !is_json_content_type(&headers) {
         return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "{}").into_response();
     }

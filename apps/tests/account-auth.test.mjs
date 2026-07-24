@@ -38,6 +38,21 @@ test("readLoginStatusResult 统一读取登录状态对象", () => {
   assert.equal(result.error, "temporary");
 });
 
+test("readLoginStatusResult 保留 Device Code 终态并收敛未知状态", () => {
+  assert.equal(
+    accountAuth.readLoginStatusResult({ status: "cancelled" }).status,
+    "cancelled",
+  );
+  assert.equal(
+    accountAuth.readLoginStatusResult({ status: "expired" }).status,
+    "expired",
+  );
+  assert.equal(
+    accountAuth.readLoginStatusResult({ status: "unexpected" }).status,
+    "unknown",
+  );
+});
+
 test("readCurrentAccessTokenAccountReadResult 解析当前账号与认证要求", () => {
   const result = accountAuth.readCurrentAccessTokenAccountReadResult({
     account: {

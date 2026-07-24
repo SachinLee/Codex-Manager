@@ -14,6 +14,10 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   上游连接: "Upstream connections",
   "连通性测试只使用已配置路由对应的模型。":
     "Connection tests only use models referenced by configured routes.",
+  "通用兼容（Codex + Claude）": "Compatible (Codex + Claude)",
+  "按请求路径原样转发 Codex 与 Claude 协议；自定义 action 会自动关闭。":
+    "Forwards Codex and Claude protocols using the incoming path; custom action is disabled automatically.",
+  "例如：https://example.com/v1": "For example: https://example.com/v1",
   模型路由: "Model routes",
   供应商: "Supplier",
   连通性: "Connectivity",

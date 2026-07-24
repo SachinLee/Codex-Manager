@@ -151,6 +151,30 @@ async function mockApiKeyRpc(
       await ok({ items: apiKeys });
       return;
     }
+    if (method === "account/list") {
+      await ok({
+        items: [
+          {
+            id: "account-team-a",
+            label: "Team A account",
+            group_name: "team-a",
+            status: "active",
+            sort: 0,
+          },
+          {
+            id: "account-team-b",
+            label: "Team B account",
+            group_name: "team-b",
+            status: "active",
+            sort: 1,
+          },
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 2,
+      });
+      return;
+    }
     if (method === "apikey/managedModelListV2") {
       await ok({
         items: [
@@ -282,7 +306,9 @@ test("api key modal reuses prefix model metadata for long model slugs", async ({
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "编辑平台密钥" })).toBeVisible();
   await dialog.getByText("GPT-5.3 Codex", { exact: true }).click();
-  await expect(page.getByText("GPT-5.3 Codex", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("option", { name: /GPT-5\.3 Codex/ }).first(),
+  ).toBeVisible();
 });
 
 test("api key modal hides image-only models when creating a key", async ({ page }) => {
@@ -366,6 +392,7 @@ test("api key modal displays and submits hybrid rotation", async ({ page }) => {
         protocol_type: "openai_compat",
         rotation_strategy: "hybrid_rotation",
         account_plan_filter: "plus",
+        account_group_filter: "team-a",
         status: "enabled",
         created_at: 1_770_000_001,
       },
@@ -383,13 +410,16 @@ test("api key modal displays and submits hybrid rotation", async ({ page }) => {
   const row = page.locator("tr", { hasText: "Hybrid Key" });
   await expect(row).toBeVisible();
   await expect(row.getByText("混合轮转（账号优先）", { exact: true })).toBeVisible();
+  await expect(row.getByText("账号分组: team-a", { exact: true })).toBeVisible();
 
   await row.getByTitle("编辑配置").click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "编辑平台密钥" })).toBeVisible();
   await expect(dialog.getByText("混合轮转（账号优先）", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("账号组筛选", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("账号计划筛选", { exact: true })).toBeVisible();
   await expect(dialog.getByText("Plus", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("账号分组筛选", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("team-a", { exact: true })).toBeVisible();
 
   await dialog.getByRole("button", { name: "完成" }).click();
 
@@ -397,6 +427,7 @@ test("api key modal displays and submits hybrid rotation", async ({ page }) => {
   const params = updatePayloads[0]?.params as Record<string, unknown>;
   expect(params.rotationStrategy).toBe("hybrid_rotation");
   expect(params.accountPlanFilter).toBe("plus");
+  expect(params.accountGroupFilter).toBe("team-a");
 });
 
 test("api key modal can select hybrid rotation on create", async ({ page }) => {
@@ -422,10 +453,12 @@ test("api key modal can select hybrid rotation on create", async ({ page }) => {
   await dialog.getByLabel("自定义 API Key (可选)").fill("sk-cm-custom-fixed");
   await dialog.getByText("账号轮转", { exact: true }).click();
   await page.getByText("混合轮转（账号优先）", { exact: true }).click();
-  await expect(dialog.getByText("账号组筛选", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("账号计划筛选", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("账号分组筛选", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "完成" }).click();
 
   await expect.poll(() => createPayloads.length).toBe(1);
+  await expect(dialog).not.toBeVisible();
   const params = createPayloads[0]?.params as Record<string, unknown>;
   expect(params.rotationStrategy).toBe("hybrid_rotation");
   expect(params.customKey).toBe("sk-cm-custom-fixed");

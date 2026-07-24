@@ -14,10 +14,12 @@ import type { AppSettings } from "@/types";
 
 type GeneralBasicsSnapshot = Pick<
   AppSettings,
+  | "updateAutoCheck"
   | "autoStartEnabled"
   | "autoStartSupported"
   | "closeToTrayOnClose"
   | "closeToTraySupported"
+  | "keepWindowUiMounted"
   | "lowTransparency"
 >;
 
@@ -127,6 +129,21 @@ export function GeneralBasicsCard({
         </Card>
         <div className="flex items-center justify-between">
           <div className="space-y-0.5">
+            <Label>{t("自动检查更新")}</Label>
+            <p className="text-xs text-muted-foreground">
+              {t("启动完成后在后台检查更新，并每 7 小时检查一次")}
+            </p>
+          </div>
+          <Switch
+            checked={snapshot.updateAutoCheck}
+            disabled={!canSelfUpdate}
+            onCheckedChange={(value) =>
+              updateSettings.mutate({ updateAutoCheck: value })
+            }
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
             <Label>{t("开机自动启动")}</Label>
             <p className="text-xs text-muted-foreground">{t("系统登录后自动启动桌面端并保持网关可用")}</p>
           </div>
@@ -145,6 +162,27 @@ export function GeneralBasicsCard({
             checked={snapshot.closeToTrayOnClose}
             disabled={!canCloseToTray || !snapshot.closeToTraySupported}
             onCheckedChange={(value) => updateSettings.mutate({ closeToTrayOnClose: value })}
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label>{t("窗口界面资源常驻")}</Label>
+            <p className="text-xs text-muted-foreground">
+              {!snapshot.closeToTrayOnClose
+                ? t("需先开启关闭时最小化到托盘，才能选择窗口关闭后的资源策略")
+                : snapshot.keepWindowUiMounted
+                  ? t("快速唤醒：关闭后隐藏并保留界面，重开更快，但会占用更多内存")
+                  : t("低资源：关闭后销毁界面，后台服务继续运行，重开时重新加载")}
+            </p>
+          </div>
+          <Switch
+            checked={snapshot.keepWindowUiMounted}
+            disabled={
+              !canCloseToTray ||
+              !snapshot.closeToTraySupported ||
+              !snapshot.closeToTrayOnClose
+            }
+            onCheckedChange={(value) => updateSettings.mutate({ keepWindowUiMounted: value })}
           />
         </div>
         <div className="flex items-center justify-between">

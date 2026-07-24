@@ -1,4 +1,4 @@
-use rusqlite::{params_from_iter, Result, Row};
+use rusqlite::{params_from_iter, OptionalExtension, Result, Row};
 
 use super::api_key_quota_limits::delete_api_key_quota_limit_by_key_sql;
 use super::key_id_filters::{key_id_in_clause, normalize_key_ids, SQLITE_IN_CLAUSE_BATCH_SIZE};
@@ -39,6 +39,7 @@ const API_KEY_SUMMARY_SELECT_SQL: &str = "SELECT
     COALESCE(k.rotation_strategy, 'account_rotation') AS rotation_strategy,
     k.aggregate_api_id,
     k.account_plan_filter,
+    k.account_group_filter,
     a.url AS aggregate_api_url,
     COALESCE(p.client_type, 'codex') AS client_type,
     COALESCE(p.protocol_type, 'openai_compat') AS protocol_type,
@@ -93,7 +94,7 @@ impl Storage {
     /// 返回函数执行结果
     pub fn insert_api_key(&self, key: &ApiKey) -> Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO api_keys (id, name, model_slug, reasoning_effort, key_hash, status, created_at, last_used_at, rotation_strategy, aggregate_api_id, account_plan_filter) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR REPLACE INTO api_keys (id, name, model_slug, reasoning_effort, key_hash, status, created_at, last_used_at, rotation_strategy, aggregate_api_id, account_plan_filter, account_group_filter) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, (SELECT account_group_filter FROM api_keys WHERE id = ?1))",
             (
                 &key.id,
                 &key.name,
@@ -287,6 +288,17 @@ impl Storage {
         }
     }
 
+    pub fn find_api_key_account_group_filter(&self, key_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT account_group_filter FROM api_keys WHERE id = ?1 LIMIT 1",
+                [key_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+    }
+
     pub fn find_api_key_status_by_id(&self, key_id: &str) -> Result<Option<ApiKeyStatus>> {
         let mut stmt = self.conn.prepare(api_key_status_by_id_sql())?;
         let mut rows = stmt.query([key_id])?;
@@ -419,6 +431,18 @@ impl Storage {
                 account_plan_filter,
                 key_id,
             ),
+        )?;
+        Ok(())
+    }
+
+    pub fn update_api_key_account_group_filter(
+        &self,
+        key_id: &str,
+        account_group_filter: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE api_keys SET account_group_filter = ?1 WHERE id = ?2",
+            (account_group_filter, key_id),
         )?;
         Ok(())
     }
@@ -732,6 +756,11 @@ impl Storage {
              WHERE account_plan_filter IS NOT NULL AND TRIM(account_plan_filter) = ''",
             [],
         )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_api_key_account_group_filter_column(&self) -> Result<()> {
+        self.ensure_column("api_keys", "account_group_filter", "TEXT")?;
         Ok(())
     }
 
@@ -1066,16 +1095,17 @@ fn map_api_key_summary_row(row: &Row<'_>) -> Result<ApiKeyListSummary> {
         rotation_strategy: row.get(5)?,
         aggregate_api_id: row.get(6)?,
         account_plan_filter: row.get(7)?,
-        aggregate_api_url: row.get(8)?,
-        client_type: row.get(9)?,
-        protocol_type: row.get(10)?,
-        auth_scheme: row.get(11)?,
-        upstream_base_url: row.get(12)?,
-        static_headers_json: row.get(13)?,
-        status: row.get(14)?,
-        quota_limit_tokens: row.get(15)?,
-        created_at: row.get(16)?,
-        last_used_at: row.get(17)?,
+        account_group_filter: row.get(8)?,
+        aggregate_api_url: row.get(9)?,
+        client_type: row.get(10)?,
+        protocol_type: row.get(11)?,
+        auth_scheme: row.get(12)?,
+        upstream_base_url: row.get(13)?,
+        static_headers_json: row.get(14)?,
+        status: row.get(15)?,
+        quota_limit_tokens: row.get(16)?,
+        created_at: row.get(17)?,
+        last_used_at: row.get(18)?,
     })
 }
 

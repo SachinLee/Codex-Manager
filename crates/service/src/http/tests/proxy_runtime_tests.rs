@@ -620,7 +620,7 @@ async fn start_mock_upstream_ws() -> (
     (addr.to_string(), event_rx, capture_rx, handle)
 }
 
-async fn start_mock_upstream_ws_fail_then_success() -> (
+async fn start_mock_upstream_ws_usage_limit_then_success() -> (
     String,
     tokio::sync::mpsc::UnboundedReceiver<String>,
     oneshot::Receiver<Vec<UpstreamWsCapture>>,
@@ -662,12 +662,35 @@ async fn start_mock_upstream_ws_fail_then_success() -> (
             if let Some(Ok(Message::Text(text))) = websocket.next().await {
                 frames.push(text.to_string());
                 let _ = event_tx.send(text.to_string());
+                let response_id = if round == 0 {
+                    "resp_ws_limited_a"
+                } else {
+                    "resp_ws_failover_ok"
+                };
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "response.created",
+                            "response": { "id": response_id }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .expect("send upstream response.created");
+                if round == 0 {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                }
                 let response_payload = if round == 0 {
                     serde_json::json!({
                         "type": "response.failed",
-                        "status": 429,
-                        "error": {
-                            "message": "rate limited on first account"
+                        "response": {
+                            "id": response_id,
+                            "status": "failed",
+                            "error": {
+                                "code": "usage_limit_reached",
+                                "message": "The usage limit has been reached"
+                            }
                         }
                     })
                 } else {
@@ -901,7 +924,6 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         }
         other => panic!("unexpected first client event: {other:?}"),
     }
-
     client_ws
         .send(Message::Text(
             serde_json::json!({
@@ -1184,13 +1206,13 @@ async fn official_responses_websocket_preserves_explicit_prompt_cache_key_when_s
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn official_responses_websocket_retries_current_request_after_terminal_failure() {
+async fn official_responses_websocket_retries_usage_limit_on_next_account() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-failover");
     let storage = init_test_storage(&db_path);
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let (upstream_addr, mut upstream_events, capture_rx, upstream_handle) =
-        start_mock_upstream_ws_fail_then_success().await;
+        start_mock_upstream_ws_usage_limit_then_success().await;
     insert_api_key_record(
         &storage,
         "platform_key_ws_failover",
@@ -1213,8 +1235,28 @@ async fn official_responses_websocket_retries_current_request_after_terminal_fai
         "proxy-runtime-ws-b",
         "chatgpt_proxy_runtime_ws_b",
         "access_token_ws_b",
+        2,
+    );
+    insert_account_and_token_with_id(
+        &storage,
+        "acc_proxy_runtime_ws_forbidden",
+        "proxy-runtime-ws-forbidden",
+        "chatgpt_proxy_runtime_ws_forbidden",
+        "access_token_ws_forbidden",
         1,
     );
+    storage
+        .update_account_group_name("acc_proxy_runtime_ws_a", Some("team-a"))
+        .expect("group first websocket account");
+    storage
+        .update_account_group_name("acc_proxy_runtime_ws_b", Some("team-a"))
+        .expect("group failover websocket account");
+    storage
+        .update_account_group_name("acc_proxy_runtime_ws_forbidden", Some("team-b"))
+        .expect("group forbidden websocket account");
+    storage
+        .update_api_key_account_group_filter("gk_proxy_runtime_ws", Some("team-a"))
+        .expect("restrict websocket api key group");
     tokio::task::spawn_blocking(|| {
         crate::gateway::reload_runtime_config_from_env();
         let _ = crate::gateway::front_proxy_max_body_bytes();
@@ -1230,7 +1272,10 @@ async fn official_responses_websocket_retries_current_request_after_terminal_fai
     let request = build_ws_request(
         &format!("ws://{front_addr}/v1/responses"),
         "platform_key_ws_failover",
-        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+        &[
+            ("OpenAI-Beta", "responses_websockets=2026-02-06"),
+            ("session_id", "session_ws_failover"),
+        ],
     );
     let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
@@ -1271,18 +1316,30 @@ async fn official_responses_websocket_retries_current_request_after_terminal_fai
 
     let first_client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
         .await
-        .expect("client retry event timeout")
-        .expect("client retry event")
-        .expect("client retry event result");
-    match first_client_event {
-        Message::Text(text) => {
-            assert!(
-                text.contains("\"response.completed\""),
-                "unexpected retry event: {text}"
-            );
-        }
-        other => panic!("unexpected retry client event: {other:?}"),
-    }
+        .expect("client retry created event timeout")
+        .expect("client retry created event")
+        .expect("client retry created event result");
+    let second_client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("client retry completed event timeout")
+        .expect("client retry completed event")
+        .expect("client retry completed event result");
+    let client_events = [first_client_event, second_client_event]
+        .into_iter()
+        .map(|event| match event {
+            Message::Text(text) => text.to_string(),
+            other => panic!("unexpected retry client event: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert!(client_events[0].contains("\"response.created\""));
+    assert!(client_events[0].contains("resp_ws_failover_ok"));
+    assert!(client_events[1].contains("\"response.completed\""));
+    assert!(client_events[1].contains("resp_ws_failover_ok"));
+    assert!(client_events.iter().all(|event| {
+        !event.contains("resp_ws_limited_a")
+            && !event.contains("usage_limit_reached")
+            && !event.contains("The usage limit has been reached")
+    }));
 
     let captures = tokio::time::timeout(Duration::from_secs(5), capture_rx)
         .await
@@ -1314,6 +1371,24 @@ async fn official_responses_websocket_retries_current_request_after_terminal_fai
             .get("chatgpt-account-id")
             .map(String::as_str),
         Some("chatgpt_proxy_runtime_ws_b")
+    );
+    assert!(captures.iter().all(|capture| {
+        capture.headers.get("session_id").map(String::as_str) == Some("session_ws_failover")
+    }));
+
+    let limited_account = storage
+        .find_account_by_id("acc_proxy_runtime_ws_a")
+        .expect("find exhausted websocket account")
+        .expect("exhausted websocket account exists");
+    assert_eq!(limited_account.status, "limited");
+    let status_reasons = storage
+        .latest_account_status_reasons(&["acc_proxy_runtime_ws_a".to_string()])
+        .expect("load exhausted websocket account status reason");
+    assert_eq!(
+        status_reasons
+            .get("acc_proxy_runtime_ws_a")
+            .map(String::as_str),
+        Some("usage_limit_exhausted")
     );
 
     client_ws.close(None).await.expect("close client websocket");

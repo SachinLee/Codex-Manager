@@ -1,8 +1,12 @@
+use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response as AxumResponse};
+use bytes::BytesMut;
 use codexmanager_core::rpc::types::{
     JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
 };
+use futures_util::StreamExt;
+use std::io::Read as _;
 use std::panic::AssertUnwindSafe;
 use tiny_http::Request;
 use tiny_http::Response;
@@ -300,6 +304,23 @@ fn validate_axum_headers(headers: &HeaderMap) -> Option<AxumResponse> {
     None
 }
 
+async fn read_axum_rpc_body_bounded(body: Body) -> Result<String, StatusCode> {
+    let mut stream = body.into_data_stream();
+    let mut bytes = BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| StatusCode::BAD_REQUEST)?;
+        let next_len = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
+        if next_len > crate::RPC_BODY_LIMIT_BYTES {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
 /// 函数 `handle_rpc_http`
 ///
 /// 作者: gaohongshun
@@ -311,13 +332,25 @@ fn validate_axum_headers(headers: &HeaderMap) -> Option<AxumResponse> {
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) async fn handle_rpc_http(headers: HeaderMap, body: String) -> AxumResponse {
+pub(crate) async fn handle_rpc_http(request: axum::extract::Request) -> AxumResponse {
     let mut rpc_metrics_guard = crate::gateway::begin_rpc_request();
-    if let Some(response) = validate_axum_headers(&headers) {
+    let headers = request.headers();
+    if let Some(response) = validate_axum_headers(headers) {
         return response;
     }
-    let actor = rpc_actor_from_axum_headers(&headers);
-    let body_for_task = body;
+    let actor = rpc_actor_from_axum_headers(headers);
+    if headers
+        .get("Content-Length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .is_some_and(|length| length > crate::RPC_BODY_LIMIT_BYTES as u64)
+    {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "{}").into_response();
+    }
+    let body_for_task = match read_axum_rpc_body_bounded(request.into_body()).await {
+        Ok(body) => body,
+        Err(status) => return (status, "{}").into_response(),
+    };
     let (status, response_body, success) =
         match tokio::task::spawn_blocking(move || handle_rpc_body(&body_for_task, actor)).await {
             Ok(result) => result,
@@ -391,10 +424,27 @@ pub fn handle_rpc(mut request: Request) {
         }
     }
 
+    if let Some(content_length) =
+        get_header_value(&request, "Content-Length").and_then(|value| value.parse::<usize>().ok())
+    {
+        if content_length > crate::RPC_BODY_LIMIT_BYTES {
+            let _ = request.respond(Response::from_string("{}").with_status_code(413));
+            return;
+        }
+    }
+
     let actor = rpc_actor_from_request_headers(&request);
     let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
+    let read_result = request
+        .as_reader()
+        .take(crate::RPC_BODY_LIMIT_BYTES.saturating_add(1) as u64)
+        .read_to_string(&mut body);
+    if read_result.is_err() {
         let _ = request.respond(Response::from_string("{}").with_status_code(400));
+        return;
+    }
+    if body.len() > crate::RPC_BODY_LIMIT_BYTES {
+        let _ = request.respond(Response::from_string("{}").with_status_code(413));
         return;
     }
     if body.trim().is_empty() {

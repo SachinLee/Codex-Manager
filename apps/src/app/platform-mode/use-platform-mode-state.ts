@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -26,6 +26,44 @@ import type {
 const EMPTY_CANDIDATES = { accounts: [], apiKeys: [] };
 const RELOAD_AFTER_SWITCH_STORAGE_KEY =
   "codexmanager.platform-mode.reload-after-switch";
+const RELOAD_AFTER_SWITCH_EVENT =
+  "codexmanager:platform-mode-reload-after-switch";
+
+let reloadAfterSwitchMemoryValue = true;
+
+function getReloadAfterSwitchPreference(): boolean {
+  if (typeof window === "undefined") {
+    return reloadAfterSwitchMemoryValue;
+  }
+  try {
+    const stored = window.localStorage.getItem(RELOAD_AFTER_SWITCH_STORAGE_KEY);
+    if (stored === "true" || stored === "false") {
+      reloadAfterSwitchMemoryValue = stored === "true";
+    }
+  } catch {
+    // Use the in-memory preference when browser storage is unavailable.
+  }
+  return reloadAfterSwitchMemoryValue;
+}
+
+function subscribeToReloadAfterSwitchPreference(
+  onStoreChange: () => void,
+): () => void {
+  if (typeof window === "undefined") {
+    return () => undefined;
+  }
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === RELOAD_AFTER_SWITCH_STORAGE_KEY) {
+      onStoreChange();
+    }
+  };
+  window.addEventListener("storage", handleStorage);
+  window.addEventListener(RELOAD_AFTER_SWITCH_EVENT, onStoreChange);
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    window.removeEventListener(RELOAD_AFTER_SWITCH_EVENT, onStoreChange);
+  };
+}
 
 export function historyRepairChangeCount(
   summary: CodexProfileHistoryRepairSummary | null,
@@ -74,7 +112,11 @@ export function usePlatformModePageState(
   const [selectedAccountIdDraft, setSelectedAccountIdDraft] = useState<string | null>(null);
   const [selectedApiKeyIdDraft, setSelectedApiKeyIdDraft] = useState<string | null>(null);
   const [gatewayBaseUrlDraft, setGatewayBaseUrlDraft] = useState<string | null>(null);
-  const [reloadAfterSwitch, setReloadAfterSwitchState] = useState(true);
+  const reloadAfterSwitch = useSyncExternalStore(
+    subscribeToReloadAfterSwitchPreference,
+    getReloadAfterSwitchPreference,
+    () => true,
+  );
   const browserOrigin = useSyncExternalStore(
     () => () => undefined,
     () =>
@@ -95,19 +137,8 @@ export function usePlatformModePageState(
 
   const statusQuery = useCodexProfileModeStatus();
 
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(RELOAD_AFTER_SWITCH_STORAGE_KEY);
-      if (stored === "true" || stored === "false") {
-        setReloadAfterSwitchState(stored === "true");
-      }
-    } catch {
-      // Keep the safe default when browser storage is unavailable.
-    }
-  }, []);
-
   const setReloadAfterSwitch = (enabled: boolean) => {
-    setReloadAfterSwitchState(enabled);
+    reloadAfterSwitchMemoryValue = enabled;
     try {
       window.localStorage.setItem(
         RELOAD_AFTER_SWITCH_STORAGE_KEY,
@@ -116,6 +147,7 @@ export function usePlatformModePageState(
     } catch {
       // The preference still applies to the current page session.
     }
+    window.dispatchEvent(new Event(RELOAD_AFTER_SWITCH_EVENT));
   };
   const candidatesQuery = useQuery({
     queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,

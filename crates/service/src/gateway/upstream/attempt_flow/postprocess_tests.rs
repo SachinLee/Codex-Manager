@@ -18,6 +18,7 @@ fn oauth_authorization(value: &str) -> super::super::primary_flow::PrimaryAuthor
         task_id: None,
         uses_agent_identity: false,
         is_fedramp: false,
+        account_scope_id: None,
     }
 }
 
@@ -135,6 +136,7 @@ fn agent_identity_always_disables_openai_fallback() {
         task_id: Some("task-id".to_string()),
         uses_agent_identity: true,
         is_fedramp: false,
+        account_scope_id: Some("workspace-account".to_string()),
     };
 
     assert!(!allow_openai_fallback_for_authorization(
@@ -243,6 +245,7 @@ fn agent_identity_invalid_task_recovery_replays_once_without_oauth_fallback() {
         task_id: Some("task-stale".to_string()),
         uses_agent_identity: true,
         is_fedramp: true,
+        account_scope_id: Some("workspace-account".to_string()),
     };
     let upstream = super::super::transport::send_upstream_request(
         &client,

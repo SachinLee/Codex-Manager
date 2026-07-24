@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
 import type { Account } from "@/types";
 import { cn } from "@/lib/utils";
@@ -30,9 +31,12 @@ export function ProxyFlag({
 
 	if (flagImgUrl && !hasError) {
 		return (
-			<img
+			<Image
 				src={flagImgUrl}
 				alt={countryCode || "flag"}
+				width={16}
+				height={12}
+				unoptimized
 				className={cn("h-3 w-4 shrink-0 object-cover rounded-[1px]", className)}
 				onError={() => setHasError(true)}
 			/>

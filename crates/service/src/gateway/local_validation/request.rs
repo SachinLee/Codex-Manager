@@ -1800,6 +1800,17 @@ pub(super) fn build_local_validation_result(
     api_key: ApiKey,
 ) -> Result<LocalValidationResult, LocalValidationError> {
     // 按当前策略取消每次请求都更新 api_keys.last_used_at，减少并发写入冲突。
+    let account_group_filter = storage
+        .find_api_key_account_group_filter(&api_key.id)
+        .map_err(|err| {
+            LocalValidationError::new(
+                500,
+                crate::gateway::bilingual_error(
+                    "读取 API Key 账号分组失败",
+                    format!("read api key account group filter failed: {err}"),
+                ),
+            )
+        })?;
     let normalized_path = super::super::normalize_models_path(request.url());
     if is_removed_openai_compat_request_path(normalized_path.as_str()) {
         return Err(LocalValidationError::new(
@@ -1974,6 +1985,7 @@ pub(super) fn build_local_validation_result(
             protocol_type: effective_protocol_type.to_string(),
             rotation_strategy: ROTATION_AGGREGATE_API.to_string(),
             aggregate_api_id: api_key.aggregate_api_id,
+            account_group_filter: account_group_filter.clone(),
             account_plan_filter: api_key.account_plan_filter,
             response_adapter: maybe_wrap_compact_response_adapter(
                 logical_path.as_str(),
@@ -2348,6 +2360,7 @@ pub(super) fn build_local_validation_result(
         request_log_session_id,
         rotation_strategy: api_key.rotation_strategy,
         aggregate_api_id: api_key.aggregate_api_id,
+        account_group_filter,
         account_plan_filter: api_key.account_plan_filter,
         client_model_for_log,
         model_for_log,

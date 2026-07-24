@@ -12,6 +12,7 @@ import { loadRuntimeCapabilities } from "@/lib/api/transport";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CodexCliOnboardingDialog } from "@/components/layout/codex-cli-onboarding-dialog";
+import { AutomaticUpdateChecker } from "@/components/layout/automatic-update-checker";
 import { applyAppearancePreset } from "@/lib/appearance";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { isTrayPreviewPath } from "@/components/layout/app-frame";
@@ -28,6 +29,7 @@ import { withTimeout } from "@/lib/utils/timeout";
 const DEFAULT_SERVICE_ADDR = "localhost:48760";
 const STARTUP_STEP_TIMEOUT_MS = 15_000;
 const WEB_GATEWAY_SETTINGS_TIMEOUT_MS = 60_000;
+const TRAY_PREVIEW_SERVICE_INITIALIZE_RETRIES = 40;
 const CODEX_CLI_GUIDE_SESSION_DISMISSED_KEY =
   "codexmanager.codexCliGuide.sessionDismissed";
 const UNSUPPORTED_RUNTIME_AUTO_RETRY_LIMIT = 8;
@@ -126,6 +128,7 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
   const { canManageService, isDesktopRuntime, isUnsupportedWebRuntime } =
     useRuntimeCapabilities();
   const [isInitializing, setIsInitializing] = useState(true);
+  const [desktopStartupSettled, setDesktopStartupSettled] = useState(false);
   const hasInitializedOnce = useRef(false);
   const hasBootstrappedOnce = useRef(false);
   const unsupportedRuntimeRetryCountRef = useRef(0);
@@ -298,13 +301,20 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
 
       if (desktopRuntime) {
         markDesktopShellReady(settings.lowTransparency);
-        void startAndInitializeService(addr)
+        setDesktopStartupSettled(false);
+        const connectToDesktopService = isTrayPreview
+          ? initializeService(addr, TRAY_PREVIEW_SERVICE_INITIALIZE_RETRIES)
+          : startAndInitializeService(addr);
+        void connectToDesktopService
           .then(() => {
             applyConnectedServiceState(addr, "", settings.lowTransparency);
           })
           .catch((serviceError: unknown) => {
             setServiceStatus({ addr, connected: false, version: "" });
             setError(formatServiceError(serviceError));
+          })
+          .finally(() => {
+            setDesktopStartupSettled(true);
           });
         return;
       }
@@ -329,6 +339,7 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
   }, [
     applyConnectedServiceState,
     initializeService,
+    isTrayPreview,
     markDesktopShellReady,
     setAppSettings,
     setRuntimeCapabilities,
@@ -527,6 +538,15 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
         onOpenChange={handleGuideOpenChange}
         onAcknowledge={handleGuideAcknowledge}
       />
+
+      {!isTrayPreview &&
+      !isInitializing &&
+      !showCodexGuide &&
+      isDesktopRuntime &&
+      desktopStartupSettled &&
+      appSettings.updateAutoCheck ? (
+        <AutomaticUpdateChecker />
+      ) : null}
 
       {!isTrayPreview && (showLoading || showError) && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/92 px-4">

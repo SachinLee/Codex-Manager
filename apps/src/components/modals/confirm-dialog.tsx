@@ -80,7 +80,9 @@ export function ConfirmDialog({
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
+          <DialogDescription className="break-words">
+            {description}
+          </DialogDescription>
         </DialogHeader>
 
         <DialogFooter className="gap-2 sm:gap-2">

@@ -120,6 +120,8 @@ Service 侧还会按请求路径识别协议：
 | `gemini_native` | `gemini` |
 | 其他 | `codex` |
 
+`providerType = compatible` 会同时进入 `codex` 和 `claude` 候选，但不会进入 `gemini` 候选。它适合共用同一 URL 和密钥、并原生提供 `/v1/responses`、`/v1/chat/completions` 与 `/v1/messages` 的聚合供应商。
+
 如果没有可用候选，会返回类似：
 
 - `aggregate api not found for provider codex`
@@ -159,6 +161,7 @@ Service 侧还会按请求路径识别协议：
 | `codex` | `codex`、`openai`、`openai_compat`、`gpt` |
 | `claude` | `claude`、`anthropic`、`anthropic_native`、`claude_code` |
 | `gemini` | `gemini`、`gemini_native`、`google`、`google_ai`、`google_gemini` |
+| `compatible` | `compatible` |
 
 默认 URL：
 
@@ -167,6 +170,9 @@ Service 侧还会按请求路径识别协议：
 | `codex` | `https://api.openai.com/v1` |
 | `claude` | `https://api.anthropic.com/v1` |
 | `gemini` | `https://generativelanguage.googleapis.com` |
+| `compatible` | `https://api.openai.com/v1` |
+
+`compatible` 会按客户端当前请求路径和请求体原样选择协议，不触发 Codex 专用传输改写，也不会把 Responses 请求桥接成 Claude Messages。为确保不同协议都能保留各自路径，使用该类型时应关闭自定义 action。
 
 注意：请求转发时会保留 `url` 的路径前缀，然后追加客户端原始路径或自定义 action。也就是说，如果 `url` 写成 `https://api.example.com/v1`，客户端又请求 `/v1/chat/completions`，最终会变成 `https://api.example.com/v1/v1/chat/completions`。生产配置建议：
 

@@ -1837,7 +1837,7 @@ fn ensure_profile_dir_valid(profile_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_profile_dir(codex_home: Option<&str>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_profile_dir(codex_home: Option<&str>) -> Result<PathBuf, String> {
     if let Some(input) = codex_home.map(str::trim).filter(|value| !value.is_empty()) {
         return Ok(expand_home_prefix(input));
     }

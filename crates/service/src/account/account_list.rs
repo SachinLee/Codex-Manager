@@ -92,9 +92,10 @@ impl From<&Account> for AccountSummaryParts {
 pub(crate) fn read_accounts() -> Result<AccountListResult, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
     let db_path = std::env::var("CODEXMANAGER_DB_PATH").unwrap_or_else(|_| "<unset>".to_string());
-    let accounts = storage
+    let mut accounts = storage
         .list_account_summary_rows()
         .map_err(|err| format!("list accounts failed: {err}"))?;
+    resolve_generated_import_labels(&storage, &mut accounts);
     let total = accounts.len() as i64;
     let context = build_account_summary_context_from_rows(&storage, accounts)?;
     let items = context.items;
@@ -117,6 +118,34 @@ pub(crate) fn read_accounts() -> Result<AccountListResult, String> {
         page: 1,
         page_size,
     })
+}
+
+fn resolve_generated_import_labels(
+    storage: &codexmanager_core::storage::Storage,
+    accounts: &mut [AccountListSummaryRow],
+) {
+    for account in accounts {
+        if !super::import::is_generated_import_label(&account.label) {
+            continue;
+        }
+        let token = match storage.find_token_by_account_id(&account.id) {
+            Ok(Some(token)) => token,
+            Ok(None) => continue,
+            Err(err) => {
+                log::warn!(
+                    "event=account_list_import_label_resolution_failed account_id={} error={}",
+                    account.id,
+                    err
+                );
+                continue;
+            }
+        };
+        if let Some(label) =
+            super::import::token_display_label(&token.id_token, &token.access_token)
+        {
+            account.label = label;
+        }
+    }
 }
 
 /// 函数 `to_account_summary_with_reason`

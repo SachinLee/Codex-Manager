@@ -1,5 +1,5 @@
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, HeaderMap, Request as HttpRequest, Response, StatusCode};
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -427,7 +427,11 @@ async fn proxy_test_upload(
 /// 返回函数执行结果
 fn build_front_proxy_app(state: ProxyState) -> Router {
     Router::new()
-        .route("/rpc", post(crate::http::rpc_endpoint::handle_rpc_http))
+        .route(
+            "/rpc",
+            post(crate::http::rpc_endpoint::handle_rpc_http)
+                .layer(DefaultBodyLimit::max(crate::RPC_BODY_LIMIT_BYTES)),
+        )
         .route(
             "/events/usage-refresh",
             get(crate::http::usage_events::handle_usage_refresh_events_http),

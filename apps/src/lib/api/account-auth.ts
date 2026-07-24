@@ -4,6 +4,7 @@ import type {
   ChatgptAuthTokensRefreshResult,
   CurrentAccessTokenAccount,
   CurrentAccessTokenAccountReadResult,
+  LoginStatus,
   LoginStatusResult,
 } from "../../types";
 
@@ -56,8 +57,18 @@ function readNullableStringField(payload: unknown, key: string): string | null {
 }
 
 export function readLoginStatusResult(payload: unknown): LoginStatusResult {
+  const rawStatus = readStringField(payload, "status").toLowerCase();
+  const status: LoginStatus =
+    rawStatus === "pending" ||
+    rawStatus === "completing" ||
+    rawStatus === "success" ||
+    rawStatus === "failed" ||
+    rawStatus === "cancelled" ||
+    rawStatus === "expired"
+      ? rawStatus
+      : "unknown";
   return {
-    status: readStringField(payload, "status"),
+    status,
     error: readStringField(payload, "error"),
   };
 }

@@ -25,6 +25,7 @@ url = "2"
 webbrowser = "0.8"
 urlencoding = "2"
 log = "0.4"
+libc = "0.2"
 env_logger = "0.11"
 crossbeam-channel = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -35,6 +36,7 @@ zstd = "0.13"
 os_info = "3.12.0"
 rhai = "1"
 sysinfo = "0.30"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 rcgen = "0.13"

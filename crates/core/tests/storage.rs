@@ -1006,6 +1006,163 @@ fn storage_login_session_roundtrip() {
     assert_eq!(loaded.workspace_id.as_deref(), Some("org_123"));
 }
 
+#[test]
+fn storage_login_session_terminal_transitions_are_guarded_and_clear_verifier() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let insert_pending = |login_id: &str| {
+        storage
+            .insert_login_session(&codexmanager_core::storage::LoginSession {
+                login_id: login_id.to_string(),
+                code_verifier: "sensitive-verifier".to_string(),
+                state: login_id.to_string(),
+                status: "pending".to_string(),
+                error: None,
+                workspace_id: None,
+                note: None,
+                tags: None,
+                group_name: None,
+                created_at: now_ts(),
+                updated_at: now_ts(),
+            })
+            .expect("insert pending login session");
+    };
+
+    insert_pending("login-cancelled");
+    assert!(storage
+        .cancel_login_session("login-cancelled")
+        .expect("cancel pending session"));
+    assert!(!storage
+        .claim_login_session_for_completion("login-cancelled")
+        .expect("cancelled session cannot be claimed"));
+    assert!(!storage
+        .finish_login_session("login-cancelled", "success", None)
+        .expect("late success cannot overwrite cancellation"));
+    assert!(!storage
+        .update_login_session_code_verifier_if_pending("login-cancelled", "late-verifier")
+        .expect("late verifier cannot be stored"));
+    let cancelled = storage
+        .get_login_session("login-cancelled")
+        .expect("load cancelled session")
+        .expect("cancelled session exists");
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(cancelled.code_verifier.is_empty());
+
+    insert_pending("login-failed");
+    assert!(storage
+        .fail_pending_login_session("login-failed", Some("access denied"))
+        .expect("fail pending session"));
+    let failed = storage
+        .get_login_session("login-failed")
+        .expect("load failed session")
+        .expect("failed session exists");
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.error.as_deref(), Some("access denied"));
+    assert!(failed.code_verifier.is_empty());
+
+    insert_pending("login-completing");
+    assert!(storage
+        .update_login_session_code_verifier_if_pending("login-completing", "device-verifier")
+        .expect("store verifier while pending"));
+    assert!(storage
+        .claim_login_session_for_completion("login-completing")
+        .expect("claim pending session"));
+    assert!(!storage
+        .cancel_login_session("login-completing")
+        .expect("completion owner wins cancellation race"));
+    assert!(!storage
+        .fail_pending_login_session("login-completing", Some("late callback failure"))
+        .expect("completion owner wins callback failure race"));
+    assert!(storage
+        .finish_login_session("login-completing", "success", None)
+        .expect("finish claimed session"));
+    assert!(!storage
+        .finish_login_session("login-completing", "failed", Some("late failure"))
+        .expect("terminal status cannot be overwritten"));
+    let completed = storage
+        .get_login_session("login-completing")
+        .expect("load completed session")
+        .expect("completed session exists");
+    assert_eq!(completed.status, "success");
+    assert!(completed.code_verifier.is_empty());
+}
+
+#[test]
+fn storage_completion_claim_wins_concurrent_callback_failure() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let db_path = std::env::temp_dir().join(format!(
+        "codexmanager-login-race-{}-{unique}.db",
+        std::process::id()
+    ));
+    let storage = Storage::open(&db_path).expect("open race database");
+    storage.init().expect("init race database");
+    storage
+        .insert_login_session(&codexmanager_core::storage::LoginSession {
+            login_id: "login-race".to_string(),
+            code_verifier: "sensitive-verifier".to_string(),
+            state: "login-race".to_string(),
+            status: "pending".to_string(),
+            error: None,
+            workspace_id: None,
+            note: None,
+            tags: None,
+            group_name: None,
+            created_at: now_ts(),
+            updated_at: now_ts(),
+        })
+        .expect("insert race session");
+    drop(storage);
+
+    let (claimed_tx, claimed_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+    let owner_path = db_path.clone();
+    let owner = std::thread::spawn(move || {
+        let storage = Storage::open(owner_path).expect("open completion owner database");
+        let claimed = storage
+            .claim_login_session_for_completion("login-race")
+            .expect("claim completion");
+        claimed_tx.send(claimed).expect("publish completion claim");
+        finish_rx.recv().expect("wait to finish completion");
+        storage
+            .finish_login_session("login-race", "success", None)
+            .expect("finish completion")
+    });
+
+    assert!(claimed_rx.recv().expect("receive completion claim"));
+    let callback_path = db_path.clone();
+    let callback = std::thread::spawn(move || {
+        let storage = Storage::open(callback_path).expect("open callback database");
+        storage
+            .fail_pending_login_session("login-race", Some("access denied"))
+            .expect("apply callback failure")
+    });
+    assert!(
+        !callback.join().expect("join callback worker"),
+        "an OAuth error callback must not overwrite a claimed completion"
+    );
+
+    finish_tx.send(()).expect("release completion owner");
+    assert!(owner.join().expect("join completion owner"));
+
+    let storage = Storage::open(&db_path).expect("reopen race database");
+    let session = storage
+        .get_login_session("login-race")
+        .expect("load race session")
+        .expect("race session exists");
+    assert_eq!(session.status, "success");
+    assert!(session.error.is_none());
+    assert!(session.code_verifier.is_empty());
+    drop(storage);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+}
+
 /// 函数 `storage_account_metadata_roundtrip_and_delete_cleanup`
 ///
 /// 作者: gaohongshun

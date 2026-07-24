@@ -223,9 +223,18 @@ pub(crate) fn deactivation_reason_from_message(message: &str) -> Option<&'static
 
 pub(crate) fn usage_limit_reason_from_message(message: &str) -> Option<&'static str> {
     let normalized = message.trim().to_ascii_lowercase();
+    let has_usage_limit_code = normalized
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .any(|token| {
+            matches!(
+                token,
+                "usage_limit_reached" | "usage_limit_exceeded" | "usage_limit_exhausted"
+            )
+        });
     if normalized.contains("you've hit your usage limit")
         || normalized.contains("you have hit your usage limit")
         || normalized.contains("usage limit has been reached")
+        || has_usage_limit_code
         || normalized.contains("insufficient_quota")
         || normalized.contains("quota exceeded")
         || normalized.contains("usage exhausted")

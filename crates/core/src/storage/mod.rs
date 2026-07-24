@@ -16,6 +16,7 @@ mod aggregate_apis;
 mod aggregate_apis_sql;
 mod api_key_quota_limits;
 mod api_keys;
+mod codex_skill_repositories;
 mod conversation_bindings;
 mod events;
 mod gateway_capabilities;
@@ -639,6 +640,36 @@ fn update_login_session_code_verifier_sql() -> &'static str {
     "UPDATE login_sessions SET code_verifier = ?1, updated_at = ?2 WHERE login_id = ?3"
 }
 
+fn claim_login_session_for_completion_sql() -> &'static str {
+    "UPDATE login_sessions
+     SET status = 'completing', error = NULL, updated_at = ?1
+     WHERE login_id = ?2 AND status = 'pending'"
+}
+
+fn finish_login_session_sql() -> &'static str {
+    "UPDATE login_sessions
+     SET status = ?1, error = ?2, code_verifier = '', updated_at = ?3
+     WHERE login_id = ?4 AND status IN ('pending', 'completing')"
+}
+
+fn fail_pending_login_session_sql() -> &'static str {
+    "UPDATE login_sessions
+     SET status = 'failed', error = ?1, code_verifier = '', updated_at = ?2
+     WHERE login_id = ?3 AND status = 'pending'"
+}
+
+fn cancel_login_session_sql() -> &'static str {
+    "UPDATE login_sessions
+     SET status = 'cancelled', error = NULL, code_verifier = '', updated_at = ?1
+     WHERE login_id = ?2 AND status = 'pending'"
+}
+
+fn update_login_session_code_verifier_if_pending_sql() -> &'static str {
+    "UPDATE login_sessions
+     SET code_verifier = ?1, updated_at = ?2
+     WHERE login_id = ?3 AND status = 'pending'"
+}
+
 #[derive(Debug, Clone)]
 pub struct UsageSnapshotRecord {
     pub account_id: String,
@@ -721,6 +752,50 @@ pub struct ConversationBinding {
     pub created_at: i64,
     pub updated_at: i64,
     pub last_used_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSkillRepositoryRecord {
+    pub id: String,
+    pub owner: String,
+    pub repository: String,
+    pub ref_name: String,
+    pub enabled: bool,
+    pub is_builtin: bool,
+    pub revision: Option<String>,
+    pub last_scanned_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSkillRepositoryUpsert {
+    pub id: String,
+    pub owner: String,
+    pub repository: String,
+    pub ref_name: String,
+    pub enabled: bool,
+    pub is_builtin: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSkillRepositorySkillRecord {
+    pub repository_id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    pub source_url: String,
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodexSkillRepositoryCatalogSnapshot {
+    pub repositories: Vec<CodexSkillRepositoryRecord>,
+    pub skills: Vec<CodexSkillRepositorySkillRecord>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1371,6 +1446,7 @@ pub struct ApiKeyListSummary {
     pub rotation_strategy: String,
     pub aggregate_api_id: Option<String>,
     pub account_plan_filter: Option<String>,
+    pub account_group_filter: Option<String>,
     pub aggregate_api_url: Option<String>,
     pub client_type: String,
     pub protocol_type: String,
@@ -2395,7 +2471,7 @@ impl Storage {
         )?;
         // Custom-feature bridge keeps its historical migration name so databases
         // that already applied it during the first integration continue cleanly.
-        // Main's 117-122 use different names, so both chains coexist.
+        // Main's numbered migrations use different names, so both chains coexist.
         self.ensure_model_price_rules_table()?;
         self.ensure_request_token_stats_table()?;
         self.ensure_request_pricing_snapshots_table()?;
@@ -2403,7 +2479,17 @@ impl Storage {
             "117_custom_feature_bridge",
             include_str!("../../migrations/117_custom_feature_bridge.sql"),
         )?;
+        self.apply_sql_or_compat_migration(
+            "123_api_keys_account_group_filter",
+            include_str!("../../migrations/123_api_keys_account_group_filter.sql"),
+            |s| s.ensure_api_key_account_group_filter_column(),
+        )?;
+        self.apply_sql_migration(
+            "124_codex_skill_repositories",
+            include_str!("../../migrations/124_codex_skill_repositories.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
+        self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_secrets_table()?;
         self.ensure_aggregate_api_balance_secrets_table()?;
@@ -2625,6 +2711,66 @@ impl Storage {
             (code_verifier, now_ts(), login_id),
         )?;
         Ok(())
+    }
+
+    /// Atomically claims a pending login session for token/account persistence.
+    pub fn claim_login_session_for_completion(&self, login_id: &str) -> Result<bool> {
+        let changed = self.conn.execute(
+            claim_login_session_for_completion_sql(),
+            (now_ts(), login_id),
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Moves an active login session to a terminal state and clears its PKCE verifier.
+    ///
+    /// The guarded update prevents a late completion/error from overwriting a session
+    /// that has already been cancelled or otherwise completed.
+    pub fn finish_login_session(
+        &self,
+        login_id: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            finish_login_session_sql(),
+            (status, error, now_ts(), login_id),
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Fails a session only before a completion worker has claimed ownership.
+    ///
+    /// OAuth error callbacks use this narrower transition so a second browser
+    /// callback cannot overwrite an in-flight successful completion.
+    pub fn fail_pending_login_session(&self, login_id: &str, error: Option<&str>) -> Result<bool> {
+        let changed = self.conn.execute(
+            fail_pending_login_session_sql(),
+            (error, now_ts(), login_id),
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Cancels a pending login session without racing a completion owner.
+    pub fn cancel_login_session(&self, login_id: &str) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(cancel_login_session_sql(), (now_ts(), login_id))?;
+        Ok(changed == 1)
+    }
+
+    /// Stores a verifier returned by the Device Code endpoint only while the
+    /// session is still pending.
+    pub fn update_login_session_code_verifier_if_pending(
+        &self,
+        login_id: &str,
+        code_verifier: &str,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            update_login_session_code_verifier_if_pending_sql(),
+            (code_verifier, now_ts(), login_id),
+        )?;
+        Ok(changed == 1)
     }
 
     /// 函数 `ensure_column`

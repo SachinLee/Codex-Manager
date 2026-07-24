@@ -1,5 +1,6 @@
 use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 
+use crate::RpcActor;
 use crate::{
     account_cleanup, account_delete, account_delete_many, account_export, account_import,
     account_list, account_proxy, account_update, account_warmup, auth_account, auth_login,
@@ -17,7 +18,7 @@ use crate::{
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonRpcResponse> {
     let result = match req.method.as_str() {
         "account/list" => super::value_or_error(account_list::read_accounts()),
         "account/delete" => {
@@ -65,23 +66,35 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let preferred = super::bool_param(req, "preferred");
             let status = super::string_param(req, "status");
             let label = super::string_param(req, "label");
+            let has_group_name = req
+                .params
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|params| params.contains_key("groupName"));
+            let group_name = super::string_param(req, "groupName");
             let note = super::string_param(req, "note");
             let tags = super::string_param(req, "tags");
             let quota_capacity_primary_window_tokens =
                 super::i64_param(req, "quotaCapacityPrimaryWindowTokens");
             let quota_capacity_secondary_window_tokens =
                 super::i64_param(req, "quotaCapacitySecondaryWindowTokens");
-            super::ok_or_error(account_update::update_account(
-                account_id,
-                sort,
-                preferred,
-                status.as_deref(),
-                label.as_deref(),
-                note.as_deref(),
-                tags.as_deref(),
-                quota_capacity_primary_window_tokens,
-                quota_capacity_secondary_window_tokens,
-            ))
+            if has_group_name && !actor.is_admin() {
+                super::ok_or_error(Err(super::permission_denied("account/update groupName")))
+            } else {
+                super::ok_or_error(account_update::update_account(
+                    account_id,
+                    sort,
+                    preferred,
+                    status.as_deref(),
+                    label.as_deref(),
+                    group_name.as_deref(),
+                    has_group_name,
+                    note.as_deref(),
+                    tags.as_deref(),
+                    quota_capacity_primary_window_tokens,
+                    quota_capacity_secondary_window_tokens,
+                ))
+            }
         }
         "account/updateSorts" => super::value_or_error(
             account_sort_updates_param(req).and_then(account_update::update_account_sorts),
@@ -364,6 +377,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let login_id = super::str_param(req, "loginId").unwrap_or("");
             super::as_json(auth_login::login_status(login_id))
         }
+        "account/login/cancel" => {
+            let login_id = super::str_param(req, "loginId").unwrap_or("");
+            super::value_or_error(auth_login::login_cancel(login_id))
+        }
         "account/login/complete" => {
             let state = super::str_param(req, "state").unwrap_or("");
             let code = super::str_param(req, "code").unwrap_or("");
@@ -500,24 +517,47 @@ mod tests {
 
     #[test]
     fn update_sorts_rpc_rejects_malformed_updates() {
-        let missing_sort = try_handle(&rpc_request(
-            "account/updateSorts",
-            serde_json::json!({ "updates": [{ "accountId": "acc-a" }] }),
-        ))
+        let actor = RpcActor::system_admin();
+        let missing_sort = try_handle(
+            &rpc_request(
+                "account/updateSorts",
+                serde_json::json!({ "updates": [{ "accountId": "acc-a" }] }),
+            ),
+            &actor,
+        )
         .expect("response");
         assert_eq!(
             error_message(&missing_sort),
             "account sort update at index 0 missing sort"
         );
 
-        let missing_account_id = try_handle(&rpc_request(
-            "account/updateSorts",
-            serde_json::json!({ "updates": [{ "sort": 1 }] }),
-        ))
+        let missing_account_id = try_handle(
+            &rpc_request(
+                "account/updateSorts",
+                serde_json::json!({ "updates": [{ "sort": 1 }] }),
+            ),
+            &actor,
+        )
         .expect("response");
         assert_eq!(
             error_message(&missing_account_id),
             "account sort update at index 0 missing accountId"
+        );
+    }
+
+    #[test]
+    fn member_cannot_change_account_group_name() {
+        let response = try_handle(
+            &rpc_request(
+                "account/update",
+                serde_json::json!({ "accountId": "acc-a", "groupName": "team-a" }),
+            ),
+            &RpcActor::from_parts(Some(crate::ROLE_MEMBER), Some("member-a")),
+        )
+        .expect("response");
+        assert_eq!(
+            error_message(&response),
+            "permission_denied: account/update groupName"
         );
     }
 }

@@ -30,6 +30,7 @@ fn account_update_payload(
     preferred: Option<bool>,
     status: Option<String>,
     label: Option<String>,
+    group_name: Option<String>,
     note: Option<String>,
     tags: Option<String>,
     quota_capacity_primary_window_tokens: Option<i64>,
@@ -51,6 +52,12 @@ fn account_update_payload(
     }
     if let Some(value) = label {
         params.insert("label".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = group_name {
+        params.insert(
+            "groupName".to_string(),
+            serde_json::json!(value.trim()),
+        );
     }
     if let Some(value) = note {
         params.insert("note".to_string(), serde_json::json!(value));
@@ -200,6 +207,7 @@ pub async fn service_account_update(
     preferred: Option<bool>,
     status: Option<String>,
     label: Option<String>,
+    group_name: Option<String>,
     note: Option<String>,
     tags: Option<String>,
     quota_capacity_primary_window_tokens: Option<i64>,
@@ -214,6 +222,7 @@ pub async fn service_account_update(
             preferred,
             status,
             label,
+            group_name,
             note,
             tags,
             quota_capacity_primary_window_tokens,
@@ -460,6 +469,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("payload");
         let expected = serde_json::json!({
@@ -485,6 +495,7 @@ mod tests {
         let actual = account_update_payload(
             "acc-1".to_string(),
             Some(5),
+            None,
             None,
             None,
             None,
@@ -524,6 +535,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("payload");
         let expected = serde_json::json!({
@@ -544,6 +556,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("payload");
         let expected = serde_json::json!({
@@ -551,5 +564,38 @@ mod tests {
             "preferred": true
         });
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn account_update_payload_distinguishes_omitted_and_cleared_group_name() {
+        let omitted = account_update_payload(
+            "acc-1".to_string(),
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("omitted payload");
+        assert!(omitted.get("groupName").is_none());
+
+        let cleared = account_update_payload(
+            "acc-1".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some("   ".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("cleared payload");
+        assert_eq!(cleared.get("groupName").and_then(|value| value.as_str()), Some(""));
     }
 }

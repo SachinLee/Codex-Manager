@@ -1355,7 +1355,9 @@ fn aggregate_api_provider_type_condition(provider_type: &str) -> Option<(String,
         return None;
     }
 
-    const CLAUDE_ALIASES: &[&str] = &["claude", "anthropic", "anthropic_native", "claude_code"];
+    const CLAUDE_NATIVE_ALIASES: &[&str] =
+        &["claude", "anthropic", "anthropic_native", "claude_code"];
+    const COMPATIBLE_PROVIDER: &str = "compatible";
     const GEMINI_ALIASES: &[&str] = &[
         "gemini",
         "gemini_native",
@@ -1366,13 +1368,16 @@ fn aggregate_api_provider_type_condition(provider_type: &str) -> Option<(String,
 
     match provider_type.as_str() {
         "claude" | "anthropic" | "anthropic_native" | "claude_code" => {
-            let placeholders = vec!["?"; CLAUDE_ALIASES.len()].join(", ");
+            let aliases = CLAUDE_NATIVE_ALIASES
+                .iter()
+                .copied()
+                .chain(std::iter::once(COMPATIBLE_PROVIDER))
+                .map(|value| Value::Text(value.to_string()))
+                .collect::<Vec<_>>();
+            let placeholders = vec!["?"; aliases.len()].join(", ");
             Some((
                 format!("{AGGREGATE_API_NORMALIZED_PROVIDER_SQL} IN ({placeholders})"),
-                CLAUDE_ALIASES
-                    .iter()
-                    .map(|value| Value::Text((*value).to_string()))
-                    .collect(),
+                aliases,
             ))
         }
         "gemini" | "gemini_native" | "google" | "google_ai" | "google_gemini" => {
@@ -1385,8 +1390,12 @@ fn aggregate_api_provider_type_condition(provider_type: &str) -> Option<(String,
                     .collect(),
             ))
         }
+        COMPATIBLE_PROVIDER => Some((
+            format!("{AGGREGATE_API_NORMALIZED_PROVIDER_SQL} = ?"),
+            vec![Value::Text(COMPATIBLE_PROVIDER.to_string())],
+        )),
         _ => {
-            let aliases = CLAUDE_ALIASES
+            let aliases = CLAUDE_NATIVE_ALIASES
                 .iter()
                 .chain(GEMINI_ALIASES.iter())
                 .map(|value| Value::Text((*value).to_string()))
@@ -2361,13 +2370,23 @@ mod supplier_model_tests {
         claude.provider_type = "claude".to_string();
         let mut gemini = sample_aggregate_api("ag-provider-gemini", now);
         gemini.provider_type = "google-gemini".to_string();
+        let mut compatible = sample_aggregate_api("ag-provider-compatible", now);
+        compatible.provider_type = "compatible".to_string();
+        compatible.sort = 2;
         let mut codex_first = sample_aggregate_api("ag-provider-codex-first", now);
         codex_first.provider_type = " openai-compatible ".to_string();
         codex_first.status = " ACTIVE ".to_string();
         codex_first.sort = 0;
         codex_first.created_at = now.saturating_add(10);
 
-        for api in [&codex_second, &disabled, &claude, &gemini, &codex_first] {
+        for api in [
+            &codex_second,
+            &disabled,
+            &claude,
+            &gemini,
+            &compatible,
+            &codex_first,
+        ] {
             storage.insert_aggregate_api(api).expect("insert api");
         }
 
@@ -2382,8 +2401,39 @@ mod supplier_model_tests {
             ids,
             vec![
                 "ag-provider-codex-first".to_string(),
-                "ag-provider-codex-second".to_string()
+                "ag-provider-codex-second".to_string(),
+                "ag-provider-compatible".to_string()
             ]
+        );
+        assert_eq!(
+            storage
+                .list_active_aggregate_apis_by_provider_type("claude")
+                .expect("list Claude-compatible aggregate apis")
+                .into_iter()
+                .map(|api| api.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "ag-provider-claude".to_string(),
+                "ag-provider-compatible".to_string()
+            ]
+        );
+        assert_eq!(
+            storage
+                .list_active_aggregate_apis_by_provider_type("gemini")
+                .expect("list Gemini aggregate apis")
+                .into_iter()
+                .map(|api| api.id)
+                .collect::<Vec<_>>(),
+            vec!["ag-provider-gemini".to_string()]
+        );
+        assert_eq!(
+            storage
+                .list_active_aggregate_apis_by_provider_type("compatible")
+                .expect("list universal aggregate apis")
+                .into_iter()
+                .map(|api| api.id)
+                .collect::<Vec<_>>(),
+            vec!["ag-provider-compatible".to_string()]
         );
         assert!(storage
             .list_active_aggregate_apis_by_provider_type(" ")

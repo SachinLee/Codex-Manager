@@ -36,6 +36,10 @@
 
 批量导入会自动识别常见字段名。`/api/auth/session` 的整段 JSON 通常包含 `accessToken`，软件会按兼容格式解析；如果 JSON 中还带有 `refreshToken`、`idToken` 或账号 ID 信息，也会一并使用。
 
+只有有效 `accessToken` 也可以导入。首次请求 Codex 上游或执行账号预热时，CodexManager 会按需注册并持久化该账号缺少的 AgentIdentity，随后使用 AgentAssertion 鉴权；不需要从 `/api/auth/session` 手工寻找或填写 AgentIdentity。软件也能识别完整的嵌套 `agent_identity` / `agentIdentity` 对象及 snake_case、camelCase 字段，但不会把单独的 JWT 字符串当成可信的 AgentIdentity 记录。
+
+账号显示名会优先读取 JWT 的 OpenAI profile 邮箱，其次读取会话 JSON 中的 `user.email` / `user.name`。这些字段只用于显示，不参与权限判断；已经手工修改的账号名称不会被自动覆盖。
+
 可识别的常见字段包括：
 
 ```json
@@ -70,9 +74,15 @@
 
 通常是没有复制完整 JSON，或复制时带入了浏览器额外文本。重新打开页面，使用 `Ctrl+A`、`Ctrl+C` 复制整页内容后再粘贴。
 
-### 导入成功但后续不可用
+### 导入后请求仍返回 401 Unauthorized
 
-如果导入内容只有 `accessToken` 而没有 `refreshToken`，token 过期后可能无法自动续期。此时重新复制 `/api/auth/session` 再导入，或改用软件内置“登录授权”。
+先确认已经更新并重启到包含 AgentIdentity 自动注册修复的 CodexManager。当前版本会为仅含有效 `accessToken` 的账号按需补齐 AgentIdentity；如果仍失败，再检查 accessToken 是否已经过期，以及代理或网络是否拦截了 AgentIdentity 注册请求。
+
+如果导入内容没有 `refreshToken`，accessToken 过期后仍无法自动续期。此时重新复制 `/api/auth/session` 再导入，或改用软件内置“登录授权”。
+
+### 提示 model is not supported
+
+这是当前 ChatGPT 账号计划不具备该模型权限，不是 token 或 AgentIdentity 鉴权失败。本地模型目录中存在某个模型，不代表当前账号一定能调用它；请改用该账号上游实际允许的模型。
 
 ### 能不能把这段 JSON 发给别人帮忙排查
 

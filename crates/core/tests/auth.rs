@@ -70,6 +70,19 @@ fn parse_id_token_claims_extracts_email_and_sub() {
     let claims = codexmanager_core::auth::parse_id_token_claims(token).expect("claims");
     assert_eq!(claims.sub, "user-1");
     assert_eq!(claims.email.as_deref(), Some("test@example.com"));
+    assert_eq!(claims.resolved_email(), Some("test@example.com"));
+}
+
+#[test]
+fn parse_id_token_claims_extracts_openai_profile_identity() {
+    let token = jwt_with_json(
+        r#"{"sub":"user-1","email":"   ","https://api.openai.com/profile":{"email":"session@example.com","name":"Session User"}}"#,
+    );
+    let claims = codexmanager_core::auth::parse_id_token_claims(&token).expect("claims");
+
+    assert_eq!(claims.email.as_deref(), Some("   "));
+    assert_eq!(claims.resolved_email(), Some("session@example.com"));
+    assert_eq!(claims.resolved_name(), Some("Session User"));
 }
 
 #[test]

@@ -591,6 +591,10 @@ fn refresh_usage_for_token(
         .unwrap_or_else(|_| "https://chatgpt.com".to_string());
 
     let mut current = token.clone();
+    let account = storage
+        .find_account_by_id(&current.account_id)
+        .map_err(|err| format!("load account for usage refresh failed: {err}"))?
+        .ok_or_else(|| "account disappeared before usage refresh".to_string())?;
     let mut resolved_workspace_id = workspace_id.map(|v| v.to_string());
     let agent_identity = storage
         .find_account_agent_identity(&current.account_id)
@@ -632,19 +636,25 @@ fn refresh_usage_for_token(
     if agent_identity.is_some() {
         let registration_client = crate::gateway::upstream_client_for_account(&current.account_id)
             .map_err(|err| format!("build agent task registration client failed: {err}"))?;
-        let authorization = crate::agent_identity::resolve_account_agent_identity_authorization(
-            storage,
-            &registration_client,
-            &current.account_id,
-        )?
-        .ok_or_else(|| "agent identity disappeared before usage refresh".to_string())?;
+        let authorization =
+            crate::agent_identity::resolve_or_bootstrap_account_agent_identity_authorization(
+                storage,
+                &registration_client,
+                &account,
+                &current,
+            )?
+            .ok_or_else(|| "agent identity disappeared before usage refresh".to_string())?;
         let failed_task_id = authorization.task_id.clone();
+        let authorization_scope_id = authorization
+            .account_scope_id
+            .as_deref()
+            .or(resolved_workspace_id.as_deref());
         let first = refresh_account_snapshot(
             storage,
             &current.account_id,
             &base_url,
             &authorization.value,
-            resolved_workspace_id.as_deref(),
+            authorization_scope_id,
             None,
             authorization.is_fedramp,
         );
@@ -654,7 +664,8 @@ fn refresh_usage_for_token(
                     crate::agent_identity::recover_account_agent_identity_authorization(
                         storage,
                         &registration_client,
-                        &current.account_id,
+                        &account,
+                        &current,
                         &failed_task_id,
                     )?
                     .ok_or_else(|| {
@@ -665,7 +676,10 @@ fn refresh_usage_for_token(
                     &current.account_id,
                     &base_url,
                     &recovered.value,
-                    resolved_workspace_id.as_deref(),
+                    recovered
+                        .account_scope_id
+                        .as_deref()
+                        .or(resolved_workspace_id.as_deref()),
                     None,
                     recovered.is_fedramp,
                 )

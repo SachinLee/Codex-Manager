@@ -157,7 +157,7 @@ export function WebPasswordModal({ open, onOpenChange }: WebPasswordModalProps) 
     return () => {
       cancelled = true;
     };
-  }, [canAccessManagementRpc, open, setAppSettings]);
+  }, [canAccessManagementRpc, open, setAppSettings, t]);
 
   /**
    * 函数 `handleSave`

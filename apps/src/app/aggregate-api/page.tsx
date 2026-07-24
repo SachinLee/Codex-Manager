@@ -54,6 +54,7 @@ import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
+import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
@@ -69,6 +70,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
   claude: "Claude",
   gemini: "Gemini",
+  compatible: "Codex + Claude",
 };
 
 function parseBalanceSnapshot(api: AggregateApi): AggregateApiBalanceSnapshot | null {
@@ -167,7 +169,9 @@ export default function AggregateApiPage() {
     () =>
       providerFilter === "all"
         ? aggregateApis
-        : aggregateApis.filter((api) => api.providerType === providerFilter),
+        : aggregateApis.filter((api) =>
+            aggregateApiProviderMatchesFilter(api.providerType, providerFilter),
+          ),
     [aggregateApis, providerFilter],
   );
   const selectedCapabilityApi = useMemo(
@@ -333,6 +337,9 @@ export default function AggregateApiPage() {
                   <SelectItem value="codex">Codex</SelectItem>
                   <SelectItem value="claude">Claude</SelectItem>
                   <SelectItem value="gemini">Gemini</SelectItem>
+                  <SelectItem value="compatible">
+                    {t("通用兼容（Codex + Claude）")}
+                  </SelectItem>
                 </SelectGroup></SelectContent>
               </Select>
             </div>
@@ -381,7 +388,13 @@ export default function AggregateApiPage() {
                               {t("创建时间")}: {formatTsFromSeconds(api.createdAt, "-")}
                             </div>
                           </TableCell>
-                          <TableCell><Badge variant="secondary">{PROVIDER_LABELS[api.providerType] || api.providerType}</Badge></TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">
+                              {api.providerType === "compatible"
+                                ? t("通用兼容（Codex + Claude）")
+                                : PROVIDER_LABELS[api.providerType] || api.providerType}
+                            </Badge>
+                          </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-1">
                               <code className="max-w-[160px] truncate rounded border bg-muted/40 px-2 py-1 text-[10px]">

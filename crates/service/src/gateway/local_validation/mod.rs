@@ -24,6 +24,7 @@ pub(super) struct LocalValidationResult {
     pub(super) protocol_type: String,
     pub(super) rotation_strategy: String,
     pub(super) aggregate_api_id: Option<String>,
+    pub(super) account_group_filter: Option<String>,
     pub(super) account_plan_filter: Option<String>,
     pub(super) response_adapter: super::ResponseAdapter,
     pub(super) gemini_stream_output_mode: Option<super::GeminiStreamOutputMode>,

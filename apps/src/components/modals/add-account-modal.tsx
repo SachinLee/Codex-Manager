@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -15,12 +15,22 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { accountClient } from "@/lib/api/account-client";
+import { appClient } from "@/lib/api/app-client";
 import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
+import type { LoginType } from "@/types";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -40,6 +50,10 @@ interface AddAccountModalProps {
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
+
+const BROWSER_LOGIN_TIMEOUT_MS = 2 * 60 * 1000;
+const DEVICE_CODE_LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
+const LOGIN_COMPLETION_GRACE_MS = 5 * 60 * 1000;
 
 /**
  * 函数 `pickImportTokenField`
@@ -241,12 +255,17 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
   const [loginHint, setLoginHint] = useState("");
   const queryClient = useQueryClient();
   const loginPollTokenRef = useRef(0);
+  const activeLoginIdRef = useRef("");
+  const previousOpenRef = useRef(open);
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
 
   // Login Form
+  const [loginType, setLoginType] = useState<LoginType>("chatgpt");
+  const [groupName, setGroupName] = useState("");
   const [tags, setTags] = useState("");
   const [note, setNote] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
+  const [deviceUserCode, setDeviceUserCode] = useState("");
   const [manualCallback, setManualCallback] = useState("");
 
   // Bulk Import
@@ -255,18 +274,55 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
     ? t("服务未连接，账号授权与导入暂不可用；连接恢复后可继续操作。")
     : t("当前运行环境暂不支持账号管理。");
 
-  const resetModalState = useCallback(() => {
+  const cancelLoginSession = useCallback((loginId: string) => {
+    if (!loginId) return;
+    void accountClient.cancelLogin(loginId).catch(() => undefined);
+  }, []);
+
+  const stopActiveLogin = useCallback(() => {
     loginPollTokenRef.current += 1;
-    setActiveTab("login");
+    const loginId = activeLoginIdRef.current;
+    activeLoginIdRef.current = "";
+    if (loginId) {
+      cancelLoginSession(loginId);
+    }
     setIsLoading(false);
     setIsPollingLogin(false);
+  }, [cancelLoginSession]);
+
+  const resetModalState = useCallback(() => {
+    stopActiveLogin();
+    setActiveTab("login");
+    setIsLoading(false);
     setLoginHint("");
+    setLoginType("chatgpt");
+    setGroupName("");
     setTags("");
     setNote("");
     setLoginUrl("");
+    setDeviceUserCode("");
     setManualCallback("");
     setBulkContent("");
-  }, []);
+  }, [stopActiveLogin]);
+
+  useEffect(() => {
+    if (previousOpenRef.current && !open) {
+      resetModalState();
+    }
+    previousOpenRef.current = open;
+  }, [open, resetModalState]);
+
+  useEffect(
+    () => () => {
+      loginPollTokenRef.current += 1;
+      const loginId = activeLoginIdRef.current;
+      activeLoginIdRef.current = "";
+      if (loginId) {
+        cancelLoginSession(loginId);
+      }
+    },
+    [cancelLoginSession],
+  );
 
   /**
    * 函数 `invalidateLoginQueries`
@@ -310,6 +366,31 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       resetModalState();
     }
     onOpenChange(nextOpen);
+  };
+
+  const handleTabChange = (nextTab: string) => {
+    if (activeTab === "login" && nextTab !== "login") {
+      stopActiveLogin();
+      setLoginHint("");
+      setLoginUrl("");
+      setDeviceUserCode("");
+    }
+    setActiveTab(nextTab);
+  };
+
+  const handleLoginTypeChange = (nextLoginType: string | null) => {
+    if (nextLoginType !== "chatgpt" && nextLoginType !== "chatgptDeviceCode") {
+      return;
+    }
+    if (nextLoginType === loginType) {
+      return;
+    }
+    stopActiveLogin();
+    setLoginType(nextLoginType);
+    setLoginHint("");
+    setLoginUrl("");
+    setDeviceUserCode("");
+    setManualCallback("");
   };
 
   /**
@@ -356,12 +437,22 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
     throw new Error(lastError || t("授权已完成，但账号列表暂未同步成功"));
   };
 
-  const completeLoginSuccess = async (message: string) => {
+  const completeLoginSuccess = async (
+    message: string,
+    operationToken: number,
+  ): Promise<boolean> => {
     await syncLoggedInAccountToList();
+    if (operationToken !== loginPollTokenRef.current) {
+      return false;
+    }
     await invalidateLoginQueries();
+    if (operationToken !== loginPollTokenRef.current) {
+      return false;
+    }
     toast.success(message);
     resetModalState();
     onOpenChange(false);
+    return true;
   };
 
   /**
@@ -403,13 +494,21 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
    * # 返回
    * 返回函数执行结果
    */
-  const waitForLogin = async (loginId: string, pendingHint?: string) => {
-    const pollToken = loginPollTokenRef.current + 1;
-    loginPollTokenRef.current = pollToken;
+  const waitForLogin = async (
+    loginId: string,
+    pollToken: number,
+    requestedLoginType: LoginType,
+    pendingHint: string,
+  ) => {
     setIsPollingLogin(true);
-    setLoginHint(pendingHint || t("已生成登录链接，正在等待授权完成..."));
+    setLoginHint(pendingHint);
 
-    const deadline = Date.now() + 2 * 60 * 1000;
+    const timeoutMs =
+      requestedLoginType === "chatgptDeviceCode"
+        ? DEVICE_CODE_LOGIN_TIMEOUT_MS
+        : BROWSER_LOGIN_TIMEOUT_MS;
+    let deadline = Date.now() + timeoutMs;
+    let completionGraceApplied = false;
     while (pollToken === loginPollTokenRef.current && Date.now() < deadline) {
       try {
         const result = await accountClient.getLoginStatus(loginId);
@@ -421,10 +520,16 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
           .trim()
           .toLowerCase();
         if (status === "success") {
+          if (activeLoginIdRef.current === loginId) {
+            activeLoginIdRef.current = "";
+          }
           setLoginHint(t("授权完成，正在同步账号列表..."));
           try {
-            await completeLoginSuccess(t("登录成功"));
+            await completeLoginSuccess(t("登录成功"), pollToken);
           } catch (error: unknown) {
+            if (pollToken !== loginPollTokenRef.current) {
+              return;
+            }
             const message =
               error instanceof Error ? error.message : String(error);
             setIsPollingLogin(false);
@@ -433,11 +538,30 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
           }
           return;
         }
-        if (status === "failed") {
-          const message = result.error || t("登录失败，请重试");
+        if (status === "completing" && !completionGraceApplied) {
+          completionGraceApplied = true;
+          deadline = Math.max(deadline, Date.now() + LOGIN_COMPLETION_GRACE_MS);
+          setLoginHint(t("授权已确认，正在完成登录..."));
+        }
+        if (
+          status === "failed" ||
+          status === "cancelled" ||
+          status === "expired"
+        ) {
+          if (activeLoginIdRef.current === loginId) {
+            activeLoginIdRef.current = "";
+          }
+          const message =
+            status === "cancelled"
+              ? t("登录已取消")
+              : status === "expired"
+                ? t("设备登录已过期，请重新生成验证码。")
+                : result.error || t("登录失败，请重试");
           setIsPollingLogin(false);
-          setLoginHint(`${t("登录失败")}：${message}`);
-          toast.error(message);
+          setLoginHint(message);
+          if (status !== "cancelled") {
+            toast.error(message);
+          }
           return;
         }
       } catch {
@@ -451,7 +575,11 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
 
     if (pollToken === loginPollTokenRef.current) {
       setIsPollingLogin(false);
-      setLoginHint(t("登录超时，请重试或使用下方手动解析回调。"));
+      setLoginHint(
+        requestedLoginType === "chatgptDeviceCode"
+          ? t("设备登录已过期，请重新生成验证码。")
+          : t("登录超时，请重试或使用下方手动解析回调。"),
+      );
     }
   };
 
@@ -472,39 +600,67 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
     if (!ensureServiceReady("开始登录授权")) {
       return;
     }
+    stopActiveLogin();
+    const operationToken = loginPollTokenRef.current;
+    const requestedLoginType = loginType;
     setIsLoading(true);
     setLoginHint("");
+    setLoginUrl("");
+    setDeviceUserCode("");
     try {
       const result = await accountClient.startLogin({
+        loginType: requestedLoginType,
+        openBrowser: requestedLoginType === "chatgpt",
         tags: tags
           .split(",")
           .map((t) => t.trim())
           .filter(Boolean),
+        groupName: groupName.trim() || null,
         note,
       });
-      setLoginUrl(result.authUrl || result.verificationUrl || "");
-      const pendingHint = result.userCode
-        ? `${t("设备验证码")}：${result.userCode}，${t("正在等待授权完成...")}`
-        : t("已生成登录链接，正在等待授权完成...");
-      if (result.userCode) {
-        setLoginHint(`${t("设备验证码")}：${result.userCode}`);
+      if (operationToken !== loginPollTokenRef.current) {
+        cancelLoginSession(result.loginId);
+        return;
       }
+
+      if (result.type !== requestedLoginType || !result.loginId) {
+        cancelLoginSession(result.loginId);
+        throw new Error(t("服务返回了无效的登录任务，请重试。"));
+      }
+
+      activeLoginIdRef.current = result.loginId;
+      const isDeviceCode = result.type === "chatgptDeviceCode";
+      const nextLoginUrl = isDeviceCode
+        ? result.verificationUrl
+        : result.authUrl;
+      const nextUserCode = isDeviceCode ? result.userCode : "";
+      setLoginUrl(nextLoginUrl);
+      setDeviceUserCode(nextUserCode);
+      const pendingHint = isDeviceCode
+        ? t("验证码有效期为 15 分钟，正在等待授权完成...")
+        : t("已生成登录链接，正在等待授权完成...");
       toast.success(
-        result.userCode
+        isDeviceCode
           ? t("已生成设备登录信息，请按提示完成授权")
           : t("已生成登录链接，请在浏览器中完成授权"),
       );
-      if (result.loginId) {
-        void waitForLogin(result.loginId, pendingHint);
-      } else {
-        setLoginHint(t("未返回登录任务编号，请完成授权后使用手动解析。"));
-      }
+      void waitForLogin(
+        result.loginId,
+        operationToken,
+        requestedLoginType,
+        pendingHint,
+      );
     } catch (err: unknown) {
+      if (operationToken !== loginPollTokenRef.current) {
+        return;
+      }
       toast.error(
         `${t("启动登录失败")}: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
-      setIsLoading(false);
+      if (operationToken === loginPollTokenRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -529,6 +685,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       toast.error(t("请先粘贴回调链接"));
       return;
     }
+    loginPollTokenRef.current += 1;
+    const operationToken = loginPollTokenRef.current;
+    setIsPollingLogin(false);
     setIsLoading(true);
     setLoginHint(t("正在解析回调..."));
     try {
@@ -538,9 +697,16 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       const redirectUri = `${url.origin}${url.pathname}`;
 
       await accountClient.completeLogin(state, code, redirectUri);
+      if (operationToken !== loginPollTokenRef.current) {
+        return;
+      }
+      activeLoginIdRef.current = "";
       setLoginHint(t("授权完成，正在同步账号列表..."));
-      await completeLoginSuccess(t("登录成功"));
+      await completeLoginSuccess(t("登录成功"), operationToken);
     } catch (err: unknown) {
+      if (operationToken !== loginPollTokenRef.current) {
+        return;
+      }
       setLoginHint(
         `${t("解析失败")}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -548,7 +714,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
         `${t("解析失败")}: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
-      setIsLoading(false);
+      if (operationToken === loginPollTokenRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -621,10 +789,33 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
     }
   };
 
+  const copyUserCode = async () => {
+    if (!deviceUserCode) return;
+    try {
+      await copyTextToClipboard(deviceUserCode);
+      toast.success(t("验证码已复制"));
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openLoginUrl = async () => {
+    if (!loginUrl) return;
+    try {
+      await appClient.openInBrowser(loginUrl);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="glass-card max-h-[85vh] overflow-hidden p-0 sm:max-w-[640px]">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <Tabs
+          value={activeTab}
+          onValueChange={handleTabChange}
+          className="w-full"
+        >
           <div className="shrink-0 bg-muted/20 px-6 pt-6">
             <DialogHeader className="mb-4">
               <DialogTitle className="flex items-center gap-2">
@@ -660,13 +851,60 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                 </Alert>
               ) : null}
               <div className="space-y-2">
-                <Label>{t("标签（逗号分隔）")}</Label>
-                <Input
-                  placeholder={t("例如：高频, 团队A")}
-                  value={tags}
-                  disabled={!isServiceReady}
-                  onChange={(e) => setTags(e.target.value)}
-                />
+                <Label htmlFor="account-login-type">{t("登录方式")}</Label>
+                <Select
+                  value={loginType}
+                  onValueChange={handleLoginTypeChange}
+                  disabled={!isServiceReady || isLoading}
+                >
+                  <SelectTrigger
+                    id="account-login-type"
+                    className="h-10 w-full"
+                  >
+                    <SelectValue>
+                      {(value) =>
+                        value === "chatgptDeviceCode"
+                          ? t("设备码登录")
+                          : t("浏览器登录")
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="chatgpt">{t("浏览器登录")}</SelectItem>
+                      <SelectItem value="chatgptDeviceCode">
+                        {t("设备码登录")}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {loginType === "chatgptDeviceCode"
+                    ? t(
+                        "在任意设备打开验证页并输入验证码，验证码有效期为 15 分钟。",
+                      )
+                    : t("在当前设备的浏览器中完成 ChatGPT 授权。")}
+                </p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>{t("账号分组")}</Label>
+                  <Input
+                    placeholder={t("例如：团队 A")}
+                    value={groupName}
+                    disabled={!isServiceReady}
+                    onChange={(e) => setGroupName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>{t("标签（逗号分隔）")}</Label>
+                  <Input
+                    placeholder={t("例如：高频, 团队A")}
+                    value={tags}
+                    disabled={!isServiceReady}
+                    onChange={(e) => setTags(e.target.value)}
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>{t("备注/描述")}</Label>
@@ -681,24 +919,68 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
               <div className="pt-2">
                 <Button
                   onClick={handleStartLogin}
-                  disabled={!isServiceReady || isLoading || isPollingLogin}
+                  disabled={!isServiceReady || isLoading}
                   className="w-full gap-2"
                 >
-                  <ExternalLink className="h-4 w-4" /> {t("登录授权")}
+                  <ExternalLink className="h-4 w-4" />
+                  {isPollingLogin
+                    ? t("重新开始授权")
+                    : loginType === "chatgptDeviceCode"
+                      ? t("生成设备验证码")
+                      : t("登录授权")}
                 </Button>
+                {loginType === "chatgptDeviceCode" && deviceUserCode ? (
+                  <div className="mt-3 rounded-lg border border-primary/15 bg-primary/5 p-3 animate-in fade-in zoom-in duration-300">
+                    <p className="text-xs text-muted-foreground">
+                      {t("设备验证码")}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+                      <code className="select-all font-mono text-2xl font-semibold tracking-[0.2em] text-foreground">
+                        {deviceUserCode}
+                      </code>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void copyUserCode()}
+                        className="shrink-0 gap-1.5"
+                      >
+                        <Clipboard className="h-3.5 w-3.5" />
+                        {t("复制验证码")}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
                 {loginUrl && (
-                  <div className="mt-3 p-2 rounded-lg bg-primary/5 border border-primary/10 flex items-center gap-2 animate-in fade-in zoom-in duration-300">
+                  <div className="mt-3 flex items-center gap-2 rounded-lg border border-primary/10 bg-primary/5 p-2 animate-in fade-in zoom-in duration-300">
                     <Input
                       value={loginUrl}
                       readOnly
+                      aria-label={
+                        loginType === "chatgptDeviceCode"
+                          ? t("设备验证链接")
+                          : t("登录链接")
+                      }
                       className="font-mono text-[10px] h-8 bg-transparent"
                     />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void openLoginUrl()}
+                      disabled={!loginUrl}
+                      className="h-8 shrink-0 gap-1.5 px-2"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      {loginType === "chatgptDeviceCode"
+                        ? t("打开验证页")
+                        : t("打开")}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => void copyUrl()}
                       disabled={!loginUrl}
                       className="h-8 w-8 p-0"
+                      aria-label={t("复制链接")}
                     >
                       <Clipboard className="h-3.5 w-3.5" />
                     </Button>
@@ -711,34 +993,38 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                 ) : null}
               </div>
 
-              <Separator />
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <Label className="text-xs flex items-center gap-1.5 text-muted-foreground">
-                    <Hash className="h-3 w-3" />{" "}
-                    {t("手动解析回调（当本地 48760 端口占用时）")}
-                  </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder={t(
-                        "粘贴浏览器跳转后的完整回调 URL（包含 state 和 code）",
-                      )}
-                      value={manualCallback}
-                      disabled={!isServiceReady}
-                      onChange={(e) => setManualCallback(e.target.value)}
-                      className="font-mono text-[10px] h-9"
-                    />
-                    <Button
-                      variant="secondary"
-                      onClick={handleManualCallback}
-                      disabled={!isServiceReady || isLoading}
-                      className="h-9 px-4 shrink-0"
-                    >
-                      {t("解析")}
-                    </Button>
+              {loginType === "chatgpt" ? (
+                <>
+                  <Separator />
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <Label className="text-xs flex items-center gap-1.5 text-muted-foreground">
+                        <Hash className="h-3 w-3" />{" "}
+                        {t("手动解析回调（当本地 48760 端口占用时）")}
+                      </Label>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder={t(
+                            "粘贴浏览器跳转后的完整回调 URL（包含 state 和 code）",
+                          )}
+                          value={manualCallback}
+                          disabled={!isServiceReady}
+                          onChange={(e) => setManualCallback(e.target.value)}
+                          className="font-mono text-[10px] h-9"
+                        />
+                        <Button
+                          variant="secondary"
+                          onClick={handleManualCallback}
+                          disabled={!isServiceReady || isLoading}
+                          className="h-9 px-4 shrink-0"
+                        >
+                          {t("解析")}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                </>
+              ) : null}
             </TabsContent>
 
             <TabsContent value="bulk" className="mt-0 space-y-4">

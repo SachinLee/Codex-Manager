@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -154,12 +155,17 @@ function PartnerLogo({
 
   if (imageSrc && !imageFailed) {
     return (
-      <img
-        src={imageSrc}
-        alt={fallbackLabel}
-        className="max-h-20 max-w-full object-contain"
-        onError={() => setImageFailed(true)}
-      />
+      <div className="relative h-20 w-full max-w-[180px]">
+        <Image
+          fill
+          unoptimized
+          src={imageSrc}
+          alt={fallbackLabel}
+          sizes="180px"
+          className="object-contain"
+          onError={() => setImageFailed(true)}
+        />
+      </div>
     );
   }
 
@@ -428,9 +434,11 @@ export default function AuthorPage() {
                     </p>
                   </div>
                   <div className="mt-4 overflow-hidden rounded-xl border border-border/50 bg-card/80 p-3 shadow-inner">
-                    <img
+                    <Image
                       src={item.src}
                       alt={t(item.title)}
+                      width={220}
+                      height={220}
                       className="mx-auto aspect-square w-full max-w-[220px] rounded-xl object-cover"
                     />
                   </div>
@@ -464,9 +472,11 @@ export default function AuthorPage() {
                   {t("扫码可直接添加作者微信，也可以手动搜索上面的微信号。")}
                 </p>
                 <div className="mt-4 overflow-hidden rounded-xl border border-border/50 bg-white p-3">
-                  <img
+                  <Image
                     src="/author-wechat.jpg"
                     alt={t("作者微信二维码")}
+                    width={180}
+                    height={180}
                     className="mx-auto aspect-square w-full max-w-[180px] rounded-xl object-cover"
                   />
                 </div>

@@ -104,6 +104,10 @@ fn classify_account_availability_signal_separates_usage_refresh_and_deactivation
     assert!(ws_usage_limit.should_failover);
     assert!(ws_usage_limit.should_mark_account_unavailable);
     assert!(ws_usage_limit.should_mark_default_cooldown);
+
+    let ws_usage_limit_code = analyze_gateway_error("usage_limit_reached", true);
+    assert_eq!(ws_usage_limit_code.kind, GatewayErrorKind::UsageLimit);
+    assert!(ws_usage_limit_code.should_failover);
 }
 
 /// 函数 `gateway_usage_limit_error_marks_account_limited_immediately`

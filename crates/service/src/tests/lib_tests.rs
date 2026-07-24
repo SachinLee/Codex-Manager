@@ -120,6 +120,21 @@ fn member_actor_cannot_call_admin_only_rpc() {
         "accountManager/users/list",
         "codexProfile/repairHistory",
         "codexProfile/pruneHistoryBackups",
+        "codexSkills/list",
+        "codexSkills/installZip",
+        "codexSkills/importDirectory",
+        "codexSkills/delete",
+        "codexSkills/repositoryList",
+        "codexSkills/repositoryAdd",
+        "codexSkills/repositoryDelete",
+        "codexSkills/repositoryRefresh",
+        "codexSkills/repositoryInstall",
+        "codexSkills/registrySearch",
+        "codexSkills/registryInstall",
+        "codexSkills/marketplaceList",
+        "codexSkills/marketplaceAdd",
+        "codexSkills/marketplaceRefresh",
+        "codexSkills/marketplacePluginInstall",
         "apikey/managedModelUpdateStateV2",
         "apikey/managedModelBatchUpdateStateV2",
     ] {
@@ -141,6 +156,65 @@ fn member_actor_cannot_call_admin_only_rpc() {
             .unwrap_or("");
         assert!(err.contains("permission_denied"), "{method}: {err}");
     }
+}
+
+#[test]
+fn admin_actor_can_list_codex_skills() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let codex_home = std::env::temp_dir().join(format!(
+        "codexmanager-admin-skills-rpc-{}-{nonce}",
+        std::process::id()
+    ));
+    let codex_home_string = codex_home.to_string_lossy().to_string();
+    let req = JsonRpcRequest {
+        id: 22.into(),
+        method: "codexSkills/list".to_string(),
+        params: Some(serde_json::json!({ "codexHome": codex_home_string })),
+        trace: None,
+    };
+
+    let resp = response_result(handle_request_with_actor(req, RpcActor::system_admin()));
+
+    assert!(resp.result.get("error").is_none(), "{:?}", resp.result);
+    assert_eq!(
+        resp.result
+            .get("codexHome")
+            .and_then(|value| value.as_str()),
+        Some(codex_home_string.as_str())
+    );
+    assert_eq!(
+        resp.result
+            .get("items")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(0)
+    );
+}
+
+#[test]
+fn admin_actor_can_reach_codex_skills_marketplace_rpc() {
+    let req = JsonRpcRequest {
+        id: 23.into(),
+        method: "codexSkills/marketplaceAdd".to_string(),
+        params: Some(serde_json::json!({ "source": "not-a-github-source" })),
+        trace: None,
+    };
+
+    let resp = response_result(handle_request_with_actor(req, RpcActor::system_admin()));
+    let err = resp
+        .result
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    assert!(
+        err.contains("GitHub"),
+        "unexpected response: {:?}",
+        resp.result
+    );
+    assert!(!err.contains("permission_denied"));
 }
 
 #[test]
@@ -518,6 +592,7 @@ fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
         None,
         None,
         None,
+        None,
     )
     .expect_err("image model must not be bound as a text primary model");
     assert!(create_error.contains("image-only model"));
@@ -525,6 +600,7 @@ fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
     let created = apikey_create::create_api_key(
         Some("external key".to_string()),
         Some("external-model".to_string()),
+        None,
         None,
         None,
         None,
@@ -550,6 +626,10 @@ fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
         None,
         None,
         None,
+        None,
+        true,
+        true,
+        false,
         false,
         None,
     )
@@ -612,10 +692,334 @@ fn create_owned_test_api_key(user_id: &str, name: &str, model: &str) -> String {
         None,
         None,
         None,
+        None,
     )
     .expect("create api key");
     set_api_key_owner(&created.id, "user", Some(user_id), None).expect("own api key");
     created.id
+}
+
+#[test]
+fn api_key_account_group_filter_is_admin_controlled_and_normalized() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-api-key-account-group-filter");
+    let created = apikey_create::create_api_key(
+        Some("group key".to_string()),
+        Some("external-model".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(crate::apikey_profile::ROTATION_HYBRID.to_string()),
+        None,
+        Some("plus".to_string()),
+        Some("  team-a  ".to_string()),
+        None,
+        None,
+    )
+    .expect("create grouped api key");
+    let storage = storage_helpers::open_storage().expect("open storage");
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&created.id)
+            .expect("read created group")
+            .as_deref(),
+        Some("team-a")
+    );
+    let preserved = storage
+        .find_api_key_by_id(&created.id)
+        .expect("read key after name-only update")
+        .expect("key exists");
+    assert_eq!(preserved.model_slug.as_deref(), Some("external-model"));
+    assert_eq!(
+        preserved.rotation_strategy,
+        crate::apikey_profile::ROTATION_HYBRID
+    );
+    assert_eq!(preserved.account_plan_filter.as_deref(), Some("plus"));
+
+    let name_only = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({ "id": &created.id, "name": "renamed group key" }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        name_only.result.get("error").is_none(),
+        "{:?}",
+        name_only.result
+    );
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&created.id)
+            .expect("read preserved group after omitted field")
+            .as_deref(),
+        Some("team-a")
+    );
+
+    let invalid = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({
+                "id": &created.id,
+                "name": "must not persist",
+                "rotationStrategy": "account_rotation",
+                "accountPlanFilter": "not-a-plan"
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(rpc_error(&invalid).contains("unsupported account plan filter"));
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&created.id)
+            .expect("read key after invalid update")
+            .expect("key exists")
+            .name
+            .as_deref(),
+        Some("renamed group key")
+    );
+
+    let update = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({
+                "id": &created.id,
+                "accountGroupFilter": "  team-b  "
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(update.result.get("error").is_none(), "{:?}", update.result);
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&created.id)
+            .expect("read updated group")
+            .as_deref(),
+        Some("team-b")
+    );
+    let preserved = storage
+        .find_api_key_by_id(&created.id)
+        .expect("read key after group-only update")
+        .expect("key exists");
+    assert_eq!(preserved.model_slug.as_deref(), Some("external-model"));
+    assert_eq!(
+        preserved.rotation_strategy,
+        crate::apikey_profile::ROTATION_HYBRID
+    );
+    assert_eq!(preserved.account_plan_filter.as_deref(), Some("plus"));
+
+    let clear = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({
+                "id": &created.id,
+                "accountGroupFilter": null
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(clear.result.get("error").is_none(), "{:?}", clear.result);
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&created.id)
+            .expect("read cleared group"),
+        None
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn member_api_key_updates_preserve_admin_routing_fields() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-member-api-key-routing-preserved");
+    let member = create_test_member("member-routing-preserved", None);
+    let created = apikey_create::create_api_key(
+        Some("member key".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(crate::apikey_profile::ROTATION_HYBRID.to_string()),
+        None,
+        Some("plus".to_string()),
+        Some("team-a".to_string()),
+        None,
+        None,
+    )
+    .expect("create member key");
+    set_api_key_owner(&created.id, "user", Some(&member.id), None).expect("own member key");
+    let storage = storage_helpers::open_storage().expect("open storage");
+    storage
+        .update_api_key_rotation_config(
+            &created.id,
+            crate::apikey_profile::ROTATION_HYBRID,
+            Some("aggregate-admin"),
+            Some("plus"),
+        )
+        .expect("seed admin routing config");
+
+    let response = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({
+                "id": &created.id,
+                "name": "member renamed key",
+                "rotationStrategy": "account_rotation",
+                "aggregateApiId": "aggregate-member",
+                "accountPlanFilter": "free",
+                "accountGroupFilter": "team-b"
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&member.id)),
+    ));
+    assert!(
+        response.result.get("error").is_none(),
+        "{:?}",
+        response.result
+    );
+    let stored = storage
+        .find_api_key_by_id(&created.id)
+        .expect("read member key")
+        .expect("member key exists");
+    assert_eq!(stored.name.as_deref(), Some("member renamed key"));
+    assert_eq!(
+        stored.rotation_strategy,
+        crate::apikey_profile::ROTATION_HYBRID
+    );
+    assert_eq!(stored.aggregate_api_id.as_deref(), Some("aggregate-admin"));
+    assert_eq!(stored.account_plan_filter.as_deref(), Some("plus"));
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(&created.id)
+            .expect("read preserved group")
+            .as_deref(),
+        Some("team-a")
+    );
+
+    let member_created = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/create",
+            serde_json::json!({
+                "name": "member attempted grouped key",
+                "accountGroupFilter": "team-b"
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&member.id)),
+    ));
+    let member_created_id = member_created.result["id"]
+        .as_str()
+        .expect("member-created key id");
+    assert_eq!(
+        storage
+            .find_api_key_account_group_filter(member_created_id)
+            .expect("read member-created group"),
+        None
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn account_group_name_rpc_is_admin_only_without_blocking_member_profile_updates() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-account-group-rpc-permission");
+    let storage = storage_helpers::open_storage().expect("open storage");
+    let now = codexmanager_core::storage::now_ts();
+    storage
+        .insert_account(&Account {
+            id: "acc-group-rpc".to_string(),
+            label: "group rpc".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+
+    let admin_set = response_result(handle_request_with_actor(
+        rpc_request(
+            "account/update",
+            serde_json::json!({ "accountId": "acc-group-rpc", "groupName": "  team-a  " }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        admin_set.result.get("error").is_none(),
+        "{:?}",
+        admin_set.result
+    );
+    assert_eq!(
+        storage
+            .find_account_by_id("acc-group-rpc")
+            .expect("read grouped account")
+            .expect("account exists")
+            .group_name
+            .as_deref(),
+        Some("team-a")
+    );
+
+    let member = RpcActor::from_parts(Some(ROLE_MEMBER), Some("member-profile-update"));
+    let member_sort = response_result(handle_request_with_actor(
+        rpc_request(
+            "account/update",
+            serde_json::json!({ "accountId": "acc-group-rpc", "sort": 7 }),
+        ),
+        member.clone(),
+    ));
+    assert!(
+        member_sort.result.get("error").is_none(),
+        "{:?}",
+        member_sort.result
+    );
+    let member_group = response_result(handle_request_with_actor(
+        rpc_request(
+            "account/update",
+            serde_json::json!({ "accountId": "acc-group-rpc", "groupName": null }),
+        ),
+        member,
+    ));
+    assert_eq!(
+        rpc_error(&member_group),
+        "permission_denied: account/update groupName"
+    );
+    let unchanged = storage
+        .find_account_by_id("acc-group-rpc")
+        .expect("read unchanged account")
+        .expect("account exists");
+    assert_eq!(unchanged.sort, 7);
+    assert_eq!(unchanged.group_name.as_deref(), Some("team-a"));
+
+    let admin_clear = response_result(handle_request_with_actor(
+        rpc_request(
+            "account/update",
+            serde_json::json!({ "accountId": "acc-group-rpc", "groupName": null }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert!(
+        admin_clear.result.get("error").is_none(),
+        "{:?}",
+        admin_clear.result
+    );
+    assert_eq!(
+        storage
+            .find_account_by_id("acc-group-rpc")
+            .expect("read cleared account")
+            .expect("account exists")
+            .group_name,
+        None
+    );
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 fn seed_test_catalog_model(slug: &str) {
@@ -1347,11 +1751,13 @@ fn member_dashboard_filters_to_current_user_keys() {
         None,
         None,
         None,
+        None,
     )
     .expect("create key one");
     let key_two = apikey_create::create_api_key(
         Some("member two key".to_string()),
         Some("gpt-5-mini".to_string()),
+        None,
         None,
         None,
         None,

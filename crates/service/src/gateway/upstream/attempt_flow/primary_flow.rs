@@ -27,6 +27,7 @@ pub(in crate::gateway::upstream) struct PrimaryAuthorization {
     pub(in crate::gateway::upstream) task_id: Option<String>,
     pub(in crate::gateway::upstream) uses_agent_identity: bool,
     pub(in crate::gateway::upstream) is_fedramp: bool,
+    pub(in crate::gateway::upstream) account_scope_id: Option<String>,
 }
 
 /// 函数 `resolve_chatgpt_primary_bearer`
@@ -55,20 +56,32 @@ fn resolve_chatgpt_primary_authorization(
     account: &Account,
     token: &Token,
 ) -> Result<(PrimaryAuthorization, &'static str), String> {
-    if let Some(resolved) = crate::agent_identity::resolve_account_agent_identity_authorization(
-        storage,
-        client,
-        &account.id,
-    )? {
-        return Ok((
-            PrimaryAuthorization {
-                value: resolved.value,
-                task_id: Some(resolved.task_id),
-                uses_agent_identity: true,
-                is_fedramp: resolved.is_fedramp,
-            },
-            "agent_identity",
-        ));
+    match crate::agent_identity::resolve_or_bootstrap_account_agent_identity_authorization(
+        storage, client, account, token,
+    ) {
+        Ok(Some(resolved)) => {
+            return Ok((
+                PrimaryAuthorization {
+                    value: resolved.value,
+                    task_id: Some(resolved.task_id),
+                    uses_agent_identity: true,
+                    is_fedramp: resolved.is_fedramp,
+                    account_scope_id: resolved.account_scope_id,
+                },
+                "agent_identity",
+            ));
+        }
+        Ok(None) => {}
+        Err(err) => {
+            if token.access_token.trim().is_empty() {
+                return Err(err);
+            }
+            log::warn!(
+                "event=gateway_agent_identity_resolution_failed account_id={} error={}",
+                account.id,
+                err
+            );
+        }
     }
     resolve_chatgpt_primary_bearer(token)
         .map(|access_token| {
@@ -78,6 +91,7 @@ fn resolve_chatgpt_primary_authorization(
                     task_id: None,
                     uses_agent_identity: false,
                     is_fedramp: false,
+                    account_scope_id: None,
                 },
                 "access_token",
             )
@@ -152,7 +166,7 @@ where
         body,
         is_stream,
         authorization.value.as_str(),
-        account,
+        &account_with_authorization_scope(account, &authorization),
         strip_session_affinity,
         has_more_candidates,
         &mut log_gateway_result,
@@ -205,6 +219,23 @@ where
             message,
         },
     }
+}
+
+pub(super) fn account_with_authorization_scope(
+    account: &Account,
+    authorization: &PrimaryAuthorization,
+) -> Account {
+    let mut account = account.clone();
+    if let Some(scope) = authorization
+        .account_scope_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+    {
+        account.chatgpt_account_id = Some(scope.to_string());
+        account.workspace_id = Some(scope.to_string());
+    }
+    account
 }
 
 #[cfg(test)]

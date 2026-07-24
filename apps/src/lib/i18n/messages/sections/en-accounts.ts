@@ -208,6 +208,11 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
   "用量刷新失败，请查看后台日志": "Usage refresh failed. Check backend logs.",
   "用量限制": "Usage limit",
   "留空使用计划模板": "Leave blank to use the plan template",
+  账号分组: "Account group",
+  未分组: "Ungrouped",
+  "例如：团队 A": "For example: Team A",
+  "的名称、分组、标签、备注、排序与额度池配置。":
+    "'s name, group, tags, notes, sort order, and quota pool configuration.",
   "的名称、标签、备注、排序与额度池配置。":
     "'s name, tags, notes, sort order, and quota pool configuration.",
   "确认清理": "Confirm cleanup",

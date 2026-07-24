@@ -163,6 +163,7 @@ export interface AccountsPageViewProps {
   deleteDialogState: DeleteDialogState;
   currentEditingAccount: Account | null;
   labelDraft: string;
+  groupNameDraft: string;
   tagsDraft: string;
   noteDraft: string;
   sortDraft: string;
@@ -199,6 +200,7 @@ export interface AccountsPageViewProps {
   setProxyUrlDraft: Dispatch<SetStateAction<string>>;
   setAccountEditorState: Dispatch<SetStateAction<AccountEditorState | null>>;
   setLabelDraft: Dispatch<SetStateAction<string>>;
+  setGroupNameDraft: Dispatch<SetStateAction<string>>;
   setTagsDraft: Dispatch<SetStateAction<string>>;
   setNoteDraft: Dispatch<SetStateAction<string>>;
   setSortDraft: Dispatch<SetStateAction<string>>;
@@ -289,6 +291,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     deleteDialogState,
     currentEditingAccount,
     labelDraft,
+    groupNameDraft,
     tagsDraft,
     noteDraft,
     sortDraft,
@@ -323,6 +326,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     setProxyProfileIdDraft,
     setAccountEditorState,
     setLabelDraft,
+    setGroupNameDraft,
     setTagsDraft,
     setNoteDraft,
     setSortDraft,
@@ -1448,7 +1452,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
             <DialogTitle>{t("编辑账号信息")}</DialogTitle>
             <DialogDescription>
               {accountEditorState
-                ? `${t("修改")} ${accountEditorState.accountName} ${t("的名称、标签、备注、排序与额度池配置。")}`
+                ? `${t("修改")} ${accountEditorState.accountName} ${t("的名称、分组、标签、备注、排序与额度池配置。")}`
                 : t("修改账号的基础资料。")}
             </DialogDescription>
           </DialogHeader>
@@ -1464,6 +1468,16 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 />
               </div>
               <div className="grid gap-2">
+                <Label htmlFor="account-group-input">{t("账号分组")}</Label>
+                <Input
+                  id="account-group-input"
+                  value={groupNameDraft}
+                  disabled={Boolean(isUpdatingProfileAccountId)}
+                  onChange={(event) => setGroupNameDraft(event.target.value)}
+                  placeholder={t("例如：团队 A")}
+                />
+              </div>
+              <div className="grid gap-2 sm:col-span-2">
                 <Label htmlFor="account-tags-input">
                   {t("标签（逗号分隔）")}
                 </Label>

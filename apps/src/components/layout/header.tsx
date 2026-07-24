@@ -49,7 +49,7 @@ export function Header() {
   const { canManageService, isDesktopRuntime, mode } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
-  const routeAccess = { role, mode: session?.mode ?? null };
+  const routeAccess = { role, mode: session?.mode ?? null, isDesktopRuntime };
 
   useEffect(() => {
     const current = String(serviceStatus.addr || DEFAULT_SERVICE_ADDR);

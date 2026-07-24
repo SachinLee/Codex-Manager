@@ -39,9 +39,9 @@ pub(super) use super::store::{save_persisted_app_setting, save_persisted_bool_se
 pub(super) use super::ui::{
     normalize_ui_appearance_preset, normalize_ui_locale, normalize_ui_theme,
     set_auto_start_enabled_setting, set_close_to_tray_on_close_setting,
-    set_codex_cli_guide_dismissed, set_lightweight_mode_on_close_to_tray_setting,
-    set_ui_appearance_preset, set_ui_locale, set_ui_low_transparency_enabled, set_ui_theme,
-    set_update_auto_check_enabled,
+    set_codex_cli_guide_dismissed, set_keep_window_ui_mounted_setting,
+    set_lightweight_mode_on_close_to_tray_setting, set_ui_appearance_preset, set_ui_locale,
+    set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
 };
 pub(super) use super::{normalize_optional_text, parse_bool_with_default};
 pub(super) use super::{
@@ -58,10 +58,11 @@ pub(super) use super::{
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
-    APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
-    APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY, APP_SETTING_SERVICE_ADDR_KEY,
-    APP_SETTING_UI_APPEARANCE_PRESET_KEY, APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
-    APP_SETTING_UI_LOCALE_KEY, APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
+    APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY, APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+    APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
+    APP_SETTING_SERVICE_ADDR_KEY, APP_SETTING_UI_APPEARANCE_PRESET_KEY,
+    APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY, APP_SETTING_UI_LOCALE_KEY,
+    APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
     APP_SETTING_UPDATE_AUTO_CHECK_KEY,
 };
 

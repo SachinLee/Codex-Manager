@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   Cable,
   LayoutDashboard,
@@ -9,7 +10,9 @@ import {
   Boxes,
   Database,
   Puzzle,
+  WandSparkles,
   FileText,
+  FolderKanban,
   Route,
   Settings,
   UserRound,
@@ -46,10 +49,12 @@ const NAV_ITEM_BY_PATH = new Map<TopLevelRoutePath, { icon: LucideIcon }>([
   ["/aggregate-api", { icon: Database }],
   ["/apikeys", { icon: Key }],
   ["/platform-mode", { icon: Cable }],
+  ["/projects", { icon: FolderKanban }],
   ["/models", { icon: Boxes }],
   ["/model-groups", { icon: Route }],
   ["/plugins", { icon: Puzzle }],
   ["/codex-launcher", { icon: Rocket }],
+  ["/skills", { icon: WandSparkles }],
   ["/logs", { icon: FileText }],
   ["/settings", { icon: Settings }],
   ["/proxy-settings", { icon: Globe }],
@@ -145,8 +150,8 @@ export function Sidebar() {
   const brandTitle = isSidebarOpen ? t("重新打开 Codex 引导") : "CodexManager";
   const toggleTitle = isSidebarOpen ? t("收起侧边栏") : t("展开侧边栏");
   const routeAccess = useMemo(
-    () => ({ role, mode: session?.mode ?? null }),
-    [role, session?.mode],
+    () => ({ role, mode: session?.mode ?? null, isDesktopRuntime }),
+    [isDesktopRuntime, role, session?.mode],
   );
 
   const handleNavigate = useCallback(
@@ -263,9 +268,11 @@ export function Sidebar() {
             {logoFailed ? (
               <span className="text-sm font-bold">CM</span>
             ) : (
-              <img
+              <Image
                 src="/logo.png"
                 alt="CodexManager"
+                width={40}
+                height={40}
                 className="h-full w-full object-cover"
                 onError={() => setLogoFailed(true)}
               />

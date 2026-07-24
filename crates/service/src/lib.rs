@@ -1,5 +1,7 @@
 use codexmanager_core::rpc::types::{JsonRpcMessage, JsonRpcRequest};
 
+pub const RPC_BODY_LIMIT_BYTES: usize = 24 * 1024 * 1024;
+
 mod account;
 mod account_identity;
 mod agent_identity;
@@ -12,6 +14,9 @@ mod codex_model_catalog;
 mod codex_profile;
 pub mod codex_session;
 mod codex_runtime;
+mod codex_skill_repositories;
+mod codex_skills;
+mod codex_skills_marketplace;
 mod dashboard;
 mod errors;
 mod gateway;
@@ -37,6 +42,7 @@ pub(crate) use account::cleanup as account_cleanup;
 pub(crate) use account::delete as account_delete;
 pub(crate) use account::delete_many as account_delete_many;
 pub(crate) use account::export as account_export;
+pub(crate) use account::group as account_group;
 pub(crate) use account::import as account_import;
 pub(crate) use account::list as account_list;
 pub(crate) use account::plan as account_plan;
@@ -120,12 +126,12 @@ pub use app_settings::{
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
     current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
-    current_lightweight_mode_on_close_to_tray_setting, current_saved_service_addr,
-    current_service_bind_mode, current_ui_appearance_preset, current_ui_low_transparency_enabled,
-    current_ui_theme, current_update_auto_check_enabled, default_gateway_originator,
-    default_gateway_user_agent_version, default_listener_bind_addr, default_web_listener_addr,
-    fetch_codex_latest_version, listener_bind_addr, listener_bind_addr_for_mode,
-    residency_requirement_options, set_auto_start_enabled_setting,
+    current_keep_window_ui_mounted_setting, current_lightweight_mode_on_close_to_tray_setting,
+    current_saved_service_addr, current_service_bind_mode, current_ui_appearance_preset,
+    current_ui_low_transparency_enabled, current_ui_theme, current_update_auto_check_enabled,
+    default_gateway_originator, default_gateway_user_agent_version, default_listener_bind_addr,
+    default_web_listener_addr, fetch_codex_latest_version, listener_bind_addr,
+    listener_bind_addr_for_mode, residency_requirement_options, set_auto_start_enabled_setting,
     set_close_to_tray_on_close_setting, set_codex_cli_guide_dismissed,
     set_gateway_account_max_inflight, set_gateway_background_tasks,
     set_gateway_free_account_max_model, set_gateway_model_forward_rules, set_gateway_originator,
@@ -134,15 +140,16 @@ pub use app_settings::{
     set_gateway_sse_keepalive_interval_ms, set_gateway_thread_aware_account_distribution_enabled,
     set_gateway_upstream_proxy_bypass_hosts, set_gateway_upstream_proxy_url,
     set_gateway_upstream_stream_timeout_ms, set_gateway_upstream_total_timeout_ms,
-    set_gateway_user_agent_version, set_lightweight_mode_on_close_to_tray_setting,
-    set_saved_service_addr, set_service_bind_mode, set_ui_appearance_preset,
-    set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
-    sync_runtime_settings_from_storage, BackgroundTasksInput, APP_SETTING_AUTO_START_ENABLED_KEY,
-    APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_DISTRIBUTION_ENABLED_KEY,
-    APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
-    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
-    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
-    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    set_gateway_user_agent_version, set_keep_window_ui_mounted_setting,
+    set_lightweight_mode_on_close_to_tray_setting, set_saved_service_addr, set_service_bind_mode,
+    set_ui_appearance_preset, set_ui_low_transparency_enabled, set_ui_theme,
+    set_update_auto_check_enabled, sync_runtime_settings_from_storage, BackgroundTasksInput,
+    APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
+    APP_SETTING_DISTRIBUTION_ENABLED_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
+    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
+    APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
@@ -150,13 +157,13 @@ pub use app_settings::{
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
-    APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_SERVICE_ADDR_KEY,
-    APP_SETTING_UI_APPEARANCE_PRESET_KEY, APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
-    APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
-    APP_SETTING_UPDATE_AUTO_CHECK_KEY, APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY,
-    APP_SETTING_WEB_AUTH_MODE_KEY, DEFAULT_ADDR, DEFAULT_BIND_ADDR, DEFAULT_WEB_ADDR,
-    DEFAULT_WEB_BIND_ADDR, SERVICE_BIND_MODE_ALL_INTERFACES, SERVICE_BIND_MODE_LOOPBACK,
-    SERVICE_BIND_MODE_SETTING_KEY, WEB_ACCESS_SESSION_COOKIE_NAME,
+    APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY, APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+    APP_SETTING_SERVICE_ADDR_KEY, APP_SETTING_UI_APPEARANCE_PRESET_KEY,
+    APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY, APP_SETTING_UI_LOW_TRANSPARENCY_KEY,
+    APP_SETTING_UI_THEME_KEY, APP_SETTING_UPDATE_AUTO_CHECK_KEY,
+    APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY, APP_SETTING_WEB_AUTH_MODE_KEY, DEFAULT_ADDR,
+    DEFAULT_BIND_ADDR, DEFAULT_WEB_ADDR, DEFAULT_WEB_BIND_ADDR, SERVICE_BIND_MODE_ALL_INTERFACES,
+    SERVICE_BIND_MODE_LOOPBACK, SERVICE_BIND_MODE_SETTING_KEY, WEB_ACCESS_SESSION_COOKIE_NAME,
 };
 pub use auth::{
     api_key_belongs_to_user, app_auth_status_value, app_session_result, billing_mode_lock_status,

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
-  Clock,
   Gauge,
   Globe,
   HelpCircle,
@@ -24,11 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
-  CardAction,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import {
   Dialog,
@@ -82,10 +77,7 @@ import {
   proxyProfilesClient,
 } from "@/lib/api/proxy-profiles";
 import { getAppErrorMessage } from "@/lib/api/transport";
-import {
-  formatProxyGeoLocationParts,
-  resolveProxyFlagDisplay,
-} from "@/lib/utils/proxy-geo";
+import { formatProxyGeoLocationParts } from "@/lib/utils/proxy-geo";
 import { cn } from "@/lib/utils";
 import type { ProxyProfile, ProxyTestJobState, SpeedSample } from "@/types";
 import { useI18n } from "@/lib/i18n/provider";
@@ -170,55 +162,6 @@ function formatJobPhase(
       return t("排队中");
   }
 }
-
-function formatJobSummary(
-  job: ProxyTestJobState,
-  t: (key: string) => string,
-): string {
-  if (job.status === "cancelled") {
-    return t("测试已取消");
-  }
-  if (job.status === "failed" && job.error) {
-    return job.error;
-  }
-  if (job.kind === "cloudflare_style_speed") {
-    if (job.phase === "download") {
-      const currentMbps = job.downloadMbps != null ? ` · ↓ ${formatMetric(job.downloadMbps, "Mbps", 1)}` : "";
-      return `${formatJobPhase(job.phase, t)} · ${formatTransferredBytes(job.downloadedBytes)}${currentMbps}`;
-    }
-    if (job.phase === "upload") {
-      const currentMbps = job.uploadMbps != null ? ` · ↑ ${formatMetric(job.uploadMbps, "Mbps", 1)}` : "";
-      return `${formatJobPhase(job.phase, t)} · ${formatTransferredBytes(job.uploadedBytes)}${currentMbps}`;
-    }
-    if (job.status === "completed" && job.cfStyleResult) {
-      const res = job.cfStyleResult;
-      const downloadPart = res.download ? `↓ ${formatMetric(res.download.finalMbps, "Mbps", 1)}` : "";
-      const uploadPart = res.upload ? `↑ ${formatMetric(res.upload.finalMbps, "Mbps", 1)}` : "";
-      const latencyPart = res.latency ? `latency: ${formatMetric(res.latency.medianMs, "ms")}` : "";
-      return [downloadPart, uploadPart, latencyPart].filter(Boolean).join("  ");
-    }
-  }
-  if (job.phase === "download") {
-    return `${formatJobPhase(job.phase, t)} · ${formatTransferredBytes(job.downloadedBytes)}`;
-  }
-  if (job.phase === "upload") {
-    return `${formatJobPhase(job.phase, t)} · ${formatTransferredBytes(job.uploadedBytes)}`;
-  }
-  if (job.kind === "latency" && job.latencyMs != null) {
-    return `${formatJobPhase(job.phase, t)} · ${formatMetric(job.latencyMs, "ms")}`;
-  }
-  if (job.kind === "speed") {
-    const metrics = [
-      job.downloadMbps != null ? `↓ ${formatMetric(job.downloadMbps, "Mbps", 1)}` : null,
-      job.uploadMbps != null ? `↑ ${formatMetric(job.uploadMbps, "Mbps", 1)}` : null,
-    ].filter(Boolean);
-    if (metrics.length > 0) {
-      return `${formatJobPhase(job.phase, t)} · ${metrics.join("  ")}`;
-    }
-  }
-  return formatJobPhase(job.phase, t);
-}
-
 
 function formatType(profile: ProxyProfile): string {
   const scheme = String(profile.scheme || "unknown").toUpperCase().replace(/H$/, "");
@@ -363,7 +306,6 @@ export function ProxySettingsCard({
     enabled: canManage,
   });
   const {
-    data: presetsData,
     isLoading: isLoadingPresets,
     isError: isPresetsError,
     error: presetsError,
@@ -374,9 +316,7 @@ export function ProxySettingsCard({
     enabled: canManage,
   });
 
-  const items = data?.items ?? [];
-  const speedProviders = presetsData?.speedProviders ?? [];
-  const fileSizes = presetsData?.fileSizes ?? [];
+  const items = useMemo(() => data?.items ?? [], [data?.items]);
 
   const speedControlsDisabled =
     !canManage ||

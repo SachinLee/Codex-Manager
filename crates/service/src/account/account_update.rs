@@ -32,6 +32,8 @@ pub(crate) fn update_account(
     preferred: Option<bool>,
     status: Option<&str>,
     label: Option<&str>,
+    group_name: Option<&str>,
+    has_group_name: bool,
     note: Option<&str>,
     tags: Option<&str>,
     quota_capacity_primary_window_tokens: Option<i64>,
@@ -45,6 +47,10 @@ pub(crate) fn update_account(
 
     let normalized_status = status.map(normalize_account_status).transpose()?;
     let normalized_label = normalize_optional_label(label)?;
+    let normalized_group_name = group_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let normalized_note = normalize_optional_text(note);
     let normalized_tags = normalize_optional_tags(tags);
     let metadata_requested = note.is_some() || tags.is_some();
@@ -55,6 +61,7 @@ pub(crate) fn update_account(
         && preferred.is_none()
         && normalized_status.is_none()
         && normalized_label.is_none()
+        && !has_group_name
         && !metadata_requested
         && !quota_override_requested
     {
@@ -116,6 +123,21 @@ pub(crate) fn update_account(
             account_id: Some(normalized_account_id.to_string()),
             event_type: "account_profile_update".to_string(),
             message: format!("label={label}"),
+            created_at: now,
+        });
+    }
+
+    if has_group_name {
+        storage
+            .update_account_group_name(normalized_account_id, normalized_group_name.as_deref())
+            .map_err(|e| e.to_string())?;
+        let _ = storage.insert_event(&Event {
+            account_id: Some(normalized_account_id.to_string()),
+            event_type: "account_group_update".to_string(),
+            message: format!(
+                "group_name={}",
+                normalized_group_name.as_deref().unwrap_or("-")
+            ),
             created_at: now,
         });
     }

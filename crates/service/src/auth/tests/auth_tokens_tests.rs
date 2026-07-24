@@ -1,6 +1,7 @@
 use super::{
-    auth_http_client_for_issuer, next_account_sort, openai_auth_loopback_http_client_build_count,
-    resolve_existing_account_for_login,
+    auth_http_client_for_issuer, next_account_sort, normalized_device_poll_interval,
+    openai_auth_loopback_http_client_build_count, poll_device_auth_token_async_with_timeout,
+    resolve_existing_account_for_login, run_auth_future, DeviceLoginError,
 };
 use crate::account_identity::{build_account_storage_id, pick_existing_account_id_by_identity};
 use crate::auth_tokens::{
@@ -12,6 +13,29 @@ use codexmanager_core::auth::parse_id_token_claims;
 use codexmanager_core::storage::{now_ts, Account, Storage};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Duration;
+
+#[test]
+fn device_poll_interval_is_clamped_to_one_second() {
+    assert_eq!(normalized_device_poll_interval(0), Duration::from_secs(1));
+    assert_eq!(normalized_device_poll_interval(7), Duration::from_secs(7));
+}
+
+#[test]
+fn device_poll_reports_expired_without_waiting_for_real_timeout() {
+    let result = run_auth_future(poll_device_auth_token_async_with_timeout(
+        "http://127.0.0.1:1",
+        "device-auth-test",
+        "CODE-TEST",
+        0,
+        Duration::ZERO,
+        Arc::new(AtomicBool::new(false)),
+    ));
+
+    assert!(matches!(result, Err(DeviceLoginError::Expired)));
+}
 
 /// 函数 `build_account`
 ///

@@ -163,9 +163,17 @@ export function useApiKeys() {
                     aggregateApiId:
                       variables.params.aggregateApiId ?? item.aggregateApiId,
                     accountPlanFilter:
-                      variables.params.accountPlanFilter ?? item.accountPlanFilter,
+                      "accountPlanFilter" in variables.params
+                        ? variables.params.accountPlanFilter ?? null
+                        : item.accountPlanFilter,
+                    accountGroupFilter:
+                      "accountGroupFilter" in variables.params
+                        ? variables.params.accountGroupFilter ?? null
+                        : item.accountGroupFilter,
                     quotaLimitTokens:
-                      variables.params.quotaLimitTokens ?? item.quotaLimitTokens,
+                      "quotaLimitTokens" in variables.params
+                        ? variables.params.quotaLimitTokens ?? null
+                        : item.quotaLimitTokens,
                   }
                 : item,
             )

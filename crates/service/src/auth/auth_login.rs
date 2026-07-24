@@ -7,6 +7,12 @@ use codexmanager_core::storage::{now_ts, Event, LoginSession};
 use crate::auth_callback::{ensure_login_server, resolve_redirect_uri};
 use crate::storage_helpers::open_storage;
 
+const LOGIN_SESSION_TTL_SECONDS: i64 = 15 * 60;
+// A completion performs at most two auth HTTP requests, each bounded to 60
+// seconds. Five minutes leaves ample margin while allowing an interrupted
+// process to release the verifier on a later status check.
+const LOGIN_COMPLETION_STALE_SECONDS: i64 = 5 * 60;
+
 /// 函数 `is_device_login_type`
 ///
 /// 作者: gaohongshun
@@ -84,8 +90,7 @@ pub(crate) fn login_start(
         resolve_redirect_uri().unwrap_or_else(|| "http://localhost:1455/auth/callback".to_string())
     };
 
-    // 生成 PKCE 与状态
-    let pkce = generate_pkce();
+    // 生成登录状态。Device Code 的 verifier 由 token 轮询接口返回。
     let state = generate_state();
     let login_id = if is_device {
         generate_state()
@@ -95,10 +100,11 @@ pub(crate) fn login_start(
 
     if is_device {
         let device = crate::auth_tokens::request_device_code(&issuer, &client_id)?;
-        if let Some(storage) = open_storage() {
-            let _ = storage.insert_login_session(&LoginSession {
+        let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+        storage
+            .insert_login_session(&LoginSession {
                 login_id: login_id.clone(),
-                code_verifier: pkce.code_verifier.clone(),
+                code_verifier: String::new(),
                 state: login_id.clone(),
                 status: "pending".to_string(),
                 error: None,
@@ -108,22 +114,24 @@ pub(crate) fn login_start(
                 group_name,
                 created_at: now_ts(),
                 updated_at: now_ts(),
-            });
-            let _ = storage.insert_event(&Event {
-                account_id: None,
-                event_type: "login_start".to_string(),
-                message: format!(
-                    "{{\"login_id\":\"{}\",\"code_verifier\":\"{}\"}}",
-                    login_id, pkce.code_verifier
-                ),
-                created_at: now_ts(),
-            });
-        }
+            })
+            .map_err(|err| err.to_string())?;
+        let _ = storage.insert_event(&Event {
+            account_id: None,
+            event_type: "login_start".to_string(),
+            message: serde_json::json!({
+                "login_id": &login_id,
+                "login_type": "chatgptDeviceCode"
+            })
+            .to_string(),
+            created_at: now_ts(),
+        });
+        drop(storage);
         crate::auth_tokens::spawn_device_code_login_completion(
             issuer.clone(),
             login_id.clone(),
             device.clone(),
-        );
+        )?;
 
         return Ok(LoginStartResult::ChatgptDeviceCode {
             login_id,
@@ -132,9 +140,12 @@ pub(crate) fn login_start(
         });
     }
 
+    let pkce = generate_pkce();
+
     // 写入登录会话
-    if let Some(storage) = open_storage() {
-        let _ = storage.insert_login_session(&LoginSession {
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    storage
+        .insert_login_session(&LoginSession {
             login_id: login_id.clone(),
             code_verifier: pkce.code_verifier.clone(),
             state: state.clone(),
@@ -146,8 +157,8 @@ pub(crate) fn login_start(
             group_name,
             created_at: now_ts(),
             updated_at: now_ts(),
-        });
-    }
+        })
+        .map_err(|err| err.to_string())?;
 
     // 构造登录地址
     let auth_url = build_authorize_url(
@@ -161,17 +172,17 @@ pub(crate) fn login_start(
     );
 
     // 写入事件日志
-    if let Some(storage) = open_storage() {
-        let _ = storage.insert_event(&Event {
-            account_id: None,
-            event_type: "login_start".to_string(),
-            message: format!(
-                "{{\"login_id\":\"{}\",\"code_verifier\":\"{}\"}}",
-                state, pkce.code_verifier
-            ),
-            created_at: now_ts(),
-        });
-    }
+    let _ = storage.insert_event(&Event {
+        account_id: None,
+        event_type: "login_start".to_string(),
+        message: serde_json::json!({
+            "login_id": &state,
+            "login_type": "chatgpt"
+        })
+        .to_string(),
+        created_at: now_ts(),
+    });
+    drop(storage);
 
     // 可选自动打开浏览器
     if open_browser {
@@ -204,13 +215,58 @@ pub(crate) fn login_status(login_id: &str) -> serde_json::Value {
         Some(storage) => storage,
         None => return serde_json::json!({ "status": "unknown" }),
     };
-    let session = match storage.get_login_session(login_id) {
+    let mut session = match storage.get_login_session(login_id) {
         Ok(Some(session)) => session,
         _ => return serde_json::json!({ "status": "unknown" }),
     };
+    let now = now_ts();
+    let expiration_message = match session.status.as_str() {
+        "pending" if now.saturating_sub(session.created_at) >= LOGIN_SESSION_TTL_SECONDS => {
+            Some("login session expired after 15 minutes")
+        }
+        "completing"
+            if now.saturating_sub(session.updated_at) >= LOGIN_COMPLETION_STALE_SECONDS =>
+        {
+            Some("login completion expired after 5 minutes without progress")
+        }
+        _ => None,
+    };
+    if let Some(message) = expiration_message {
+        if storage
+            .finish_login_session(login_id, "expired", Some(message))
+            .unwrap_or(false)
+        {
+            crate::auth_tokens::cancel_device_code_login(login_id);
+        }
+        if let Ok(Some(updated)) = storage.get_login_session(login_id) {
+            session = updated;
+        }
+    }
     serde_json::json!({
         "status": session.status,
         "error": session.error,
         "updatedAt": session.updated_at
     })
+}
+
+pub(crate) fn login_cancel(login_id: &str) -> Result<serde_json::Value, String> {
+    if login_id.trim().is_empty() {
+        return Err("missing login id".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let cancelled = storage
+        .cancel_login_session(login_id)
+        .map_err(|err| err.to_string())?;
+    if cancelled {
+        crate::auth_tokens::cancel_device_code_login(login_id);
+    }
+    let status = storage
+        .get_login_session(login_id)
+        .map_err(|err| err.to_string())?
+        .map(|session| session.status)
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(serde_json::json!({
+        "cancelled": cancelled,
+        "status": status
+    }))
 }

@@ -98,6 +98,7 @@ fn reset_runtime_defaults() {
         "gatewayUserAgentVersion": codexmanager_service::default_gateway_user_agent_version(),
         "gatewayResidencyRequirement": "",
         "appearancePreset": "classic",
+        "keepWindowUiMounted": true,
         "lightweightModeOnCloseToTray": false,
         "upstreamProxyUrl": "",
         "upstreamStreamTimeoutMs": 600000,
@@ -724,6 +725,91 @@ fn app_settings_sse_keepalive_enabled_defaults_true_and_persists_updates() {
 }
 
 #[test]
+fn window_ui_mount_default_preserves_existing_platform_behavior() {
+    with_temp_db(|db_path| {
+        let storage = Storage::open(db_path).expect("open storage");
+        storage
+            .delete_app_setting(codexmanager_service::APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY)
+            .expect("delete window UI mount setting");
+        storage
+            .delete_app_setting(
+                codexmanager_service::APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+            )
+            .expect("delete legacy lightweight setting");
+        drop(storage);
+
+        let snapshot = codexmanager_service::app_settings_get().expect("get app settings");
+        let expected_keep_mounted = !cfg!(target_os = "windows");
+        assert_eq!(
+            snapshot
+                .get("keepWindowUiMounted")
+                .and_then(|value| value.as_bool()),
+            Some(expected_keep_mounted)
+        );
+        assert_eq!(
+            snapshot
+                .get("lightweightModeOnCloseToTray")
+                .and_then(|value| value.as_bool()),
+            Some(!expected_keep_mounted)
+        );
+    });
+}
+
+#[test]
+fn window_ui_mount_setting_keeps_legacy_alias_in_sync() {
+    with_temp_db(|db_path| {
+        let storage = Storage::open(db_path).expect("open storage");
+        storage
+            .delete_app_setting(codexmanager_service::APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY)
+            .expect("delete window UI mount setting");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+                "1",
+                now_ts(),
+            )
+            .expect("save legacy lightweight setting");
+        drop(storage);
+
+        let legacy_snapshot =
+            codexmanager_service::app_settings_get().expect("get legacy app settings");
+        assert_eq!(legacy_snapshot["keepWindowUiMounted"], false);
+        assert_eq!(legacy_snapshot["lightweightModeOnCloseToTray"], true);
+
+        let legacy_update = codexmanager_service::app_settings_set(Some(&json!({
+            "lightweightModeOnCloseToTray": false
+        })))
+        .expect("update legacy lightweight setting");
+        assert_eq!(legacy_update["keepWindowUiMounted"], true);
+        assert_eq!(legacy_update["lightweightModeOnCloseToTray"], false);
+
+        let new_setting_wins = codexmanager_service::app_settings_set(Some(&json!({
+            "keepWindowUiMounted": false,
+            "lightweightModeOnCloseToTray": false
+        })))
+        .expect("update window UI mount setting");
+        assert_eq!(new_setting_wins["keepWindowUiMounted"], false);
+        assert_eq!(new_setting_wins["lightweightModeOnCloseToTray"], true);
+
+        let storage = Storage::open(db_path).expect("reopen storage");
+        assert_eq!(
+            storage
+                .get_app_setting(codexmanager_service::APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY)
+                .expect("read window UI mount setting"),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
+                )
+                .expect("read legacy lightweight setting"),
+            Some("1".to_string())
+        );
+    });
+}
+
+#[test]
 fn sse_keepalive_app_settings_respect_process_env_and_preserve_requested_storage() {
     with_temp_db(|db_path| {
         codexmanager_service::set_gateway_sse_keepalive_enabled(true)
@@ -824,6 +910,7 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
         let snapshot = codexmanager_service::app_settings_set(Some(&json!({
             "updateAutoCheck": false,
             "closeToTrayOnClose": true,
+            "keepWindowUiMounted": false,
             "lightweightModeOnCloseToTray": true,
             "codexCliGuideDismissed": true,
             "lowTransparency": true,
@@ -875,6 +962,12 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 .get("closeToTrayOnClose")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            snapshot
+                .get("keepWindowUiMounted")
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
         assert_eq!(
             snapshot
@@ -985,6 +1078,12 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
         ));
 
         let storage = Storage::open(db_path).expect("open storage");
+        assert_eq!(
+            storage
+                .get_app_setting(codexmanager_service::APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY)
+                .expect("read keep window UI mounted"),
+            Some("0".to_string())
+        );
         assert_eq!(
             storage
                 .get_app_setting(

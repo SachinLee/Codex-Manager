@@ -55,6 +55,7 @@ export interface AppSettings extends GatewayTransportValues {
   autoStartSupported: boolean;
   closeToTrayOnClose: boolean;
   closeToTraySupported: boolean;
+  keepWindowUiMounted: boolean;
   lowTransparency: boolean;
   lightweightModeOnCloseToTray: boolean;
   codexCliGuideDismissed: boolean;

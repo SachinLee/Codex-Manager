@@ -4,10 +4,11 @@ use super::{
     build_anthropic_bridge_aggregate_api_request, build_upstream_url, effective_action_path,
     resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
     responses_to_anthropic_messages_action_path, rewrite_body_model_override,
+    should_bridge_responses_to_anthropic,
 };
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
-    AGGREGATE_API_PROVIDER_GEMINI,
+    AGGREGATE_API_PROVIDER_COMPATIBLE, AGGREGATE_API_PROVIDER_GEMINI,
 };
 use crate::gateway::upstream::support::payload_rewrite::build_continuation_recovery_body;
 use crate::gateway::{PassthroughSseProtocol, ResponseAdapter};
@@ -258,6 +259,39 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
         .map(|item| item.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(candidate_ids, vec!["agg-gemini"]);
+}
+
+#[test]
+fn compatible_candidate_resolves_for_codex_and_anthropic_without_protocol_bridge() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let now = now_ts();
+    let mut compatible = aggregate_api_with_action(None);
+    compatible.id = "agg-compatible".to_string();
+    compatible.provider_type = AGGREGATE_API_PROVIDER_COMPATIBLE.to_string();
+    compatible.url = "https://multi-protocol.example.com".to_string();
+    compatible.created_at = now;
+    compatible.updated_at = now;
+    storage
+        .insert_aggregate_api(&compatible)
+        .expect("insert compatible aggregate api");
+
+    for protocol_type in ["openai", "anthropic_native"] {
+        let candidates = resolve_aggregate_api_rotation_candidates(&storage, protocol_type, None)
+            .expect("resolve compatible candidate");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agg-compatible"]
+        );
+    }
+    assert!(resolve_aggregate_api_rotation_candidates(&storage, "gemini_native", None).is_err());
+    assert!(!should_bridge_responses_to_anthropic(
+        &compatible,
+        "/v1/responses"
+    ));
 }
 
 #[test]

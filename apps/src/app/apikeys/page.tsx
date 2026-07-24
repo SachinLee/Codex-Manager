@@ -791,12 +791,22 @@ export default function ApiKeysPage() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className="text-[10px] font-normal">
-                          {t(
-                            ROTATION_STRATEGY_LABELS[key.rotationStrategy] ||
-                              key.rotationStrategy,
-                          )}
-                        </Badge>
+                        <div className="flex max-w-[190px] flex-col items-start gap-1">
+                          <Badge variant="secondary" className="text-[10px] font-normal">
+                            {t(
+                              ROTATION_STRATEGY_LABELS[key.rotationStrategy] ||
+                                key.rotationStrategy,
+                            )}
+                          </Badge>
+                          {key.accountGroupFilter ? (
+                            <span
+                              className="max-w-full truncate text-[10px] text-muted-foreground"
+                              title={`${t("账号分组")}: ${key.accountGroupFilter}`}
+                            >
+                              {t("账号分组")}: {key.accountGroupFilter}
+                            </span>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell className="text-xs font-medium text-muted-foreground">
                         {key.model ? (

@@ -1,5 +1,21 @@
 import type { WebCommandDescriptor } from "./shared";
-import { asRecord, mapKeyIdToId } from "./shared";
+import { asRecord, mapKeyIdToId, type InvokeParams } from "./shared";
+
+const API_KEY_UPDATE_PRESENCE_MARKERS = [
+  "hasName",
+  "hasModelConfig",
+  "hasRoutingConfig",
+  "hasAccountGroupFilter",
+  "hasQuotaLimitTokens",
+] as const;
+
+export function mapApiKeyUpdateParams(params?: InvokeParams): InvokeParams {
+  const mapped = { ...mapKeyIdToId(params) };
+  for (const marker of API_KEY_UPDATE_PRESENCE_MARKERS) {
+    delete mapped[marker];
+  }
+  return mapped;
+}
 
 export function createApiKeyWebCommands(): Record<string, WebCommandDescriptor> {
   return {
@@ -7,7 +23,10 @@ export function createApiKeyWebCommands(): Record<string, WebCommandDescriptor> 
     service_apikey_create: { rpcMethod: "apikey/create" },
     service_apikey_usage_stats: { rpcMethod: "apikey/usageStats" },
     service_apikey_delete: { rpcMethod: "apikey/delete", mapParams: mapKeyIdToId },
-    service_apikey_update_model: { rpcMethod: "apikey/updateModel", mapParams: mapKeyIdToId },
+    service_apikey_update_model: {
+      rpcMethod: "apikey/updateModel",
+      mapParams: mapApiKeyUpdateParams,
+    },
     service_apikey_disable: { rpcMethod: "apikey/disable", mapParams: mapKeyIdToId },
     service_apikey_enable: { rpcMethod: "apikey/enable", mapParams: mapKeyIdToId },
     service_managed_model_list_v2: { rpcMethod: "apikey/managedModelListV2" },

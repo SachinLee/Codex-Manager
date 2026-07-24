@@ -11,7 +11,7 @@ use tiny_http::Request;
 use super::super::GatewayUpstreamResponse;
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_AUTH_USERPASS, AGGREGATE_API_PROVIDER_CLAUDE,
-    AGGREGATE_API_PROVIDER_CODEX, AGGREGATE_API_PROVIDER_GEMINI,
+    AGGREGATE_API_PROVIDER_CODEX, AGGREGATE_API_PROVIDER_COMPATIBLE, AGGREGATE_API_PROVIDER_GEMINI,
 };
 use crate::gateway::protocol_adapter::adapt_openai_responses_to_anthropic_messages;
 use crate::gateway::request_log::RequestLogUsage;
@@ -932,6 +932,7 @@ fn normalize_provider_type_value(value: &str) -> String {
         "gemini" | "gemini_native" | "google" | "google_ai" | "google_gemini" => {
             AGGREGATE_API_PROVIDER_GEMINI.to_string()
         }
+        "compatible" => AGGREGATE_API_PROVIDER_COMPATIBLE.to_string(),
         _ => AGGREGATE_API_PROVIDER_CODEX.to_string(),
     }
 }
@@ -2365,6 +2366,8 @@ mod bridge_tests {
         generic.model_override = Some("MiniMax-M3".to_string());
         let mut claude = candidate("claude", 2);
         claude.provider_type = AGGREGATE_API_PROVIDER_CLAUDE.to_string();
+        let mut compatible = candidate("compatible", 3);
+        compatible.provider_type = AGGREGATE_API_PROVIDER_COMPATIBLE.to_string();
 
         let codex_body = rewrite_body_for_candidate_transport(
             &body,
@@ -2384,11 +2387,19 @@ mod bridge_tests {
             "/v1/responses",
             "https://proxy.example.com/backend-api/codex/responses",
         );
+        let compatible_body = rewrite_body_for_candidate_transport(
+            &body,
+            &compatible,
+            "/v1/responses",
+            "https://proxy.example.com/backend-api/codex/responses",
+        );
         let codex_value: Value = serde_json::from_slice(codex_body.as_ref()).expect("codex body");
         let generic_value: Value =
             serde_json::from_slice(generic_body.as_ref()).expect("generic body");
         let claude_value: Value =
             serde_json::from_slice(claude_body.as_ref()).expect("claude body");
+        let compatible_value: Value =
+            serde_json::from_slice(compatible_body.as_ref()).expect("compatible body");
 
         assert_eq!(codex_value["model"], "gpt-5.4");
         assert_eq!(
@@ -2412,6 +2423,13 @@ mod bridge_tests {
         assert_eq!(claude_value["service_tier"], "fast");
         assert!(claude_value.get("instructions").is_none());
         assert!(claude_value.get("store").is_none());
+
+        assert_eq!(compatible_value["model"], "platform-model");
+        assert_eq!(compatible_value["input"], "hello");
+        assert_eq!(compatible_value["stream"], false);
+        assert_eq!(compatible_value["service_tier"], "fast");
+        assert!(compatible_value.get("instructions").is_none());
+        assert!(compatible_value.get("store").is_none());
     }
 
     /// 函数 `ids`

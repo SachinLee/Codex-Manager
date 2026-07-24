@@ -1597,6 +1597,7 @@ function AdminSettingsPage() {
           <DialogFooter className="gap-2 sm:gap-2">
             <Button
               variant="outline"
+              className="update-dialog-later-button"
               disabled={
                 prepareUpdate.isPending || applyPreparedUpdate.isPending
               }

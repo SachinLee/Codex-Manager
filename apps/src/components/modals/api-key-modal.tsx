@@ -93,6 +93,16 @@ const ACCOUNT_PLAN_FILTER_LABELS: Record<string, string> = {
   unknown: "未知计划",
 };
 
+const ALL_ACCOUNT_GROUPS_VALUE = "__all_account_groups__";
+
+function accountGroupOptionValue(groupName: string): string {
+  return `group:${groupName}`;
+}
+
+function accountGroupNameFromOption(value: string): string {
+  return value.startsWith("group:") ? value.slice("group:".length) : "";
+}
+
 interface ApiKeyModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -148,6 +158,7 @@ export function ApiKeyModal({
   const [serviceTier, setServiceTier] = useState("");
   const [rotationStrategy, setRotationStrategy] = useState("account_rotation");
   const [accountPlanFilter, setAccountPlanFilter] = useState("all");
+  const [accountGroupFilter, setAccountGroupFilter] = useState("");
   const [quotaLimitValue, setQuotaLimitValue] = useState("");
   const [quotaLimitUnit, setQuotaLimitUnit] = useState<QuotaLimitUnit>("k");
   const [upstreamBaseUrl, setUpstreamBaseUrl] = useState("");
@@ -182,6 +193,26 @@ export function ApiKeyModal({
     },
     enabled: open && isServiceReady,
   });
+
+  const { data: accountList } = useQuery({
+    queryKey: ["accounts", "list"],
+    queryFn: () => accountClient.list(),
+    enabled: open && isAdminMode && isServiceReady,
+    retry: 1,
+  });
+
+  const accountGroupOptions = useMemo(() => {
+    const groups = new Set<string>();
+    for (const account of accountList?.items || []) {
+      const groupName = String(account.groupName || "").trim();
+      if (groupName) groups.add(groupName);
+    }
+    const selectedGroup = accountGroupFilter.trim();
+    if (selectedGroup) groups.add(selectedGroup);
+    return Array.from(groups).sort((left, right) =>
+      left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+    );
+  }, [accountGroupFilter, accountList?.items]);
 
   const selectedModelInfo = useMemo(
     () => findBestMatchingModel(models?.models || [], modelSlug),
@@ -231,6 +262,7 @@ export function ApiKeyModal({
       setServiceTier("");
       setRotationStrategy("account_rotation");
       setAccountPlanFilter("all");
+      setAccountGroupFilter("");
       setQuotaLimitValue("");
       setQuotaLimitUnit("k");
       setUpstreamBaseUrl("");
@@ -249,6 +281,7 @@ export function ApiKeyModal({
     setServiceTier(normalizeEditableServiceTier(apiKey.serviceTier));
     setRotationStrategy(apiKey.rotationStrategy || "account_rotation");
     setAccountPlanFilter(apiKey.accountPlanFilter || "all");
+    setAccountGroupFilter(apiKey.accountGroupFilter || "");
     const resolvedQuotaUnit = resolveQuotaLimitUnit(apiKey.quotaLimitTokens);
     setQuotaLimitUnit(resolvedQuotaUnit);
     setQuotaLimitValue(
@@ -327,6 +360,10 @@ export function ApiKeyModal({
           isAdminMode && usesAccountPlanFilter && accountPlanFilter !== "all"
             ? accountPlanFilter
             : null,
+        accountGroupFilter:
+          isAdminMode && usesAccountPlanFilter && accountGroupFilter.trim()
+            ? accountGroupFilter.trim()
+            : null,
         quotaLimitTokens: quotaLimitTokenPreview,
         customKey: !apiKey?.id && customKey.trim() ? customKey.trim() : null,
       };
@@ -362,7 +399,7 @@ export function ApiKeyModal({
         queryClient.invalidateQueries({ queryKey: ["dashboard", "member-summary"] }),
         queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY }),
       ]);
-      if (apiKey?.id) onOpenChange(false);
+      onOpenChange(false);
     } catch (err: unknown) {
       toast.error(
         `操作失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -493,7 +530,7 @@ export function ApiKeyModal({
 
           {isAdminMode && usesAccountPlanFilter ? (
             <div className="grid gap-2">
-              <Label>{t("账号组筛选")}</Label>
+              <Label>{t("账号计划筛选")}</Label>
               <Select
                 value={accountPlanFilter}
                 onValueChange={(val) => val && setAccountPlanFilter(val)}
@@ -525,6 +562,58 @@ export function ApiKeyModal({
                 {t(
                   "仅对账号轮转和混合轮转生效，可限制这把平台密钥只从指定账号计划类型中选路由账号。",
                 )}
+              </p>
+            </div>
+          ) : null}
+
+          {isAdminMode && usesAccountPlanFilter ? (
+            <div className="grid gap-2">
+              <Label>{t("账号分组筛选")}</Label>
+              <Select
+                value={
+                  accountGroupFilter
+                    ? accountGroupOptionValue(accountGroupFilter)
+                    : ALL_ACCOUNT_GROUPS_VALUE
+                }
+                onValueChange={(value) => {
+                  if (!value) return;
+                  setAccountGroupFilter(
+                    value === ALL_ACCOUNT_GROUPS_VALUE
+                      ? ""
+                      : accountGroupNameFromOption(value),
+                  );
+                }}
+                disabled={!isServiceReady}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue>
+                    {() => accountGroupFilter || t("全部分组")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value={ALL_ACCOUNT_GROUPS_VALUE}>
+                      {t("全部分组")}
+                    </SelectItem>
+                    {accountGroupOptions.map((groupName) => (
+                      <SelectItem
+                        key={groupName}
+                        value={accountGroupOptionValue(groupName)}
+                      >
+                        {groupName}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                {accountGroupOptions.length > 0
+                  ? t(
+                      "仅在选中的自定义账号分组内轮转；与账号计划筛选同时设置时，账号必须同时满足两项条件。",
+                    )
+                  : t(
+                      "尚未配置账号分组。请先在 OpenAI 账号池中编辑账号并填写分组。",
+                    )}
               </p>
             </div>
           ) : null}

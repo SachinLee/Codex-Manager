@@ -3,6 +3,12 @@ import http from "node:http";
 import { dirname, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
+import {
+  findDesktopDevProcess,
+  getDesktopDevProcessInfo,
+  listDesktopDevListenerPids,
+  terminateDesktopDevProcessTree,
+} from "./desktop-dev-processes.mjs";
 
 const cwd = process.cwd();
 const task = process.argv[2] || "build:desktop";
@@ -163,108 +169,6 @@ function warmupDesktopHomePageInBackground() {
   }, 0);
 }
 
-function listDesktopDevListenerPids(port = desktopDevPort) {
-  const result = spawnSync("netstat", ["-ano", "-p", "tcp"], {
-    encoding: "utf8",
-  });
-
-  if (result.error || result.status !== 0) {
-    return [];
-  }
-
-  const expectedAddress = `${desktopDevHost}:${port}`;
-  const pids = new Set();
-
-  for (const line of result.stdout.split(/\r?\n/)) {
-    if (!line.includes(expectedAddress) || !/\bLISTENING\b/i.test(line)) {
-      continue;
-    }
-
-    const match = line.trim().match(/(\d+)$/);
-    if (!match) {
-      continue;
-    }
-
-    pids.add(Number.parseInt(match[1], 10));
-  }
-
-  return [...pids];
-}
-
-function getWindowsProcessInfo(pid) {
-  const command = [
-    `$process = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
-    'if ($process) { $process | Select-Object ProcessId, ParentProcessId, CommandLine | ConvertTo-Json -Compress }',
-  ].join("; ");
-
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", command], {
-    encoding: "utf8",
-  });
-
-  if (result.error || result.status !== 0) {
-    return null;
-  }
-
-  const rawOutput = result.stdout.trim();
-  if (!rawOutput) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(rawOutput);
-  } catch {
-    return null;
-  }
-}
-
-function isDesktopDevProcess(pid, port = desktopDevPort) {
-  let currentPid = pid;
-
-  for (let index = 0; index < 4 && currentPid; index += 1) {
-    const processInfo = getWindowsProcessInfo(currentPid);
-    if (!processInfo?.CommandLine) {
-      break;
-    }
-
-    const normalizedCommandLine = processInfo.CommandLine.toLowerCase();
-    const isNextProcess =
-      normalizedCommandLine.includes("next dev") ||
-      normalizedCommandLine.includes("\\next\\dist\\bin\\next") ||
-      normalizedCommandLine.includes("start-server.js");
-    const isDevProxyProcess =
-      normalizedCommandLine.includes("before-build.mjs") &&
-      normalizedCommandLine.includes("dev:desktop");
-    const matchesDesktopPort =
-      normalizedCommandLine.includes(`-p ${port}`) ||
-      normalizedCommandLine.includes(`:${port}`);
-
-    if ((isNextProcess || isDevProxyProcess) && (matchesDesktopPort || isDevProxyProcess || index > 0)) {
-      return true;
-    }
-
-    currentPid = processInfo.ParentProcessId;
-  }
-
-  return false;
-}
-
-function terminateWindowsProcessTree(pid) {
-  const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-    encoding: "utf8",
-  });
-
-  if (result.error) {
-    return false;
-  }
-
-  if (result.status === 0) {
-    return true;
-  }
-
-  const combinedOutput = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  return /not found|no running instance|does not exist/i.test(combinedOutput);
-}
-
 function createDesktopDevProxy() {
   const server = http.createServer((request, response) => {
     const proxyRequest = http.request(
@@ -332,30 +236,65 @@ function createDesktopDevProxy() {
 }
 
 async function cleanupStaleDesktopDevState() {
-  const listenerPids = [
-    ...new Set([
-      ...listDesktopDevListenerPids(desktopDevPort),
-      ...listDesktopDevListenerPids(desktopNextPort),
-    ]),
-  ];
+  const occupiedPorts = [];
+  if (await canConnect(desktopDevHost, desktopDevPort, 300)) {
+    occupiedPorts.push(desktopDevPort);
+  }
+  if (await canConnect(desktopDevHost, desktopNextPort, 300)) {
+    occupiedPorts.push(desktopNextPort);
+  }
+  const listeners = occupiedPorts.flatMap((port) =>
+    listDesktopDevListenerPids(port, desktopDevHost).map((pid) => ({ pid, port })),
+  );
 
-  for (const pid of listenerPids) {
-    const processInfo = getWindowsProcessInfo(pid);
-    if (!isDesktopDevProcess(pid, desktopDevPort) && !isDesktopDevProcess(pid, desktopNextPort)) {
+  const unresolvedOccupiedPorts = occupiedPorts.filter(
+    (port) => !listeners.some((listener) => listener.port === port),
+  );
+  const stillUnresolvedOccupiedPorts = [];
+  for (const port of unresolvedOccupiedPorts) {
+    if (await canConnect(desktopDevHost, port, 300)) {
+      stillUnresolvedOccupiedPorts.push(port);
+    }
+  }
+  if (stillUnresolvedOccupiedPorts.length > 0) {
+    console.error(
+      `检测到开发端口被占用，但无法识别监听进程。请手动释放端口: ${stillUnresolvedOccupiedPorts.join(", ")}`,
+    );
+    process.exit(1);
+  }
+
+  const desktopDevProcesses = new Map();
+
+  for (const listener of listeners) {
+    const listenerProcessInfo = getDesktopDevProcessInfo(listener.pid);
+    const desktopDevProcess =
+      findDesktopDevProcess(listener.pid, {
+        port: listener.port,
+        frontendDir,
+      }) ||
+      findDesktopDevProcess(listener.pid, {
+        port: listener.port === desktopDevPort ? desktopNextPort : desktopDevPort,
+        frontendDir,
+      });
+    if (!desktopDevProcess) {
       console.error(
-        `开发端口被其他进程占用，无法自动清理。PID: ${pid}，命令行: ${processInfo?.CommandLine || "未知"}`,
+        `开发端口被其他进程占用，无法自动清理。PID: ${listener.pid}，命令行: ${listenerProcessInfo?.CommandLine || "未知"}`,
       );
       process.exit(1);
     }
 
+    desktopDevProcesses.set(desktopDevProcess.pid, desktopDevProcess);
+  }
+
+  for (const { pid } of desktopDevProcesses.values()) {
     console.log(`检测到未响应的 Next.js 开发进程，准备终止: PID ${pid}`);
-    if (!terminateWindowsProcessTree(pid)) {
+    if (!terminateDesktopDevProcessTree(pid)) {
       console.error(`终止残留 Next.js 开发进程失败: PID ${pid}`);
       process.exit(1);
     }
   }
 
-  if (listenerPids.length > 0) {
+  if (listeners.length > 0) {
     const portReleased = await waitForDesktopDevPortsToClose();
     if (!portReleased) {
       console.error(`开发端口释放超时，无法继续启动前端开发服务`);

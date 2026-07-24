@@ -37,13 +37,14 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 -Bundle nsis -CleanDist -Porta
 ```
 
 ## GitHub Actions
-The unified release workflow is `.github/workflows/release-all.yml`. It is triggered through `workflow_dispatch` and does not run automatically.
+The unified release workflow is `.github/workflows/release-all.yml`. Pushing a `v*` tag automatically runs `build-and-publish`; `workflow_dispatch` also supports manual runs in `build-and-publish`, `build-artifacts`, or `publish-artifacts` mode.
 
 ### `release-all.yml`
 - Purpose: publish Desktop + Service artifacts for all supported platforms in one run
 - Build targets: `Windows`, `macOS (dmg)`, `Linux`
 - The frontend `dist` is built once, then reused by the packaging jobs for each platform
 - Inputs:
+  - `mode`: defaults to `build-and-publish`, options: `build-and-publish | build-artifacts | publish-artifacts`
   - `tag`: required
   - `ref`: defaults to `main`
   - `prerelease`: defaults to `auto`, options: `auto | true | false`

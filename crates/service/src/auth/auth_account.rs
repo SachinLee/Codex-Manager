@@ -173,8 +173,9 @@ pub(crate) fn login_with_chatgpt_auth_tokens(
     let account = Account {
         id: account_id.clone(),
         label: claims
-            .email
-            .clone()
+            .resolved_email()
+            .or_else(|| claims.resolved_name())
+            .map(str::to_string)
             .unwrap_or_else(|| resolved_scope_id.clone()),
         issuer: std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string()),
         chatgpt_account_id: chatgpt_account_id.clone(),
@@ -631,7 +632,8 @@ fn current_account_payload(
         account_id: account.id.clone(),
         email: claims
             .as_ref()
-            .and_then(|claims| claims.email.clone())
+            .and_then(|claims| claims.resolved_email())
+            .map(str::to_string)
             .unwrap_or_else(|| account.label.clone()),
         plan_type,
         plan_type_raw: resolved_plan.and_then(|plan| plan.raw),

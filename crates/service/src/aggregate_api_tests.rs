@@ -13,6 +13,7 @@ use super::{
     normalize_custom_balance_query_config, normalize_provider_type, normalize_provider_type_value,
     probe_claude_endpoint, probe_codex_endpoint, provider_default_url, read_aggregate_api_secret,
     run_diagnostic_request, CustomBalanceQueryConfig, AGGREGATE_API_PROVIDER_CLAUDE,
+    AGGREGATE_API_PROVIDER_COMPATIBLE,
     AGGREGATE_API_PROVIDER_GEMINI,
 };
 
@@ -196,6 +197,14 @@ fn gemini_provider_type_is_normalized_independently() {
     assert_eq!(
         normalize_provider_type(Some("claude".to_string())).unwrap(),
         AGGREGATE_API_PROVIDER_CLAUDE
+    );
+    assert_eq!(
+        normalize_provider_type(Some("compatible".to_string())).unwrap(),
+        AGGREGATE_API_PROVIDER_COMPATIBLE
+    );
+    assert_eq!(
+        normalize_provider_type_value("compatible"),
+        AGGREGATE_API_PROVIDER_COMPATIBLE
     );
 }
 

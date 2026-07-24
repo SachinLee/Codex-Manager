@@ -856,6 +856,7 @@ export function normalizeApiKey(item: unknown): ApiKey | null {
     rotationStrategy: asString(source.rotationStrategy ?? source.rotation_strategy) || "account_rotation",
     aggregateApiId: asString(source.aggregateApiId ?? source.aggregate_api_id) || null,
     accountPlanFilter: asString(source.accountPlanFilter ?? source.account_plan_filter) || null,
+    accountGroupFilter: asString(source.accountGroupFilter ?? source.account_group_filter) || null,
     aggregateApiUrl: asString(source.aggregateApiUrl ?? source.aggregate_api_url) || null,
     quotaLimitTokens: toNullableNumber(source.quotaLimitTokens ?? source.quota_limit_tokens),
     protocol: asString(source.protocolType ?? source.protocol_type) || "openai_compat",
@@ -1530,14 +1531,27 @@ export function normalizeDeviceAuthInfo(payload: unknown): DeviceAuthInfo | null
  */
 export function normalizeLoginStartResult(payload: unknown): LoginStartResult {
   const source = asObject(payload);
+  const type = asString(source.type ?? source.loginType ?? source.login_type);
   const verificationUrl = asString(source.verificationUrl ?? source.verification_url);
-  return {
-    type: asString(source.type ?? source.loginType ?? source.login_type),
-    authUrl: asString(source.authUrl ?? source.auth_url ?? verificationUrl),
-    loginId: asString(source.loginId ?? source.login_id),
-    verificationUrl: verificationUrl || null,
-    userCode: asString(source.userCode ?? source.user_code) || null,
-  };
+  const loginId = asString(source.loginId ?? source.login_id);
+
+  if (type === "chatgptDeviceCode") {
+    return {
+      type,
+      loginId,
+      verificationUrl,
+      userCode: asString(source.userCode ?? source.user_code),
+    };
+  }
+  if (type === "chatgpt") {
+    return {
+      type,
+      loginId,
+      authUrl: asString(source.authUrl ?? source.auth_url),
+    };
+  }
+
+  throw new Error(`unsupported login start result type: ${type || "unknown"}`);
 }
 
 /**
@@ -2150,17 +2164,23 @@ export function normalizeEnvOverrideCatalog(payload: unknown): EnvOverrideCatalo
  */
 export function normalizeAppSettings(payload: unknown): AppSettings {
   const source = asObject(payload);
+  const legacyLightweightMode = asBoolean(
+    source.lightweightModeOnCloseToTray,
+    false
+  );
+  const keepWindowUiMounted = asBoolean(
+    source.keepWindowUiMounted,
+    !legacyLightweightMode
+  );
   return {
     updateAutoCheck: asBoolean(source.updateAutoCheck, true),
     autoStartEnabled: asBoolean(source.autoStartEnabled, false),
     autoStartSupported: asBoolean(source.autoStartSupported, false),
     closeToTrayOnClose: asBoolean(source.closeToTrayOnClose, false),
     closeToTraySupported: asBoolean(source.closeToTraySupported, false),
+    keepWindowUiMounted,
     lowTransparency: asBoolean(source.lowTransparency, false),
-    lightweightModeOnCloseToTray: asBoolean(
-      source.lightweightModeOnCloseToTray,
-      false
-    ),
+    lightweightModeOnCloseToTray: !keepWindowUiMounted,
     codexCliGuideDismissed: asBoolean(source.codexCliGuideDismissed, false),
     webAccessPasswordConfigured: asBoolean(
       source.webAccessPasswordConfigured,

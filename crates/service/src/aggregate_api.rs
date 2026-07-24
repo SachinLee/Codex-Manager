@@ -19,6 +19,7 @@ use crate::storage_helpers::{generate_aggregate_api_id, open_storage};
 pub(crate) const AGGREGATE_API_PROVIDER_CODEX: &str = "codex";
 pub(crate) const AGGREGATE_API_PROVIDER_CLAUDE: &str = "claude";
 pub(crate) const AGGREGATE_API_PROVIDER_GEMINI: &str = "gemini";
+pub(crate) const AGGREGATE_API_PROVIDER_COMPATIBLE: &str = "compatible";
 pub(crate) const AGGREGATE_API_AUTH_APIKEY: &str = "apikey";
 pub(crate) const AGGREGATE_API_AUTH_USERPASS: &str = "userpass";
 const AGGREGATE_API_BALANCE_TEMPLATE_GENERIC: &str = "generic";
@@ -688,6 +689,7 @@ fn normalize_provider_type(value: Option<String>) -> Result<String, String> {
                 "claude" | "anthropic" | "anthropic_native" | "claude_code" => {
                     Ok(AGGREGATE_API_PROVIDER_CLAUDE.to_string())
                 }
+                "compatible" => Ok(AGGREGATE_API_PROVIDER_COMPATIBLE.to_string()),
                 other => Err(format!("unsupported aggregate api provider type: {other}")),
             }
         }
@@ -715,6 +717,7 @@ fn normalize_provider_type_value(value: &str) -> String {
         "gemini" | "gemini_native" | "google" | "google_ai" | "google_gemini" => {
             AGGREGATE_API_PROVIDER_GEMINI.to_string()
         }
+        "compatible" => AGGREGATE_API_PROVIDER_COMPATIBLE.to_string(),
         _ => AGGREGATE_API_PROVIDER_CODEX.to_string(),
     }
 }

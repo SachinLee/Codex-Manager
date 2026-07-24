@@ -21,19 +21,37 @@ pub(in super::super) enum CandidateSkipReason {
 pub(crate) fn prepare_gateway_candidates(
     storage: &Storage,
     _request_model: Option<&str>,
+    account_group_filter: Option<&str>,
     account_plan_filter: Option<&str>,
     low_quota_mode: super::super::super::LowQuotaCandidateMode,
 ) -> Result<Vec<(Account, Token)>, String> {
-    // 中文注释：保持账号原始顺序（按账户排序字段）作为候选顺序，失败时再依次切下一个。
-    let mut candidates = super::super::super::collect_gateway_candidates_with_low_quota_mode(
-        storage,
-        low_quota_mode,
-    )?;
-    let normalized_filter = account_plan_filter
+    let normalized_group_filter = account_group_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let normalized_plan_filter = account_plan_filter
         .map(str::trim)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("all"));
-    if let Some(plan_filter) = normalized_filter {
-        let account_ids = candidates
+
+    // 中文注释：未受限的 Key 继续复用全局缓存；受限 Key 必须先形成 group + plan
+    // 的授权交集，再在交集内执行额度保护，避免组外账号影响组内低额度兜底。
+    if normalized_group_filter.is_none() && normalized_plan_filter.is_none() {
+        return super::super::super::collect_gateway_candidates_with_low_quota_mode(
+            storage,
+            low_quota_mode,
+        );
+    }
+
+    let mut authorized_candidates = storage
+        .list_gateway_candidates()
+        .map_err(|err| format!("list gateway candidates failed: {err}"))?;
+    if let Some(group_filter) = normalized_group_filter {
+        authorized_candidates.retain(|(account, _)| {
+            crate::account_group::account_matches_group_filter(account, Some(group_filter))
+        });
+    }
+
+    if let Some(plan_filter) = normalized_plan_filter {
+        let account_ids = authorized_candidates
             .iter()
             .map(|(account, _)| account.id.clone())
             .collect::<Vec<_>>();
@@ -43,7 +61,7 @@ pub(crate) fn prepare_gateway_candidates(
             .into_iter()
             .map(|snapshot| (snapshot.account_id.clone(), snapshot))
             .collect::<HashMap<_, _>>();
-        candidates.retain(|(account, token)| {
+        authorized_candidates.retain(|(account, token)| {
             crate::account_plan::account_matches_plan_filter_with_snapshot(
                 token,
                 snapshots.get(account.id.as_str()),
@@ -51,7 +69,17 @@ pub(crate) fn prepare_gateway_candidates(
             )
         });
     }
-    Ok(candidates)
+
+    let authorized_account_ids = authorized_candidates
+        .into_iter()
+        .map(|(account, _)| account.id)
+        .collect::<Vec<_>>();
+    // 中文注释：保持账号原始顺序（按账户排序字段）作为候选顺序，失败时再依次切下一个。
+    super::super::super::collect_gateway_candidates_for_account_ids_with_low_quota_mode(
+        storage,
+        &authorized_account_ids,
+        low_quota_mode,
+    )
 }
 
 /// 函数 `allow_openai_fallback_for_account`

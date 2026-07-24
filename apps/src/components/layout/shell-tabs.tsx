@@ -20,7 +20,7 @@ export function ShellTabs() {
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
-  const routeAccess = { role, mode: session?.mode ?? null };
+  const routeAccess = { role, mode: session?.mode ?? null, isDesktopRuntime };
 
   if (openShellTabs.length <= 1) {
     return null;

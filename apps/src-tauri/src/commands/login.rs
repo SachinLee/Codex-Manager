@@ -61,6 +61,17 @@ pub async fn service_login_status(
     rpc_call_in_background("account/login/status", addr, Some(params)).await
 }
 
+#[tauri::command]
+pub async fn service_login_cancel(
+    addr: Option<String>,
+    login_id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+      "loginId": login_id
+    });
+    rpc_call_in_background("account/login/cancel", addr, Some(params)).await
+}
+
 /// 函数 `service_login_complete`
 ///
 /// 作者: gaohongshun

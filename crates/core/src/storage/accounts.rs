@@ -1138,6 +1138,18 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_account_group_name(
+        &self,
+        account_id: &str,
+        group_name: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            update_account_group_name_sql(),
+            (group_name, now_ts(), account_id),
+        )?;
+        Ok(())
+    }
+
     pub fn update_account_workspace_identity(
         &self,
         account_id: &str,

@@ -58,7 +58,13 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
       ["/models", "/model-groups"],
       ["/account-manager"],
       ["/logs"],
-      ["/settings", "/proxy-settings", "/plugins", "/codex-launcher", "/author"],
+      [
+        "/settings",
+        "/proxy-settings",
+        "/plugins",
+        "/codex-launcher",
+        "/skills",
+      ],
     ]
   );
   assert.equal(
@@ -69,6 +75,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
   assert.equal(routes.getTopLevelRouteLabel("/account-manager", access), "成员账号");
   assert.equal(routes.getTopLevelRouteLabel("/model-groups", access), "模型组");
   assert.equal(routes.getTopLevelRouteLabel("/platform-mode", access), "平台模式选择");
+  assert.equal(routes.getTopLevelRouteLabel("/skills", access), "Skills 与插件");
 });
 
 test("none/password 单人管理员模式隐藏账号体系入口但保留单人管理入口", () => {
@@ -90,6 +97,7 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
         "/proxy-settings",
         "/plugins",
         "/codex-launcher",
+        "/skills",
         "/author",
       ]);
       assert.equal(
@@ -114,6 +122,29 @@ test("未解析 session mode 时不会闪现账号体系专属入口", () => {
   assert.equal(paths.includes("/model-groups"), false);
   assert.equal(paths.includes("/accounts"), true);
   assert.equal(paths.includes("/apikeys"), true);
+});
+
+test("项目启动入口只在 Tauri 桌面运行时出现", () => {
+  const webAccess = {
+    role: "system_admin",
+    mode: "accounts",
+    isDesktopRuntime: false,
+  };
+  const desktopAccess = { ...webAccess, isDesktopRuntime: true };
+
+  assert.equal(
+    routes.getAllowedTopLevelRoutes(webAccess).some((route) => route.path === "/projects"),
+    false,
+  );
+  assert.equal(
+    routes.getAllowedTopLevelRoutes(desktopAccess).some((route) => route.path === "/projects"),
+    true,
+  );
+  assert.equal(
+    routes.isTopLevelRouteAllowedForRole("/projects", desktopAccess),
+    true,
+  );
+  assert.equal(routes.isTopLevelRouteAllowedForRole("/projects", webAccess), false);
 });
 
 test("accounts 模式成员菜单只保留自助入口", () => {

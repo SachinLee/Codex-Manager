@@ -8,6 +8,7 @@ export interface ApiKey {
   rotationStrategy: string;
   aggregateApiId: string | null;
   accountPlanFilter: string | null;
+  accountGroupFilter: string | null;
   aggregateApiUrl: string | null;
   quotaLimitTokens: number | null;
   protocol: string;

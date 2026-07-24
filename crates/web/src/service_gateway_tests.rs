@@ -4,6 +4,7 @@ use super::{
     tcp_probe, ENV_GATEWAY_PROXY_MAX_BODY_BYTES,
 };
 use axum::http::{header, HeaderValue, Uri};
+use axum::{body::Bytes, extract::State, http::HeaderMap};
 use std::sync::{Mutex, MutexGuard};
 
 static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -113,4 +114,29 @@ fn gateway_proxy_header_filters_skip_hop_by_hop_headers() {
         &header::AUTHORIZATION,
         &HeaderValue::from_static("Bearer key")
     ));
+}
+
+#[tokio::test]
+async fn rpc_proxy_rejects_body_over_the_bounded_upload_limit() {
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+    let state = std::sync::Arc::new(crate::AppState {
+        client: reqwest::Client::new(),
+        service_rpc_url: "http://127.0.0.1:1/rpc".to_string(),
+        service_addr: "127.0.0.1:1".to_string(),
+        rpc_token: "test-token".to_string(),
+        web_auth_session_key: "test-session".to_string(),
+        shutdown_tx,
+        spawned_service: std::sync::Arc::new(tokio::sync::Mutex::new(false)),
+        missing_ui_html: std::sync::Arc::new(String::new()),
+    });
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let body = Bytes::from(vec![b'x'; codexmanager_service::RPC_BODY_LIMIT_BYTES + 1]);
+
+    let response = super::rpc_proxy(State(state), headers, body).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
 }
