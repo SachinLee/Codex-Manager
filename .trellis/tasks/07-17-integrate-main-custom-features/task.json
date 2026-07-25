@@ -15,12 +15,12 @@
   "branch": "codex/integrate-main-20260717",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "1742e652",
+  "commit": "pending-runtime-route-price-log-restore",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "First merge main@514f3dba (ae9aed07); second merge origin/main@482f7ffa (e099182a). Post-merge fixes: keepalive variants, token stats schema ensure, encrypted-content strip. Test hardening: fake proxy accept window + full header read; keepalive silent gaps 2000ms; auth temp DB path uniqueness. Validation: cargo test -p codexmanager-core --lib 401/401; cargo test -p codexmanager-service --lib 1276/1276; cargo test -p codexmanager-web 25/25 (earlier). origin/main@482f7ffa still fully contained (no third merge needed). package.json untracked. Frontend build/runtime still pending.",
+  "notes": "First merge main@514f3dba (ae9aed07); second merge origin/main@482f7ffa (e099182a). Post-merge fixes: keepalive variants, token stats schema ensure, encrypted-content strip. Test hardening: fake proxy accept window + full header read; keepalive silent gaps 2000ms; auth temp DB path uniqueness. Validation: cargo test -p codexmanager-core --lib 401/401; cargo test -p codexmanager-service --lib 1276/1276; cargo test -p codexmanager-web 25/25 (earlier). origin/main@482f7ffa still fully contained (no third merge needed). package.json untracked. Frontend build/runtime still pending. | Runtime fix for post-merge data loss: 1) catalog v2 seed now idempotently backfills model_routes from model_source_mappings + quota_source_model_assignments (custom aggregate model assignments); 2) missing grok-4.5* prices filled with official short/long tiers without overwriting custom prices; 3) request-log UI re-wired ModelUsageStatsCard, SessionInfoCell, pricing/guard cost columns from custom features. Tests: cargo test -p codexmanager-core --lib model_catalog_v2 15/15 including seed_backfills_quota_aggregate_routes_and_missing_grok_prices.",
   "meta": {}
 }

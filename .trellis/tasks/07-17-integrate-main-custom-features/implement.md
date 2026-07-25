@@ -100,3 +100,16 @@ o such column: cache_write_input_tokens).
 - Validation: `cargo test -p codexmanager-service --lib` → **1276 passed; 0 failed**
 - `git fetch origin main`: origin/main still ancestor of integrate branch (no new main commits to merge)
 - Remaining acceptance: `cargo test --workspace`, frontend `test:runtime` / `build` / `build:desktop`
+
+## Progress log (2026-07-22 runtime restore)
+
+User reported after merge: aggregate APIs all missing route, grok-4.5 price/route missing, request-log custom features gone.
+
+Root causes and fixes:
+- **Aggregate routes**: runtime/UI use model catalog v2 model_routes only; custom branch stored assignments in quota_source_model_assignments, and main migrate_legacy_routes skipped simple 1:1 mappings. Added idempotent backfill from model_source_mappings + quota assignments into model_routes on every seed_missing_builtin_models_v2 (app init).
+- **Grok price**: custom models migrated with price_status=missing and official Grok rates were not ported to v2 prices. Backfill fills only missing grok-4.5* / grok-build-latest with official short/long tiers.
+- **Request logs UI**: components existed (model-usage-stats.tsx, SessionInfoCell) but page-sections.tsx / page.tsx lost wiring after main page takeover. Restored ModelUsageStatsCard, session column, cost/pricing/guard badges, cache rate, output rate.
+
+Validation: cargo test -p codexmanager-core --lib model_catalog_v2 → 15/15.
+Restart app against existing DB to apply backfill; no manual re-assignment needed if legacy quota rows remain.
+

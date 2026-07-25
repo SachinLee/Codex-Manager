@@ -424,6 +424,70 @@ fn sample_incoming_headers_with_platform_key(
 }
 
 #[test]
+fn request_log_session_id_prefers_trusted_header_over_body_candidate() {
+    let headers = sample_incoming_headers_with_session_id(
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("header-session-id"),
+        None,
+    );
+
+    let actual = resolve_request_log_session_id(&headers, [Some("body-thread-id")]);
+
+    assert_eq!(actual.as_deref(), Some("header-session-id"));
+}
+
+#[test]
+fn request_log_session_id_uses_client_metadata_thread_id_for_responses_log() {
+    let body = serde_json::json!({
+        "client_metadata": {
+            "thread_id": "019e6d9b-c5a1-72d2-a13d-e189680767e0"
+        }
+    });
+    let metadata = crate::gateway::parse_request_metadata_from_value(&body);
+    let headers = sample_incoming_headers(None, None, None, None, None);
+    let session_id =
+        resolve_request_log_session_id(&headers, [metadata.session_id_candidate.as_deref()]);
+
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    crate::gateway::write_request_log(
+        &storage,
+        crate::gateway::RequestLogTraceContext {
+            trace_id: Some("responses-client-metadata-thread-id"),
+            session_id: session_id.as_deref(),
+            original_path: Some("/v1/responses"),
+            adapted_path: Some("/v1/responses"),
+            request_type: Some("http"),
+            ..Default::default()
+        },
+        None,
+        None,
+        "/v1/responses",
+        "POST",
+        None,
+        None,
+        None,
+        Some(200),
+        crate::gateway::RequestLogUsage::default(),
+        None,
+        Some(1),
+    );
+
+    let logs = storage
+        .list_request_logs(None, 10)
+        .expect("read request logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].session_id.as_deref(),
+        Some("019e6d9b-c5a1-72d2-a13d-e189680767e0")
+    );
+}
+
+#[test]
 fn preferred_client_prompt_cache_key_is_used_without_native_anchor() {
     let incoming_headers = sample_incoming_headers(None, None, None, None, None);
     let initial_request_meta = sample_request_metadata(Some("client_thread"));

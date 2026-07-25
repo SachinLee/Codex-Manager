@@ -94,7 +94,7 @@ fn session_id_is_preferred_for_sticky_key_material() {
 fn current_codex_hyphenated_headers_are_captured() {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
-        "session-id",
+        "x-session-id",
         axum::http::HeaderValue::from_static("session-current"),
     );
     headers.insert(
@@ -113,7 +113,8 @@ fn current_codex_hyphenated_headers_are_captured() {
 fn current_codex_hyphenated_headers_are_captured_from_tiny_http_requests() {
     let request: tiny_http::Request = tiny_http::TestRequest::new()
         .with_header(
-            tiny_http::Header::from_bytes("session-id", "session-current").expect("session header"),
+            tiny_http::Header::from_bytes("x-session-id", "session-current")
+                .expect("session header"),
         )
         .with_header(
             tiny_http::Header::from_bytes("thread-id", "thread-current").expect("thread header"),
@@ -125,6 +126,31 @@ fn current_codex_hyphenated_headers_are_captured_from_tiny_http_requests() {
     assert_eq!(snapshot.session_id(), Some("session-current"));
     assert_eq!(snapshot.conversation_id(), Some("thread-current"));
     assert_eq!(snapshot.sticky_key_material(), Some("session-current"));
+}
+
+#[test]
+fn all_session_id_header_aliases_are_captured_by_http_and_tiny_http() {
+    for name in ["session-id", "session_id", "x-session-id"] {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::HeaderName::from_static(name),
+            axum::http::HeaderValue::from_static("session-alias"),
+        );
+        assert_eq!(
+            IncomingHeaderSnapshot::from_http_headers(&headers).session_id(),
+            Some("session-alias")
+        );
+
+        let request: tiny_http::Request = tiny_http::TestRequest::new()
+            .with_header(
+                tiny_http::Header::from_bytes(name, "session-alias").expect("session header alias"),
+            )
+            .into();
+        assert_eq!(
+            IncomingHeaderSnapshot::from_request(&request).session_id(),
+            Some("session-alias")
+        );
+    }
 }
 
 /// 函数 `codex_headers_are_captured_from_http_headers`

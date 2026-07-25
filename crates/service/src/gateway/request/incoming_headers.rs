@@ -82,7 +82,8 @@ impl IncomingHeaderSnapshot {
             }
             if snapshot.session_id.is_none()
                 && (name.eq_ignore_ascii_case("session-id")
-                    || name.eq_ignore_ascii_case("session_id"))
+                    || name.eq_ignore_ascii_case("session_id")
+                    || name.eq_ignore_ascii_case("x-session-id"))
             {
                 if !value.is_empty() {
                     snapshot.session_id = Some(value.to_string());
@@ -246,7 +247,9 @@ impl IncomingHeaderSnapshot {
                 continue;
             }
             if snapshot.session_id.is_none()
-                && (header.field.equiv("session-id") || header.field.equiv("session_id"))
+                && (header.field.equiv("session-id")
+                    || header.field.equiv("session_id")
+                    || header.field.equiv("x-session-id"))
             {
                 let value = header.value.as_str().trim();
                 if !value.is_empty() {

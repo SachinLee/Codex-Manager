@@ -1251,6 +1251,8 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub service_tier_for_log: Option<&'a str>,
     pub effective_service_tier_for_log: Option<&'a str>,
     pub service_tier_source_for_log: Option<&'a str>,
+    pub session_id_for_log: Option<&'a str>,
+    pub conversation_anchor_for_log: Option<&'a str>,
     pub aggregate_api_candidates: Vec<AggregateApi>,
     pub request_deadline: Option<Instant>,
     pub started_at: Instant,
@@ -1283,6 +1285,8 @@ pub(in super::super) fn proxy_aggregate_request(
         service_tier_for_log,
         effective_service_tier_for_log,
         service_tier_source_for_log,
+        session_id_for_log,
+        conversation_anchor_for_log,
         aggregate_api_candidates,
         request_deadline,
         started_at,
@@ -1332,6 +1336,8 @@ pub(in super::super) fn proxy_aggregate_request(
                 original_path: Some(original_path),
                 adapted_path: Some(path),
                 attempted_aggregate_api_ids: Some(cooling_down_candidate_ids.as_slice()),
+                session_id: session_id_for_log,
+                conversation_anchor: conversation_anchor_for_log,
                 ..Default::default()
             },
             Some(key_id),
@@ -1396,6 +1402,8 @@ pub(in super::super) fn proxy_aggregate_request(
                 effective_service_tier: effective_service_tier_for_log,
                 service_tier_source: service_tier_source_for_log,
                 attempted_aggregate_api_ids: Some(daily_limited_candidate_ids.as_slice()),
+                session_id: session_id_for_log,
+                conversation_anchor: conversation_anchor_for_log,
                 ..Default::default()
             },
             Some(key_id),
@@ -1647,6 +1655,8 @@ pub(in super::super) fn proxy_aggregate_request(
                         upstream_model: candidate_upstream_model.as_deref(),
                         actual_source_kind: Some("aggregate_api"),
                         actual_source_id: Some(candidate_id.as_str()),
+                        session_id: session_id_for_log,
+                        conversation_anchor: conversation_anchor_for_log,
                         ..Default::default()
                     },
                     Some(key_id),
@@ -2180,6 +2190,8 @@ pub(in super::super) fn proxy_aggregate_request(
                     actual_source_kind: Some("aggregate_api"),
                     actual_source_id: Some(candidate_id.as_str()),
                     aggregate_api_cost_multiplier: Some(candidate.cost_multiplier),
+                    session_id: session_id_for_log,
+                    conversation_anchor: conversation_anchor_for_log,
                     ..Default::default()
                 },
                 Some(key_id),
@@ -2265,6 +2277,8 @@ pub(in super::super) fn proxy_aggregate_request(
             upstream_model: last_attempt_upstream_model.as_deref(),
             actual_source_kind: last_attempt_id.as_deref().map(|_| "aggregate_api"),
             actual_source_id: last_attempt_id.as_deref(),
+            session_id: session_id_for_log,
+            conversation_anchor: conversation_anchor_for_log,
             ..Default::default()
         },
         Some(key_id),

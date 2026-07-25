@@ -1959,10 +1959,10 @@ pub(super) fn build_local_validation_result(
         .map_err(|err| LocalValidationError::new(400, err.message()))?;
         let incoming_headers = incoming_headers
             .with_conversation_id_override(initial_local_conversation_id.as_deref());
-        let request_log_session_id = incoming_headers
-            .session_id()
-            .or(incoming_headers.parent_thread_id())
-            .map(str::to_string);
+        let request_log_session_id = resolve_request_log_session_id(
+            &incoming_headers,
+            [initial_request_meta.session_id_candidate.as_deref()],
+        );
         let is_stream = resolve_client_is_stream(
             effective_protocol_type,
             logical_path.as_str(),
@@ -2327,10 +2327,14 @@ pub(super) fn build_local_validation_result(
     );
     let has_prompt_cache_key = request_meta.has_prompt_cache_key;
     let request_shape = client_request_meta.request_shape;
-    let request_log_session_id = incoming_headers
-        .session_id()
-        .or(incoming_headers.parent_thread_id())
-        .map(str::to_string);
+    let request_log_session_id = resolve_request_log_session_id(
+        &incoming_headers,
+        [
+            client_request_meta.session_id_candidate.as_deref(),
+            initial_request_meta.session_id_candidate.as_deref(),
+            request_meta.session_id_candidate.as_deref(),
+        ],
+    );
 
     ensure_anthropic_model_is_listed(&storage, effective_protocol_type, model_for_log.as_deref())?;
 
@@ -2374,6 +2378,23 @@ pub(super) fn build_local_validation_result(
         gateway_mode_for_log: compact_gateway_mode,
         method,
     })
+}
+
+fn resolve_request_log_session_id<'a>(
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+    metadata_candidates: impl IntoIterator<Item = Option<&'a str>>,
+) -> Option<String> {
+    incoming_headers
+        .session_id()
+        .or(incoming_headers.parent_thread_id())
+        .map(str::to_string)
+        .or_else(|| {
+            metadata_candidates
+                .into_iter()
+                .flatten()
+                .map(str::to_string)
+                .next()
+        })
 }
 
 #[cfg(test)]

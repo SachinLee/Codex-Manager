@@ -84,3 +84,29 @@ test("request log summary cards show guard retry usage as a separate hint", asyn
     /summary\.guardRetryEstimatedCostUsd > 0[\s\S]*Guard \+\$\{formatUsdAmount\(summary\.guardRetryEstimatedCostUsd\)\}/,
   );
 });
+
+test("request logs use compact result metrics without model usage statistics", async () => {
+  const sectionsSource = await readPageSectionsSource();
+  const logsPageSource = await readLogsPageSource();
+
+  assert.doesNotMatch(sectionsSource, /ModelUsageStatsCard/);
+  assert.match(sectionsSource, /<RequestResultSummaryCard/);
+  assert.match(sectionsSource, /title=\{t\("累计费用"\)\}/);
+  assert.match(sectionsSource, /value=\{formatUsdAmount\(summary\.totalCostUsd\)\}/);
+  assert.match(logsPageSource, /codexSessionMap=\{codexSessionMap\}/);
+  assert.match(sectionsSource, /<SessionInfoCell[\s\S]*session=\{codexSessionMap\.get/);
+  assert.match(sectionsSource, /formatOutputRate\(log\.outputTokens, log\.durationMs\)/);
+  assert.match(sectionsSource, /formatCacheRate\(log\.inputTokens, log\.cachedInputTokens\)/);
+  assert.match(sectionsSource, /formatUsdAmount\(log\.estimatedCostUsd\)/);
+  assert.match(sectionsSource, /formatTableTokenAmount\(log\.cacheWriteInputTokens\)/);
+  assert.match(sectionsSource, /log\.billableTotalTokens !== log\.totalTokens/);
+  assert.match(sectionsSource, /\{t\("历史长上下文候选"\)\}/);
+  assert.match(
+    sectionsSource,
+    /formatDuration\(log\.durationMs\)\}[\s\S]*formatDuration\(log\.firstResponseMs\)\}[\s\S]*formatOutputRate\(log\.outputTokens, log\.durationMs\)/,
+  );
+  assert.match(
+    sectionsSource,
+    /log\.billableEstimatedCostUsd !== log\.estimatedCostUsd/,
+  );
+});

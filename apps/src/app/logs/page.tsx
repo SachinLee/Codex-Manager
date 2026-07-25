@@ -8,7 +8,10 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { accountClient } from "@/lib/api/account-client";
-import { codexLauncherClient } from "@/lib/api/codex-launcher";
+import {
+  codexLauncherClient,
+  type CodexSession,
+} from "@/lib/api/codex-launcher";
 import {
   buildStartupSnapshotQueryKey,
   STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
@@ -232,6 +235,17 @@ function LogsPageContent() {
     );
   }, [aggregateApisResult]);
 
+  const codexSessionMap = useMemo(() => {
+    return new Map<string, CodexSession>(
+      (codexSessions || [])
+        .map((session) => {
+          const id = String(session.sessionId || "").trim();
+          return id ? ([id, session] as const) : null;
+        })
+        .filter((entry): entry is readonly [string, CodexSession] => entry != null),
+    );
+  }, [codexSessions]);
+
   const logs = logsResult?.items || [];
   const isLogsLoading =
     serviceStatus.connected &&
@@ -400,6 +414,7 @@ function LogsPageContent() {
             accountNameMap={accountNameMap}
             apiKeyMap={apiKeyMap}
             aggregateApiMap={aggregateApiMap}
+            codexSessionMap={codexSessionMap}
             clearMutationPending={clearMutation.isPending}
             onSearchChange={(value) => {
               setSearch(value);

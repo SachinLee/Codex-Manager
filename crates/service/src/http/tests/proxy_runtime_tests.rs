@@ -865,7 +865,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         "platform_key_ws_supported",
         &[
             ("OpenAI-Beta", "responses_websockets=2026-02-06"),
-            ("session_id", "session_ws_1"),
+            ("x-session-id", "session_ws_1"),
             ("x-codex-window-id", "session_ws_1:7"),
             ("x-client-request-id", "client_req_ws_1"),
             ("x-openai-subagent", "review"),
@@ -1073,6 +1073,12 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         ws_logs.len(),
         2,
         "expected two websocket request log entries"
+    );
+    assert!(
+        ws_logs
+            .iter()
+            .all(|item| item.session_id.as_deref() == Some("session_ws_1")),
+        "expected x-session-id to persist on every websocket request log"
     );
     assert!(
         ws_logs

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/codexmanager-service/backend/index.md", "reason": "服务端网关实现与质量约束"}
+{"file": ".trellis/spec/codexmanager-service/backend/logging-guidelines.md", "reason": "请求日志不得泄露原始请求内容或敏感字段"}

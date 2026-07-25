@@ -8,6 +8,13 @@ import ts from "../node_modules/typescript/lib/typescript.js";
 
 const appsRoot = path.resolve(import.meta.dirname, "..");
 const sourcePath = path.join(appsRoot, "src", "lib", "api", "aggregate-capabilities.ts");
+const aggregatePagePath = path.join(
+  appsRoot,
+  "src",
+  "app",
+  "aggregate-api",
+  "page.tsx",
+);
 
 async function loadModule() {
   const source = await fs.readFile(sourcePath, "utf8");
@@ -55,4 +62,46 @@ test("capability attempts discard raw payload fields", () => {
   assert.equal(attempts[0].deliveryStarted, false);
   assert.equal("prompt" in attempts[0], false);
   assert.equal("requestBody" in attempts[0], false);
+});
+
+test("aggregate API page preserves batch balance refresh", async () => {
+  const source = await fs.readFile(aggregatePagePath, "utf8");
+
+  assert.match(source, /const \[refreshingBalances, setRefreshingBalances\] = useState\(false\)/);
+  assert.match(
+    source,
+    /const balanceEnabledApiIds = useMemo\([\s\S]*api\.balanceQueryEnabled[\s\S]*api\.id/,
+  );
+  assert.match(
+    source,
+    /const refreshAllBalancesMutation = useMutation\([\s\S]*Promise\.allSettled\([\s\S]*accountClient\.refreshAggregateApiBalance/,
+  );
+  assert.match(
+    source,
+    /refreshAllBalancesMutation\.mutate\(\{[\s\S]*apiIds: balanceEnabledApiIds/,
+  );
+  assert.match(source, /\{t\("刷新余额"\)\}/);
+});
+
+test("aggregate API page preserves cooldown countdown and reset controls", async () => {
+  const source = await fs.readFile(aggregatePagePath, "utf8");
+
+  assert.match(
+    source,
+    /useAggregateApiRuntimeStatuses\(isQueryEnabled\)/,
+  );
+  assert.match(
+    source,
+    /runtimeStatus\?\.isCoolingDown[\s\S]*runtimeStatus\.cooldownUntil/,
+  );
+  assert.match(
+    source,
+    /formatCooldownRemaining\([\s\S]*runtimeStatus\.cooldownUntil/,
+  );
+  assert.match(
+    source,
+    /accountClient\.resetAggregateApiRuntimeStatus\(apiId\)/,
+  );
+  assert.match(source, /\{t\("解除冷却"\)\}/);
+  assert.match(source, /<ConfirmDialog[\s\S]*title=\{t\("解除冷却"\)\}/);
 });

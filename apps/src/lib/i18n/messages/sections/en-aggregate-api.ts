@@ -98,4 +98,18 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   "留空表示不限": "Leave blank for no limit",
   "请求费用按模型基础价格计算后乘以该倍率；默认 1。": "Request cost uses the model base price multiplied by this value; default is 1.",
   "用于聚合 API 当日消耗控制；留空不限制。": "Controls same-day Aggregate API spending; leave blank for no limit.",
+  "运行状态": "Runtime status",
+  "冷却中": "Cooling down",
+  "连续失败": "Consecutive failures",
+  "解除冷却": "Clear cooldown",
+  "连续上游请求失败": "Consecutive upstream request failures",
+  "最后失败": "Last failure",
+  "冷却截止": "Cooldown ends",
+  "正常": "Healthy",
+  "已解除冷却，API 已重新加入路由候选":
+    "Cooldown cleared; the API has rejoined routing candidates",
+  "解除冷却失败": "Failed to clear cooldown",
+  "确认解除": "Confirm clear",
+  "解除后该上游会立即重新进入路由候选。若上游仍不稳定，可能很快再次触发冷却。":
+    "The upstream will immediately rejoin routing candidates. If it remains unstable, it may quickly enter cooldown again.",
 };

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Zap, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -224,6 +224,65 @@ export function SummaryCard({
         ) : null}
       </div>
       <p className="relative mt-auto line-clamp-2 border-t border-border/35 pt-3 text-[11px] leading-4 text-muted-foreground">
+        {description}
+      </p>
+    </div>
+  );
+}
+
+export function RequestResultSummaryCard({
+  title,
+  requestCount,
+  successCount,
+  errorCount,
+  requestLabel,
+  successLabel,
+  errorLabel,
+  description,
+}: {
+  title: string;
+  requestCount: number;
+  successCount: number;
+  errorCount: number;
+  requestLabel: string;
+  successLabel: string;
+  errorLabel: string;
+  description: string;
+}) {
+  const metrics = [
+    { label: requestLabel, value: requestCount, icon: Zap, toneClass: "text-primary" },
+    { label: successLabel, value: successCount, icon: CheckCircle2, toneClass: "text-green-500" },
+    { label: errorLabel, value: errorCount, icon: AlertTriangle, toneClass: "text-red-500" },
+  ];
+
+  return (
+    <div className="group/metric relative flex min-h-[142px] flex-col overflow-hidden rounded-2xl border border-border/55 bg-background/72 p-4 shadow-[0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-border/80 hover:bg-background/86 hover:shadow-md sm:col-span-2">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full bg-primary/12 opacity-45 blur-2xl transition-opacity group-hover/metric:opacity-70"
+      />
+      <div className="relative flex items-center justify-between gap-3">
+        <div className="truncate text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+          {title}
+        </div>
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary ring-1 ring-inset ring-white/10">
+          <Zap className="size-4" />
+        </div>
+      </div>
+      <div className="relative mt-4 grid grid-cols-3 divide-x divide-border/45">
+        {metrics.map(({ label, value, icon: Icon, toneClass }) => (
+          <div key={label} className="min-w-0 px-3 first:pl-0 last:pr-0">
+            <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+              <Icon className={`size-3 shrink-0 ${toneClass}`} />
+              <span className="truncate">{label}</span>
+            </div>
+            <div className="mt-1 truncate text-xl font-semibold tracking-[-0.03em] text-foreground">
+              {value.toLocaleString("zh-CN")}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="relative mt-auto border-t border-border/35 pt-3 text-[11px] leading-4 text-muted-foreground">
         {description}
       </p>
     </div>

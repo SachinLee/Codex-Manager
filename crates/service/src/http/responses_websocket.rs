@@ -1805,6 +1805,7 @@ fn finalize_ws_request_log(
         &storage,
         crate::gateway::RequestLogTraceContext {
             trace_id: Some(pending.trace_id.as_str()),
+            session_id: context.incoming_headers.session_id(),
             original_path: Some(RESPONSES_ENDPOINT),
             adapted_path: Some(RESPONSES_ENDPOINT),
             request_type: Some("ws"),

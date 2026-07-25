@@ -50,6 +50,76 @@ Questions to answer:
 
 (To be filled by the team)
 
+## Scenario: Request Log Session Identity
+
+### 1. Scope / Trigger
+
+- Trigger: changing Codex request headers, Responses request normalization, HTTP or WebSocket request-log finalization, or session-title projection.
+- Applies to `gateway/request/incoming_headers.rs`, `gateway/local_validation/request.rs`, `http/responses_websocket.rs`, `gateway/upstream/protocol/aggregate_api.rs`, `gateway/upstream/proxy.rs`, and request-log tests.
+
+### 2. Signatures
+
+- Accepted session header aliases: `session-id`, `session_id`, and `x-session-id`.
+- Trusted parent fallback: `x-codex-parent-thread-id`.
+- Explicit request-body fields may appear at the top level, under `client_metadata`, or under `metadata`: `session_id`, `sessionId`, `codex_session_id`, `codexSessionId`, `thread_id`, `threadId`, `codex_thread_id`, and `codexThreadId`.
+- Persisted field: `RequestLogTraceContext.session_id` -> `request_logs.session_id`.
+
+### 3. Contracts
+
+- Resolution precedence is `session header > parent-thread header > explicit body candidate > recognized prompt_cache_key`.
+- HTTP, WebSocket, and Aggregate API finalizers must all copy the resolved session ID into `RequestLogTraceContext`; forwarding a header upstream is not equivalent to logging it. Aggregate route success/failure logs must not drop `session_id` / `conversation_anchor` via `..Default::default()`.
+- Body-derived IDs are logging metadata only. They must not change routing, session affinity, or the upstream request body.
+- A persisted candidate is limited to 256 bytes of printable ASCII.
+- `prompt_cache_key` is accepted only when it is a Codex UUID-shaped thread ID or a non-empty `local:` ID. Route anchors beginning with `pck:v1:` and arbitrary cache keys are not session IDs.
+
+### 4. Validation & Error Matrix
+
+- Empty, control-character-containing, or longer-than-256-byte candidate -> ignore it for request-log session identity.
+- Empty `local:` suffix -> ignore it.
+- `pck:v1:` route anchor -> ignore it.
+- Header and body disagree -> persist the header value.
+- No valid identity source -> persist `NULL`; do not invent an ID from request order or timing.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a Codex request with `x-session-id` stores that ID for both HTTP and WebSocket logs, allowing the UI to resolve the local thread title.
+- Base: a compatible Responses client omits session headers but supplies `client_metadata.thread_id`; the bounded explicit ID is stored only in the log.
+- Bad: the upstream receives `x-session-id`, but the WebSocket finalizer omits `RequestLogTraceContext.session_id`, leaving the UI with `-`.
+- Bad: the Aggregate API path resolves a body/header session ID, then writes request logs with `..Default::default()` and drops `session_id`.
+- Bad: treating every `prompt_cache_key` as a session ID, which can link unrelated requests or persist attacker-controlled labels.
+
+### 6. Tests Required
+
+- Unit tests must cover all three header aliases through both axum and tiny_http parsers.
+- Resolver tests must prove header precedence over body metadata.
+- Body parsing tests must cover explicit metadata, UUID and `local:` cache keys, route-anchor rejection, ordinary-key rejection, control characters, empty local IDs, and the 256-byte bound.
+- HTTP request-log tests must write and read a log row using a body-derived candidate.
+- WebSocket proxy tests must assert every finalized request-log row stores `x-session-id`.
+- Aggregate API request-log contexts must include `session_id_for_log` / `conversation_anchor_for_log` on every write path.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let request_log_session_id = incoming_headers.session_id().map(str::to_string);
+// The WebSocket finalizer omits session_id even though the header was parsed.
+```
+
+#### Correct
+
+```rust
+let request_log_session_id = resolve_request_log_session_id(
+    &incoming_headers,
+    [request_metadata.session_id_candidate.as_deref()],
+);
+
+RequestLogTraceContext {
+    session_id: request_log_session_id.as_deref(),
+    ..Default::default()
+}
+```
+
 ## Scenario: Gateway Reasoning Guard Runtime Contract
 
 ### 1. Scope / Trigger

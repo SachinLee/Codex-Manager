@@ -12,6 +12,7 @@ import {
   PencilLine,
   Plus,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   Trash2,
   Unplug,
@@ -53,8 +54,10 @@ import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivati
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
+import { useAggregateApiRuntimeStatuses } from "@/hooks/useAggregateApiRuntimeStatuses";
 import { accountClient } from "@/lib/api/account-client";
 import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
+import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
@@ -112,6 +115,14 @@ function secretPreview(secret: AggregateApiSecretResult): string {
   return secret.key;
 }
 
+function formatCooldownRemaining(cooldownUntil: number | null | undefined, nowSeconds: number): string {
+  const remaining = Math.max(0, Number(cooldownUntil || 0) - nowSeconds);
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+
 export default function AggregateApiPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -135,11 +146,18 @@ export default function AggregateApiPage() {
   const [refreshingBalanceId, setRefreshingBalanceId] = useState<string | null>(
     null,
   );
+  const [refreshingBalances, setRefreshingBalances] = useState(false);
   const [togglingApiId, setTogglingApiId] = useState<string | null>(null);
   const [capabilityApiId, setCapabilityApiId] = useState<string | null>(null);
   const [diagnosingApiId, setDiagnosingApiId] = useState<string | null>(null);
   const [diagnosticsResult, setDiagnosticsResult] =
     useState<AggregateApiCapabilityDiagnosticsResult | null>(null);
+  const [resetCooldownApi, setResetCooldownApi] = useState<AggregateApi | null>(null);
+
+  const {
+    byApiId: aggregateApiRuntimeStatusById,
+    nowSeconds: runtimeStatusNowSeconds,
+  } = useAggregateApiRuntimeStatuses(isQueryEnabled);
 
   const { data: aggregateApis = [], isLoading } = useQuery({
     queryKey: ["aggregate-apis"],
@@ -156,6 +174,7 @@ export default function AggregateApiPage() {
       setModalOpen(false);
       setEditingId(null);
       setDeleteId(null);
+      setResetCooldownApi(null);
       setRevealedSecrets({});
     });
     return () => window.cancelAnimationFrame(frameId);
@@ -174,6 +193,10 @@ export default function AggregateApiPage() {
           ),
     [aggregateApis, providerFilter],
   );
+  const balanceEnabledApiIds = useMemo(
+    () => filteredApis.filter((api) => api.balanceQueryEnabled).map((api) => api.id),
+    [filteredApis],
+  );
   const selectedCapabilityApi = useMemo(
     () => aggregateApis.find((api) => api.id === capabilityApiId) ?? aggregateApis[0] ?? null,
     [aggregateApis, capabilityApiId]
@@ -189,6 +212,12 @@ export default function AggregateApiPage() {
   const activeCount = aggregateApis.filter((api) => api.status === "active").length;
   const routedCount = aggregateApis.filter((api) => api.modelSlugs.length > 0).length;
   const failedCount = aggregateApis.filter((api) => api.lastTestStatus === "failed").length;
+  const coolingCount = aggregateApis.filter((api) => {
+    const runtime = aggregateApiRuntimeStatusById.get(api.id);
+    return Boolean(
+      runtime?.isCoolingDown && Number(runtime.cooldownUntil || 0) > runtimeStatusNowSeconds,
+    );
+  }).length;
 
   const deleteMutation = useMutation({
     mutationFn: (apiId: string) => accountClient.deleteAggregateApi(apiId),
@@ -222,6 +251,18 @@ export default function AggregateApiPage() {
     },
   });
 
+  const resetCooldownMutation = useMutation({
+    mutationFn: (apiId: string) => accountClient.resetAggregateApiRuntimeStatus(apiId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["aggregate-api-runtime-status"] });
+      toast.success(t("已解除冷却，API 已重新加入路由候选"));
+      setResetCooldownApi(null);
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("解除冷却失败")}: ${getAppErrorMessage(error)}`);
+    },
+  });
+
   const balanceMutation = useMutation({
     mutationFn: (apiId: string) => accountClient.refreshAggregateApiBalance(apiId),
     onMutate: (apiId) => setRefreshingBalanceId(apiId),
@@ -231,6 +272,37 @@ export default function AggregateApiPage() {
     },
     onSettled: async (_result, _error, apiId) => {
       setRefreshingBalanceId((current) => (current === apiId ? null : current));
+      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+    },
+  });
+
+  const refreshAllBalancesMutation = useMutation({
+    mutationFn: async ({ apiIds }: { apiIds: string[] }) =>
+      Promise.allSettled(
+        apiIds.map((apiId) => accountClient.refreshAggregateApiBalance(apiId)),
+      ),
+    onMutate: () => setRefreshingBalances(true),
+    onSuccess: (results) => {
+      const successCount = results.filter(
+        (result) => result.status === "fulfilled" && result.value.ok,
+      ).length;
+      const failCount = results.length - successCount;
+      if (failCount === 0) {
+        toast.success(t("余额刷新完成：{count} 个成功", { count: successCount }));
+        return;
+      }
+      toast.warning(
+        t("余额刷新完成：{success} 个成功，{fail} 个失败", {
+          success: successCount,
+          fail: failCount,
+        }),
+      );
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("批量刷新余额失败")}: ${getAppErrorMessage(error)}`);
+    },
+    onSettled: async () => {
+      setRefreshingBalances(false);
       await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
     },
   });
@@ -300,25 +372,46 @@ export default function AggregateApiPage() {
           title={t("聚合 API")}
           description={t("这里只管理上游连接；模型路由在“模型管理”中显式配置，页面不会访问供应商 `/models`。")}
           actions={
-            <Button
-              size="sm"
-              disabled={!isServiceReady}
-              onClick={() => {
-                setEditingId(null);
-                setModalOpen(true);
-              }}
-            >
-              <Plus className="mr-1.5 h-4 w-4" />
-              {t("新建聚合 API")}
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!isServiceReady || refreshingBalances}
+                onClick={() => {
+                  if (balanceEnabledApiIds.length === 0) {
+                    toast.info(t("暂无已启用余额检测的聚合 API"));
+                    return;
+                  }
+                  refreshAllBalancesMutation.mutate({ apiIds: balanceEnabledApiIds });
+                }}
+              >
+                <RefreshCw
+                  className={`mr-1.5 h-4 w-4 ${refreshingBalances ? "animate-spin" : ""}`}
+                />
+                {t("刷新余额")}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!isServiceReady}
+                onClick={() => {
+                  setEditingId(null);
+                  setModalOpen(true);
+                }}
+              >
+                <Plus className="mr-1.5 h-4 w-4" />
+                {t("新建聚合 API")}
+              </Button>
+            </div>
           }
         />
 
-        <section className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <section className="grid grid-cols-2 gap-2 lg:grid-cols-5">
           <MetricCard title={t("总数")} value={aggregateApis.length} icon={Database} tone="blue" />
           <MetricCard title={t("已启用")} value={activeCount} icon={ShieldCheck} tone="emerald" />
           <MetricCard title={t("已有模型路由")} value={routedCount} icon={Gauge} tone="violet" />
           <MetricCard title={t("测试失败")} value={failedCount} icon={Unplug} tone="rose" />
+          <MetricCard title={t("冷却中")} value={coolingCount} icon={RotateCcw} tone="amber" />
         </section>
 
         <Card className="glass-card overflow-hidden py-0">
@@ -354,6 +447,7 @@ export default function AggregateApiPage() {
                     <TableHead>{t("密钥")}</TableHead>
                     <TableHead>{t("模型路由")}</TableHead>
                     <TableHead>{t("余额")}</TableHead>
+                    <TableHead>{t("运行状态")}</TableHead>
                     <TableHead>{t("连通性")}</TableHead>
                     <TableHead>{t("启用")}</TableHead>
                     <TableHead className="text-right">{t("操作")}</TableHead>
@@ -370,7 +464,7 @@ export default function AggregateApiPage() {
                     ))
                   ) : filteredApis.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="h-48 text-center text-muted-foreground">
+                      <TableCell colSpan={9} className="h-48 text-center text-muted-foreground">
                         {t("暂无聚合 API，点击右上角新建")}
                       </TableCell>
                     </TableRow>
@@ -379,6 +473,11 @@ export default function AggregateApiPage() {
                       const revealed = revealedSecrets[api.id];
                       const balance = parseBalanceSnapshot(api);
                       const testError = String(api.lastTestError || "").trim();
+                      const runtimeStatus = aggregateApiRuntimeStatusById.get(api.id);
+                      const isCoolingDown = Boolean(
+                        runtimeStatus?.isCoolingDown &&
+                          Number(runtimeStatus.cooldownUntil || 0) > runtimeStatusNowSeconds,
+                      );
                       return (
                         <TableRow key={api.id}>
                           <TableCell className="min-w-[240px]">
@@ -424,11 +523,75 @@ export default function AggregateApiPage() {
                             <div className="flex items-center gap-1">
                               <span className="font-mono text-xs">{formatBalance(balance)}</span>
                               {api.balanceQueryEnabled ? (
-                                <Button type="button" variant="ghost" size="icon" aria-label={t("刷新余额")} disabled={refreshingBalanceId === api.id} onClick={() => balanceMutation.mutate(api.id)}>
+                                <Button type="button" variant="ghost" size="icon" aria-label={t("刷新余额")} disabled={refreshingBalanceId === api.id || refreshingBalances} onClick={() => balanceMutation.mutate(api.id)}>
                                   <RefreshCw className={`h-4 w-4 ${refreshingBalanceId === api.id ? "animate-spin" : ""}`} />
                                 </Button>
                               ) : null}
                             </div>
+                          </TableCell>
+                          <TableCell className="align-middle min-w-[160px]">
+                            {isCoolingDown && runtimeStatus ? (
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={<div />}
+                                  className="flex flex-col items-start gap-1"
+                                >
+                                  <Badge className="w-fit border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+                                    {t("冷却中")}{" "}
+                                    {formatCooldownRemaining(
+                                      runtimeStatus.cooldownUntil,
+                                      runtimeStatusNowSeconds,
+                                    )}
+                                  </Badge>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {t("连续失败")} {runtimeStatus.consecutiveFailures}/
+                                    {runtimeStatus.failureThreshold}
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 w-fit gap-1 px-1 text-[10px] text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+                                    disabled={!isServiceReady || resetCooldownMutation.isPending}
+                                    onClick={() => setResetCooldownApi(api)}
+                                  >
+                                    <RotateCcw className="h-3 w-3" />
+                                    {t("解除冷却")}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-sm space-y-1 text-xs">
+                                  <div className="grid gap-1">
+                                    <span>{runtimeStatus.reason || t("连续上游请求失败")}</span>
+                                    <span>
+                                      {t("最后失败")}:{" "}
+                                      {formatTsFromSeconds(
+                                        runtimeStatus.lastFailureAt,
+                                        t("未知时间"),
+                                      )}
+                                    </span>
+                                    <span>
+                                      {t("冷却截止")}:{" "}
+                                      {formatTsFromSeconds(
+                                        runtimeStatus.cooldownUntil,
+                                        t("未知时间"),
+                                      )}
+                                    </span>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <div className="flex flex-col items-start gap-1">
+                                <Badge className="w-fit border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300">
+                                  {t("正常")}
+                                </Badge>
+                                {runtimeStatus && runtimeStatus.consecutiveFailures > 0 ? (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {t("连续失败")} {runtimeStatus.consecutiveFailures}/
+                                    {runtimeStatus.failureThreshold}
+                                  </span>
+                                ) : null}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell>
                             <div className="space-y-1">
@@ -547,6 +710,22 @@ export default function AggregateApiPage() {
           if (!deleteId) return;
           deleteMutation.mutate(deleteId);
           setDeleteId(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(resetCooldownApi)}
+        onOpenChange={(open) => {
+          if (!open) setResetCooldownApi(null);
+        }}
+        title={t("解除冷却")}
+        description={t(
+          "解除后该上游会立即重新进入路由候选。若上游仍不稳定，可能很快再次触发冷却。",
+        )}
+        confirmText={t("确认解除")}
+        onConfirm={() => {
+          if (!resetCooldownApi) return;
+          resetCooldownMutation.mutate(resetCooldownApi.id);
         }}
       />
     </>

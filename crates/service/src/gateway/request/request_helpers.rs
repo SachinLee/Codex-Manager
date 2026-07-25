@@ -3,6 +3,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub(crate) const MAX_TEXT_INPUT_CHARS: usize = 1_048_576;
+const MAX_REQUEST_LOG_SESSION_ID_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ParsedRequestMetadata {
@@ -14,6 +15,7 @@ pub(crate) struct ParsedRequestMetadata {
     pub(crate) request_shape: Option<String>,
     pub(crate) has_prompt_cache_key: bool,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) session_id_candidate: Option<String>,
     pub(crate) has_previous_response_id: bool,
 }
 
@@ -108,6 +110,7 @@ pub(crate) fn parse_request_metadata_from_value(value: &Value) -> ParsedRequestM
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
+    let session_id_candidate = request_log_session_id_candidate_from_value(value);
     let has_previous_response_id = value
         .get("previous_response_id")
         .and_then(Value::as_str)
@@ -127,8 +130,108 @@ pub(crate) fn parse_request_metadata_from_value(value: &Value) -> ParsedRequestM
         request_shape,
         has_prompt_cache_key,
         prompt_cache_key,
+        session_id_candidate,
         has_previous_response_id,
     }
+}
+
+pub(crate) fn request_log_session_id_candidate_from_value(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    session_candidate_from_object(object, ExplicitSessionCandidate::Yes)
+        .or_else(|| {
+            object
+                .get("client_metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| {
+                    session_candidate_from_object(metadata, ExplicitSessionCandidate::Yes)
+                })
+        })
+        .or_else(|| {
+            object
+                .get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| {
+                    session_candidate_from_object(metadata, ExplicitSessionCandidate::Yes)
+                })
+        })
+        .or_else(|| {
+            object
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .and_then(|value| normalize_session_candidate(value, ExplicitSessionCandidate::No))
+        })
+}
+
+#[derive(Clone, Copy)]
+enum ExplicitSessionCandidate {
+    Yes,
+    No,
+}
+
+fn session_candidate_from_object(
+    object: &serde_json::Map<String, Value>,
+    explicit: ExplicitSessionCandidate,
+) -> Option<String> {
+    [
+        "session_id",
+        "sessionId",
+        "codex_session_id",
+        "codexSessionId",
+        "thread_id",
+        "threadId",
+        "codex_thread_id",
+        "codexThreadId",
+    ]
+    .iter()
+    .find_map(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(|value| normalize_session_candidate(value, explicit))
+    })
+}
+
+fn normalize_session_candidate(value: &str, explicit: ExplicitSessionCandidate) -> Option<String> {
+    let normalized = value.trim();
+    if !is_safe_request_log_session_id(normalized) || normalized.starts_with("pck:v1:") {
+        return None;
+    }
+    if matches!(explicit, ExplicitSessionCandidate::Yes)
+        || looks_like_local_thread_id(normalized)
+        || looks_like_codex_thread_id(normalized)
+    {
+        return Some(normalized.to_string());
+    }
+    None
+}
+
+fn is_safe_request_log_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_REQUEST_LOG_SESSION_ID_BYTES
+        && value.bytes().all(|byte| matches!(byte, b'!'..=b'~'))
+}
+
+fn looks_like_local_thread_id(value: &str) -> bool {
+    value
+        .strip_prefix("local:")
+        .is_some_and(|thread_id| !thread_id.is_empty())
+}
+
+fn looks_like_codex_thread_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (idx, byte) in bytes.iter().enumerate() {
+        if matches!(idx, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn validate_text_input_limit_for_path(
