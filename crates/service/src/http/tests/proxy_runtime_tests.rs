@@ -659,50 +659,103 @@ async fn start_mock_upstream_ws_usage_limit_then_success() -> (
                 .expect("accept websocket handshake");
 
             let mut frames = Vec::new();
-            if let Some(Ok(Message::Text(text))) = websocket.next().await {
-                frames.push(text.to_string());
-                let _ = event_tx.send(text.to_string());
-                let response_id = if round == 0 {
-                    "resp_ws_limited_a"
-                } else {
-                    "resp_ws_failover_ok"
-                };
-                websocket
-                    .send(Message::Text(
+            if round == 0 {
+                if let Some(Ok(Message::Text(text))) = websocket.next().await {
+                    frames.push(text.to_string());
+                    let _ = event_tx.send(text.to_string());
+                    for response_payload in [
                         serde_json::json!({
                             "type": "response.created",
-                            "response": { "id": response_id }
-                        })
-                        .to_string()
-                        .into(),
-                    ))
-                    .await
-                    .expect("send upstream response.created");
-                if round == 0 {
-                    tokio::time::sleep(Duration::from_millis(120)).await;
-                }
-                let response_payload = if round == 0 {
-                    serde_json::json!({
-                        "type": "response.failed",
-                        "response": {
-                            "id": response_id,
-                            "status": "failed",
-                            "error": {
-                                "code": "usage_limit_reached",
-                                "message": "The usage limit has been reached"
+                            "response": { "id": "resp_ws_tool_seed" }
+                        }),
+                        serde_json::json!({
+                            "type": "response.output_item.done",
+                            "response_id": "resp_ws_tool_seed",
+                            "output_index": 0,
+                            "item": {
+                                "type": "custom_tool_call",
+                                "id": "ctc_ws_tool_seed",
+                                "call_id": "call_ws_tool_rebase",
+                                "name": "apply_patch",
+                                "input": "*** Begin Patch",
+                                "status": "completed"
                             }
-                        }
-                    })
-                } else {
+                        }),
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_ws_tool_seed",
+                                "status": "completed",
+                                "output": [{
+                                    "type": "custom_tool_call",
+                                    "id": "ctc_ws_tool_seed",
+                                    "call_id": "call_ws_tool_rebase",
+                                    "name": "apply_patch",
+                                    "input": "*** Begin Patch",
+                                    "status": "completed"
+                                }]
+                            }
+                        }),
+                    ] {
+                        websocket
+                            .send(Message::Text(response_payload.to_string().into()))
+                            .await
+                            .expect("send upstream tool-call response");
+                    }
+                }
+
+                if let Some(Ok(Message::Text(text))) = websocket.next().await {
+                    frames.push(text.to_string());
+                    let _ = event_tx.send(text.to_string());
+                    websocket
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "response.created",
+                                "response": { "id": "resp_ws_limited_a" }
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .expect("send limited account response.created");
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    websocket
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "response.failed",
+                                "response": {
+                                    "id": "resp_ws_limited_a",
+                                    "status": "failed",
+                                    "error": {
+                                        "code": "usage_limit_reached",
+                                        "message": "The usage limit has been reached"
+                                    }
+                                }
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .expect("send limited account response.failed");
+                }
+            } else if let Some(Ok(Message::Text(text))) = websocket.next().await {
+                frames.push(text.to_string());
+                let _ = event_tx.send(text.to_string());
+                for response_payload in [
+                    serde_json::json!({
+                        "type": "response.created",
+                        "response": { "id": "resp_ws_failover_ok" }
+                    }),
                     serde_json::json!({
                         "type": "response.completed",
                         "response": { "id": "resp_ws_failover_ok" }
-                    })
-                };
-                websocket
-                    .send(Message::Text(response_payload.to_string().into()))
-                    .await
-                    .expect("send upstream response");
+                    }),
+                ] {
+                    websocket
+                        .send(Message::Text(response_payload.to_string().into()))
+                        .await
+                        .expect("send successful failover response");
+                }
             }
             let (path, headers) = captured_headers
                 .lock()
@@ -1212,7 +1265,7 @@ async fn official_responses_websocket_preserves_explicit_prompt_cache_key_when_s
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn official_responses_websocket_retries_usage_limit_on_next_account() {
+async fn official_responses_websocket_rebases_tool_output_on_next_account() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-failover");
     let storage = init_test_storage(&db_path);
@@ -1281,6 +1334,13 @@ async fn official_responses_websocket_retries_usage_limit_on_next_account() {
         &[
             ("OpenAI-Beta", "responses_websockets=2026-02-06"),
             ("session_id", "session_ws_failover"),
+            ("x-client-request-id", "request_ws_failover"),
+            ("x-codex-window-id", "window_ws_failover"),
+            ("x-codex-turn-state", "turn_state_ws_failover"),
+            ("x-codex-turn-metadata", "turn_meta_ws_failover"),
+            ("x-codex-parent-thread-id", "parent_ws_failover"),
+            ("x-openai-subagent", "review"),
+            ("x-codex-beta-features", "beta-a"),
         ],
     );
     let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
@@ -1291,8 +1351,7 @@ async fn official_responses_websocket_retries_usage_limit_on_next_account() {
             serde_json::json!({
                 "type": "response.create",
                 "model": "gpt-4.1",
-                "previous_response_id": "resp_ws_old_account",
-                "input": "first request"
+                "input": "make a patch"
             })
             .to_string()
             .into(),
@@ -1307,18 +1366,98 @@ async fn official_responses_websocket_retries_usage_limit_on_next_account() {
     let first_payload: serde_json::Value =
         serde_json::from_str(&first_upstream_frame).expect("parse first upstream frame");
     assert_eq!(first_payload["type"], "response.create");
-    assert_eq!(first_payload["previous_response_id"], "resp_ws_old_account");
+    assert_eq!(first_payload["input"], "make a patch");
+
+    let mut seed_client_events = Vec::new();
+    for _ in 0..3 {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("seed client event timeout")
+            .expect("seed client event")
+            .expect("seed client event result");
+        match event {
+            Message::Text(text) => seed_client_events.push(text.to_string()),
+            other => panic!("unexpected seed client event: {other:?}"),
+        }
+    }
+    assert!(seed_client_events[0].contains("\"response.created\""));
+    assert!(seed_client_events[1].contains("\"custom_tool_call\""));
+    assert!(seed_client_events[1].contains("call_ws_tool_rebase"));
+    assert!(seed_client_events[2].contains("\"response.completed\""));
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "previous_response_id": "resp_ws_tool_seed",
+                "input": [
+                    {
+                        "type": "reasoning",
+                        "id": "reasoning_old_account",
+                        "summary": [],
+                        "encrypted_content": "encrypted_old_account"
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call_ws_tool_rebase",
+                        "output": "patch applied"
+                    }
+                ]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send incremental tool output frame");
 
     let second_upstream_frame =
         tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
             .await
-            .expect("retry upstream frame timeout")
-            .expect("retry upstream frame channel");
+            .expect("limited account tool-output frame timeout")
+            .expect("limited account tool-output frame channel");
     let second_payload: serde_json::Value =
         serde_json::from_str(&second_upstream_frame).expect("parse second upstream frame");
     assert_eq!(second_payload["type"], "response.create");
-    assert_eq!(second_payload["input"], "first request");
-    assert!(second_payload.get("previous_response_id").is_none());
+    assert_eq!(second_payload["previous_response_id"], "resp_ws_tool_seed");
+    assert_eq!(
+        second_payload["input"][1]["type"],
+        "custom_tool_call_output"
+    );
+
+    let rebased_upstream_frame =
+        tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+            .await
+            .expect("rebased upstream frame timeout")
+            .expect("rebased upstream frame channel");
+    let rebased_payload: serde_json::Value =
+        serde_json::from_str(&rebased_upstream_frame).expect("parse rebased upstream frame");
+    assert!(rebased_payload.get("previous_response_id").is_none());
+    let rebased_input = rebased_payload["input"]
+        .as_array()
+        .expect("rebased tool input array");
+    assert_eq!(rebased_input.len(), 2);
+    assert_eq!(rebased_input[0]["type"], "custom_tool_call");
+    assert_eq!(rebased_input[0]["call_id"], "call_ws_tool_rebase");
+    assert_eq!(rebased_input[1]["type"], "custom_tool_call_output");
+    assert_eq!(rebased_input[1]["call_id"], "call_ws_tool_rebase");
+    assert!(rebased_input
+        .iter()
+        .all(|item| item.get("encrypted_content").is_none()));
+    for key in [
+        "x-codex-window-id",
+        "x-codex-turn-metadata",
+        "x-codex-parent-thread-id",
+    ] {
+        assert!(
+            rebased_payload["client_metadata"].get(key).is_none(),
+            "cross-account response.create must strip {key}"
+        );
+    }
+    assert_eq!(
+        rebased_payload["client_metadata"]["x-openai-subagent"],
+        "review"
+    );
 
     let first_client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
         .await
@@ -1378,9 +1517,40 @@ async fn official_responses_websocket_retries_usage_limit_on_next_account() {
             .map(String::as_str),
         Some("chatgpt_proxy_runtime_ws_b")
     );
-    assert!(captures.iter().all(|capture| {
-        capture.headers.get("session_id").map(String::as_str) == Some("session_ws_failover")
-    }));
+    assert_eq!(
+        captures[0].headers.get("session_id").map(String::as_str),
+        Some("session_ws_failover")
+    );
+    assert!(
+        captures[1].headers.get("session_id").is_none(),
+        "cross-account websocket must not reuse the previous account session"
+    );
+    for header in [
+        "x-client-request-id",
+        "x-codex-window-id",
+        "x-codex-turn-state",
+        "x-codex-turn-metadata",
+        "x-codex-parent-thread-id",
+    ] {
+        assert!(
+            captures[1].headers.get(header).is_none(),
+            "cross-account websocket must strip {header}"
+        );
+    }
+    assert_eq!(
+        captures[1]
+            .headers
+            .get("x-openai-subagent")
+            .map(String::as_str),
+        Some("review")
+    );
+    assert_eq!(
+        captures[1]
+            .headers
+            .get("x-codex-beta-features")
+            .map(String::as_str),
+        Some("beta-a")
+    );
 
     let limited_account = storage
         .find_account_by_id("acc_proxy_runtime_ws_a")

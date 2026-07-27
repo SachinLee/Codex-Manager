@@ -378,6 +378,7 @@ impl Storage {
         self.list_request_logs_with_filter(filters, normalized_offset, normalized_limit)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn list_request_logs_paginated_for_keys(
         &self,
         query: Option<&str>,

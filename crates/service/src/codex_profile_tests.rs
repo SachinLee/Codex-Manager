@@ -158,6 +158,7 @@ name = "Other"
         Some(input.to_string()),
         "http://127.0.0.1:48770/v1",
         &managed_catalog,
+        true,
     )
     .expect("patch gateway");
 
@@ -168,6 +169,15 @@ name = "Other"
     assert!(output.contains("supports_websockets = true"));
     assert!(output.contains("model_catalog_json = \"/tmp/codexmanager/gateway-models.json\""));
     assert!(output.contains("[model_providers.other]"));
+
+    let without_websocket = patch_config_for_gateway(
+        Some(output),
+        "http://127.0.0.1:48770/v1",
+        &managed_catalog,
+        false,
+    )
+    .expect("disable gateway websocket");
+    assert!(without_websocket.contains("supports_websockets = false"));
 }
 
 #[test]
@@ -205,8 +215,53 @@ fn invalid_toml_is_rejected() {
         Some("bad = [".to_string()),
         "http://x/v1",
         Path::new("/tmp/gateway-models.json"),
+        false,
     )
     .is_err());
+}
+
+#[test]
+fn rotation_strategy_selects_catalog_ownership() {
+    assert_eq!(
+        crate::codex_model_catalog::gateway_catalog_policy_for_rotation_strategy(
+            crate::apikey_profile::ROTATION_ACCOUNT
+        ),
+        crate::codex_model_catalog::GatewayCatalogPolicy::OfficialAccountPool
+    );
+    assert_eq!(
+        crate::codex_model_catalog::gateway_catalog_policy_for_rotation_strategy(
+            crate::apikey_profile::ROTATION_AGGREGATE_API
+        ),
+        crate::codex_model_catalog::GatewayCatalogPolicy::Managed
+    );
+    assert_eq!(
+        crate::codex_model_catalog::gateway_catalog_policy_for_rotation_strategy(
+            crate::apikey_profile::ROTATION_HYBRID
+        ),
+        crate::codex_model_catalog::GatewayCatalogPolicy::Managed
+    );
+}
+
+#[test]
+fn api_key_candidates_expose_route_and_catalog_ownership() {
+    for (rotation_strategy, catalog_source) in [
+        (crate::apikey_profile::ROTATION_ACCOUNT, "official"),
+        (crate::apikey_profile::ROTATION_AGGREGATE_API, "managed"),
+        (crate::apikey_profile::ROTATION_HYBRID, "managed"),
+    ] {
+        let candidate = api_key_candidate(ApiKeyCodexProfileCandidate {
+            id: format!("key-{rotation_strategy}"),
+            name: Some("Platform key".to_string()),
+            model_slug: None,
+            reasoning_effort: None,
+            rotation_strategy: rotation_strategy.to_string(),
+            status: "active".to_string(),
+        })
+        .expect("active candidate");
+
+        assert_eq!(candidate.rotation_strategy, rotation_strategy);
+        assert_eq!(candidate.catalog_source, catalog_source);
+    }
 }
 
 #[test]

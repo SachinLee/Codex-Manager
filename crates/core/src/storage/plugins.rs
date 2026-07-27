@@ -847,6 +847,7 @@ impl Storage {
     ///
     /// # 返回
     /// 返回函数执行结果
+    #[allow(clippy::too_many_arguments)]
     pub fn update_plugin_task_definition(
         &self,
         task_id: &str,

@@ -93,6 +93,19 @@ test("formatRuntimeTimeZoneLabel 显示后端传回的时区和偏移", () => {
   );
 });
 
+test("Free 账号模型上限选项始终保留不限制和当前值", () => {
+  assert.equal(helpers.formatFreeAccountMaxModelLabel("auto"), "不限制");
+  assert.equal(helpers.formatFreeAccountMaxModelLabel("gpt-5.4"), "gpt-5.4");
+  assert.deepEqual(
+    helpers.resolveFreeAccountMaxModelOptions("gpt-5.4", [
+      "auto",
+      "gpt-5.2",
+      "gpt-5.2",
+    ]),
+    ["auto", "gpt-5.2", "gpt-5.4"],
+  );
+});
+
 test("parseModelForwardRules 解析多行模型转发规则", () => {
   assert.deepEqual(
     helpers.parseModelForwardRules(

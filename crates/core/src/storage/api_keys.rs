@@ -75,6 +75,7 @@ const API_KEY_CODEX_PROFILE_CANDIDATE_SELECT_SQL: &str = "SELECT
     k.name,
     COALESCE(p.default_model, k.model_slug) AS model_slug,
     COALESCE(p.reasoning_effort, k.reasoning_effort) AS reasoning_effort,
+    COALESCE(k.rotation_strategy, 'account_rotation') AS rotation_strategy,
     k.status
  FROM api_keys k
  LEFT JOIN api_key_profiles p ON p.key_id = k.id";
@@ -568,6 +569,7 @@ impl Storage {
     ///
     /// # 返回
     /// 返回函数执行结果
+    #[allow(clippy::too_many_arguments)]
     pub fn update_api_key_profile_config(
         &self,
         key_id: &str,
@@ -1126,7 +1128,8 @@ fn map_api_key_codex_profile_candidate_row(row: &Row<'_>) -> Result<ApiKeyCodexP
         name: row.get(1)?,
         model_slug: row.get(2)?,
         reasoning_effort: row.get(3)?,
-        status: row.get(4)?,
+        rotation_strategy: row.get(4)?,
+        status: row.get(5)?,
     })
 }
 

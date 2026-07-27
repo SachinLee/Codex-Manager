@@ -554,7 +554,7 @@ fn plugin_task_counts_by_plugin_groups_task_totals() {
     let second = counts.get("second-plugin").expect("second count");
     assert_eq!(second.task_count, 1);
     assert_eq!(second.enabled_task_count, 1);
-    assert!(counts.get("missing-plugin").is_none());
+    assert!(!counts.contains_key("missing-plugin"));
 }
 
 #[test]

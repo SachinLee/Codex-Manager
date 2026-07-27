@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-26
+
+### Added
+
+- 恢复“Free 账号模型上限”设置；可选择 `auto`（不限制）或模型目录中的具体上限。
+
+### Changed
+
+- 发布版本提升到 `0.5.1`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+- 清理低风险 Rust 告警，并仅在 Windows MSVC 目标上抑制 `link.exe` 正常建库信息产生的 `linker_messages` 噪声，其他编译告警仍保持可见。
+
+### Fixed
+
+- Free 账号模型上限现在只过滤超过上限的 Free 账号候选，不会改写请求模型；Plus / Pro 账号不受影响，额度保护仍在过滤后执行，混合账号优先模式在账号耗尽后仍按现有策略回退到聚合 API。
+
 ## [0.5.0] - 2026-07-23
 
 ### Added
@@ -425,7 +440,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.2...v0.4.3

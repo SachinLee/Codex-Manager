@@ -39,9 +39,9 @@ use super::{
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
     APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY, APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
     APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
-    APP_SETTING_SERVICE_ADDR_KEY, APP_SETTING_UI_APPEARANCE_PRESET_KEY,
-    APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY, APP_SETTING_UI_LOCALE_KEY,
-    APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
+    APP_SETTING_SERVICE_ADDR_KEY, APP_SETTING_SHOW_MAIN_WINDOW_ON_STARTUP_KEY,
+    APP_SETTING_UI_APPEARANCE_PRESET_KEY, APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
+    APP_SETTING_UI_LOCALE_KEY, APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
     APP_SETTING_UPDATE_AUTO_CHECK_KEY, SERVICE_BIND_MODE_ALL_INTERFACES,
     SERVICE_BIND_MODE_LOOPBACK, SERVICE_BIND_MODE_SETTING_KEY,
 };
@@ -162,6 +162,8 @@ fn current_app_settings_value_inner(
     let runtime_time_zone = current_runtime_time_zone_value();
     let update_auto_check = setting_bool(&settings, APP_SETTING_UPDATE_AUTO_CHECK_KEY, true);
     let auto_start_enabled = setting_bool(&settings, APP_SETTING_AUTO_START_ENABLED_KEY, false);
+    let show_main_window_on_startup =
+        setting_bool(&settings, APP_SETTING_SHOW_MAIN_WINDOW_ON_STARTUP_KEY, true);
     let persisted_close_to_tray =
         setting_bool(&settings, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, false);
     let close_to_tray = close_to_tray_on_close.unwrap_or(persisted_close_to_tray);
@@ -270,6 +272,7 @@ fn current_app_settings_value_inner(
             &settings,
             update_auto_check,
             auto_start_enabled,
+            show_main_window_on_startup,
             persisted_close_to_tray,
             keep_window_ui_mounted,
             lightweight_mode_on_close_to_tray,
@@ -382,6 +385,10 @@ fn current_app_settings_value_inner(
         object.insert(
             "keepWindowUiMounted".to_string(),
             serde_json::json!(keep_window_ui_mounted),
+        );
+        object.insert(
+            "showMainWindowOnStartup".to_string(),
+            show_main_window_on_startup.into(),
         );
         object.insert("autoStartEnabled".to_string(), auto_start_enabled.into());
         object.insert("autoStartSupported".to_string(), false.into());
@@ -590,6 +597,7 @@ fn persist_current_snapshot(
     settings: &HashMap<String, String>,
     update_auto_check: bool,
     auto_start_enabled: bool,
+    show_main_window_on_startup: bool,
     persisted_close_to_tray: bool,
     keep_window_ui_mounted: bool,
     lightweight_mode_on_close_to_tray: bool,
@@ -625,6 +633,10 @@ fn persist_current_snapshot(
 ) {
     let _ = save_persisted_bool_setting(APP_SETTING_UPDATE_AUTO_CHECK_KEY, update_auto_check);
     let _ = save_persisted_bool_setting(APP_SETTING_AUTO_START_ENABLED_KEY, auto_start_enabled);
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_SHOW_MAIN_WINDOW_ON_STARTUP_KEY,
+        show_main_window_on_startup,
+    );
     let _ = save_persisted_bool_setting(
         APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
         persisted_close_to_tray,

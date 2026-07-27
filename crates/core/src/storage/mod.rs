@@ -1475,6 +1475,7 @@ pub struct ApiKeyCodexProfileCandidate {
     pub name: Option<String>,
     pub model_slug: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub rotation_strategy: String,
     pub status: String,
 }
 

@@ -51,6 +51,7 @@ fn assert_uses_any_index(details: &[String], index_names: &[&str], label: &str) 
 ///
 /// # 返回
 /// 无
+#[allow(clippy::too_many_arguments)]
 fn insert_rollup_row(
     storage: &Storage,
     key_id: &str,
@@ -1318,7 +1319,6 @@ fn dashboard_rollups_survive_cleared_request_logs() {
             reasoning_output_tokens: Some(3),
             estimated_cost_usd: Some(0.35),
             created_at: 3_700,
-            ..RequestTokenStat::default()
         })
         .expect("insert aggregate stat");
 

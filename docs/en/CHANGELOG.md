@@ -5,6 +5,21 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-26
+
+### Added
+
+- Restored the **Free account model ceiling** setting with `auto` (no limit) and concrete model-catalog choices.
+
+### Changed
+
+- Bumped the release version to `0.5.1` and synchronized workspace, frontend package, Tauri desktop metadata, and lockfiles.
+- Cleaned up low-risk Rust warnings and suppressed only the `linker_messages` noise produced by normal `link.exe` library output on Windows MSVC targets; other compiler warnings remain visible.
+
+### Fixed
+
+- The Free account model ceiling now filters only Free-account candidates above the selected ceiling without rewriting the requested model. Plus and Pro accounts are unaffected, quota protection still runs after filtering, and account-first mixed mode retains its aggregate API fallback after account candidates are exhausted.
+
 ## [0.5.0] - 2026-07-23
 
 ### Added
@@ -425,7 +440,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.2...v0.4.3

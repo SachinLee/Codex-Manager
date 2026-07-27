@@ -502,7 +502,51 @@ async fn fast_close_non_sse_error_stream(
     let _ = body_tx.send(super::super::GatewayByteStreamItem::Eof);
 }
 
-fn send_async_stream_request(
+#[derive(Debug)]
+pub(in crate::gateway) enum AsyncStreamRequestError {
+    Request(reqwest::Error),
+    ResponseHeadersTimeout(Duration),
+}
+
+impl std::fmt::Display for AsyncStreamRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Request(err) => err.fmt(formatter),
+            Self::ResponseHeadersTimeout(timeout) => write!(
+                formatter,
+                "upstream response headers timed out after {} ms",
+                timeout.as_millis()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AsyncStreamRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Request(err) => Some(err),
+            Self::ResponseHeadersTimeout(_) => None,
+        }
+    }
+}
+
+async fn send_request_for_response_headers(
+    builder: reqwest::RequestBuilder,
+    timeout: Option<Duration>,
+) -> Result<reqwest::Response, AsyncStreamRequestError> {
+    match timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, builder.send()).await {
+            Ok(result) => result.map_err(AsyncStreamRequestError::Request),
+            Err(_) => Err(AsyncStreamRequestError::ResponseHeadersTimeout(timeout)),
+        },
+        None => builder
+            .send()
+            .await
+            .map_err(AsyncStreamRequestError::Request),
+    }
+}
+
+pub(in crate::gateway) fn send_async_stream_request(
     client: &reqwest::Client,
     method: &reqwest::Method,
     target_url: &str,
@@ -511,7 +555,7 @@ fn send_async_stream_request(
     request_headers: &[(String, String)],
     request_body: &Bytes,
     is_stream: bool,
-) -> Result<super::super::GatewayStreamResponse, reqwest::Error> {
+) -> Result<super::super::GatewayStreamResponse, AsyncStreamRequestError> {
     let client = client.clone();
     let method = method.clone();
     let target_url = target_url.to_string();
@@ -520,9 +564,10 @@ fn send_async_stream_request(
     let request_body = request_body.clone();
     let send_timeout = super::super::support::deadline::send_timeout(request_deadline, is_stream);
     let (meta_tx, meta_rx) = mpsc::sync_channel::<
-        Result<(reqwest::StatusCode, reqwest::header::HeaderMap), reqwest::Error>,
+        Result<(reqwest::StatusCode, reqwest::header::HeaderMap), AsyncStreamRequestError>,
     >(1);
     let (body_tx, body_rx) = mpsc::sync_channel::<super::super::GatewayByteStreamItem>(128);
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     thread::spawn(move || {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -530,16 +575,13 @@ fn send_async_stream_request(
             .unwrap_or_else(|err| panic!("build gateway upstream runtime failed: {err}"));
         runtime.block_on(async move {
             let mut builder = client.request(method, target_url);
-            if let Some(timeout) = send_timeout {
-                builder = builder.timeout(timeout);
-            }
             for (name, value) in request_headers.iter() {
                 builder = builder.header(name, value);
             }
             if !request_body.is_empty() {
                 builder = builder.body(request_body);
             }
-            match builder.send().await {
+            match send_request_for_response_headers(builder, send_timeout).await {
                 Ok(response) => {
                     let status = response.status();
                     let headers = response.headers().clone();
@@ -560,7 +602,14 @@ fn send_async_stream_request(
                         return;
                     }
                     let mut stream = response.bytes_stream();
-                    while let Some(item) = stream.next().await {
+                    loop {
+                        let item = tokio::select! {
+                            _ = &mut cancel_rx => return,
+                            item = stream.next() => item,
+                        };
+                        let Some(item) = item else {
+                            break;
+                        };
                         match item {
                             Ok(bytes) => {
                                 if body_tx
@@ -590,7 +639,7 @@ fn send_async_stream_request(
         Ok(Ok((status, headers))) => Ok(super::super::GatewayStreamResponse::new(
             status,
             headers,
-            super::super::GatewayByteStream::from_receiver(body_rx),
+            super::super::GatewayByteStream::from_receiver_with_cancel(body_rx, Some(cancel_tx)),
         )),
         Ok(Err(err)) => Err(err),
         Err(_) => panic!("receive gateway async upstream response metadata failed"),
@@ -1350,11 +1399,13 @@ fn send_websocket_upstream_request(
         target_url.to_string()
     };
     let request_headers = request_headers.to_vec();
-    let proxy_url = super::super::super::current_upstream_proxy_url_for_account(account_id);
+    let proxy_url =
+        super::super::super::current_websocket_proxy_url_for_account(account_id, ws_url.as_str())?;
     let handshake_timeout = websocket_handshake_timeout(request_deadline);
 
     let (meta_tx, meta_rx) = mpsc::sync_channel::<Result<(), String>>(1);
     let (body_tx, body_rx) = mpsc::sync_channel::<super::super::GatewayByteStreamItem>(128);
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
     thread::spawn(move || {
         let runtime = Builder::new_current_thread()
@@ -1395,7 +1446,11 @@ fn send_websocket_upstream_request(
                     }
                     // body_text was pre-validated as UTF-8 before this thread was spawned.
                     if let Some(text) = body_text {
-                        if let Err(e) = ws_stream.send(Message::Text(text.into())).await {
+                        let send_result = tokio::select! {
+                            _ = &mut cancel_rx => return,
+                            result = ws_stream.send(Message::Text(text.into())) => result,
+                        };
+                        if let Err(e) = send_result {
                             let _ = body_tx.send(super::super::GatewayByteStreamItem::Error(
                                 format!("WebSocket send error: {e}"),
                             ));
@@ -1410,7 +1465,11 @@ fn send_websocket_upstream_request(
                                 let remaining = d
                                     .saturating_duration_since(Instant::now())
                                     .max(Duration::from_millis(100));
-                                match tokio::time::timeout(remaining, ws_stream.next()).await {
+                                let read_result = tokio::select! {
+                                    _ = &mut cancel_rx => return,
+                                    result = tokio::time::timeout(remaining, ws_stream.next()) => result,
+                                };
+                                match read_result {
                                     Ok(m) => m,
                                     Err(_) => {
                                         let _ = body_tx.send(
@@ -1422,7 +1481,10 @@ fn send_websocket_upstream_request(
                                     }
                                 }
                             }
-                            None => ws_stream.next().await,
+                            None => tokio::select! {
+                                _ = &mut cancel_rx => return,
+                                message = ws_stream.next() => message,
+                            },
                         };
                         match next_msg {
                             None => {
@@ -1477,7 +1539,10 @@ fn send_websocket_upstream_request(
             Ok(super::super::GatewayStreamResponse::new(
                 reqwest::StatusCode::OK,
                 headers,
-                super::super::GatewayByteStream::from_receiver(body_rx),
+                super::super::GatewayByteStream::from_receiver_with_cancel(
+                    body_rx,
+                    Some(cancel_tx),
+                ),
             ))
         }
         Ok(Err(err)) => Err(err),

@@ -532,9 +532,11 @@ fn raw_token_rollup_select(
     group_by: &str,
     include_owner_joins: bool,
 ) -> String {
-    let owner_joins = include_owner_joins
-        .then_some(USER_OWNER_JOINS)
-        .unwrap_or("");
+    let owner_joins = if include_owner_joins {
+        USER_OWNER_JOINS
+    } else {
+        ""
+    };
     format!(
         "SELECT
             {select_prefix}

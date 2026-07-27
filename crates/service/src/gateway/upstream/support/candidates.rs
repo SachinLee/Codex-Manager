@@ -20,7 +20,7 @@ pub(in super::super) enum CandidateSkipReason {
 /// 返回函数执行结果
 pub(crate) fn prepare_gateway_candidates(
     storage: &Storage,
-    _request_model: Option<&str>,
+    request_model: Option<&str>,
     account_group_filter: Option<&str>,
     account_plan_filter: Option<&str>,
     low_quota_mode: super::super::super::LowQuotaCandidateMode,
@@ -31,10 +31,14 @@ pub(crate) fn prepare_gateway_candidates(
     let normalized_plan_filter = account_plan_filter
         .map(str::trim)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("all"));
+    let exclude_free_accounts = request_exceeds_free_account_model_ceiling(storage, request_model)?;
 
     // 中文注释：未受限的 Key 继续复用全局缓存；受限 Key 必须先形成 group + plan
     // 的授权交集，再在交集内执行额度保护，避免组外账号影响组内低额度兜底。
-    if normalized_group_filter.is_none() && normalized_plan_filter.is_none() {
+    if normalized_group_filter.is_none()
+        && normalized_plan_filter.is_none()
+        && !exclude_free_accounts
+    {
         return super::super::super::collect_gateway_candidates_with_low_quota_mode(
             storage,
             low_quota_mode,
@@ -50,7 +54,7 @@ pub(crate) fn prepare_gateway_candidates(
         });
     }
 
-    if let Some(plan_filter) = normalized_plan_filter {
+    if normalized_plan_filter.is_some() || exclude_free_accounts {
         let account_ids = authorized_candidates
             .iter()
             .map(|(account, _)| account.id.clone())
@@ -61,13 +65,33 @@ pub(crate) fn prepare_gateway_candidates(
             .into_iter()
             .map(|snapshot| (snapshot.account_id.clone(), snapshot))
             .collect::<HashMap<_, _>>();
-        authorized_candidates.retain(|(account, token)| {
-            crate::account_plan::account_matches_plan_filter_with_snapshot(
-                token,
-                snapshots.get(account.id.as_str()),
-                Some(plan_filter),
-            )
-        });
+        if let Some(plan_filter) = normalized_plan_filter {
+            authorized_candidates.retain(|(account, token)| {
+                crate::account_plan::account_matches_plan_filter_with_snapshot(
+                    token,
+                    snapshots.get(account.id.as_str()),
+                    Some(plan_filter),
+                )
+            });
+        }
+
+        if exclude_free_accounts {
+            let subscriptions = storage
+                .list_account_subscriptions_for_accounts(&account_ids)
+                .map_err(|err| format!("list account subscriptions failed: {err}"))?
+                .into_iter()
+                .map(|subscription| (subscription.account_id.clone(), subscription))
+                .collect::<HashMap<_, _>>();
+            authorized_candidates.retain(|(account, token)| {
+                let token_plan = crate::account_plan::token_plan_from_token(token);
+                !crate::account_plan::resolve_effective_account_plan(
+                    Some(&token_plan),
+                    snapshots.get(account.id.as_str()),
+                    subscriptions.get(account.id.as_str()),
+                )
+                .is_some_and(|plan| plan.normalized == "free")
+            });
+        }
     }
 
     let authorized_account_ids = authorized_candidates
@@ -80,6 +104,42 @@ pub(crate) fn prepare_gateway_candidates(
         &authorized_account_ids,
         low_quota_mode,
     )
+}
+
+fn request_exceeds_free_account_model_ceiling(
+    storage: &Storage,
+    request_model: Option<&str>,
+) -> Result<bool, String> {
+    let configured = super::super::super::current_free_account_max_model();
+    let ceiling = configured.trim();
+    let Some(request_model) = request_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    if ceiling.is_empty()
+        || ceiling.eq_ignore_ascii_case("auto")
+        || ceiling.eq_ignore_ascii_case(request_model)
+    {
+        return Ok(false);
+    }
+
+    let ceiling_model = storage
+        .get_enabled_model_v2(ceiling)
+        .map_err(|err| format!("read free account model ceiling failed: {err}"))?;
+    let request_model = storage
+        .get_enabled_model_v2(request_model)
+        .map_err(|err| format!("read requested model rank failed: {err}"))?;
+
+    // 中文注释：模型目录的 sort_order 越小优先级越高。未知模型无法证明未超过上限，
+    // 因此在配置了具体上限时保守地跳过 Free 账号。
+    Ok(match (request_model, ceiling_model) {
+        (Some(request_model), Some(ceiling_model)) => {
+            request_model.sort_order < ceiling_model.sort_order
+        }
+        _ => true,
+    })
 }
 
 /// 函数 `allow_openai_fallback_for_account`

@@ -32,8 +32,7 @@ pub(super) fn text_id_in_clause(column: &str, ids: &[String]) -> Option<(String,
         return None;
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(ids.len())
+    let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     let params = ids.into_iter().map(Value::Text).collect::<Vec<_>>();

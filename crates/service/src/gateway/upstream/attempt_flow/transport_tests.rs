@@ -135,6 +135,79 @@ fn spawn_raw_http_response(
     (format!("http://{addr}/v1/responses"), release_tx, handle)
 }
 
+fn spawn_active_streaming_http_response(
+    chunks: Vec<Vec<u8>>,
+    chunk_interval: Duration,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind streaming mock upstream");
+    let addr = listener.local_addr().expect("streaming mock upstream addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept streaming mock upstream");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set streaming mock read timeout");
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(read) => request.extend_from_slice(&buf[..read]),
+                Err(_) => break,
+            }
+        }
+
+        let body_len = chunks.iter().map(Vec::len).sum::<usize>();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write streaming mock response headers");
+        stream.flush().expect("flush streaming mock headers");
+
+        for chunk in chunks {
+            thread::sleep(chunk_interval);
+            stream
+                .write_all(chunk.as_slice())
+                .expect("write streaming mock body chunk");
+            stream.flush().expect("flush streaming mock body chunk");
+        }
+    });
+
+    (format!("http://{addr}/v1/responses"), handle)
+}
+
+fn spawn_delayed_http_response_headers(delay: Duration) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind delayed-header mock upstream");
+    let addr = listener
+        .local_addr()
+        .expect("delayed-header mock upstream addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("accept delayed-header mock upstream");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set delayed-header mock read timeout");
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(read) => request.extend_from_slice(&buf[..read]),
+                Err(_) => break,
+            }
+        }
+
+        thread::sleep(delay);
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 14\r\nConnection: close\r\n\r\ndata: [DONE]\n\n",
+        );
+        let _ = stream.flush();
+    });
+
+    (format!("http://{addr}/v1/responses"), handle)
+}
+
 fn send_mock_stream_request(url: &str) -> super::super::super::GatewayStreamResponse {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(1))
@@ -610,6 +683,71 @@ fn stream_transport_does_not_fast_close_successful_sse_body() {
 }
 
 // ── WebSocket upstream selection & fallback ────────────────────────────────
+
+#[test]
+fn stream_transport_timeout_does_not_cap_active_body_duration() {
+    let _env_lock = crate::test_env_guard();
+    let _reload_guard = RuntimeConfigReloadGuard;
+    let _stream_timeout_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS", "200");
+    crate::gateway::reload_runtime_config_from_env();
+
+    let chunks = vec![
+        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"one\"}\n\n".to_vec(),
+        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"two\"}\n\n".to_vec(),
+        b"data: {\"type\":\"response.completed\"}\n\n".to_vec(),
+    ];
+    let expected = chunks.concat();
+    let (url, handle) = spawn_active_streaming_http_response(chunks, Duration::from_millis(80));
+
+    let response = send_mock_stream_request(url.as_str());
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response
+        .read_all_bytes()
+        .expect("active response body may outlive the header deadline");
+
+    assert_eq!(body.as_ref(), expected.as_slice());
+    handle.join().expect("join streaming mock upstream");
+}
+
+#[test]
+fn stream_transport_reports_response_headers_timeout() {
+    let _env_lock = crate::test_env_guard();
+    let _reload_guard = RuntimeConfigReloadGuard;
+    let _stream_timeout_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS", "50");
+    crate::gateway::reload_runtime_config_from_env();
+
+    let (url, handle) = spawn_delayed_http_response_headers(Duration::from_millis(200));
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(1))
+        .build()
+        .expect("build reqwest client");
+    let started_at = Instant::now();
+    let result = send_async_stream_request(
+        &client,
+        &reqwest::Method::GET,
+        url.as_str(),
+        "/v1/responses",
+        Some(Instant::now() + Duration::from_secs(5)),
+        &[],
+        &Bytes::new(),
+        true,
+    );
+
+    assert!(
+        matches!(
+            result,
+            Err(super::AsyncStreamRequestError::ResponseHeadersTimeout(timeout))
+                if timeout == Duration::from_millis(50)
+        ),
+        "delayed response headers must report ResponseHeadersTimeout, got {result:?}"
+    );
+    assert!(
+        started_at.elapsed() < Duration::from_millis(500),
+        "configured response-header timeout was not enforced: {:?}",
+        started_at.elapsed()
+    );
+    handle.join().expect("join delayed-header mock upstream");
+}
 
 #[test]
 fn websocket_upstream_not_selected_when_flag_disabled() {

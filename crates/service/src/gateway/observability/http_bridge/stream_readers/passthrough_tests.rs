@@ -1,13 +1,12 @@
 use super::*;
 
 #[test]
-fn extract_usage_limit_matches_plain_text_delta() {
+fn extract_usage_limit_ignores_plain_text_delta() {
     let lines = vec![
         "event: response.output_text.delta\n".to_string(),
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"You've hit your usage limit. To get more access now, send a request to your admin or try again at 7:44 PM.\"}\n".to_string(),
     ];
-    let got = extract_usage_limit_from_sse_data(&lines).expect("must match");
-    assert!(got.contains("hit your usage limit"));
+    assert!(extract_usage_limit_from_sse_data(&lines).is_none());
 }
 
 #[test]

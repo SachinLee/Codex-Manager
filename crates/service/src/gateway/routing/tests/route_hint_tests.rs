@@ -209,6 +209,146 @@ fn balanced_round_robin_rotates_start_by_key_and_model() {
     reload_from_env();
 }
 
+/// balanced 的账号游标必须跟随账号身份，而不是把旧数字索引直接套到变化后的候选池。
+///
+/// 语义：
+/// - 固定池仍按 A -> B -> C 前进；
+/// - 移除游标之前的账号时，下一次应继续到上次所选账号的后继；
+/// - 上次所选账号临时消失时，优先使用此前记录的后继账号；
+/// - 候选恢复后，再按恢复后的稳定账号顺序继续。
+#[test]
+fn balanced_round_robin_tracks_account_identity_across_candidate_churn() {
+    let _guard = crate::test_env_guard();
+    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let mut first = candidate_list();
+    apply_route_strategy(&mut first, "gk-churn-before", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&first)[0], "acc-a");
+
+    let mut second = candidate_list();
+    apply_route_strategy(&mut second, "gk-churn-before", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&second)[0], "acc-b");
+
+    let mut removed_predecessor = candidate_list()
+        .into_iter()
+        .filter(|(account, _)| account.id != "acc-a")
+        .collect::<Vec<_>>();
+    apply_route_strategy(
+        &mut removed_predecessor,
+        "gk-churn-before",
+        Some("gpt-5.3-codex"),
+    );
+    assert_eq!(
+        account_ids(&removed_predecessor)[0],
+        "acc-c",
+        "removing an earlier candidate must not remap the cursor back onto acc-b"
+    );
+
+    let mut restored = candidate_list();
+    apply_route_strategy(&mut restored, "gk-churn-before", Some("gpt-5.3-codex"));
+    assert_eq!(
+        account_ids(&restored)[0],
+        "acc-a",
+        "restoring the full pool should continue after the last selected account"
+    );
+
+    clear_route_state_for_tests();
+    let mut selected_then_removed = candidate_list();
+    apply_route_strategy(
+        &mut selected_then_removed,
+        "gk-churn-selected",
+        Some("gpt-5.3-codex"),
+    );
+    assert_eq!(account_ids(&selected_then_removed)[0], "acc-a");
+
+    let mut without_last_selected = candidate_list()
+        .into_iter()
+        .filter(|(account, _)| account.id != "acc-a")
+        .collect::<Vec<_>>();
+    apply_route_strategy(
+        &mut without_last_selected,
+        "gk-churn-selected",
+        Some("gpt-5.3-codex"),
+    );
+    assert_eq!(
+        account_ids(&without_last_selected)[0],
+        "acc-b",
+        "when the last selected account disappears, use its recorded successor"
+    );
+
+    let mut restored_after_missing = candidate_list();
+    apply_route_strategy(
+        &mut restored_after_missing,
+        "gk-churn-selected",
+        Some("gpt-5.3-codex"),
+    );
+    assert_eq!(account_ids(&restored_after_missing)[0], "acc-c");
+
+    if let Some(value) = previous {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    reload_from_env();
+}
+
+#[test]
+fn balanced_round_robin_records_single_account_before_pool_expands() {
+    let _guard = crate::test_env_guard();
+    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let mut single = candidate_list()
+        .into_iter()
+        .filter(|(account, _)| account.id == "acc-a")
+        .collect::<Vec<_>>();
+    apply_route_strategy(&mut single, "gk-single-expand", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&single)[0], "acc-a");
+
+    let mut expanded = candidate_list();
+    apply_route_strategy(&mut expanded, "gk-single-expand", Some("gpt-5.3-codex"));
+    assert_eq!(
+        account_ids(&expanded)[0],
+        "acc-b",
+        "after selecting the only account, an expanded pool must continue with its successor"
+    );
+
+    clear_route_state_for_tests();
+    let mut first = candidate_list();
+    apply_route_strategy(&mut first, "gk-shrink-restore", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&first)[0], "acc-a");
+    let mut second = candidate_list();
+    apply_route_strategy(&mut second, "gk-shrink-restore", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&second)[0], "acc-b");
+
+    let mut contracted = candidate_list()
+        .into_iter()
+        .filter(|(account, _)| account.id == "acc-a")
+        .collect::<Vec<_>>();
+    apply_route_strategy(&mut contracted, "gk-shrink-restore", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&contracted)[0], "acc-a");
+
+    let mut restored = candidate_list();
+    apply_route_strategy(&mut restored, "gk-shrink-restore", Some("gpt-5.3-codex"));
+    assert_eq!(
+        account_ids(&restored)[0],
+        "acc-b",
+        "a contracted pool selection must replace the stale pre-contraction cursor"
+    );
+
+    if let Some(value) = previous {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    reload_from_env();
+}
+
 /// 函数 `balanced_round_robin_isolated_by_key_and_model`
 ///
 /// 作者: gaohongshun
@@ -579,5 +719,73 @@ fn persisted_preferred_account_rotates_to_head() {
     } else {
         std::env::remove_var("CODEXMANAGER_DB_PATH");
     }
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn single_manual_preferred_account_does_not_advance_balanced_cursor() {
+    let _guard = crate::test_env_guard();
+    clear_route_state_for_tests();
+    let previous_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
+    let db_path = std::env::temp_dir().join(format!(
+        "codexmanager-route-hint-single-preferred-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    reload_from_env();
+    crate::initialize_storage_if_needed().expect("init storage");
+    let storage = crate::storage_helpers::open_storage().expect("open storage");
+    let now = codexmanager_core::storage::now_ts();
+    for (account_id, sort) in [("acc-a", 0_i64), ("acc-b", 1_i64)] {
+        storage
+            .insert_account(&Account {
+                id: account_id.to_string(),
+                label: account_id.to_string(),
+                issuer: "issuer".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort,
+                status: "active".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+    }
+    set_manual_preferred_account("acc-a").expect("set preferred");
+
+    let mut single = candidate_list()
+        .into_iter()
+        .filter(|(account, _)| account.id == "acc-a")
+        .collect::<Vec<_>>();
+    let application =
+        apply_route_strategy_with_source(&mut single, "gk-single-preferred", Some("gpt-5.3-codex"));
+    assert_eq!(application.strategy_label, "manual_preferred_account");
+    assert_eq!(application.source, "manual_preferred_account");
+
+    clear_manual_preferred_account();
+    let mut expanded = candidate_list();
+    apply_route_strategy(&mut expanded, "gk-single-preferred", Some("gpt-5.3-codex"));
+    assert_eq!(
+        account_ids(&expanded)[0],
+        "acc-a",
+        "manual preferred selections must not advance the balanced route cursor"
+    );
+
+    drop(storage);
+    if let Some(value) = previous_strategy {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    if let Some(value) = previous_db_path {
+        std::env::set_var("CODEXMANAGER_DB_PATH", value);
+    } else {
+        std::env::remove_var("CODEXMANAGER_DB_PATH");
+    }
+    reload_from_env();
     let _ = std::fs::remove_file(&db_path);
 }

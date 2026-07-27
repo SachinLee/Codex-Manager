@@ -128,7 +128,7 @@
 候选池基础顺序：
 
 - 候选账号先由 `Storage::list_gateway_candidates()` 选出
-- 初始顺序按 `account.sort ASC, account.updated_at DESC` 排列
+- 初始顺序按 `account.sort ASC, account.updated_at DESC, account.id ASC` 排列；`id` 是前两项相同时的稳定兜底
 - 也就是说，`ordered` 的“顺序”首先来自账号排序值，而不是随机顺序
 
 额外覆盖规则：
@@ -146,7 +146,10 @@
 - 客户端发 `codex-auto-review`，上游请求体继续使用 `codex-auto-review`
 - 只有显式模型转发规则、平台密钥强绑模型或聚合 API 自身 `modelOverride` 这类明确配置才会改写请求模型
 - 账号模型映射、聚合 API 模型映射、free / 7 天单窗口账号类型不会隐式改写请求模型
-- 历史设置 `gateway.free_account_max_model` / `appSettings.freeAccountMaxModel` 为兼容旧配置保留，不再参与上游请求模型改写
+- `gateway.free_account_max_model` / `appSettings.freeAccountMaxModel` / `CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL` 只限制 Free 账号参与候选，不会改写请求模型
+- 默认值 `auto` 表示不限制；选择具体模型后，模型目录中排序高于该模型的请求会从候选池中跳过 Free 账号
+- 未知请求模型在配置具体上限时按超过上限处理；Plus / Pro 等非 Free 账号不受影响
+- 混合账号优先模式下，过滤后的账号候选耗尽时仍沿用现有聚合 API fallback
 
 ### 请求体压缩
 
@@ -210,7 +213,8 @@
 行为：
 
 - 以 `key_id + model` 作为维度维护独立轮询状态
-- 每次请求会推进该维度的起始索引，实现严格 round-robin
+- 每次请求会记录该维度本轮轮询起点的账号 ID，下一次从其后一个可用账号继续，实现严格 round-robin
+- 候选账号临时移除或恢复时，游标仍跟随账号身份，不会把旧数字索引错误套到变化后的候选池
 - 默认健康度窗口为 `1`，因此默认不会发生健康度换头
 - 只有显式调大 `CODEXMANAGER_ROUTE_HEALTH_P2C_BALANCED_WINDOW` 时，才会在轮询头部附近引入健康度挑战者
 
@@ -218,6 +222,12 @@
 
 - 更接近“同一平台密钥、同一模型下的均衡轮询”
 - 不同 key、不同模型之间的轮询状态互相隔离
+
+### `/v1/responses` 额度切号预检
+
+- 上游在 HTTP `200` 的 SSE 正文里返回明确额度错误时，网关只会在实际文本、工具调用等语义事件交付前透明切换账号
+- 预检使用独立的 10 秒总上限；到期后提交已缓冲的原流，避免正常慢首字让下游响应头等待完整的上游流空闲超时
+- 超过预检窗口才到达的额度错误不会透明切号；已交付语义事件后也不会重放请求，以免重复输出、计费或工具副作用
 
 ### 可观测性
 

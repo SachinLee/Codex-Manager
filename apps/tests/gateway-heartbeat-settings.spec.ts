@@ -165,3 +165,21 @@ test("gateway heartbeat switch persists and controls the interval input", async 
   await expect(heartbeatSwitch).not.toBeChecked();
   await expect(intervalInput).toBeDisabled();
 });
+
+test("Free account model ceiling persists the selected model", async ({ page }) => {
+  const settingsPatches = await mockRuntimeAndRpc(page);
+
+  await page.goto("/settings/");
+  await page.getByRole("tab", { name: "网关" }).click();
+
+  const ceilingSelect = page.getByRole("combobox", {
+    name: "Free 账号模型上限",
+  });
+  await expect(ceilingSelect).toContainText("不限制");
+  await ceilingSelect.click();
+  await page.getByRole("option", { name: "gpt-5" }).click();
+
+  await expect.poll(() => settingsPatches.length).toBe(1);
+  expect(settingsPatches[0]?.freeAccountMaxModel).toBe("gpt-5");
+  await expect(ceilingSelect).toContainText("gpt-5");
+});

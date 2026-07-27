@@ -843,7 +843,7 @@ pub mod backup {
                 let mut target_handle = target_connection.lock_handle().await?;
                 let source_ptr = source_handle.as_raw_handle().as_ptr();
                 let target_ptr = target_handle.as_raw_handle().as_ptr();
-                let main = b"main\0".as_ptr().cast();
+                let main = c"main".as_ptr();
                 let backup = unsafe { sqlite3_backup_init(target_ptr, main, source_ptr, main) };
                 if backup.is_null() {
                     let message = unsafe { CStr::from_ptr(sqlite3_errmsg(target_ptr)) }
@@ -873,9 +873,7 @@ pub mod backup {
                     }
                 };
                 let finish_code = unsafe { sqlite3_backup_finish(backup) };
-                if let Err(err) = result {
-                    return Err(err);
-                }
+                result?;
                 if finish_code != SQLITE_OK {
                     let message = unsafe { CStr::from_ptr(sqlite3_errmsg(target_ptr)) }
                         .to_string_lossy()

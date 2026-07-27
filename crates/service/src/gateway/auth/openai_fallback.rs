@@ -7,6 +7,7 @@ use std::time::Instant;
 use super::upstream::support::payload_rewrite::{
     body_has_encrypted_content_hint, strip_encrypted_content_from_body,
 };
+use super::upstream::GatewayUpstreamResponse;
 
 /// 函数 `should_force_connection_close`
 ///
@@ -132,13 +133,13 @@ pub(super) fn try_openai_fallback(
     request_path: &str,
     incoming_headers: &super::IncomingHeaderSnapshot,
     body: &Bytes,
-    _is_stream: bool,
+    is_stream: bool,
     upstream_base: &str,
     account: &Account,
     token: &mut Token,
     strip_session_affinity: bool,
     debug: bool,
-) -> Result<Option<reqwest::blocking::Response>, String> {
+) -> Result<Option<GatewayUpstreamResponse>, String> {
     let (url, _url_alt) = super::compute_upstream_url(upstream_base, request_path);
     let bearer = super::resolve_openai_bearer_token(storage, account, token)?;
     let attempt_started_at = Instant::now();
@@ -252,7 +253,7 @@ pub(super) fn try_openai_fallback(
             upstream_base
         );
     }
-    let build_request = |http: &Client| {
+    let build_blocking_request = |http: &Client| {
         let mut builder = http.request(method.clone(), &url);
         for (name, value) in upstream_headers.iter() {
             builder = builder.header(name, value);
@@ -262,43 +263,103 @@ pub(super) fn try_openai_fallback(
         }
         builder
     };
-    let resp = match build_request(client).send() {
-        Ok(resp) => resp,
-        Err(first_err) => {
-            let fresh = match super::fresh_upstream_client_for_account(account.id.as_str()) {
-                Ok(client) => client,
-                Err(fresh_err) => {
-                    return Err(format!(
-                        "{}; retry_after_fresh_client_build: {}",
-                        first_err, fresh_err
-                    ));
+    let resp = if is_stream {
+        let async_client = super::async_upstream_client_for_account(account.id.as_str())?;
+        match send_openai_stream_request(
+            &async_client,
+            method,
+            &url,
+            request_path,
+            upstream_headers.as_slice(),
+            &body_for_request,
+        ) {
+            Ok(resp) => resp,
+            Err(first_err) => {
+                let fresh =
+                    match super::fresh_async_upstream_client_for_account(account.id.as_str()) {
+                        Ok(client) => client,
+                        Err(fresh_err) => {
+                            return Err(format!(
+                                "{}; retry_after_fresh_client_build: {}",
+                                first_err, fresh_err
+                            ));
+                        }
+                    };
+                match send_openai_stream_request(
+                    &fresh,
+                    method,
+                    &url,
+                    request_path,
+                    upstream_headers.as_slice(),
+                    &body_for_request,
+                ) {
+                    Ok(resp) => {
+                        log::info!(
+                            "event=gateway_openai_fallback_retry_with_fresh_client_succeeded path={} account_id={} upstream_base={}",
+                            request_path,
+                            account.id,
+                            upstream_base
+                        );
+                        resp
+                    }
+                    Err(second_err) => {
+                        let duration_ms = super::duration_to_millis(attempt_started_at.elapsed());
+                        super::metrics::record_gateway_upstream_attempt(duration_ms, true);
+                        log::warn!(
+                            "event=gateway_openai_fallback_retry_with_fresh_client_failed path={} account_id={} upstream_base={} first_err={} retry_err={}",
+                            request_path,
+                            account.id,
+                            upstream_base,
+                            first_err,
+                            second_err
+                        );
+                        return Err(format!(
+                            "{}; retry_after_fresh_client: {}",
+                            first_err, second_err
+                        ));
+                    }
                 }
-            };
-            match build_request(&fresh).send() {
-                Ok(resp) => {
-                    log::info!(
-                        "event=gateway_openai_fallback_retry_with_fresh_client_succeeded path={} account_id={} upstream_base={}",
-                        request_path,
-                        account.id,
-                        upstream_base
-                    );
-                    resp
-                }
-                Err(second_err) => {
-                    let duration_ms = super::duration_to_millis(attempt_started_at.elapsed());
-                    super::metrics::record_gateway_upstream_attempt(duration_ms, true);
-                    log::warn!(
-                        "event=gateway_openai_fallback_retry_with_fresh_client_failed path={} account_id={} upstream_base={} first_err={} retry_err={}",
-                        request_path,
-                        account.id,
-                        upstream_base,
-                        first_err,
-                        second_err
-                    );
-                    return Err(format!(
-                        "{}; retry_after_fresh_client: {}",
-                        first_err, second_err
-                    ));
+            }
+        }
+    } else {
+        match build_blocking_request(client).send() {
+            Ok(resp) => resp.into(),
+            Err(first_err) => {
+                let fresh = match super::fresh_upstream_client_for_account(account.id.as_str()) {
+                    Ok(client) => client,
+                    Err(fresh_err) => {
+                        return Err(format!(
+                            "{}; retry_after_fresh_client_build: {}",
+                            first_err, fresh_err
+                        ));
+                    }
+                };
+                match build_blocking_request(&fresh).send() {
+                    Ok(resp) => {
+                        log::info!(
+                            "event=gateway_openai_fallback_retry_with_fresh_client_succeeded path={} account_id={} upstream_base={}",
+                            request_path,
+                            account.id,
+                            upstream_base
+                        );
+                        resp.into()
+                    }
+                    Err(second_err) => {
+                        let duration_ms = super::duration_to_millis(attempt_started_at.elapsed());
+                        super::metrics::record_gateway_upstream_attempt(duration_ms, true);
+                        log::warn!(
+                            "event=gateway_openai_fallback_retry_with_fresh_client_failed path={} account_id={} upstream_base={} first_err={} retry_err={}",
+                            request_path,
+                            account.id,
+                            upstream_base,
+                            first_err,
+                            second_err
+                        );
+                        return Err(format!(
+                            "{}; retry_after_fresh_client: {}",
+                            first_err, second_err
+                        ));
+                    }
                 }
             }
         }
@@ -307,3 +368,29 @@ pub(super) fn try_openai_fallback(
     super::metrics::record_gateway_upstream_attempt(duration_ms, false);
     Ok(Some(resp))
 }
+
+fn send_openai_stream_request(
+    client: &reqwest::Client,
+    method: &Method,
+    url: &str,
+    request_path: &str,
+    headers: &[(String, String)],
+    body: &Bytes,
+) -> Result<GatewayUpstreamResponse, String> {
+    super::upstream::send_async_stream_request(
+        client,
+        method,
+        url,
+        request_path,
+        None,
+        headers,
+        body,
+        true,
+    )
+    .map(GatewayUpstreamResponse::Stream)
+    .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+#[path = "openai_fallback_tests.rs"]
+mod tests;

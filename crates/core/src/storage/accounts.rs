@@ -2151,7 +2151,7 @@ fn gateway_candidates_filtered_sql(latest_usage_cte: &str, where_clause: &str) -
            ON lu.account_id = a.id
           AND lu.rn = 1
          WHERE {where_clause}
-         ORDER BY a.sort ASC, a.updated_at DESC",
+         ORDER BY a.sort ASC, a.updated_at DESC, a.id ASC",
         account_select = account_select_columns("a"),
         token_select = token_select_columns("t"),
     )

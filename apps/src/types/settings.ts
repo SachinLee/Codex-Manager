@@ -53,6 +53,7 @@ export interface AppSettings extends GatewayTransportValues {
   updateAutoCheck: boolean;
   autoStartEnabled: boolean;
   autoStartSupported: boolean;
+  showMainWindowOnStartup: boolean;
   closeToTrayOnClose: boolean;
   closeToTraySupported: boolean;
   keepWindowUiMounted: boolean;

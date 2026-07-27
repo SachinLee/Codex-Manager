@@ -27,7 +27,16 @@ use crate::http::codex_source::{
 use crate::http::proxy_response::{text_error_response, text_response};
 use crate::storage_helpers::{hash_platform_key, open_storage};
 
+#[path = "responses_websocket_rebase.rs"]
+mod responses_websocket_rebase;
+
+use responses_websocket_rebase::{
+    rebase_response_create_for_account_change, rebase_response_create_for_missing_tool_call,
+    CompletedWsToolCallCache, WsToolCallKind,
+};
+
 const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
+const RESPONSES_WS_CONTEXT_REBASE_ERROR_CODE: &str = "responses_websocket_context_rebase_failed";
 const RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const MAX_BUFFERED_WS_PREAMBLE_EVENTS: usize = 16;
 
@@ -63,6 +72,7 @@ struct PendingWsRequestState {
     buffered_upstream_preamble: Vec<String>,
     buffer_retry_preamble: bool,
     attempted_account_ids: HashSet<String>,
+    retried_missing_tool_call_context: bool,
 }
 
 type UpstreamWebsocketStream =
@@ -159,6 +169,7 @@ struct PendingWsRequestLog {
     estimated_input_tokens: i64,
 }
 
+#[derive(Debug)]
 struct WsSessionError {
     status: u16,
     code: String,
@@ -184,6 +195,10 @@ impl WsSessionError {
 
     fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new(503, RESPONSES_WS_ERROR_CODE, message)
+    }
+
+    fn context_rebase_failed(message: impl Into<String>) -> Self {
+        Self::new(409, RESPONSES_WS_CONTEXT_REBASE_ERROR_CODE, message)
     }
 
     fn bad_request_bilingual(
@@ -299,11 +314,14 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
         buffered_upstream_preamble: Vec::new(),
-        buffer_retry_preamble: has_unattempted_ws_failover_candidate(
+        buffer_retry_preamble: should_buffer_ws_retry_preamble(
             &upstream,
             &first_attempted_account_ids,
+            prepared_first.text.as_str(),
+            false,
         ),
         attempted_account_ids: first_attempted_account_ids,
+        retried_missing_tool_call_context: false,
     };
 
     if let Err(err) = upstream
@@ -337,6 +355,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         return;
     }
     let mut pending_request = Some(first_pending);
+    let mut completed_tool_calls = CompletedWsToolCallCache::default();
 
     loop {
         tokio::select! {
@@ -365,9 +384,11 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 }
                                 let attempted_account_ids =
                                     HashSet::from([upstream.account_id.clone()]);
-                                let buffer_retry_preamble = has_unattempted_ws_failover_candidate(
+                                let buffer_retry_preamble = should_buffer_ws_retry_preamble(
                                     &upstream,
                                     &attempted_account_ids,
+                                    prepared.text.as_str(),
+                                    false,
                                 );
                                 let current_pending = PendingWsRequestState {
                                     log: begin_ws_request_log(
@@ -381,6 +402,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     buffered_upstream_preamble: Vec::new(),
                                     buffer_retry_preamble,
                                     attempted_account_ids,
+                                    retried_missing_tool_call_context: false,
                                 };
                                 if let Err(err) = upstream.stream.send(UpstreamMessage::Text(
                                     current_pending.prepared.text.clone().into(),
@@ -461,22 +483,53 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                 };
                 match upstream_result {
                     Ok(UpstreamMessage::Text(text)) => {
+                        completed_tool_calls.observe_upstream_event(text.as_str());
                         if let Some(terminal) = inspect_ws_terminal_event(text.as_str()) {
                             apply_ws_terminal_account_follow_up(
                                 upstream.account_id.as_str(),
                                 &terminal,
                             );
-                            let retry_succeeded = if let Some(pending) = pending_request.as_mut() {
+                            let retry_result = if let Some(pending) = pending_request.as_mut() {
                                 if !pending.forwarded_upstream_event {
-                                    try_retry_ws_request_after_terminal(&context, &mut upstream, pending, &terminal).await
+                                    try_retry_ws_request_after_terminal(
+                                        &context,
+                                        &mut upstream,
+                                        pending,
+                                        &terminal,
+                                        &completed_tool_calls,
+                                    )
+                                    .await
                                 } else {
-                                    false
+                                    Ok(false)
                                 }
                             } else {
-                                false
+                                Ok(false)
                             };
-                            if retry_succeeded {
-                                continue;
+                            match retry_result {
+                                Ok(true) => continue,
+                                Ok(false) => {}
+                                Err(err) => {
+                                    let log_error = err.message.clone();
+                                    if let Some(pending) = pending_request.take() {
+                                        finalize_ws_request_log(
+                                            &context,
+                                            &pending.log,
+                                            Some(upstream.account_id.as_str()),
+                                            Some(upstream.upstream_url.as_str()),
+                                            err.status,
+                                            terminal.usage,
+                                            Some(log_error),
+                                        );
+                                    }
+                                    send_ws_error_and_close(
+                                        &mut socket,
+                                        err,
+                                        context.prefer_raw_errors,
+                                    )
+                                    .await;
+                                    let _ = upstream.stream.close(None).await;
+                                    break;
+                                }
                             }
 
                             if let Some(mut pending) = pending_request.take() {
@@ -972,7 +1025,9 @@ async fn connect_upstream_websocket(
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
     let mut last_error = None;
     for (account, token) in routed.candidates {
-        match connect_account_upstream_websocket(context, &account, token, ws_url.as_str()).await {
+        match connect_account_upstream_websocket(context, &account, token, ws_url.as_str(), false)
+            .await
+        {
             Ok(stream) => {
                 return Ok(ConnectedUpstreamWebsocket {
                     stream,
@@ -1003,12 +1058,20 @@ async fn connect_account_upstream_websocket(
     account: &codexmanager_core::storage::Account,
     token: codexmanager_core::storage::Token,
     ws_url: &str,
+    strip_session_affinity: bool,
 ) -> Result<UpstreamWebsocketStream, String> {
     let (authorization, token) =
         resolve_upstream_authorization_for_websocket(account.clone(), token).await?;
-    let request = build_upstream_websocket_request(ws_url, account, &authorization, context)
-        .map_err(|err| err.message)?;
-    let proxy_url = crate::gateway::current_upstream_proxy_url_for_account(account.id.as_str());
+    let request = build_upstream_websocket_request(
+        ws_url,
+        account,
+        &authorization,
+        context,
+        strip_session_affinity,
+    )
+    .map_err(|err| err.message)?;
+    let proxy_url =
+        crate::gateway::current_websocket_proxy_url_for_account(account.id.as_str(), ws_url)?;
     let first_error =
         match connect_upstream_websocket_request_detailed(request, ws_url, proxy_url.as_deref())
             .await
@@ -1063,9 +1126,14 @@ async fn connect_account_upstream_websocket(
         }
     };
 
-    let retry_request =
-        build_upstream_websocket_request(ws_url, account, &retry_authorization, context)
-            .map_err(|err| err.message)?;
+    let retry_request = build_upstream_websocket_request(
+        ws_url,
+        account,
+        &retry_authorization,
+        context,
+        strip_session_affinity,
+    )
+    .map_err(|err| err.message)?;
     connect_upstream_websocket_request_detailed(retry_request, ws_url, proxy_url.as_deref())
         .await
         .map(|(stream, _)| stream)
@@ -1567,6 +1635,7 @@ fn build_upstream_websocket_request(
     account: &codexmanager_core::storage::Account,
     authorization: &WsUpstreamAuthorization,
     context: &WsRequestContext,
+    strip_session_affinity: bool,
 ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, WsSessionError> {
     let mut request = ws_url.into_client_request().map_err(|err| {
         WsSessionError::bad_gateway_bilingual(
@@ -1615,18 +1684,20 @@ fn build_upstream_websocket_request(
             residency_requirement.as_str(),
         )?;
     }
-    if let Some(session_id) = context.incoming_headers.session_id() {
-        insert_header(headers, "session_id", session_id)?;
-    }
-    if let Some(window_id) = context.incoming_headers.window_id() {
-        insert_header(
-            headers,
-            crate::http::codex_source::X_CODEX_WINDOW_ID_HEADER,
-            window_id,
-        )?;
-    }
-    if let Some(client_request_id) = context.incoming_headers.client_request_id() {
-        insert_header(headers, "x-client-request-id", client_request_id)?;
+    if !strip_session_affinity {
+        if let Some(session_id) = context.incoming_headers.session_id() {
+            insert_header(headers, "session_id", session_id)?;
+        }
+        if let Some(window_id) = context.incoming_headers.window_id() {
+            insert_header(
+                headers,
+                crate::http::codex_source::X_CODEX_WINDOW_ID_HEADER,
+                window_id,
+            )?;
+        }
+        if let Some(client_request_id) = context.incoming_headers.client_request_id() {
+            insert_header(headers, "x-client-request-id", client_request_id)?;
+        }
     }
     if let Some(subagent) = context.incoming_headers.subagent() {
         insert_header(
@@ -1638,26 +1709,30 @@ fn build_upstream_websocket_request(
     if let Some(beta_features) = context.incoming_headers.beta_features() {
         insert_header(headers, "x-codex-beta-features", beta_features)?;
     }
-    if let Some(turn_state) = context.incoming_headers.turn_state() {
-        insert_header(
-            headers,
-            crate::http::codex_source::X_CODEX_TURN_STATE_HEADER,
-            turn_state,
-        )?;
+    if !strip_session_affinity {
+        if let Some(turn_state) = context.incoming_headers.turn_state() {
+            insert_header(
+                headers,
+                crate::http::codex_source::X_CODEX_TURN_STATE_HEADER,
+                turn_state,
+            )?;
+        }
     }
-    if let Some(turn_metadata) = context.incoming_headers.turn_metadata() {
-        insert_header(
-            headers,
-            crate::http::codex_source::X_CODEX_TURN_METADATA_HEADER,
-            turn_metadata,
-        )?;
-    }
-    if let Some(parent_thread_id) = context.incoming_headers.parent_thread_id() {
-        insert_header(
-            headers,
-            crate::http::codex_source::X_CODEX_PARENT_THREAD_ID_HEADER,
-            parent_thread_id,
-        )?;
+    if !strip_session_affinity {
+        if let Some(turn_metadata) = context.incoming_headers.turn_metadata() {
+            insert_header(
+                headers,
+                crate::http::codex_source::X_CODEX_TURN_METADATA_HEADER,
+                turn_metadata,
+            )?;
+        }
+        if let Some(parent_thread_id) = context.incoming_headers.parent_thread_id() {
+            insert_header(
+                headers,
+                crate::http::codex_source::X_CODEX_PARENT_THREAD_ID_HEADER,
+                parent_thread_id,
+            )?;
+        }
     }
     if let Some(include_timing_metrics) = context
         .incoming_headers
@@ -1753,6 +1828,37 @@ fn has_unattempted_ws_failover_candidate(
         .any(|account_id| !attempted_account_ids.contains(account_id))
 }
 
+fn ws_request_has_tool_call_output(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    let Some(input) = value.get("input") else {
+        return false;
+    };
+    let has_tool_output = |item: &Value| {
+        item.get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|item_type| {
+                item_type.eq_ignore_ascii_case("custom_tool_call_output")
+                    || item_type.eq_ignore_ascii_case("function_call_output")
+            })
+    };
+    match input {
+        Value::Array(items) => items.iter().any(has_tool_output),
+        item => has_tool_output(item),
+    }
+}
+
+fn should_buffer_ws_retry_preamble(
+    upstream: &ConnectedUpstreamWebsocket,
+    attempted_account_ids: &HashSet<String>,
+    request_text: &str,
+    retried_missing_tool_call_context: bool,
+) -> bool {
+    has_unattempted_ws_failover_candidate(upstream, attempted_account_ids)
+        || (!retried_missing_tool_call_context && ws_request_has_tool_call_output(request_text))
+}
+
 async fn flush_ws_upstream_preamble(
     socket: &mut WebSocket,
     pending: &mut PendingWsRequestState,
@@ -1842,6 +1948,48 @@ fn finalize_ws_request_log(
     );
 }
 
+fn ws_context_rebase_error(raw_message: impl Into<String>) -> WsSessionError {
+    let raw_message = raw_message.into();
+    WsSessionError::context_rebase_failed(crate::gateway::bilingual_error(
+        "切换账号时无法重建工具调用上下文",
+        raw_message,
+    ))
+}
+
+fn rebase_ws_request_for_account_change(
+    text: &str,
+    completed_tool_calls: &CompletedWsToolCallCache,
+) -> Result<String, WsSessionError> {
+    rebase_response_create_for_account_change(text, completed_tool_calls)
+        .map_err(ws_context_rebase_error)
+}
+
+fn prepare_missing_ws_tool_call_retry(
+    text: &str,
+    completed_tool_calls: &CompletedWsToolCallCache,
+    terminal: &WsTerminalEvent,
+    already_retried: &mut bool,
+) -> Result<Option<String>, WsSessionError> {
+    let Some((kind, call_id)) = missing_ws_tool_call_from_terminal(terminal) else {
+        return Ok(None);
+    };
+    if *already_retried {
+        return Ok(None);
+    }
+    let Some(rebased) = rebase_response_create_for_missing_tool_call(
+        text,
+        completed_tool_calls,
+        kind,
+        call_id.as_str(),
+    )
+    .map_err(ws_context_rebase_error)?
+    else {
+        return Ok(None);
+    };
+    *already_retried = true;
+    Ok(Some(rebased))
+}
+
 struct WsTerminalEvent {
     status_code: u16,
     usage: crate::gateway::RequestLogUsage,
@@ -1884,16 +2032,31 @@ async fn try_retry_ws_request_after_terminal(
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
     terminal: &WsTerminalEvent,
-) -> bool {
+    completed_tool_calls: &CompletedWsToolCallCache,
+) -> Result<bool, WsSessionError> {
     if terminal.status_code == 200 || pending.forwarded_upstream_event {
-        return false;
+        return Ok(false);
     }
     let mut retry_text = None;
-    if is_previous_response_not_found_terminal(terminal) {
-        retry_text = strip_previous_response_id_from_ws_text(pending.prepared.text.as_str());
-        if retry_text.is_none() {
-            return false;
+    if missing_ws_tool_call_from_terminal(terminal).is_some() {
+        let Some(rebased) = prepare_missing_ws_tool_call_retry(
+            pending.prepared.text.as_str(),
+            completed_tool_calls,
+            terminal,
+            &mut pending.retried_missing_tool_call_context,
+        )?
+        else {
+            return Ok(false);
+        };
+        retry_text = Some(rebased);
+    } else if is_previous_response_not_found_terminal(terminal) {
+        if strip_previous_response_id_from_ws_text(pending.prepared.text.as_str()).is_none() {
+            return Ok(false);
         }
+        retry_text = Some(rebase_ws_request_for_account_change(
+            pending.prepared.text.as_str(),
+            completed_tool_calls,
+        )?);
     } else {
         let previous_account_id = upstream.account_id.clone();
         if !try_rotate_ws_upstream_after_terminal(
@@ -1905,10 +2068,13 @@ async fn try_retry_ws_request_after_terminal(
         )
         .await
         {
-            return false;
+            return Ok(false);
         }
         if upstream.account_id != previous_account_id {
-            retry_text = strip_previous_response_id_from_ws_text(pending.prepared.text.as_str());
+            retry_text = Some(rebase_ws_request_for_account_change(
+                pending.prepared.text.as_str(),
+                completed_tool_calls,
+            )?);
             pending.log.route_strategy = Some(upstream.route_strategy.to_string());
             pending.log.route_source = Some(upstream.route_source.to_string());
         }
@@ -1923,10 +2089,14 @@ async fn try_retry_ws_request_after_terminal(
             pending.prepared.text = retry_text;
             pending.forwarded_upstream_event = false;
             pending.buffered_upstream_preamble.clear();
-            pending.buffer_retry_preamble =
-                has_unattempted_ws_failover_candidate(upstream, &pending.attempted_account_ids);
+            pending.buffer_retry_preamble = should_buffer_ws_retry_preamble(
+                upstream,
+                &pending.attempted_account_ids,
+                pending.prepared.text.as_str(),
+                pending.retried_missing_tool_call_context,
+            );
             pending.log.first_response_ms = None;
-            true
+            Ok(true)
         }
         Err(err) => {
             log::warn!(
@@ -1935,7 +2105,7 @@ async fn try_retry_ws_request_after_terminal(
                 terminal.status_code,
                 err
             );
-            false
+            Ok(false)
         }
     }
 }
@@ -1993,6 +2163,7 @@ async fn try_rotate_ws_upstream_after_terminal(
             &account,
             token,
             upstream.upstream_url.as_str(),
+            true,
         )
         .await
         {
@@ -2097,6 +2268,47 @@ fn is_previous_response_not_found_terminal(terminal: &WsTerminalEvent) -> bool {
     lower.contains("previous response") && lower.contains("not found")
 }
 
+fn parse_missing_ws_tool_call_error_message(message: &str) -> Option<(WsToolCallKind, String)> {
+    let message = message.trim();
+    let lower = message.to_ascii_lowercase();
+    let prefixes = [
+        (
+            "no tool call found for custom tool call output with call_id ",
+            WsToolCallKind::Custom,
+        ),
+        (
+            "no tool call found for function tool call output with call_id ",
+            WsToolCallKind::Function,
+        ),
+        (
+            "no tool call found for function call output with call_id ",
+            WsToolCallKind::Function,
+        ),
+    ];
+    let (prefix, kind) = prefixes
+        .into_iter()
+        .find(|(prefix, _)| lower.starts_with(prefix))?;
+    let call_id = message
+        .get(prefix.len()..)?
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .trim_matches(|character| matches!(character, '\'' | '"' | '`'));
+    if call_id.is_empty() || call_id.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some((kind, call_id.to_string()))
+}
+
+fn missing_ws_tool_call_from_terminal(
+    terminal: &WsTerminalEvent,
+) -> Option<(WsToolCallKind, String)> {
+    if terminal.status_code != 400 {
+        return None;
+    }
+    parse_missing_ws_tool_call_error_message(terminal.error.as_deref()?)
+}
+
 fn strip_previous_response_id_from_ws_text(text: &str) -> Option<String> {
     let mut value = serde_json::from_str::<Value>(text).ok()?;
     let object = value.as_object_mut()?;
@@ -2120,6 +2332,9 @@ fn infer_ws_terminal_status(value: &Value, error_message: Option<&str>) -> u16 {
         return status_code;
     }
     if let Some(message) = error_message {
+        if parse_missing_ws_tool_call_error_message(message).is_some() {
+            return 400;
+        }
         if crate::account_status::usage_limit_reason_from_message(message).is_some() {
             return 429;
         }

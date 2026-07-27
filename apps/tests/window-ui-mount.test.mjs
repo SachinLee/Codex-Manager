@@ -65,3 +65,16 @@ test("窗口常驻设置明确依赖关闭到托盘并展示资源取舍", async
     /updateSettings\.mutate\(\{ keepWindowUiMounted: value \}\)/,
   );
 });
+
+test("启动主窗口设置在基础设置中持久化", async () => {
+  const source = await readSource(
+    "src/app/settings/components/general-basics-card.tsx",
+  );
+
+  assert.match(source, /启动时显示主界面/);
+  assert.match(source, /checked=\{snapshot\.showMainWindowOnStartup\}/);
+  assert.match(
+    source,
+    /updateSettings\.mutate\(\{ showMainWindowOnStartup: value \}\)/,
+  );
+});

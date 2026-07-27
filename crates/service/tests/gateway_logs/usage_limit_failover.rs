@@ -1,47 +1,54 @@
 use super::*;
 use codexmanager_core::storage::UsageSnapshotRecord;
 
-fn insert_reasoning_guard_test_account(storage: &Storage, id: &str, sort: i64, now: i64) {
-    storage
-        .insert_account(&Account {
-            id: id.to_string(),
-            label: id.to_string(),
-            issuer: "https://auth.openai.com".to_string(),
-            chatgpt_account_id: Some(format!("chatgpt_{id}")),
-            workspace_id: None,
-            group_name: None,
-            sort,
-            status: "active".to_string(),
-            created_at: now + sort,
-            updated_at: now + sort,
-        })
-        .expect("insert account");
-    storage
-        .insert_token(&Token {
-            account_id: id.to_string(),
-            id_token: String::new(),
-            access_token: format!("access_{id}"),
-            refresh_token: String::new(),
-            api_key_access_token: Some(format!("api_access_{id}")),
-            last_refresh: now,
-        })
-        .expect("insert token");
-    storage
-        .insert_usage_snapshot(&UsageSnapshotRecord {
-            account_id: id.to_string(),
-            used_percent: Some(10.0),
-            window_minutes: Some(300),
-            resets_at: None,
-            secondary_used_percent: None,
-            secondary_window_minutes: None,
-            secondary_resets_at: None,
-            credits_json: None,
-            captured_at: now,
-        })
-        .expect("insert snapshot");
-}
+fn seed_two_healthy_accounts_and_key(
+    storage: &Storage,
+    primary_id: &str,
+    secondary_id: &str,
+    platform_key: &str,
+    key_id: &str,
+) {
+    let now = now_ts();
+    for (id, sort) in [(primary_id, 0_i64), (secondary_id, 1_i64)] {
+        storage
+            .insert_account(&Account {
+                id: id.to_string(),
+                label: id.to_string(),
+                issuer: "https://auth.openai.com".to_string(),
+                chatgpt_account_id: Some(format!("chatgpt_{id}")),
+                workspace_id: None,
+                group_name: None,
+                sort,
+                status: "active".to_string(),
+                created_at: now + sort,
+                updated_at: now + sort,
+            })
+            .expect("insert account");
+        storage
+            .insert_token(&Token {
+                account_id: id.to_string(),
+                id_token: String::new(),
+                access_token: format!("access_{id}"),
+                refresh_token: String::new(),
+                api_key_access_token: Some(format!("api_access_{id}")),
+                last_refresh: now,
+            })
+            .expect("insert token");
+        storage
+            .insert_usage_snapshot(&UsageSnapshotRecord {
+                account_id: id.to_string(),
+                used_percent: Some(10.0),
+                window_minutes: Some(300),
+                resets_at: None,
+                secondary_used_percent: None,
+                secondary_window_minutes: None,
+                secondary_resets_at: None,
+                credits_json: None,
+                captured_at: now,
+            })
+            .expect("insert snapshot");
+    }
 
-fn insert_reasoning_guard_test_key(storage: &Storage, key_id: &str, platform_key: &str, now: i64) {
     storage
         .insert_api_key(&ApiKey {
             id: key_id.to_string(),
@@ -66,110 +73,69 @@ fn insert_reasoning_guard_test_key(storage: &Storage, key_id: &str, platform_key
         .expect("insert api key");
 }
 
-fn guard_non_stream_response(id: &str) -> String {
-    serde_json::json!({
-        "id": id,
-        "model": "gpt-5.3-codex",
-        "output": [{
-            "type": "message",
-            "role": "assistant",
-            "content": [{ "type": "output_text", "text": "guarded output" }]
-        }],
-        "usage": {
-            "input_tokens": 3,
-            "output_tokens": 1,
-            "total_tokens": 4,
-            "output_tokens_details": { "reasoning_tokens": 516 }
-        }
-    })
-    .to_string()
+fn assert_primary_then_secondary(
+    upstream_rx: &Receiver<CapturedUpstreamRequest>,
+    primary_id: &str,
+    secondary_id: &str,
+) {
+    let first = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive primary upstream request");
+    let second = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive secondary upstream request");
+    let first_auth = first
+        .headers
+        .get("authorization")
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        first_auth.contains(format!("access_{primary_id}").as_str()),
+        "首次应命中 primary 账号，实际 auth 头：{first_auth}"
+    );
+    let second_auth = second
+        .headers
+        .get("authorization")
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        second_auth.contains(format!("access_{secondary_id}").as_str()),
+        "失败后应在同一请求续切 secondary，实际 auth 头：{second_auth}"
+    );
 }
 
-fn upstream_capacity_error_response() -> String {
-    serde_json::json!({
-        "error": {
-            "message": "Selected model is at capacity. Please try a different model.",
-            "type": "server_error",
-            "code": null
-        }
-    })
-    .to_string()
-}
-
-fn stream_response_with_reasoning_tokens(reasoning_tokens: i64, delta: &str) -> String {
-    format!(
-        "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{delta}\"}}\n\n\
-         event: response.completed\n\
-         data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_stream\",\"model\":\"gpt-5.3-codex\",\"usage\":{{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4,\"output_tokens_details\":{{\"reasoning_tokens\":{reasoning_tokens}}}}}}}}}\n\n\
-         data: [DONE]\n\n"
-    )
-}
-
-fn reasoning_guard_test_env(
-    enabled: bool,
-    retry_attempts: usize,
-    bypass_after_consecutive: usize,
-) -> Vec<EnvGuard> {
-    let retry_attempts = retry_attempts.to_string();
-    let bypass_after_consecutive = bypass_after_consecutive.to_string();
-    vec![
-        EnvGuard::set(
-            "CODEXMANAGER_REASONING_GUARD_ENABLED",
-            if enabled { "1" } else { "0" },
-        ),
-        EnvGuard::set("CODEXMANAGER_REASONING_GUARD_TARGETS", "516,1034,1552"),
-        EnvGuard::set("CODEXMANAGER_REASONING_GUARD_INTERCEPT_STREAMING", "1"),
-        EnvGuard::set("CODEXMANAGER_REASONING_GUARD_INTERCEPT_NON_STREAMING", "1"),
-        EnvGuard::set(
-            "CODEXMANAGER_REASONING_GUARD_RETRY_ATTEMPTS",
-            retry_attempts.as_str(),
-        ),
-        EnvGuard::set(
-            "CODEXMANAGER_REASONING_GUARD_BYPASS_AFTER_CONSECUTIVE",
-            bypass_after_consecutive.as_str(),
-        ),
-    ]
-}
-
-fn metric_value(metrics: &str, name: &str, labels: &str) -> usize {
-    let prefix = if labels.is_empty() {
-        format!("{name} ")
-    } else {
-        format!("{name}{{{labels}}} ")
-    };
-    metrics
-        .lines()
-        .find_map(|line| line.strip_prefix(&prefix))
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0)
-}
-
-/// 当上游用 200 + SSE `data:` 正文夹带 "You've hit your usage limit" 回应时，
-/// 网关不能在同一次请求里重试（流已经吐给客户端），但必须把该请求内部标记成 failover：
-/// - 客户端侧 HTTP status 仍保持 200（原样透传上游响应）
-/// - request_log 的 status_code 应为 502（failover 记账，用于观察/冷却）
-///
-/// 这条链路覆盖：PassthroughSseUsageReader 扫描 data 正文（Fix A）→
-/// bridge.stream_terminal_error → response_finalize 的 failover 分支。
+/// 当首个账号用 200 + SSE `data:` 正文夹带 usage-limit 回应时，网关必须在尚未
+/// 向客户端提交响应前识别它，并在同一个客户端请求内切到下一个账号。
 #[test]
-fn gateway_usage_limit_in_sse_marks_request_as_failover() {
+fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
     let _lock = test_env_guard();
     let dir = new_test_dir("codexmanager-gateway-usage-limit-sse-failover");
     let db_path: PathBuf = dir.join("codexmanager.db");
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
 
     let usage_limit_sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_limited_primary\"}}\n\n",
+        "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"content\":[]}}\n\n",
+        "data: {\"type\":\"response.content_part.added\",\"part\":{\"type\":\"output_text\",\"text\":\"\"}}\n\n",
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"You've hit your usage limit. To get more access now, send a request to your admin or try again at 7:44 PM.\"}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let ok_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secondary ok\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_secondary_ok\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
         "data: [DONE]\n\n"
     );
 
     let (upstream_addr, upstream_rx, upstream_join) =
         start_mock_upstream_sequence_lenient_with_content_types(
-            vec![(
-                200,
-                usage_limit_sse.to_string(),
-                "text/event-stream".to_string(),
-            )],
+            vec![
+                (
+                    200,
+                    usage_limit_sse.to_string(),
+                    "text/event-stream".to_string(),
+                ),
+                (200, ok_sse.to_string(), "text/event-stream".to_string()),
+            ],
             Duration::from_secs(3),
         );
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
@@ -253,7 +219,7 @@ fn gateway_usage_limit_in_sse_marks_request_as_failover() {
         "stream": true
     });
     let req_body = serde_json::to_string(&req_body_json).expect("serialize request");
-    let (status, _body) = post_http_raw(
+    let (status, response_body) = post_http_raw(
         &server.addr,
         "/v1/responses",
         &req_body,
@@ -263,20 +229,48 @@ fn gateway_usage_limit_in_sse_marks_request_as_failover() {
         ],
     );
     server.join();
-    assert_eq!(status, 200, "客户端看到的 HTTP status 应原样透传 200");
+    assert_eq!(status, 200, "gateway response: {response_body}");
+    assert!(
+        response_body.contains("secondary ok"),
+        "客户端应只收到第二个账号的成功流：{response_body}"
+    );
+    assert!(
+        !response_body.contains("usage limit"),
+        "首账号额度错误不得泄漏给客户端：{response_body}"
+    );
+    assert_eq!(
+        storage
+            .find_account_status_by_id("acc_primary")
+            .expect("read primary status")
+            .as_deref(),
+        Some("active"),
+        "仅凭 output_text 额度提示不能永久停用账号"
+    );
 
-    let captured = upstream_rx
+    let first = upstream_rx
         .recv_timeout(Duration::from_secs(3))
-        .expect("receive upstream request");
+        .expect("receive primary upstream request");
+    let second = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive secondary upstream request");
     upstream_join.join().expect("join mock upstream");
-    let auth = captured
+    let first_auth = first
         .headers
         .get("authorization")
         .map(String::as_str)
         .unwrap_or_default();
     assert!(
-        auth.contains("access_acc_primary"),
-        "应命中 sort=0 的 primary 账号，实际 auth 头：{auth}"
+        first_auth.contains("access_acc_primary"),
+        "首次应命中 sort=0 的 primary 账号，实际 auth 头：{first_auth}"
+    );
+    let second_auth = second
+        .headers
+        .get("authorization")
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        second_auth.contains("access_acc_secondary"),
+        "额度耗尽后应在同一请求续切 secondary，实际 auth 头：{second_auth}"
     );
 
     // 等 request log 异步落盘。
@@ -296,696 +290,52 @@ fn gateway_usage_limit_in_sse_marks_request_as_failover() {
     let log = log.expect("request log should be recorded");
     assert_eq!(
         log.status_code,
-        Some(502),
-        "usage-limit 在 SSE 正文里时应触发 failover 记账（status_for_log=502），实际 {:?}",
+        Some(200),
+        "最终成功请求应按第二个账号的 200 记账，实际 {:?}",
         log.status_code
     );
     assert_eq!(
         log.account_id.as_deref(),
-        Some("acc_primary"),
-        "failover 记录应记在命中 usage-limit 的 primary 账号下"
+        Some("acc_secondary"),
+        "最终请求日志应记录真正完成响应的 secondary 账号"
     );
 }
 
+/// 一旦首账号已经产出普通语义内容，请求即已提交给客户端；随后到达的额度错误可以
+/// 更新账号状态，但不得在同一请求内续切账号，以免重复输出或重复执行工具副作用。
 #[test]
-fn gateway_reasoning_guard_non_stream_returns_502_without_next_candidate() {
+fn gateway_usage_limit_after_semantic_delta_does_not_fail_over_same_request() {
     let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 0, 0);
-    let dir = new_test_dir("codexmanager-gateway-reasoning-guard-non-stream-no-failover");
+    let dir = new_test_dir("codexmanager-gateway-post-semantic-usage-limit");
     let db_path: PathBuf = dir.join("codexmanager.db");
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
 
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_sequence_lenient_with_content_types(
-            vec![(
-                200,
-                guard_non_stream_response("resp_guarded"),
-                "application/json".to_string(),
-            )],
-            Duration::from_secs(3),
-        );
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_primary", 0, now);
-    insert_reasoning_guard_test_account(&storage, "acc_guard_secondary", 1, now);
-    let platform_key = "pk_reasoning_guard_non_stream";
-    insert_reasoning_guard_test_key(&storage, "gk_reasoning_guard_non_stream", platform_key, now);
-
-    let server = codexmanager_service::start_one_shot_server().expect("start server");
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":false}"#;
-    let (status, gateway_body) = post_http_raw(
-        &server.addr,
-        "/v1/responses",
-        request_body,
-        &[
-            ("Content-Type", "application/json"),
-            ("Authorization", &format!("Bearer {platform_key}")),
-        ],
+    let failed_after_semantic_sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_semantic_primary\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"primary visible answer\"}\n\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_semantic_primary\",\"status\":\"failed\",\"error\":{\"code\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\"}}}\n\n",
+        "data: [DONE]\n\n"
     );
-    server.join();
-
-    assert_eq!(status, 502, "gateway response: {gateway_body}");
-    assert!(
-        gateway_body.contains("reasoning_tokens=516"),
-        "502 should explain the guard trigger: {gateway_body}"
+    let unused_secondary_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secondary must not run\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_unused_secondary\",\"status\":\"completed\"}}\n\n",
+        "data: [DONE]\n\n"
     );
-    assert!(
-        !gateway_body.contains("guarded output"),
-        "guarded first response must not leak to the client: {gateway_body}"
-    );
-
-    let first = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive first upstream request");
-    upstream_join.join().expect("join mock upstream");
-    assert!(
-        first
-            .headers
-            .get("authorization")
-            .is_some_and(|auth| auth.contains("access_acc_guard_primary")),
-        "first attempt should use primary account"
-    );
-    assert!(
-        upstream_rx.try_recv().is_err(),
-        "516 must not try the next account"
-    );
-
-    let primary = storage
-        .find_account_by_id("acc_guard_primary")
-        .expect("find primary")
-        .expect("primary account exists");
-    assert_eq!(
-        primary.status, "active",
-        "reasoning guard must not mark the account unavailable"
-    );
-
-    let mut log = None;
-    for _ in 0..40 {
-        let logs = storage
-            .list_request_logs(Some("key:=gk_reasoning_guard_non_stream"), 20)
-            .expect("list request logs");
-        log = logs
-            .into_iter()
-            .find(|item| item.request_path == "/v1/responses");
-        if log.is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    let log = log.expect("request log should be recorded");
-    assert_eq!(log.status_code, Some(502));
-    assert_eq!(log.reasoning_output_tokens, Some(516));
-    assert!(
-        log.error
-            .as_deref()
-            .is_some_and(|error| error.contains("reasoning_tokens=516")),
-        "request log should classify the converted 502: {:?}",
-        log.error
-    );
-}
-
-#[test]
-fn gateway_reasoning_guard_non_stream_retries_same_candidate_before_blocking() {
-    let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 1, 0);
-    codexmanager_service::set_gateway_background_tasks(
-        codexmanager_service::BackgroundTasksInput {
-            usage_polling_enabled: Some(false),
-            gateway_keepalive_enabled: Some(false),
-            token_refresh_polling_enabled: Some(false),
-            ..Default::default()
-        },
-    )
-    .expect("disable background tasks for reasoning guard retry test");
-    let dir = new_test_dir("codexmanager-gateway-reasoning-guard-internal-retry");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let ok_response = serde_json::json!({
-        "id": "resp_retry_ok",
-        "model": "gpt-5.3-codex",
-        "output": [{
-            "type": "message",
-            "role": "assistant",
-            "content": [{ "type": "output_text", "text": "retry recovered" }]
-        }],
-        "usage": {
-            "input_tokens": 3,
-            "output_tokens": 2,
-            "total_tokens": 5,
-            "output_tokens_details": { "reasoning_tokens": 128 }
-        }
-    })
-    .to_string();
-
     let (upstream_addr, upstream_rx, upstream_join) =
         start_mock_upstream_sequence_lenient_with_content_types(
             vec![
                 (
                     200,
-                    guard_non_stream_response("resp_guard_retry_first")
-                        .replace("\"reasoning_tokens\":516", "\"reasoning_tokens\":1034"),
-                    "application/json".to_string(),
-                ),
-                (200, ok_response, "application/json".to_string()),
-                (
-                    200,
-                    r#"{"object":"list","data":[{"id":"gpt-5.3-codex","object":"model"}]}"#
-                        .to_string(),
-                    "application/json".to_string(),
-                ),
-            ],
-            Duration::from_secs(3),
-        );
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_retry_primary", 0, now);
-    insert_reasoning_guard_test_account(&storage, "acc_guard_retry_secondary", 1, now);
-    let platform_key = "pk_reasoning_guard_retry";
-    insert_reasoning_guard_test_key(&storage, "gk_reasoning_guard_retry", platform_key, now);
-
-    let server = TestServer::start();
-    let (_, metrics_before) = get_http_raw(&server.addr, "/metrics");
-    let matches_before = metric_value(
-        &metrics_before,
-        "codexmanager_gateway_reasoning_guard_matches_total",
-        "mode=\"non_stream\"",
-    );
-    let retries_before = metric_value(
-        &metrics_before,
-        "codexmanager_gateway_reasoning_guard_internal_retries_total",
-        "mode=\"non_stream\"",
-    );
-    let blocks_before = metric_value(
-        &metrics_before,
-        "codexmanager_gateway_reasoning_guard_blocks_total",
-        "mode=\"non_stream\"",
-    );
-    let failovers_before = metric_value(
-        &metrics_before,
-        "codexmanager_gateway_failover_attempts_total",
-        "",
-    );
-
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":false}"#;
-    let (status, gateway_body) = post_http_raw(
-        &server.addr,
-        "/v1/responses",
-        request_body,
-        &[
-            ("Content-Type", "application/json"),
-            ("Authorization", &format!("Bearer {platform_key}")),
-        ],
-    );
-
-    assert_eq!(status, 200, "gateway response: {gateway_body}");
-    assert!(
-        gateway_body.contains("retry recovered"),
-        "successful retry should return the second upstream response: {gateway_body}"
-    );
-    assert!(
-        !gateway_body.contains("guarded output") && !gateway_body.contains("reasoning_guard"),
-        "guarded first response must not leak to the client: {gateway_body}"
-    );
-
-    let first = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive first upstream request");
-    let second = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive retry upstream request");
-    drop(server);
-    upstream_join.join().expect("join mock upstream");
-
-    for captured in [&first, &second] {
-        assert!(
-            captured
-                .headers
-                .get("authorization")
-                .is_some_and(|auth| auth.contains("access_acc_guard_retry_primary")),
-            "internal retry should stay on the same primary account"
-        );
-    }
-    while let Ok(extra) = upstream_rx.try_recv() {
-        let auth = extra
-            .headers
-            .get("authorization")
-            .map(String::as_str)
-            .unwrap_or_default();
-        assert!(
-            !extra.path.contains("/responses"),
-            "reasoning guard retry should not make an extra responses request; extra path={} auth={auth}",
-            extra.path
-        );
-    }
-
-    let primary = storage
-        .find_account_by_id("acc_guard_retry_primary")
-        .expect("find primary")
-        .expect("primary account exists");
-    let primary_reason = storage
-        .latest_account_status_reasons(&["acc_guard_retry_primary".to_string()])
-        .expect("read primary account status reason")
-        .get("acc_guard_retry_primary")
-        .cloned();
-    assert_eq!(
-        primary.status, "active",
-        "internal retry must not mark the account unavailable; reason={primary_reason:?}"
-    );
-
-    let mut log = None;
-    for _ in 0..40 {
-        let logs = storage
-            .list_request_logs(Some("key:=gk_reasoning_guard_retry"), 20)
-            .expect("list request logs");
-        log = logs
-            .into_iter()
-            .find(|item| item.request_path == "/v1/responses" && item.status_code == Some(200));
-        if log.is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    let log = log.expect("successful retried request log should be recorded");
-    assert_eq!(log.account_id.as_deref(), Some("acc_guard_retry_primary"));
-    assert_eq!(log.reasoning_output_tokens, Some(128));
-
-    let server = TestServer::start();
-    let (_, metrics_after) = get_http_raw(&server.addr, "/metrics");
-    drop(server);
-    assert_eq!(
-        metric_value(
-            &metrics_after,
-            "codexmanager_gateway_reasoning_guard_matches_total",
-            "mode=\"non_stream\"",
-        ),
-        matches_before + 1
-    );
-    assert_eq!(
-        metric_value(
-            &metrics_after,
-            "codexmanager_gateway_reasoning_guard_internal_retries_total",
-            "mode=\"non_stream\"",
-        ),
-        retries_before + 1
-    );
-    assert_eq!(
-        metric_value(
-            &metrics_after,
-            "codexmanager_gateway_reasoning_guard_blocks_total",
-            "mode=\"non_stream\"",
-        ),
-        blocks_before
-    );
-    assert_eq!(
-        metric_value(
-            &metrics_after,
-            "codexmanager_gateway_failover_attempts_total",
-            "",
-        ),
-        failovers_before
-    );
-}
-
-#[test]
-fn gateway_upstream_capacity_error_retries_same_candidate_without_failover() {
-    let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 0, 0);
-    codexmanager_service::set_gateway_background_tasks(
-        codexmanager_service::BackgroundTasksInput {
-            usage_polling_enabled: Some(false),
-            gateway_keepalive_enabled: Some(false),
-            token_refresh_polling_enabled: Some(false),
-            ..Default::default()
-        },
-    )
-    .expect("disable background tasks for capacity retry test");
-    let dir = new_test_dir("codexmanager-gateway-upstream-capacity-retry");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let ok_response = serde_json::json!({
-        "id": "resp_capacity_retry_ok",
-        "model": "gpt-5.3-codex",
-        "output": [{
-            "type": "message",
-            "role": "assistant",
-            "content": [{ "type": "output_text", "text": "capacity recovered" }]
-        }],
-        "usage": {
-            "input_tokens": 3,
-            "output_tokens": 2,
-            "total_tokens": 5
-        }
-    })
-    .to_string();
-
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_sequence_lenient_with_content_types(
-            vec![
-                (
-                    418,
-                    upstream_capacity_error_response(),
-                    "application/json".to_string(),
-                ),
-                (200, ok_response, "application/json".to_string()),
-                (
-                    200,
-                    r#"{"object":"list","data":[{"id":"gpt-5.3-codex","object":"model"}]}"#
-                        .to_string(),
-                    "application/json".to_string(),
-                ),
-            ],
-            Duration::from_secs(3),
-        );
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_capacity_retry_primary", 0, now);
-    insert_reasoning_guard_test_account(&storage, "acc_capacity_retry_secondary", 1, now);
-    let platform_key = "pk_capacity_retry";
-    insert_reasoning_guard_test_key(&storage, "gk_capacity_retry", platform_key, now);
-
-    let server = TestServer::start();
-    let (_, metrics_before) = get_http_raw(&server.addr, "/metrics");
-    let capacity_retries_before = metric_value(
-        &metrics_before,
-        "codexmanager_gateway_upstream_capacity_internal_retries_total",
-        "",
-    );
-    let failovers_before = metric_value(
-        &metrics_before,
-        "codexmanager_gateway_failover_attempts_total",
-        "",
-    );
-
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":false}"#;
-    let (status, gateway_body) = post_http_raw(
-        &server.addr,
-        "/v1/responses",
-        request_body,
-        &[
-            ("Content-Type", "application/json"),
-            ("Authorization", &format!("Bearer {platform_key}")),
-        ],
-    );
-
-    assert_eq!(status, 200, "gateway response: {gateway_body}");
-    assert!(
-        gateway_body.contains("capacity recovered"),
-        "successful retry should return the second upstream response: {gateway_body}"
-    );
-    assert!(
-        !gateway_body.contains("Selected model is at capacity"),
-        "capacity error response must not leak after recovery: {gateway_body}"
-    );
-
-    let first = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive first upstream request");
-    let second = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive retry upstream request");
-    drop(server);
-    upstream_join.join().expect("join mock upstream");
-
-    for captured in [&first, &second] {
-        assert!(
-            captured
-                .headers
-                .get("authorization")
-                .is_some_and(|auth| auth.contains("access_acc_capacity_retry_primary")),
-            "capacity retry should stay on the same primary account"
-        );
-    }
-    while let Ok(extra) = upstream_rx.try_recv() {
-        let auth = extra
-            .headers
-            .get("authorization")
-            .map(String::as_str)
-            .unwrap_or_default();
-        assert!(
-            !extra.path.contains("/responses"),
-            "capacity retry should not make an extra responses request; extra path={} auth={auth}",
-            extra.path
-        );
-    }
-
-    let server = TestServer::start();
-    let (_, metrics_after) = get_http_raw(&server.addr, "/metrics");
-    drop(server);
-    assert_eq!(
-        metric_value(
-            &metrics_after,
-            "codexmanager_gateway_upstream_capacity_internal_retries_total",
-            "",
-        ),
-        capacity_retries_before + 1
-    );
-    assert_eq!(
-        metric_value(
-            &metrics_after,
-            "codexmanager_gateway_failover_attempts_total",
-            "",
-        ),
-        failovers_before
-    );
-}
-
-#[test]
-fn gateway_reasoning_guard_disabled_allows_non_stream_516_response() {
-    let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(false, 0, 0);
-    let dir = new_test_dir("codexmanager-gateway-reasoning-guard-disabled");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_sequence_lenient_with_content_types(
-            vec![(
-                200,
-                guard_non_stream_response("resp_guard_disabled"),
-                "application/json".to_string(),
-            )],
-            Duration::from_secs(3),
-        );
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_disabled", 0, now);
-    let platform_key = "pk_reasoning_guard_disabled";
-    insert_reasoning_guard_test_key(&storage, "gk_reasoning_guard_disabled", platform_key, now);
-
-    let server = codexmanager_service::start_one_shot_server().expect("start server");
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":false}"#;
-    let (status, gateway_body) = post_http_raw(
-        &server.addr,
-        "/v1/responses",
-        request_body,
-        &[
-            ("Content-Type", "application/json"),
-            ("Authorization", &format!("Bearer {platform_key}")),
-        ],
-    );
-    server.join();
-
-    assert_eq!(status, 200, "gateway response: {gateway_body}");
-    assert!(
-        gateway_body.contains("guarded output"),
-        "disabled guard should pass through upstream body: {gateway_body}"
-    );
-    assert!(
-        !gateway_body.contains("reasoning_guard"),
-        "disabled guard must not synthesize guard error: {gateway_body}"
-    );
-
-    upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive upstream request");
-    upstream_join.join().expect("join mock upstream");
-}
-
-#[test]
-fn gateway_reasoning_guard_bypasses_after_configured_consecutive_hits() {
-    let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 0, 2);
-    let dir = new_test_dir("codexmanager-gateway-reasoning-guard-threshold");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_sequence_lenient_with_content_types(
-            vec![
-                (
-                    200,
-                    guard_non_stream_response("resp_guard_threshold_first"),
-                    "application/json".to_string(),
-                ),
-                (
-                    200,
-                    guard_non_stream_response("resp_guard_threshold_second"),
-                    "application/json".to_string(),
-                ),
-            ],
-            Duration::from_secs(3),
-        );
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_threshold", 0, now);
-    let platform_key = "pk_reasoning_guard_threshold";
-    insert_reasoning_guard_test_key(&storage, "gk_reasoning_guard_threshold", platform_key, now);
-
-    let server = TestServer::start();
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":false}"#;
-    let headers = [
-        ("Content-Type", "application/json"),
-        ("Authorization", &format!("Bearer {platform_key}")),
-    ];
-    let (first_status, first_body) =
-        post_http_raw(&server.addr, "/v1/responses", request_body, &headers);
-    assert_eq!(first_status, 502, "first gateway response: {first_body}");
-    assert!(
-        first_body.contains("reasoning_tokens=516"),
-        "first response should be blocked by guard: {first_body}"
-    );
-
-    let (second_status, second_body) =
-        post_http_raw(&server.addr, "/v1/responses", request_body, &headers);
-    assert_eq!(second_status, 200, "second gateway response: {second_body}");
-    assert!(
-        second_body.contains("guarded output"),
-        "second consecutive 516 should be passed through after threshold: {second_body}"
-    );
-
-    upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive first upstream request");
-    upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive second upstream request");
-    drop(server);
-    upstream_join.join().expect("join mock upstream");
-}
-
-#[test]
-fn gateway_reasoning_guard_stream_returns_502_without_leaking_buffered_delta() {
-    let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 0, 0);
-    let dir = new_test_dir("codexmanager-gateway-reasoning-guard-stream-last");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_sequence_lenient_with_content_types(
-            vec![(
-                200,
-                stream_response_with_reasoning_tokens(516, "must-not-leak"),
-                "text/event-stream".to_string(),
-            )],
-            Duration::from_secs(3),
-        );
-    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
-    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_stream_last", 0, now);
-    let platform_key = "pk_reasoning_guard_stream_last";
-    insert_reasoning_guard_test_key(
-        &storage,
-        "gk_reasoning_guard_stream_last",
-        platform_key,
-        now,
-    );
-
-    let server = codexmanager_service::start_one_shot_server().expect("start server");
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#;
-    let (status, gateway_body) = post_http_raw(
-        &server.addr,
-        "/v1/responses",
-        request_body,
-        &[
-            ("Content-Type", "application/json"),
-            ("Authorization", &format!("Bearer {platform_key}")),
-        ],
-    );
-    server.join();
-
-    assert_eq!(status, 502, "gateway response: {gateway_body}");
-    assert!(
-        gateway_body.contains("reasoning_tokens=516"),
-        "502 should explain the guard trigger: {gateway_body}"
-    );
-    assert!(
-        !gateway_body.contains("must-not-leak") && !gateway_body.contains("[DONE]"),
-        "strict guard must not stream buffered upstream content after detecting 516: {gateway_body}"
-    );
-
-    let captured = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive upstream request");
-    upstream_join.join().expect("join mock upstream");
-    assert!(
-        captured
-            .headers
-            .get("authorization")
-            .is_some_and(|auth| auth.contains("access_acc_guard_stream_last")),
-        "single attempt should use the configured account"
-    );
-}
-
-#[test]
-fn gateway_reasoning_guard_continuation_recovery_replays_clean_input_only() {
-    let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 1, 0);
-    let _stream_action_guard = EnvGuard::set(
-        "CODEXMANAGER_REASONING_GUARD_STREAM_ACTION",
-        "continuationRecovery",
-    );
-    let dir = new_test_dir("codexmanager-gateway-continuation-recovery-clean-replay");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let (upstream_addr, upstream_rx, upstream_join) =
-        start_mock_upstream_sequence_lenient_with_content_types(
-            vec![
-                (
-                    200,
-                    stream_response_with_reasoning_tokens(516, "must-not-leak"),
+                    failed_after_semantic_sse.to_string(),
                     "text/event-stream".to_string(),
                 ),
                 (
                     200,
-                    stream_response_with_reasoning_tokens(128, "clean-delta"),
+                    unused_secondary_sse.to_string(),
                     "text/event-stream".to_string(),
                 ),
             ],
-            Duration::from_secs(3),
+            Duration::from_millis(300),
         );
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
     let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
@@ -993,39 +343,22 @@ fn gateway_reasoning_guard_continuation_recovery_replays_clean_input_only() {
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
     seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_continuation", 0, now);
-    let platform_key = "pk_reasoning_guard_continuation";
-    insert_reasoning_guard_test_key(
+    let platform_key = "pk_post_semantic_usage_limit";
+    seed_two_healthy_accounts_and_key(
         &storage,
-        "gk_reasoning_guard_continuation",
+        "acc_semantic_primary",
+        "acc_semantic_secondary",
         platform_key,
-        now,
+        "gk_post_semantic_usage_limit",
     );
 
     let server = codexmanager_service::start_one_shot_server().expect("start server");
     let request_body = serde_json::json!({
         "model": "gpt-5.3-codex",
-        "previous_response_id": "resp_previous",
-        "include": ["usage", "reasoning.encrypted_content"],
-        "stream": true,
-        "input": [
-            "hello",
-            { "type": "reasoning", "encrypted_content": "client-reasoning-secret" },
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "world",
-                        "encrypted_content": "client-nested-secret"
-                    }
-                ]
-            }
-        ]
-    });
-    let request_body = serde_json::to_string(&request_body).expect("serialize request");
+        "input": "hello",
+        "stream": true
+    })
+    .to_string();
     let (status, gateway_body) = post_http_raw(
         &server.addr,
         "/v1/responses",
@@ -1039,103 +372,59 @@ fn gateway_reasoning_guard_continuation_recovery_replays_clean_input_only() {
 
     assert_eq!(status, 200, "gateway response: {gateway_body}");
     assert!(
-        gateway_body.contains("clean-delta") && gateway_body.contains("[DONE]"),
-        "continuation recovery should return the clean final stream: {gateway_body}"
+        gateway_body.contains("primary visible answer"),
+        "已提交的首账号语义输出应保持可见：{gateway_body}"
     );
     assert!(
-        !gateway_body.contains("must-not-leak"),
-        "continuation recovery must discard the matched round output: {gateway_body}"
+        !gateway_body.contains("secondary must not run"),
+        "语义输出提交后不得将第二账号拼入同一响应：{gateway_body}"
     );
-
-    upstream_rx
+    let first = upstream_rx
         .recv_timeout(Duration::from_secs(3))
-        .expect("receive initial upstream request");
-    let continuation_request = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive continuation upstream request");
+        .expect("receive primary upstream request");
     upstream_join.join().expect("join mock upstream");
-
-    let continuation_body: serde_json::Value =
-        serde_json::from_slice(&decode_upstream_request_body(&continuation_request))
-            .expect("parse continuation body");
-    assert_eq!(
-        continuation_body
-            .get("stream")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
-    assert!(continuation_body.get("previous_response_id").is_none());
-    assert!(!serde_json::to_string(&continuation_body)
-        .expect("continuation body json")
-        .contains("encrypted_content"));
-    assert!(!serde_json::to_string(&continuation_body)
-        .expect("continuation body json")
-        .contains("client-reasoning-secret"));
-    assert!(!serde_json::to_string(&continuation_body)
-        .expect("continuation body json")
-        .contains("client-nested-secret"));
-    let input = continuation_body
-        .get("input")
-        .and_then(serde_json::Value::as_array)
-        .expect("continuation input");
     assert!(
-        input
-            .iter()
-            .all(|item| item.get("type").and_then(serde_json::Value::as_str) != Some("reasoning")),
-        "continuation input must not replay reasoning items: {continuation_body}"
+        first
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value.contains("access_acc_semantic_primary")),
+        "首次请求应命中 primary 账号：{:?}",
+        first.headers.get("authorization")
     );
-    assert_eq!(
-        input
-            .iter()
-            .filter(
-                |item| item.get("phase").and_then(serde_json::Value::as_str) == Some("commentary")
-            )
-            .count(),
-        1,
-        "continuation input should append exactly one commentary marker: {continuation_body}"
+    assert!(
+        upstream_rx.try_recv().is_err(),
+        "首账号已产出语义 delta 后，response.failed 不得触发第二次上游请求"
     );
-
-    let mut request_log = None;
-    for _ in 0..40 {
-        let logs = storage
-            .list_request_logs(Some("key:=gk_reasoning_guard_continuation"), 20)
-            .expect("list request logs");
-        request_log = logs
-            .into_iter()
-            .find(|item| item.request_path == "/v1/responses" && item.status_code == Some(200));
-        if request_log.is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    let request_log = request_log.expect("successful continuation recovery log should be recorded");
-    let trace_id = request_log.trace_id.expect("request log trace id");
-    let guard_summaries = storage
-        .summarize_reasoning_guard_by_trace_ids(&[trace_id])
-        .expect("summarize reasoning guard trace");
-    let guard_summary = guard_summaries
-        .first()
-        .expect("reasoning guard trace summary");
-    assert_eq!(guard_summary.internal_retry_count, 1);
-    assert_eq!(guard_summary.recovered_count, 1);
-    assert_eq!(guard_summary.retry_total_tokens, 4);
 }
 
+/// 首个可操作事件就是明确的 usage-limit `response.failed` 时，客户端尚未收到语义
+/// 输出；网关应在同一请求内切到第二账号，并把首账号持久标记为 limited。
 #[test]
-fn gateway_reasoning_guard_stream_allows_non_516_reasoning_tokens() {
+fn gateway_explicit_usage_limit_failure_fails_over_and_marks_account_limited() {
     let _lock = test_env_guard();
-    let _guard_env = reasoning_guard_test_env(true, 0, 0);
-    let dir = new_test_dir("codexmanager-gateway-reasoning-guard-stream-ok");
+    let dir = new_test_dir("codexmanager-gateway-explicit-usage-limit-failover");
     let db_path: PathBuf = dir.join("codexmanager.db");
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
 
+    let explicit_usage_limit_sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_explicit_limited\"}}\n\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_explicit_limited\",\"status\":\"failed\",\"error\":{\"code\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\"}}}\n\n"
+    );
+    let ok_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secondary explicit failover ok\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_explicit_secondary\",\"status\":\"completed\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+        "data: [DONE]\n\n"
+    );
     let (upstream_addr, upstream_rx, upstream_join) =
         start_mock_upstream_sequence_lenient_with_content_types(
-            vec![(
-                200,
-                stream_response_with_reasoning_tokens(128, "normal-delta"),
-                "text/event-stream".to_string(),
-            )],
+            vec![
+                (
+                    200,
+                    explicit_usage_limit_sse.to_string(),
+                    "text/event-stream".to_string(),
+                ),
+                (200, ok_sse.to_string(), "text/event-stream".to_string()),
+            ],
             Duration::from_secs(3),
         );
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
@@ -1144,17 +433,139 @@ fn gateway_reasoning_guard_stream_allows_non_516_reasoning_tokens() {
     let storage = Storage::open(&db_path).expect("open db");
     storage.init().expect("init db");
     seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
-    let now = now_ts();
-    insert_reasoning_guard_test_account(&storage, "acc_guard_stream_ok", 0, now);
-    let platform_key = "pk_reasoning_guard_stream_ok";
-    insert_reasoning_guard_test_key(&storage, "gk_reasoning_guard_stream_ok", platform_key, now);
+    let platform_key = "pk_explicit_usage_limit_failover";
+    seed_two_healthy_accounts_and_key(
+        &storage,
+        "acc_explicit_primary",
+        "acc_explicit_secondary",
+        platform_key,
+        "gk_explicit_usage_limit_failover",
+    );
 
     let server = codexmanager_service::start_one_shot_server().expect("start server");
-    let request_body = r#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#;
+    let request_body = serde_json::json!({
+        "model": "gpt-5.3-codex",
+        "input": "hello",
+        "stream": true
+    })
+    .to_string();
+    // Leave enough time for the 10-second stream preflight cap so a classifier
+    // regression fails on response content instead of a test socket timeout.
+    let (status, gateway_body) = post_http_raw_with_read_timeout(
+        &server.addr,
+        "/v1/responses",
+        &request_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+        ],
+        Duration::from_secs(15),
+    );
+    server.join();
+
+    upstream_join.join().expect("join mock upstream");
+    let upstream_auths = upstream_rx
+        .try_iter()
+        .map(|request| {
+            request
+                .headers
+                .get("authorization")
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        status, 200,
+        "gateway response: {gateway_body}; upstream auth sequence: {upstream_auths:?}"
+    );
+    assert!(
+        gateway_body.contains("secondary explicit failover ok"),
+        "首账号明确额度失败后应交付第二账号结果：{gateway_body}"
+    );
+    assert!(
+        !gateway_body.contains("resp_explicit_limited"),
+        "首账号的失败事件不得泄漏给客户端：{gateway_body}"
+    );
+    assert_eq!(
+        upstream_auths.len(),
+        2,
+        "explicit usage-limit failover must make exactly two upstream requests: {upstream_auths:?}"
+    );
+    assert!(upstream_auths[0].contains("access_acc_explicit_primary"));
+    assert!(upstream_auths[1].contains("access_acc_explicit_secondary"));
+
+    let primary = storage
+        .find_account_by_id("acc_explicit_primary")
+        .expect("find explicit-limited primary account")
+        .expect("explicit-limited primary account exists");
+    assert_eq!(primary.status, "limited");
+    let reasons = storage
+        .latest_account_status_reasons(&["acc_explicit_primary".to_string()])
+        .expect("load explicit-limited account status reason");
+    assert_eq!(
+        reasons.get("acc_explicit_primary").map(String::as_str),
+        Some("usage_limit_exhausted")
+    );
+}
+
+/// `/v1/responses` 的非流式客户端响应仍固定从上游读取 SSE；额度错误预检必须依据
+/// 实际上游传输模式执行，不能因客户端传入 `stream:false` 而跳过。
+#[test]
+fn gateway_non_stream_responses_usage_limit_sse_fails_over_before_delivery() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-non-stream-usage-limit-failover");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let usage_limit_sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_non_stream_limited\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"You've hit your usage limit. Please try again later.\"}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let ok_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secondary non-stream ok\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_non_stream_secondary\",\"status\":\"completed\",\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"secondary non-stream ok\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![
+                (
+                    200,
+                    usage_limit_sse.to_string(),
+                    "text/event-stream".to_string(),
+                ),
+                (200, ok_sse.to_string(), "text/event-stream".to_string()),
+            ],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
+    let platform_key = "pk_non_stream_usage_limit_failover";
+    seed_two_healthy_accounts_and_key(
+        &storage,
+        "acc_non_stream_primary",
+        "acc_non_stream_secondary",
+        platform_key,
+        "gk_non_stream_usage_limit_failover",
+    );
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let request_body = serde_json::json!({
+        "model": "gpt-5.3-codex",
+        "input": "hello",
+        "stream": false
+    })
+    .to_string();
     let (status, gateway_body) = post_http_raw(
         &server.addr,
         "/v1/responses",
-        request_body,
+        &request_body,
         &[
             ("Content-Type", "application/json"),
             ("Authorization", &format!("Bearer {platform_key}")),
@@ -1164,25 +575,107 @@ fn gateway_reasoning_guard_stream_allows_non_516_reasoning_tokens() {
 
     assert_eq!(status, 200, "gateway response: {gateway_body}");
     assert!(
-        gateway_body.contains("normal-delta") && gateway_body.contains("[DONE]"),
-        "normal reasoning usage should be replayed as SSE: {gateway_body}"
+        gateway_body.contains("secondary non-stream ok"),
+        "非流式客户端应收到第二账号聚合后的成功响应：{gateway_body}"
     );
     assert!(
-        !gateway_body.contains("reasoning_guard"),
-        "normal reasoning usage must not trigger guard response: {gateway_body}"
+        !gateway_body.contains("usage limit"),
+        "首账号额度错误不得泄漏给非流式客户端：{gateway_body}"
+    );
+    let response_json: serde_json::Value =
+        serde_json::from_str(&gateway_body).expect("非流式响应必须是单个合法 JSON 文档");
+    assert_eq!(
+        response_json
+            .get("status")
+            .and_then(serde_json::Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        response_json
+            .pointer("/output/0/content/0/text")
+            .and_then(serde_json::Value::as_str),
+        Some("secondary non-stream ok")
+    );
+    assert_primary_then_secondary(
+        &upstream_rx,
+        "acc_non_stream_primary",
+        "acc_non_stream_secondary",
+    );
+    upstream_join.join().expect("join mock upstream");
+}
+
+/// 若首账号只发出结构性 metadata 事件就正常结束连接，客户端尚未收到任何有效输出；
+/// 网关应把该不完整流视作可重试的传输失败，并在同一请求内切到下一账号。
+#[test]
+fn gateway_metadata_only_sse_eof_fails_over_before_delivery() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-metadata-eof-failover");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let metadata_only_sse =
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abandoned_primary\"}}\n\n";
+    let ok_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secondary after eof ok\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_eof_secondary\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![
+                (
+                    200,
+                    metadata_only_sse.to_string(),
+                    "text/event-stream".to_string(),
+                ),
+                (200, ok_sse.to_string(), "text/event-stream".to_string()),
+            ],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.3-codex"]);
+    let platform_key = "pk_metadata_eof_failover";
+    seed_two_healthy_accounts_and_key(
+        &storage,
+        "acc_eof_primary",
+        "acc_eof_secondary",
+        platform_key,
+        "gk_metadata_eof_failover",
     );
 
-    let captured = upstream_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("receive upstream request");
-    upstream_join.join().expect("join mock upstream");
-    assert!(
-        captured
-            .headers
-            .get("authorization")
-            .is_some_and(|auth| auth.contains("access_acc_guard_stream_ok")),
-        "single attempt should use the configured account"
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let request_body = serde_json::json!({
+        "model": "gpt-5.3-codex",
+        "input": "hello",
+        "stream": true
+    })
+    .to_string();
+    let (status, gateway_body) = post_http_raw(
+        &server.addr,
+        "/v1/responses",
+        &request_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+        ],
     );
+    server.join();
+
+    assert_eq!(status, 200, "gateway response: {gateway_body}");
+    assert!(
+        gateway_body.contains("secondary after eof ok"),
+        "metadata-only EOF 后应收到第二账号的成功流：{gateway_body}"
+    );
+    assert!(
+        !gateway_body.contains("resp_abandoned_primary"),
+        "首账号 metadata 不得泄漏给客户端：{gateway_body}"
+    );
+    assert_primary_then_secondary(&upstream_rx, "acc_eof_primary", "acc_eof_secondary");
+    upstream_join.join().expect("join mock upstream");
 }
 
 /// Fix B 端到端：快要耗尽的账号（99% used）即使 sort 排前，也应被降权到候选尾部，

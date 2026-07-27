@@ -16,11 +16,11 @@ use super::{
     set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
     set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version,
     set_keep_window_ui_mounted_setting, set_lightweight_mode_on_close_to_tray_setting,
-    set_saved_service_addr, set_service_bind_mode, set_ui_appearance_preset, set_ui_locale,
-    set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
-    BackgroundTasksInput, QuotaGuardInput, APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY,
-    APP_SETTING_AUTHOR_SPONSORS_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
-    APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
+    set_saved_service_addr, set_service_bind_mode, set_show_main_window_on_startup_setting,
+    set_ui_appearance_preset, set_ui_locale, set_ui_low_transparency_enabled, set_ui_theme,
+    set_update_auto_check_enabled, BackgroundTasksInput, QuotaGuardInput,
+    APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
+    APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
 };
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -28,6 +28,7 @@ use super::{
 pub(super) struct AppSettingsPatch {
     update_auto_check: Option<bool>,
     auto_start_enabled: Option<bool>,
+    show_main_window_on_startup: Option<bool>,
     close_to_tray_on_close: Option<bool>,
     keep_window_ui_mounted: Option<bool>,
     lightweight_mode_on_close_to_tray: Option<bool>,
@@ -101,6 +102,9 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(enabled) = patch.auto_start_enabled {
         set_auto_start_enabled_setting(enabled)?;
+    }
+    if let Some(enabled) = patch.show_main_window_on_startup {
+        set_show_main_window_on_startup_setting(enabled)?;
     }
     if let Some(enabled) = patch.close_to_tray_on_close {
         set_close_to_tray_on_close_setting(enabled)?;

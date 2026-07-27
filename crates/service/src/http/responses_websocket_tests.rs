@@ -1,9 +1,11 @@
 use super::{
     build_socks5_connect_request, build_upstream_websocket_request, infer_ws_terminal_status,
     inspect_ws_terminal_event, is_previous_response_not_found_terminal, merge_client_metadata,
-    parse_websocket_target, parse_ws_usage, proxy_basic_auth_header, rewrite_client_frame,
-    should_buffer_ws_upstream_preamble, strip_previous_response_id_from_ws_text, WsRequestContext,
-    WsUpstreamAuthorization,
+    missing_ws_tool_call_from_terminal, parse_websocket_target, parse_ws_usage,
+    prepare_missing_ws_tool_call_retry, proxy_basic_auth_header,
+    rebase_ws_request_for_account_change, rewrite_client_frame, should_buffer_ws_upstream_preamble,
+    strip_previous_response_id_from_ws_text, ws_request_has_tool_call_output,
+    CompletedWsToolCallCache, WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
 };
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{now_ts, Account, ApiKey, Storage, Token};
@@ -288,6 +290,30 @@ fn websocket_created_event_is_buffered_but_actual_output_is_not() {
 }
 
 #[test]
+fn websocket_tool_output_request_keeps_retry_preamble_buffered() {
+    assert!(ws_request_has_tool_call_output(
+        json!({
+            "type": "response.create",
+            "input": [{
+                "type": "custom_tool_call_output",
+                "call_id": "call_buffered",
+                "output": "done"
+            }]
+        })
+        .to_string()
+        .as_str()
+    ));
+    assert!(!ws_request_has_tool_call_output(
+        json!({
+            "type": "response.create",
+            "input": "ordinary prompt"
+        })
+        .to_string()
+        .as_str()
+    ));
+}
+
+#[test]
 fn infer_ws_terminal_status_maps_deactivation_message_to_403() {
     let payload = json!({
         "type": "response.failed",
@@ -386,6 +412,7 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
         &account,
         &authorization,
         &context,
+        false,
     )
     .unwrap_or_else(|err| panic!("build upstream websocket request failed: {}", err.message));
 
@@ -435,6 +462,7 @@ fn upstream_websocket_request_preserves_agent_assertion_and_fedramp() {
         &sample_account(),
         &authorization,
         &context,
+        false,
     )
     .unwrap_or_else(|err| panic!("build upstream websocket request failed: {}", err.message));
 
@@ -714,6 +742,294 @@ fn websocket_retry_can_strip_previous_response_id() {
 }
 
 #[test]
+fn websocket_account_rebase_prepends_cached_tool_calls_before_outputs() {
+    let mut cache = CompletedWsToolCallCache::default();
+    cache.observe_upstream_event(
+        json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "custom_tool_call",
+                "id": "ctc_item_1",
+                "call_id": "call_custom_1",
+                "name": "apply_patch",
+                "input": "*** Begin Patch"
+            }
+        })
+        .to_string()
+        .as_str(),
+    );
+    cache.observe_upstream_event(
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_tool_calls",
+                "output": [{
+                    "type": "function_call",
+                    "id": "fc_item_1",
+                    "call_id": "call_function_1",
+                    "name": "lookup",
+                    "arguments": "{}"
+                }]
+            }
+        })
+        .to_string()
+        .as_str(),
+    );
+    let request = json!({
+        "type": "response.create",
+        "previous_response_id": "resp_tool_calls",
+        "session_id": "old-session",
+        "x-codex-turn-state": "old-turn-state",
+        "client_metadata": {
+            "x-codex-window-id": "old-window",
+            "source": "unit-test"
+        },
+        "input": [
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_custom_1",
+                "output": "patched"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_function_1",
+                "output": "found"
+            }
+        ]
+    });
+
+    let rebased = rebase_ws_request_for_account_change(request.to_string().as_str(), &cache)
+        .expect("account rebase should restore cached tool calls");
+    let value: Value = serde_json::from_str(rebased.as_str()).expect("parse rebased request");
+    let input = value["input"].as_array().expect("rebased input array");
+
+    assert_eq!(input.len(), 4);
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[0]["call_id"], "call_custom_1");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+    assert_eq!(input[2]["type"], "function_call");
+    assert_eq!(input[2]["call_id"], "call_function_1");
+    assert_eq!(input[3]["type"], "function_call_output");
+    assert!(value.get("previous_response_id").is_none());
+    assert!(value.get("session_id").is_none());
+    assert!(value.get("x-codex-turn-state").is_none());
+    assert!(value["client_metadata"].get("x-codex-window-id").is_none());
+    assert_eq!(value["client_metadata"]["source"], "unit-test");
+}
+
+#[test]
+fn websocket_account_rebase_reorders_existing_call_without_duplicate() {
+    let request = json!({
+        "type": "response.create",
+        "previous_response_id": "resp_existing_call",
+        "input": [
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_existing",
+                "output": "done"
+            },
+            {
+                "type": "custom_tool_call",
+                "id": "ctc_existing",
+                "call_id": "call_existing",
+                "name": "apply_patch",
+                "input": "patch"
+            }
+        ]
+    });
+
+    let rebased = rebase_ws_request_for_account_change(
+        request.to_string().as_str(),
+        &CompletedWsToolCallCache::default(),
+    )
+    .expect("current input call should satisfy its output");
+    let value: Value = serde_json::from_str(rebased.as_str()).expect("parse rebased request");
+    let input = value["input"].as_array().expect("rebased input array");
+
+    assert_eq!(input.len(), 2, "matching call must not be duplicated");
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+}
+
+#[test]
+fn websocket_account_rebase_strips_cross_account_reasoning_and_affinity_metadata() {
+    fn contains_encrypted_content(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key("encrypted_content")
+                    || object.values().any(contains_encrypted_content)
+            }
+            Value::Array(items) => items.iter().any(contains_encrypted_content),
+            _ => false,
+        }
+    }
+
+    let request = json!({
+        "type": "response.create",
+        "previous_response_id": "resp_old_account",
+        "x-codex-parent-thread-id": "parent-old",
+        "x-codex-turn-metadata": "turn-meta-old",
+        "client_metadata": {
+            "session_id": "session-old",
+            "conversation_id": "conversation-old",
+            "x-client-request-id": "request-old",
+            "x-codex-window-id": "window-old",
+            "x-codex-turn-state": "turn-state-old",
+            "x-codex-parent-thread-id": "parent-old",
+            "x-codex-turn-metadata": "turn-meta-old",
+            "x-openai-subagent": "review",
+            "x-codex-beta-features": "beta-a",
+            "source": "unit-test"
+        },
+        "input": [
+            {
+                "type": "reasoning",
+                "id": "reasoning-old",
+                "summary": [],
+                "encrypted_content": "encrypted-old-account"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "continue" },
+                    { "type": "encrypted_content", "encrypted_content": "nested-old" }
+                ]
+            }
+        ]
+    });
+
+    let rebased = rebase_ws_request_for_account_change(
+        request.to_string().as_str(),
+        &CompletedWsToolCallCache::default(),
+    )
+    .expect("cross-account rebase should succeed");
+    let value: Value = serde_json::from_str(&rebased).expect("parse rebased request");
+
+    assert!(!contains_encrypted_content(&value));
+    assert!(value.get("previous_response_id").is_none());
+    assert!(value.get("x-codex-parent-thread-id").is_none());
+    assert!(value.get("x-codex-turn-metadata").is_none());
+    for key in [
+        "session_id",
+        "conversation_id",
+        "x-client-request-id",
+        "x-codex-window-id",
+        "x-codex-turn-state",
+        "x-codex-parent-thread-id",
+        "x-codex-turn-metadata",
+    ] {
+        assert!(
+            value["client_metadata"].get(key).is_none(),
+            "cross-account rebase must strip {key}"
+        );
+    }
+    assert_eq!(value["client_metadata"]["x-openai-subagent"], "review");
+    assert_eq!(value["client_metadata"]["x-codex-beta-features"], "beta-a");
+    assert_eq!(value["client_metadata"]["source"], "unit-test");
+    assert_eq!(value["input"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        value["input"][0]["content"],
+        json!([{ "type": "input_text", "text": "continue" }])
+    );
+}
+
+#[test]
+fn websocket_account_rebase_rejects_orphan_tool_output() {
+    let request = json!({
+        "type": "response.create",
+        "previous_response_id": "resp_missing_call",
+        "input": [{
+            "type": "custom_tool_call_output",
+            "call_id": "call_missing",
+            "output": "done"
+        }]
+    });
+
+    let err = rebase_ws_request_for_account_change(
+        request.to_string().as_str(),
+        &CompletedWsToolCallCache::default(),
+    )
+    .expect_err("orphan output must not be sent to a different account");
+
+    assert_eq!(err.code, super::RESPONSES_WS_CONTEXT_REBASE_ERROR_CODE);
+    assert!(err.message.contains("call_missing"));
+    assert!(err.message.contains("custom_tool_call"));
+}
+
+#[test]
+fn upstream_websocket_account_rebase_strips_session_affinity_headers() {
+    let mut headers = HeaderMap::new();
+    headers.insert("session_id", HeaderValue::from_static("session-old"));
+    headers.insert("x-codex-window-id", HeaderValue::from_static("window-old"));
+    headers.insert(
+        "x-client-request-id",
+        HeaderValue::from_static("request-old"),
+    );
+    headers.insert("x-codex-turn-state", HeaderValue::from_static("turn-old"));
+    headers.insert(
+        "x-codex-parent-thread-id",
+        HeaderValue::from_static("parent-old"),
+    );
+    headers.insert(
+        "x-codex-turn-metadata",
+        HeaderValue::from_static("turn-meta-old"),
+    );
+    headers.insert("x-openai-subagent", HeaderValue::from_static("review"));
+    headers.insert("x-codex-beta-features", HeaderValue::from_static("beta-a"));
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
+        prompt_cache_key: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let request = build_upstream_websocket_request(
+        "wss://chatgpt.com/backend-api/codex/responses",
+        &sample_account(),
+        &websocket_bearer_authorization("bearer-ws"),
+        &context,
+        true,
+    )
+    .unwrap_or_else(|err| panic!("build rebased websocket request failed: {}", err.message));
+
+    for header in [
+        "session_id",
+        "x-codex-window-id",
+        "x-client-request-id",
+        "x-codex-turn-state",
+        "x-codex-parent-thread-id",
+        "x-codex-turn-metadata",
+    ] {
+        assert!(
+            request.headers().get(header).is_none(),
+            "rebased websocket must strip {header}"
+        );
+    }
+    assert_eq!(
+        request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer bearer-ws")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("x-openai-subagent")
+            .and_then(|value| value.to_str().ok()),
+        Some("review")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("x-codex-beta-features")
+            .and_then(|value| value.to_str().ok()),
+        Some("beta-a")
+    );
+}
+
+#[test]
 fn websocket_detects_previous_response_not_found_terminal() {
     let terminal = inspect_ws_terminal_event(
             r#"{"type":"response.failed","status":400,"error":{"message":"Previous response with id 'resp_123' not found."}}"#,
@@ -721,4 +1037,148 @@ fn websocket_detects_previous_response_not_found_terminal() {
         .expect("terminal event");
 
     assert!(is_previous_response_not_found_terminal(&terminal));
+}
+
+#[test]
+fn websocket_detects_exact_missing_custom_and_function_tool_call_terminals() {
+    for (message, expected_kind, expected_call_id) in [
+        (
+            "No tool call found for custom tool call output with call_id call_custom_1.",
+            WsToolCallKind::Custom,
+            "call_custom_1",
+        ),
+        (
+            "No tool call found for function call output with call_id 'call_function_1'.",
+            WsToolCallKind::Function,
+            "call_function_1",
+        ),
+        (
+            "No tool call found for function tool call output with call_id call_function_2",
+            WsToolCallKind::Function,
+            "call_function_2",
+        ),
+    ] {
+        let terminal = inspect_ws_terminal_event(
+            json!({ "type": "error", "error": { "message": message } })
+                .to_string()
+                .as_str(),
+        )
+        .expect("missing tool call error should be terminal");
+
+        assert_eq!(terminal.status_code, 400);
+        assert_eq!(
+            missing_ws_tool_call_from_terminal(&terminal),
+            Some((expected_kind, expected_call_id.to_string()))
+        );
+    }
+
+    let unrelated = inspect_ws_terminal_event(
+        r#"{"type":"error","status":400,"error":{"message":"No tool call found while processing output"}}"#,
+    )
+    .expect("unrelated error terminal");
+    assert!(missing_ws_tool_call_from_terminal(&unrelated).is_none());
+}
+
+#[test]
+fn websocket_missing_tool_call_recovery_changes_payload_and_retries_only_once() {
+    let mut cache = CompletedWsToolCallCache::default();
+    cache.observe_upstream_event(
+        json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "custom_tool_call",
+                "id": "ctc_retry_once",
+                "call_id": "call_retry_once",
+                "name": "apply_patch",
+                "input": "patch"
+            }
+        })
+        .to_string()
+        .as_str(),
+    );
+    let request = json!({
+        "type": "response.create",
+        "previous_response_id": "resp_old",
+        "input": [{
+            "type": "custom_tool_call_output",
+            "call_id": "call_retry_once",
+            "output": "done"
+        }]
+    })
+    .to_string();
+    let terminal = inspect_ws_terminal_event(
+        r#"{"type":"response.failed","status":400,"error":{"message":"No tool call found for custom tool call output with call_id call_retry_once."}}"#,
+    )
+    .expect("missing tool call terminal");
+    let mut already_retried = false;
+
+    let recovered =
+        prepare_missing_ws_tool_call_retry(&request, &cache, &terminal, &mut already_retried)
+            .expect("prepare recovery")
+            .expect("matching cached call should allow recovery");
+    let value: Value = serde_json::from_str(&recovered).expect("parse recovered request");
+    assert!(already_retried);
+    assert!(value.get("previous_response_id").is_none());
+    assert_eq!(value["input"][0]["type"], "custom_tool_call");
+    assert_eq!(value["input"][1]["type"], "custom_tool_call_output");
+
+    assert!(
+        prepare_missing_ws_tool_call_retry(&request, &cache, &terminal, &mut already_retried,)
+            .expect("second recovery check")
+            .is_none()
+    );
+}
+
+#[test]
+fn websocket_missing_tool_call_recovery_requires_a_matching_call_and_changed_rebase() {
+    let terminal = inspect_ws_terminal_event(
+        r#"{"type":"error","status":400,"error":{"message":"No tool call found for custom tool call output with call_id call_unchanged."}}"#,
+    )
+    .expect("missing tool call terminal");
+    let mut already_retried = false;
+    let orphan = json!({
+        "type": "response.create",
+        "input": [{
+            "type": "custom_tool_call_output",
+            "call_id": "call_unchanged",
+            "output": "done"
+        }]
+    })
+    .to_string();
+    assert!(prepare_missing_ws_tool_call_retry(
+        &orphan,
+        &CompletedWsToolCallCache::default(),
+        &terminal,
+        &mut already_retried,
+    )
+    .expect("orphan recovery check")
+    .is_none());
+    assert!(!already_retried);
+
+    let already_rebased = json!({
+        "type": "response.create",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_unchanged",
+                "name": "apply_patch",
+                "input": "patch"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_unchanged",
+                "output": "done"
+            }
+        ]
+    })
+    .to_string();
+    assert!(prepare_missing_ws_tool_call_retry(
+        &already_rebased,
+        &CompletedWsToolCallCache::default(),
+        &terminal,
+        &mut already_retried,
+    )
+    .expect("unchanged recovery check")
+    .is_none());
+    assert!(!already_retried);
 }

@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
 const SETTINGS_SNAPSHOT = {
@@ -76,7 +75,6 @@ type MockState = {
   batchStateUpdateDelayMs: number;
   deletes: string[];
   importCalls: Array<{ method: string; params: JsonObject }>;
-  initializeCalls: number;
   listCalls: number;
   listError: string | null;
   listDelayMs: number;
@@ -278,7 +276,6 @@ async function installMockRuntime(page: Page): Promise<MockState> {
     batchStateUpdateDelayMs: 0,
     deletes: [],
     importCalls: [],
-    initializeCalls: 0,
     listCalls: 0,
     listError: null,
     listDelayMs: 0,
@@ -333,7 +330,6 @@ async function installMockRuntime(page: Page): Promise<MockState> {
       return;
     }
     if (method === "initialize") {
-      state.initializeCalls += 1;
       await ok({
         version: "0.4.0",
         userAgent: "codex_cli_rs/0.1.19",
@@ -351,6 +347,34 @@ async function installMockRuntime(page: Page): Promise<MockState> {
         httpStreamWorkerFactor: 1,
         httpStreamWorkerMin: 2,
         accountMaxInflight: 1,
+      });
+      return;
+    }
+    if (method === "codexProfile/get") {
+      await ok({
+        codexHome: "/tmp/.codex",
+        mode: "gateway",
+        selectedAccountId: null,
+        selectedApiKeyId: "key-hybrid",
+        gatewayBaseUrl: "http://localhost:48760/v1",
+        warnings: [],
+      });
+      return;
+    }
+    if (method === "codexProfile/listCandidates") {
+      await ok({
+        accounts: [],
+        apiKeys: [
+          {
+            id: "key-hybrid",
+            name: "Hybrid gateway",
+            status: "active",
+            modelSlug: null,
+            reasoningEffort: null,
+            rotationStrategy: "hybrid_rotation",
+            catalogSource: "managed",
+          },
+        ],
       });
       return;
     }
@@ -578,6 +602,25 @@ function rectanglesOverlap(first: Rect, second: Rect): boolean {
   );
 }
 
+test("模型与路由页面说明当前 Codex 是否使用本地目录", async ({ page }) => {
+  await installMockRuntime(page);
+  await page.goto("/models/");
+
+  await expect(
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
+  ).toBeVisible();
+  await expect(page.getByText("当前 Codex 模型来源", { exact: true })).toBeVisible();
+  await expect(page.getByText("混合路由", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("CodexManager 本地目录", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("当前平台密钥使用本地网关目录；下方模型、路由和可见性设置会影响当前 Codex。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+});
+
 test("重新读取会更新目录并明确反馈成功与失败", async ({ page }) => {
   const pageErrors: Error[] = [];
   page.on("pageerror", (error) => pageErrors.push(error));
@@ -585,19 +628,27 @@ test("重新读取会更新目录并明确反馈成功与失败", async ({ page 
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
   await expect(page.getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
 
   const callsBeforeReload = state.listCalls;
   state.models.push(importedModel());
-  await page.getByRole("button", { name: "重新读取" }).click();
+  await page.getByRole("button", { name: "刷新本地目录" }).click();
   await expect(page.getByText("imported-local", { exact: true })).toBeVisible();
-  await expect(page.getByText("模型目录已重新读取", { exact: true })).toBeVisible();
+  await expect(page.getByText("本地网关模型目录已刷新", { exact: true })).toBeVisible();
+  const refreshToast = page.locator("[data-sonner-toast]", {
+    hasText: "本地网关模型目录已刷新",
+  });
+  await expect(refreshToast).toHaveCSS("pointer-events", "none");
+  await expect(refreshToast.locator("[data-close-button]")).toHaveCSS(
+    "pointer-events",
+    "auto",
+  );
   expect(state.listCalls).toBeGreaterThan(callsBeforeReload);
 
   state.listError = "catalog reload failed";
-  await page.getByRole("button", { name: "重新读取" }).click();
+  await page.getByRole("button", { name: "刷新本地目录" }).click();
   await expect(
     page.getByText(/\u8bfb取模型失败.*catalog reload failed/),
   ).toBeVisible();
@@ -613,7 +664,7 @@ test("模型状态下拉支持四态切换并直接恢复隐藏模型", async ({
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   const row = page.locator("tr", {
@@ -703,7 +754,7 @@ test("模型状态更新失败时保留原状态", async ({ page }) => {
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   const row = page.locator("tr", {
@@ -760,7 +811,7 @@ test("批量状态下拉一次更新多个模型并保持原子失败", async ({
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
   await expect(batchStateButton(0)).toBeDisabled();
 
@@ -812,7 +863,7 @@ test("批量状态下拉一次更新多个模型并保持原子失败", async ({
   await chooseBatchState("隐藏但启用", 2);
   await expect.poll(() => state.batchStateUpdates.length).toBe(3);
   await expect(batchStateButton(2)).toBeDisabled();
-  await expect(page.getByRole("button", { name: "重新读取" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "刷新本地目录" })).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "批量分配路由 (2)" }),
   ).toBeDisabled();
@@ -846,7 +897,7 @@ test("批量删除会隐藏内置模型并删除自定义模型", async ({ page 
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   const emptyBatchDelete = page.getByRole("button", {
@@ -859,11 +910,13 @@ test("批量删除会隐藏内置模型并删除自定义模型", async ({ page 
   await page.getByLabel("选择模型 imported-local").click();
   await page.getByRole("button", { name: "批量删除模型 (2)" }).click();
 
-  const confirmDialog = page.getByRole("dialog", { name: "批量删除模型" });
+  const confirmDialog = page.getByRole("dialog", {
+    name: "从本地网关目录批量移除模型",
+  });
   await expect(confirmDialog).toContainText(
     "1 个内置模型会被隐藏并禁用，其余自定义模型会被删除",
   );
-  await confirmDialog.getByRole("button", { name: "删除", exact: true }).click();
+  await confirmDialog.getByRole("button", { name: "移除", exact: true }).click();
   await expect(confirmDialog).toHaveCount(0);
 
   expect(state.deletes).toEqual(["gpt-5.6-sol", "imported-local"]);
@@ -895,14 +948,16 @@ test("删除提交成功后刷新失败仍关闭确认框并保留成功结果",
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
   await page
-    .getByRole("button", { name: "隐藏模型 gpt-5.4", exact: true })
+    .getByRole("button", { name: "从本地网关目录隐藏模型 gpt-5.4", exact: true })
     .click();
 
-  const confirmDialog = page.getByRole("dialog", { name: "删除模型" });
-  await confirmDialog.getByRole("button", { name: "删除", exact: true }).click();
+  const confirmDialog = page.getByRole("dialog", {
+    name: "从本地网关目录移除模型",
+  });
+  await confirmDialog.getByRole("button", { name: "移除", exact: true }).click();
   await expect.poll(() => state.deletes).toEqual(["gpt-5.4"]);
 
   await page.keyboard.press("Escape");
@@ -914,7 +969,7 @@ test("删除提交成功后刷新失败仍关闭确认框并保留成功结果",
 
   await expect(confirmDialog).toHaveCount(0, { timeout: 1_000 });
   await expect(
-    page.getByRole("button", { name: "新增自定义模型" }),
+    page.getByRole("button", { name: "新增网关自定义模型" }),
   ).toBeDisabled();
   await expect(
     page.locator("tr", {
@@ -928,7 +983,7 @@ test("删除提交成功后刷新失败仍关闭确认框并保留成功结果",
     page.getByText(/读取模型失败.*post-delete catalog reload failed/),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "新增自定义模型" }),
+    page.getByRole("button", { name: "新增网关自定义模型" }),
   ).toBeEnabled();
   expect(state.models.find((model) => model.slug === "gpt-5.4")).toMatchObject({
     enabled: false,
@@ -944,17 +999,19 @@ test("批量删除部分失败时只保留失败模型并允许重试", async ({
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
   await page.getByLabel("选择模型 gpt-5.6-sol").click();
   await page.getByLabel("选择模型 imported-local").click();
   await page.getByRole("button", { name: "批量删除模型 (2)" }).click();
   await page
-    .getByRole("dialog", { name: "批量删除模型" })
-    .getByRole("button", { name: "删除", exact: true })
+    .getByRole("dialog", { name: "从本地网关目录批量移除模型" })
+    .getByRole("button", { name: "移除", exact: true })
     .click();
 
-  const retryDialog = page.getByRole("dialog", { name: "删除模型" });
+  const retryDialog = page.getByRole("dialog", {
+    name: "从本地网关目录移除模型",
+  });
   await expect(retryDialog).toBeVisible();
   await expect(
     page.getByText("批量处理完成：隐藏1个，删除0个，失败1个", {
@@ -966,7 +1023,7 @@ test("批量删除部分失败时只保留失败模型并允许重试", async ({
   await expect(page.getByLabel("选择模型 imported-local")).toBeChecked();
 
   delete state.deleteErrors["imported-local"];
-  await retryDialog.getByRole("button", { name: "删除", exact: true }).click();
+  await retryDialog.getByRole("button", { name: "移除", exact: true }).click();
   await expect(retryDialog).toHaveCount(0);
   await expect(page.locator("tr", { hasText: "imported-local" })).toHaveCount(0);
   expect(state.deletes).toEqual([
@@ -980,7 +1037,7 @@ test("编辑器不依赖后续动画帧即可载入目标模型", async ({ page 
   await installMockRuntime(page);
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   await page.evaluate(() => {
@@ -1020,10 +1077,10 @@ test("长路由来源不会覆盖相邻的模型和批量路由字段", async ({
   await installMockRuntime(page);
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "新增自定义模型" }).click();
+  await page.getByRole("button", { name: "新增网关自定义模型" }).click();
   const modelDialog = page.getByRole("dialog");
   await modelDialog.getByRole("tab", { name: "路由" }).click();
   await modelDialog.getByRole("button", { name: "添加聚合路由" }).click();
@@ -1100,7 +1157,7 @@ test("批量路由弹窗在小窗口内保留底部操作并允许正文滚动",
   await installMockRuntime(page);
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   for (const slug of Object.keys(PRICED_MODELS)) {
@@ -1148,7 +1205,7 @@ test("模型目录支持中文展示并为多个模型批量分配路由", async
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   await expect(page.getByText("内置模型", { exact: true })).toBeVisible();
@@ -1215,12 +1272,12 @@ test("模型目录支持中文展示并为多个模型批量分配路由", async
   }
 });
 
-test("模型目录 V2 完成本地管理、原子保存、导入和主动导出", async ({ page }) => {
+test("模型目录 V2 完成本地管理、原子保存和导入", async ({ page }) => {
   const state = await installMockRuntime(page);
 
   await page.goto("/models/");
   await expect(
-    page.getByRole("main").getByRole("heading", { name: "模型管理" }),
+    page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
   const rows = page.getByRole("main").locator("tbody tr");
@@ -1235,27 +1292,11 @@ test("模型目录 V2 完成本地管理、原子保存、导入和主动导出"
   await expect(page.getByText("codex-auto-review", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "远端并入" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "清理远端旧模型" })).toHaveCount(0);
-  const initializeCallsBeforeExport = state.initializeCalls;
+  await expect(
+    page.getByRole("button", { name: "导出到本地 Codex 缓存" }),
+  ).toHaveCount(0);
 
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出到本地 Codex 缓存" }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("models_cache.json");
-  const downloadPath = await download.path();
-  expect(downloadPath).not.toBeNull();
-  const cache = JSON.parse(await readFile(downloadPath!, "utf8"));
-  expect(cache.models).toHaveLength(7);
-  expect(
-    cache.models.some((model: JsonObject) => model.slug === "gpt-image-2"),
-  ).toBe(false);
-  expect(
-    cache.models.every(
-      (model: JsonObject) => model.base_instructions === "",
-    ),
-  ).toBe(true);
-  expect(state.initializeCalls).toBe(initializeCallsBeforeExport + 1);
-
-  await page.getByRole("button", { name: "新增自定义模型" }).click();
+  await page.getByRole("button", { name: "新增网关自定义模型" }).click();
   await page.getByLabel("模型标识（Slug）").fill("my-custom-model");
   await page.getByLabel("显示名称").fill("My Custom Model");
   await page.getByLabel("描述").fill("local managed model");
@@ -1327,8 +1368,12 @@ test("模型目录 V2 完成本地管理、原子保存、导入和主动导出"
     ]),
   );
 
-  await page.getByRole("button", { name: "隐藏模型 gpt-5.6-sol" }).click();
-  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "从本地网关目录隐藏模型 gpt-5.6-sol",
+    })
+    .click();
+  await page.getByRole("button", { name: "移除", exact: true }).click();
   const builtinRow = page.locator("tr", { hasText: "gpt-5.6-sol" });
   await expect(builtinRow).toHaveCount(0);
 
@@ -1343,11 +1388,11 @@ test("模型目录 V2 完成本地管理、原子保存、导入和主动导出"
   await page
     .getByRole("button", { name: "删除模型 my-custom-model" })
     .click();
-  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("button", { name: "移除", exact: true }).click();
   await expect(customRow).toHaveCount(0);
   expect(state.deletes).toEqual(["gpt-5.6-sol", "my-custom-model"]);
 
-  await page.getByRole("button", { name: "从本地 JSON 导入" }).click();
+  await page.getByRole("button", { name: "导入到本地网关目录" }).click();
   const importDialog = page.getByRole("dialog");
   await importDialog.getByLabel("JSON", { exact: true }).fill(
     JSON.stringify({

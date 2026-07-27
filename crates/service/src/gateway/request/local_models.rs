@@ -162,9 +162,8 @@ pub(super) fn maybe_respond_local_models(
         }
     };
 
-    let models = cached;
-
-    let (output_models, include_implicit_models) = filter_models_for_key(storage, key_id, models)?;
+    let (output_models, include_implicit_models) =
+        filter_models_for_catalog_policy(storage, key_id, cached, catalog_policy)?;
     let output_models = apply_auto_compact_policy(&output_models, super::auto_compact_enabled());
     let output = if include_implicit_models {
         serialize_models_response(&output_models)

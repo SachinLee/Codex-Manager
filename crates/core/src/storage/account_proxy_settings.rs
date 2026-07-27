@@ -3,6 +3,7 @@ use rusqlite::{Result, Row};
 use super::{now_ts, AccountProxySettings, Storage};
 
 impl Storage {
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_account_proxy_settings(
         &self,
         account_id: &str,
@@ -136,6 +137,7 @@ impl Storage {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_account_proxy_check_status(
         &self,
         account_id: &str,
@@ -212,6 +214,7 @@ impl Storage {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_account_proxy_test_result(
         &self,
         account_id: &str,

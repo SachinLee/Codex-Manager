@@ -2176,6 +2176,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     updateAutoCheck: asBoolean(source.updateAutoCheck, true),
     autoStartEnabled: asBoolean(source.autoStartEnabled, false),
     autoStartSupported: asBoolean(source.autoStartSupported, false),
+    showMainWindowOnStartup: asBoolean(source.showMainWindowOnStartup, true),
     closeToTrayOnClose: asBoolean(source.closeToTrayOnClose, false),
     closeToTraySupported: asBoolean(source.closeToTraySupported, false),
     keepWindowUiMounted,

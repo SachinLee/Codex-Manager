@@ -385,7 +385,7 @@ where
             if resp.status().is_success() {
                 super::super::super::clear_account_cooldown(&account.id);
                 log_gateway_result(Some(fallback_base), resp.status().as_u16(), None);
-                return FallbackBranchResult::RespondUpstream(resp.into());
+                return FallbackBranchResult::RespondUpstream(resp);
             }
             let fallback_status = resp.status().as_u16();
             super::super::super::mark_account_cooldown_for_status(&account.id, fallback_status);
@@ -393,7 +393,10 @@ where
             // 例如 5xx 这类上游服务端错误直接回传，避免单次请求在大量候选账号上长时间轮询。
             if should_failover_after_fallback_non_success(fallback_status, has_more_candidates) {
                 let headers = resp.headers().clone();
-                let body = resp.bytes().unwrap_or_default();
+                let body = resp
+                    .into_buffered()
+                    .map(|(body, _)| body)
+                    .unwrap_or_default();
                 let fallback_error = summarize_fallback_non_success(
                     status.as_u16(),
                     fallback_status,
@@ -418,7 +421,7 @@ where
                     fallback_status,
                     Some(fallback_error.as_str()),
                 );
-                FallbackBranchResult::RespondUpstream(resp.into())
+                FallbackBranchResult::RespondUpstream(resp)
             }
         }
         Ok(None) => {

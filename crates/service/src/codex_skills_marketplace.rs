@@ -1,6 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -9,7 +10,6 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const CODEX_COMMAND: &str = "codex";
 const CLI_TIMEOUT: Duration = Duration::from_secs(90);
 const CLI_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_STDOUT_BYTES: usize = 4 * 1024 * 1024;
@@ -68,6 +68,12 @@ struct MarketplaceRecord {
 #[derive(Debug)]
 struct CliOutput {
     stdout: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedCliCommand {
+    executable: PathBuf,
+    search_path: OsString,
 }
 
 #[derive(Debug)]
@@ -314,9 +320,19 @@ fn run_cli_json(
 }
 
 fn run_system_cli(args: &[String], codex_home: &Path) -> Result<CliOutput, CliRunError> {
-    let mut command = Command::new(CODEX_COMMAND);
+    let resolved = resolve_system_cli()?;
+    run_resolved_cli(&resolved, args, codex_home)
+}
+
+fn run_resolved_cli(
+    resolved: &ResolvedCliCommand,
+    args: &[String],
+    codex_home: &Path,
+) -> Result<CliOutput, CliRunError> {
+    let mut command = Command::new(&resolved.executable);
     command
         .args(args)
+        .env("PATH", &resolved.search_path)
         .env("CODEX_HOME", codex_home)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("NO_COLOR", "1")
@@ -402,6 +418,169 @@ fn run_system_cli(args: &[String], codex_home: &Path) -> Result<CliOutput, CliRu
     Ok(CliOutput {
         stdout: stdout_text,
     })
+}
+
+fn canonical_search_directories<I>(directories: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut resolved = Vec::new();
+    for directory in directories {
+        // Empty and relative PATH entries can resolve against an attacker-controlled cwd.
+        if directory.as_os_str().is_empty() || !directory.is_absolute() {
+            continue;
+        }
+        let Ok(directory) = directory.canonicalize() else {
+            continue;
+        };
+        if !directory.is_dir() || resolved.contains(&directory) {
+            continue;
+        }
+        resolved.push(directory);
+    }
+    resolved
+}
+
+fn resolved_cli_command(
+    executable: PathBuf,
+    search_directories: &[PathBuf],
+) -> Result<ResolvedCliCommand, CliRunError> {
+    let search_path = std::env::join_paths(search_directories).map_err(|err| {
+        CliRunError::Failed(format!("failed to construct a safe Codex CLI PATH: {err}"))
+    })?;
+    Ok(ResolvedCliCommand {
+        executable,
+        search_path,
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_CODEX_EXTENSIONS: [&str; 4] = ["com", "exe", "bat", "cmd"];
+
+#[cfg(any(target_os = "windows", test))]
+fn find_windows_codex(search_directories: &[PathBuf]) -> Option<PathBuf> {
+    for directory in search_directories {
+        // Do not consider the extensionless npm POSIX shim on Windows. Rust only infers `.exe`
+        // for a bare command, while npm's runnable Windows entry point is normally `codex.cmd`.
+        for extension in WINDOWS_CODEX_EXTENSIONS {
+            let candidate = directory.join(format!("codex.{extension}"));
+            if !candidate.is_file() {
+                continue;
+            }
+            if let Ok(candidate) = candidate.canonicalize() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn codex_desktop_search_directories(local_app_data: &Path) -> Vec<PathBuf> {
+    let bin_root = local_app_data.join("OpenAI").join("Codex").join("bin");
+    let mut result = vec![bin_root.clone()];
+    let mut versioned_directories = fs::read_dir(&bin_root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = entry.metadata().ok()?;
+            metadata.is_dir().then(|| (path, metadata.modified().ok()))
+        })
+        .collect::<Vec<_>>();
+    // Codex Desktop keeps CLI payloads under opaque version/hash directories. Prefer the newest
+    // payload while keeping a deterministic path tie-breaker.
+    versioned_directories.sort_by(|(left_path, left_modified), (right_path, right_modified)| {
+        right_modified
+            .cmp(left_modified)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    result.extend(versioned_directories.into_iter().map(|(path, _)| path));
+    result
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_known_search_directories(
+    nvm_symlink: Option<PathBuf>,
+    app_data: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    if let Some(nvm_symlink) = nvm_symlink {
+        result.push(nvm_symlink);
+    }
+    if let Some(app_data) = app_data {
+        result.push(app_data.join("npm"));
+    }
+    if let Some(local_app_data) = local_app_data {
+        result.extend(codex_desktop_search_directories(&local_app_data));
+        result.push(
+            local_app_data
+                .join("Programs")
+                .join("OpenAI")
+                .join("Codex")
+                .join("resources"),
+        );
+        result.push(
+            local_app_data
+                .join("Programs")
+                .join("Codex")
+                .join("resources"),
+        );
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_system_cli() -> Result<ResolvedCliCommand, CliRunError> {
+    let mut candidates = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    candidates.extend(windows_known_search_directories(
+        std::env::var_os("NVM_SYMLINK").map(PathBuf::from),
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+    ));
+    let search_directories = canonical_search_directories(candidates);
+    let executable = find_windows_codex(&search_directories)
+        .ok_or_else(|| CliRunError::Unavailable("Codex CLI was not found on PATH".to_string()))?;
+    resolved_cli_command(executable, &search_directories)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(unix)]
+fn find_unix_codex(search_directories: &[PathBuf]) -> Option<PathBuf> {
+    search_directories.iter().find_map(|directory| {
+        let candidate = directory.join("codex");
+        if !is_executable_file(&candidate) {
+            return None;
+        }
+        candidate.canonicalize().ok()
+    })
+}
+
+#[cfg(unix)]
+fn resolve_system_cli() -> Result<ResolvedCliCommand, CliRunError> {
+    let candidates = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let search_directories = canonical_search_directories(candidates);
+    let executable = find_unix_codex(&search_directories)
+        .ok_or_else(|| CliRunError::Unavailable("Codex CLI was not found on PATH".to_string()))?;
+    resolved_cli_command(executable, &search_directories)
 }
 
 fn capture_stream(

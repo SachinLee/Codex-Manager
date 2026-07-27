@@ -67,6 +67,66 @@ impl CliRunner for StubRunner {
     }
 }
 
+struct ResolvedCliRunner {
+    command: ResolvedCliCommand,
+}
+
+impl CliRunner for ResolvedCliRunner {
+    fn run(&self, args: &[String], codex_home: &Path) -> Result<CliOutput, CliRunError> {
+        run_resolved_cli(&self.command, args, codex_home)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn write_fake_codex_cli(bin: &Path) -> PathBuf {
+    fs::create_dir_all(bin).expect("create fake CLI directory");
+    let cli = bin.join("codex.cmd");
+    fs::write(
+        &cli,
+        concat!(
+            "@echo off\r\n",
+            "if \"%~1 %~2 %~3\"==\"plugin marketplace list\" (\r\n",
+            "  echo {\"marketplaces\":[]}\r\n",
+            "  exit /b 0\r\n",
+            ")\r\n",
+            "if \"%~1 %~2 %~3\"==\"plugin list --available\" (\r\n",
+            "  echo {\"installed\":[],\"available\":[]}\r\n",
+            "  exit /b 0\r\n",
+            ")\r\n",
+            "echo unexpected fake Codex arguments 1>&2\r\n",
+            "exit /b 9\r\n",
+        ),
+    )
+    .expect("write fake Windows Codex CLI");
+    cli
+}
+
+#[cfg(unix)]
+fn write_fake_codex_cli(bin: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(bin).expect("create fake CLI directory");
+    let cli = bin.join("codex");
+    fs::write(
+        &cli,
+        concat!(
+            "#!/bin/sh\n",
+            "case \"$1 $2 $3\" in\n",
+            "  \"plugin marketplace list\") printf '%s\\n' '{\"marketplaces\":[]}' ;;\n",
+            "  \"plugin list --available\") printf '%s\\n' '{\"installed\":[],\"available\":[]}' ;;\n",
+            "  *) printf '%s\\n' 'unexpected fake Codex arguments' >&2; exit 9 ;;\n",
+            "esac\n",
+        ),
+    )
+    .expect("write fake Unix Codex CLI");
+    let mut permissions = fs::metadata(&cli)
+        .expect("read fake Unix Codex CLI metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&cli, permissions).expect("make fake Unix Codex CLI executable");
+    cli
+}
+
 fn write_plugin(
     root: &Path,
     directory: &str,
@@ -309,6 +369,178 @@ fn unavailable_or_old_cli_returns_an_explicit_inventory_warning() {
     assert!(!inventory.cli_available);
     assert!(inventory.plugins.is_empty());
     assert_eq!(inventory.warnings, ["Codex CLI was not found on PATH"]);
+}
+
+#[test]
+fn windows_resolution_ignores_extensionless_shims_and_preserves_directory_priority() {
+    let temp = TestDirectory::new("windows-cli-path-priority");
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    fs::create_dir_all(&first).expect("create first CLI directory");
+    fs::create_dir_all(&second).expect("create second CLI directory");
+    fs::write(first.join("codex"), b"#!/bin/sh\nexit 0\n").expect("write extensionless npm shim");
+    fs::write(first.join("codex.cmd"), b"@exit /b 0\r\n").expect("write first codex.cmd");
+    fs::write(second.join("codex.exe"), b"not a real executable").expect("write second codex.exe");
+
+    let directories = canonical_search_directories([first.clone(), second]);
+    let executable = find_windows_codex(&directories).expect("resolve Windows Codex CLI");
+
+    assert_eq!(
+        executable,
+        first
+            .join("codex.cmd")
+            .canonicalize()
+            .expect("canonical codex.cmd")
+    );
+    assert_ne!(
+        executable,
+        first
+            .join("codex")
+            .canonicalize()
+            .expect("canonical extensionless shim")
+    );
+}
+
+#[test]
+fn windows_resolution_uses_com_exe_bat_cmd_extension_priority() {
+    let temp = TestDirectory::new("windows-cli-extension-priority");
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&bin).expect("create CLI directory");
+    for extension in ["cmd", "bat", "exe", "com"] {
+        fs::write(
+            bin.join(format!("codex.{extension}")),
+            format!("fake {extension}"),
+        )
+        .expect("write extension candidate");
+    }
+
+    let directories = canonical_search_directories([bin.clone()]);
+    let executable = find_windows_codex(&directories).expect("resolve Windows Codex CLI");
+
+    assert_eq!(
+        executable,
+        bin.join("codex.com")
+            .canonicalize()
+            .expect("canonical codex.com")
+    );
+}
+
+#[test]
+fn windows_known_locations_cover_nvm_npm_and_codex_desktop_in_priority_order() {
+    let temp = TestDirectory::new("windows-cli-known-locations");
+    let nvm = temp.path().join("nvm-symlink");
+    let app_data = temp.path().join("roaming");
+    let npm = app_data.join("npm");
+    let local_app_data = temp.path().join("local");
+    let desktop_bin = local_app_data
+        .join("OpenAI")
+        .join("Codex")
+        .join("bin")
+        .join("desktop-version");
+    for directory in [&nvm, &npm, &desktop_bin] {
+        fs::create_dir_all(directory).expect("create known CLI directory");
+    }
+    fs::write(nvm.join("codex.cmd"), b"@exit /b 0\r\n").expect("write NVM CLI");
+    fs::write(npm.join("codex.cmd"), b"@exit /b 0\r\n").expect("write npm CLI");
+    fs::write(desktop_bin.join("codex.exe"), b"fake desktop CLI").expect("write Codex Desktop CLI");
+
+    let candidates =
+        windows_known_search_directories(Some(nvm.clone()), Some(app_data), Some(local_app_data));
+    let directories = canonical_search_directories(candidates);
+
+    assert_eq!(
+        find_windows_codex(&directories).expect("resolve NVM CLI"),
+        nvm.join("codex.cmd")
+            .canonicalize()
+            .expect("canonical NVM CLI")
+    );
+
+    let without_nvm = directories
+        .iter()
+        .filter(|directory| **directory != nvm.canonicalize().expect("canonical NVM directory"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        find_windows_codex(&without_nvm).expect("resolve npm CLI"),
+        npm.join("codex.cmd")
+            .canonicalize()
+            .expect("canonical npm CLI")
+    );
+
+    let canonical_npm = npm.canonicalize().expect("canonical npm directory");
+    let without_nvm_or_npm = without_nvm
+        .iter()
+        .filter(|directory| **directory != canonical_npm)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        find_windows_codex(&without_nvm_or_npm).expect("resolve Codex Desktop CLI"),
+        desktop_bin
+            .join("codex.exe")
+            .canonicalize()
+            .expect("canonical Codex Desktop CLI")
+    );
+}
+
+#[cfg(any(target_os = "windows", unix))]
+#[test]
+fn resolved_fake_cli_produces_a_marketplace_inventory() {
+    let temp = TestDirectory::new("resolved-fake-cli");
+    let bin = temp.path().join("bin");
+    let expected_cli = write_fake_codex_cli(&bin)
+        .canonicalize()
+        .expect("canonical fake Codex CLI");
+    let directories = canonical_search_directories([bin]);
+    #[cfg(target_os = "windows")]
+    let executable = find_windows_codex(&directories).expect("resolve fake Windows Codex CLI");
+    #[cfg(unix)]
+    let executable = find_unix_codex(&directories).expect("resolve fake Unix Codex CLI");
+    let command = resolved_cli_command(executable.clone(), &directories)
+        .expect("build resolved fake Codex command");
+    let runner = ResolvedCliRunner { command };
+
+    let inventory = list_with_runner(temp.path(), &runner).expect("list fake CLI inventory");
+
+    assert!(executable.is_absolute());
+    assert_eq!(executable, expected_cli);
+    assert!(inventory.cli_available);
+    assert!(inventory.marketplaces.is_empty());
+    assert!(inventory.plugins.is_empty());
+    assert!(inventory.warnings.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_resolution_only_accepts_absolute_executable_path_entries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TestDirectory::new("unix-cli-safe-path");
+    let non_executable_bin = temp.path().join("non-executable");
+    let executable_bin = temp.path().join("executable");
+    fs::create_dir_all(&non_executable_bin).expect("create non-executable directory");
+    fs::create_dir_all(&executable_bin).expect("create executable directory");
+    fs::write(non_executable_bin.join("codex"), b"#!/bin/sh\nexit 0\n")
+        .expect("write non-executable CLI");
+    let executable = executable_bin.join("codex");
+    fs::write(&executable, b"#!/bin/sh\nexit 0\n").expect("write executable CLI");
+    let mut permissions = fs::metadata(&executable)
+        .expect("read executable CLI metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).expect("make CLI executable");
+
+    let directories = canonical_search_directories([
+        PathBuf::new(),
+        PathBuf::from("relative"),
+        non_executable_bin,
+        executable_bin,
+    ]);
+    let resolved = find_unix_codex(&directories).expect("resolve safe Unix Codex CLI");
+
+    assert_eq!(
+        resolved,
+        executable.canonicalize().expect("canonical executable CLI")
+    );
 }
 
 #[test]

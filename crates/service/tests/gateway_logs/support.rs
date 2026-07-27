@@ -152,10 +152,20 @@ pub(super) fn post_http_raw(
     body: &str,
     headers: &[(&str, &str)],
 ) -> (u16, String) {
+    post_http_raw_with_read_timeout(addr, path, body, headers, Duration::from_secs(2))
+}
+
+pub(super) fn post_http_raw_with_read_timeout(
+    addr: &str,
+    path: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+    read_timeout: Duration,
+) -> (u16, String) {
     let mut last_raw = String::new();
     for _ in 0..20 {
         let mut stream = TcpStream::connect(addr).expect("connect server");
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_read_timeout(Some(read_timeout));
         let mut request = format!("POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
         for (name, value) in headers {
             request.push_str(name);

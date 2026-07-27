@@ -10,6 +10,7 @@ use futures_util::pin_mut;
 use futures_util::stream::unfold;
 use futures_util::task::noop_waker_ref;
 use futures_util::Stream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::task::{Context, Poll};
 use std::thread;
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant};
 
 const OPENAI_RESPONSES_SSE_CHANNEL_CAPACITY: usize = 128;
 const OPENAI_RESPONSES_SIDECAR_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+const OPENAI_RESPONSES_SIDECAR_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 enum OpenAIResponsesSidecarItem {
@@ -27,20 +29,31 @@ enum OpenAIResponsesSidecarItem {
 
 struct OpenAIResponsesSidecarObserver {
     rx: Receiver<OpenAIResponsesSidecarItem>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl OpenAIResponsesSidecarObserver {
     fn new(byte_stream: GatewayByteStream) -> Self {
         let (tx, rx) =
             mpsc::sync_channel::<OpenAIResponsesSidecarItem>(OPENAI_RESPONSES_SSE_CHANNEL_CAPACITY);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
         thread::spawn(move || {
-            let byte_stream = unfold(Some(byte_stream), |state| async move {
-                let byte_stream = state?;
-                match byte_stream.recv() {
-                    Ok(GatewayByteStreamItem::Chunk(bytes)) => Some((Ok(bytes), Some(byte_stream))),
-                    Ok(GatewayByteStreamItem::Eof) => None,
-                    Ok(GatewayByteStreamItem::Error(err)) => Some((Err(err), None)),
-                    Err(_) => None,
+            let byte_stream = unfold(Some((byte_stream, worker_shutdown)), |state| async move {
+                let (mut byte_stream, shutdown) = state?;
+                loop {
+                    if shutdown.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    match byte_stream.recv_timeout(OPENAI_RESPONSES_SIDECAR_POLL_INTERVAL) {
+                        Ok(GatewayByteStreamItem::Chunk(bytes)) => {
+                            return Some((Ok(bytes), Some((byte_stream, shutdown))));
+                        }
+                        Ok(GatewayByteStreamItem::Eof) => return None,
+                        Ok(GatewayByteStreamItem::Error(err)) => return Some((Err(err), None)),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => return None,
+                    }
                 }
             });
 
@@ -71,7 +84,7 @@ impl OpenAIResponsesSidecarObserver {
                 }
             }
         });
-        Self { rx }
+        Self { rx, shutdown }
     }
 
     fn try_recv(&self) -> Result<OpenAIResponsesSidecarItem, mpsc::TryRecvError> {
@@ -83,6 +96,12 @@ impl OpenAIResponsesSidecarObserver {
         timeout: Duration,
     ) -> Result<OpenAIResponsesSidecarItem, RecvTimeoutError> {
         self.rx.recv_timeout(timeout)
+    }
+}
+
+impl Drop for OpenAIResponsesSidecarObserver {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
     }
 }
 

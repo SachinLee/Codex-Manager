@@ -65,7 +65,7 @@ where
             &mut log_gateway_result,
         ) {
             UpstreamOutcomeDecision::Failover => OpenAiAttemptResult::Failover,
-            UpstreamOutcomeDecision::RespondUpstream => OpenAiAttemptResult::Upstream(resp.into()),
+            UpstreamOutcomeDecision::RespondUpstream => OpenAiAttemptResult::Upstream(resp),
         },
         Ok(None) => {
             super::super::super::mark_account_cooldown(

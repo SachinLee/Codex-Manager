@@ -36,13 +36,13 @@ static ROUTE_STATE_CAPACITY: AtomicUsize = AtomicUsize::new(DEFAULT_ROUTE_STATE_
 static ROUTE_STATE: OnceLock<Mutex<RouteRoundRobinState>> = OnceLock::new();
 static ROUTE_CONFIG_LOADED: OnceLock<()> = OnceLock::new();
 
-#[derive(Clone, Copy)]
-struct RouteStateEntry<T: Copy> {
+#[derive(Clone)]
+struct RouteStateEntry<T> {
     value: T,
     last_seen: Instant,
 }
 
-impl<T: Copy> RouteStateEntry<T> {
+impl<T> RouteStateEntry<T> {
     /// 函数 `new`
     ///
     /// 作者: gaohongshun
@@ -60,9 +60,16 @@ impl<T: Copy> RouteStateEntry<T> {
     }
 }
 
+#[derive(Clone)]
+struct AccountRoundRobinCursor {
+    last_selected_account_id: String,
+    next_account_id: String,
+}
+
 #[derive(Default)]
 struct RouteRoundRobinState {
     next_start_by_key_model: HashMap<String, RouteStateEntry<usize>>,
+    account_cursor_by_key_model: HashMap<String, RouteStateEntry<AccountRoundRobinCursor>>,
     p2c_nonce_by_key_model: HashMap<String, RouteStateEntry<u64>>,
     manual_preferred_account_id: Option<String>,
     maintenance_tick: u64,
@@ -98,24 +105,29 @@ pub(crate) fn apply_route_strategy_with_source(
     model: Option<&str>,
 ) -> RouteStrategyApplication {
     ensure_route_config_loaded();
+    let mode = route_mode();
     let default_application = RouteStrategyApplication {
-        strategy_label: route_mode_label(route_mode()),
+        strategy_label: route_mode_label(mode),
         source: "route_strategy",
     };
-    if candidates.len() <= 1 {
-        return default_application;
-    }
-
     if rotate_to_manual_preferred_account(candidates) {
         return RouteStrategyApplication {
             strategy_label: "manual_preferred_account",
             source: "manual_preferred_account",
         };
     }
+    if candidates.len() <= 1 {
+        // A single available account is still an actual balanced selection. Persist its
+        // identity so a later pool expansion continues with that account's successor rather
+        // than reviving a stale cursor from before the pool contracted.
+        if candidates.len() == 1 && mode == ROUTE_MODE_BALANCED_ROUND_ROBIN {
+            let _ = next_account_start_index(candidates, key_id, model);
+        }
+        return default_application;
+    }
 
-    let mode = route_mode();
     if mode == ROUTE_MODE_BALANCED_ROUND_ROBIN {
-        apply_balanced_round_robin(candidates, key_id, model);
+        apply_balanced_account_round_robin(candidates, key_id, model);
     }
 
     apply_health_p2c(candidates, key_id, model, mode);
@@ -143,6 +155,20 @@ pub(crate) fn apply_balanced_round_robin<T>(
         return;
     }
     let start = next_start_index(key_id, model, candidates.len());
+    if start > 0 {
+        candidates.rotate_left(start);
+    }
+}
+
+fn apply_balanced_account_round_robin(
+    candidates: &mut [(Account, Token)],
+    key_id: &str,
+    model: Option<&str>,
+) {
+    if candidates.len() <= 1 {
+        return;
+    }
+    let start = next_account_start_index(candidates, key_id, model);
     if start > 0 {
         candidates.rotate_left(start);
     }
@@ -284,6 +310,7 @@ pub(crate) fn set_route_strategy(strategy: &str) -> Result<&'static str, String>
     if let Some(lock) = ROUTE_STATE.get() {
         let mut state = crate::lock_utils::lock_recover(lock, "route_state");
         state.next_start_by_key_model.clear();
+        state.account_cursor_by_key_model.clear();
         state.p2c_nonce_by_key_model.clear();
         state.maintenance_tick = 0;
     }
@@ -387,6 +414,60 @@ fn next_start_index(key_id: &str, model: Option<&str>, candidate_count: usize) -
         &mut state.p2c_nonce_by_key_model,
         capacity,
     );
+    start
+}
+
+fn next_account_start_index(
+    candidates: &[(Account, Token)],
+    key_id: &str,
+    model: Option<&str>,
+) -> usize {
+    let lock = ROUTE_STATE.get_or_init(|| Mutex::new(RouteRoundRobinState::default()));
+    let mut state_guard = crate::lock_utils::lock_recover(lock, "route_state");
+    let state = &mut *state_guard;
+    let now = Instant::now();
+    state.maybe_maintain(now);
+
+    let ttl = route_state_ttl();
+    let capacity = route_state_capacity();
+    let key = key_model_key(key_id, model);
+    remove_entry_if_expired(
+        &mut state.account_cursor_by_key_model,
+        key.as_str(),
+        now,
+        ttl,
+    );
+
+    let previous_cursor = state
+        .account_cursor_by_key_model
+        .get(key.as_str())
+        .map(|entry| entry.value.clone());
+    let start = previous_cursor
+        .as_ref()
+        .and_then(|cursor| {
+            candidates
+                .iter()
+                .position(|(account, _)| account.id == cursor.last_selected_account_id)
+                .map(|index| (index + 1) % candidates.len())
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .position(|(account, _)| account.id == cursor.next_account_id)
+                })
+        })
+        .unwrap_or(0);
+    let next = (start + 1) % candidates.len();
+    state.account_cursor_by_key_model.insert(
+        key,
+        RouteStateEntry::new(
+            AccountRoundRobinCursor {
+                last_selected_account_id: candidates[start].0.id.clone(),
+                next_account_id: candidates[next].0.id.clone(),
+            },
+            now,
+        ),
+    );
+    enforce_capacity(&mut state.account_cursor_by_key_model, capacity);
     start
 }
 
@@ -618,7 +699,7 @@ fn is_entry_expired(last_seen: Instant, now: Instant, ttl: Duration) -> bool {
 ///
 /// # 返回
 /// 无
-fn remove_entry_if_expired<T: Copy>(
+fn remove_entry_if_expired<T>(
     map: &mut HashMap<String, RouteStateEntry<T>>,
     key: &str,
     now: Instant,
@@ -648,7 +729,7 @@ fn remove_entry_if_expired<T: Copy>(
 ///
 /// # 返回
 /// 无
-fn prune_expired_entries<T: Copy>(
+fn prune_expired_entries<T>(
     map: &mut HashMap<String, RouteStateEntry<T>>,
     now: Instant,
     ttl: Duration,
@@ -672,7 +753,7 @@ fn prune_expired_entries<T: Copy>(
 ///
 /// # 返回
 /// 无
-fn enforce_capacity_pair<T: Copy, U: Copy>(
+fn enforce_capacity_pair<T, U>(
     map: &mut HashMap<String, RouteStateEntry<T>>,
     other: &mut HashMap<String, RouteStateEntry<U>>,
     capacity: usize,
@@ -689,6 +770,18 @@ fn enforce_capacity_pair<T: Copy, U: Copy>(
     }
 }
 
+fn enforce_capacity<T>(map: &mut HashMap<String, RouteStateEntry<T>>, capacity: usize) {
+    if capacity == 0 {
+        return;
+    }
+    while map.len() > capacity {
+        let Some(oldest_key) = find_oldest_key(map) else {
+            break;
+        };
+        map.remove(oldest_key.as_str());
+    }
+}
+
 /// 函数 `find_oldest_key`
 ///
 /// 作者: gaohongshun
@@ -700,7 +793,7 @@ fn enforce_capacity_pair<T: Copy, U: Copy>(
 ///
 /// # 返回
 /// 返回函数执行结果
-fn find_oldest_key<T: Copy>(map: &HashMap<String, RouteStateEntry<T>>) -> Option<String> {
+fn find_oldest_key<T>(map: &HashMap<String, RouteStateEntry<T>>) -> Option<String> {
     map.iter()
         .min_by(|(ka, ea), (kb, eb)| ea.last_seen.cmp(&eb.last_seen).then_with(|| ka.cmp(kb)))
         .map(|(key, _)| key.clone())
@@ -777,6 +870,7 @@ pub(super) fn reload_from_env() {
     if let Some(lock) = ROUTE_STATE.get() {
         let mut state = crate::lock_utils::lock_recover(lock, "route_state");
         state.next_start_by_key_model.clear();
+        state.account_cursor_by_key_model.clear();
         state.p2c_nonce_by_key_model.clear();
         state.manual_preferred_account_id = None;
         state.maintenance_tick = 0;
@@ -880,7 +974,9 @@ impl RouteRoundRobinState {
         let ttl = route_state_ttl();
         let capacity = route_state_capacity();
         prune_expired_entries(&mut self.next_start_by_key_model, now, ttl);
+        prune_expired_entries(&mut self.account_cursor_by_key_model, now, ttl);
         prune_expired_entries(&mut self.p2c_nonce_by_key_model, now, ttl);
+        enforce_capacity(&mut self.account_cursor_by_key_model, capacity);
         enforce_capacity_pair(
             &mut self.next_start_by_key_model,
             &mut self.p2c_nonce_by_key_model,
@@ -911,6 +1007,7 @@ fn clear_route_state_for_tests() {
     if let Some(lock) = ROUTE_STATE.get() {
         let mut state = crate::lock_utils::lock_recover(lock, "route_state");
         state.next_start_by_key_model.clear();
+        state.account_cursor_by_key_model.clear();
         state.p2c_nonce_by_key_model.clear();
         state.manual_preferred_account_id = None;
         state.maintenance_tick = 0;

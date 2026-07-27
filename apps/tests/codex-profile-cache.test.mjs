@@ -10,11 +10,12 @@ async function readSource(relativePath) {
 }
 
 function readConstFunctionBody(source, functionName) {
-  const start = source.indexOf(`const ${functionName} = async () => {`);
+  const normalizedSource = source.replaceAll("\r\n", "\n");
+  const start = normalizedSource.indexOf(`const ${functionName} = async () => {`);
   assert.notEqual(start, -1, `${functionName} not found`);
-  const end = source.indexOf("\n  };\n", start);
+  const end = normalizedSource.indexOf("\n  };\n", start);
   assert.notEqual(end, -1, `${functionName} body end not found`);
-  return source.slice(start, end);
+  return normalizedSource.slice(start, end);
 }
 
 test("账号登录和导入会刷新 Codex profile 候选账号", async () => {
@@ -43,15 +44,21 @@ test("平台模式页面可见时会主动刷新候选列表", async () => {
   assert.match(source, /pickAvailableCandidateId/);
 });
 
-test("平台模式页面采用当前模式优先的切换结构", async () => {
+test("Codex 接入方式页面展示当前状态和切换影响", async () => {
   const source = `${await readSource("src/app/platform-mode/page.tsx")}\n${await readSource("src/app/platform-mode/page-sections.tsx")}`;
-  assert.match(source, /平台模式选择/);
+  assert.match(source, /Codex 接入方式/);
   assert.match(source, /state\.mode === "web-gateway"/);
   assert.match(source, /Web \/ Docker 模式/);
   assert.match(source, /\/api\/rpc 写入 codexmanager-service/);
-  assert.match(source, /当前模式/);
-  assert.match(source, /账号直连/);
-  assert.match(source, /本地网关/);
+  assert.match(source, /当前 Codex 接入/);
+  assert.match(source, /直接连接 OpenAI/);
+  assert.match(source, /通过 CodexManager/);
+  assert.match(source, /OpenAI 账号池/);
+  assert.match(source, /聚合 API/);
+  assert.match(source, /混合路由/);
+  assert.match(source, /OpenAI 官方目录/);
+  assert.match(source, /CodexManager 本地目录/);
+  assert.match(source, /应用后/);
   assert.match(source, /高级与恢复/);
   assert.match(source, /不会产生 CodexManager 请求日志/);
   assert.match(source, /请求日志、Token、费用估算和仪表盘统计可用/);
@@ -62,14 +69,26 @@ test("平台模式页面采用当前模式优先的切换结构", async () => {
   assert.match(source, /href=\{buildStaticRouteUrl\(href\)\}/);
 });
 
-test("模型目录不再自动覆盖 Codex models_cache", async () => {
+test("模型目录不再暴露 Codex models_cache 覆盖入口", async () => {
   const hook = await readSource("src/hooks/useManagedModels.ts");
+  const page = await readSource("src/app/models/page.tsx");
+  const client = await readSource("src/lib/api/service-client.ts");
+  const tauriService = await readSource("src-tauri/src/commands/service.rs");
+  const tauriRegistry = await readSource("src-tauri/src/commands/registry.rs");
   const readme = await readSource("README.md");
-  const exportCalls = hook.match(/exportCodexModelsCache\(/g) || [];
 
-  assert.equal(exportCalls.length, 1, "cache writes should only remain in explicit export");
-  assert.match(hook, /const exportMutation = useMutation/);
-  assert.match(readme, /不会自动改写 `~\/\.codex\/models_cache\.json`/);
+  assert.doesNotMatch(hook, /exportCodexModelsCache|exportCodexCache|models_cache\.json/);
+  assert.doesNotMatch(page, /导出到本地 Codex 缓存|canExportCodexCache/);
+  assert.doesNotMatch(client, /service_export_codex_models_cache/);
+  assert.doesNotMatch(tauriService, /service_export_codex_models_cache|models_cache\.json/);
+  assert.doesNotMatch(tauriRegistry, /service_export_codex_models_cache/);
+  assert.match(readme, /不提供写入或下载 `~\/\.codex\/models_cache\.json`/);
+  assert.match(page, /当前 Codex 模型来源/);
+  assert.match(page, /本地目录是否影响当前 Codex/);
+  assert.match(page, /刷新本地目录/);
+  assert.match(page, /新增网关自定义模型/);
+  assert.match(page, /导入到本地网关目录/);
+  assert.doesNotMatch(page, /本地模型目录是唯一运行时真相源/);
 });
 
 test("平台模式切换透传并持久化 Codex 后台重载开关", async () => {

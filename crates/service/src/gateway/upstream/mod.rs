@@ -8,6 +8,7 @@ pub(super) mod proxy_pipeline;
 pub(super) mod response;
 pub(super) mod support;
 
+pub(super) use attempt_flow::transport::send_async_stream_request;
 pub(super) use response::{
     GatewayByteStream, GatewayByteStreamItem, GatewayStreamResponse, GatewayUpstreamResponse,
 };

@@ -17,6 +17,7 @@ type GeneralBasicsSnapshot = Pick<
   | "updateAutoCheck"
   | "autoStartEnabled"
   | "autoStartSupported"
+  | "showMainWindowOnStartup"
   | "closeToTrayOnClose"
   | "closeToTraySupported"
   | "keepWindowUiMounted"
@@ -151,6 +152,21 @@ export function GeneralBasicsCard({
             checked={snapshot.autoStartEnabled}
             disabled={!canAutoStart || !snapshot.autoStartSupported}
             onCheckedChange={(value) => updateSettings.mutate({ autoStartEnabled: value })}
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label>{t("启动时显示主界面")}</Label>
+            <p className="text-xs text-muted-foreground">
+              {t("开启时直接显示主界面；关闭此项时保持隐藏，可从托盘菜单打开")}
+            </p>
+          </div>
+          <Switch
+            checked={snapshot.showMainWindowOnStartup}
+            disabled={!snapshot.closeToTraySupported}
+            onCheckedChange={(value) =>
+              updateSettings.mutate({ showMainWindowOnStartup: value })
+            }
           />
         </div>
         <div className="flex items-center justify-between">

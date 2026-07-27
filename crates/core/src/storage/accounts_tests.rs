@@ -2257,6 +2257,37 @@ fn list_gateway_candidates_only_returns_active_available_accounts() {
 }
 
 #[test]
+fn list_gateway_candidates_uses_account_id_as_stable_final_tiebreaker() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let now = now_ts();
+
+    for account_id in ["acc-c", "acc-a", "acc-b"] {
+        storage
+            .insert_account(&sample_account(account_id, "active", now))
+            .expect("insert account");
+        storage
+            .insert_token(&sample_token(account_id, now))
+            .expect("insert token");
+    }
+
+    let candidates = storage
+        .list_gateway_candidates()
+        .expect("list gateway candidates");
+    let account_ids = candidates
+        .into_iter()
+        .map(|(account, _)| account.id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(account_ids, vec!["acc-a", "acc-b", "acc-c"]);
+    let sql = gateway_candidates_filtered_sql(latest_usage_cte_sql(), "1 = 1");
+    assert!(
+        sql.contains("ORDER BY a.sort ASC, a.updated_at DESC, a.id ASC"),
+        "gateway candidate SQL must declare the final id tie-breaker: {sql}"
+    );
+}
+
+#[test]
 fn list_gateway_candidates_for_accounts_filters_requested_available_accounts() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
@@ -2647,12 +2678,9 @@ fn set_preferred_account_keeps_only_one_account_selected() {
         Some("acc-b".to_string())
     );
 
-    assert!(
-        storage
-            .clear_preferred_account_if("acc-a")
-            .expect("clear non-preferred")
-            == false
-    );
+    assert!(!storage
+        .clear_preferred_account_if("acc-a")
+        .expect("clear non-preferred"));
     assert!(storage
         .clear_preferred_account_if("acc-b")
         .expect("clear preferred"));

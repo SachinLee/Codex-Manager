@@ -525,6 +525,78 @@ pub(in super::super) fn execute_candidate_sequence(
                     }
                 }
                 'finalize_response: loop {
+                    match preflight_stream_response(
+                        resp,
+                        path,
+                        upstream_is_stream,
+                        context.has_more_candidates(idx),
+                    ) {
+                        StreamPreflightOutcome::Ready(response) => {
+                            resp = response;
+                        }
+                        StreamPreflightOutcome::Failover(message) => {
+                            if should_failover_terminal_gateway_error(
+                                context,
+                                &account.id,
+                                context.has_more_candidates(idx),
+                                message.as_str(),
+                                &mut attempt_trace,
+                                &mut last_attempt_url,
+                                &mut last_attempt_error,
+                            ) {
+                                continue 'candidates;
+                            }
+                            let request = request.take().ok_or_else(|| {
+                                "request already consumed before stream preflight error response"
+                                    .to_string()
+                            })?;
+                            return respond_terminal_attempt(
+                                request,
+                                context,
+                                &account.id,
+                                attempt_trace.last_attempt_url.as_deref(),
+                                429,
+                                message,
+                                trace_id,
+                                started_at,
+                                attempt_model_for_log,
+                                Some(attempted_account_ids.as_slice()),
+                            );
+                        }
+                        StreamPreflightOutcome::RetryUsageNotice(message) => {
+                            // Some Codex-compatible upstreams encode quota exhaustion as assistant
+                            // output followed by an incomplete terminal sequence. Retry it before
+                            // delivery, but do not persistently disable the account based on model
+                            // output alone.
+                            super::super::super::mark_account_cooldown(
+                                &account.id,
+                                super::super::super::CooldownReason::Default,
+                            );
+                            let _ =
+                                crate::usage_refresh::enqueue_usage_refresh_for_account(&account.id);
+                            attempt_trace.last_attempt_error = Some(message);
+                            record_failover_attempt(
+                                &mut attempt_trace,
+                                &mut last_attempt_url,
+                                &mut last_attempt_error,
+                            );
+                            continue 'candidates;
+                        }
+                        StreamPreflightOutcome::TransportFailover(message) => {
+                            super::super::super::mark_account_cooldown(
+                                &account.id,
+                                super::super::super::CooldownReason::Network,
+                            );
+                            super::super::super::record_route_quality(&account.id, 502);
+                            attempt_trace.last_attempt_error = Some(message);
+                            record_failover_attempt(
+                                &mut attempt_trace,
+                                &mut last_attempt_url,
+                                &mut last_attempt_error,
+                            );
+                            continue 'candidates;
+                        }
+                    }
                     let response_request = request.take().ok_or_else(|| {
                         "request already consumed before upstream response".to_string()
                     })?;

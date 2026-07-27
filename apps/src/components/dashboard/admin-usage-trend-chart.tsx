@@ -1,13 +1,14 @@
 "use client";
 
 import {
+  useEffect,
   useMemo,
   useState,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { RotateCcw } from "lucide-react";
+import { Check, LoaderCircle, RotateCcw } from "lucide-react";
 import {
-  Area,
+  Brush,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -37,13 +38,16 @@ export type AdminUsageGranularity = "day" | "hour";
 type AdminUsageMetric = "tokens" | "requests";
 
 const MODEL_SERIES_COLORS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "var(--usage-series-1)",
+  "var(--usage-series-2)",
+  "var(--usage-series-3)",
+  "var(--usage-series-4)",
+  "var(--usage-series-5)",
+  "var(--usage-series-6)",
+  "var(--usage-series-7)",
+  "var(--usage-series-8)",
 ] as const;
-const MAX_SELECTED_MODELS = MODEL_SERIES_COLORS.length;
+const MAX_SELECTED_MODELS = 5;
 
 const SUPPORTED_INTL_LOCALES = ["zh-CN", "en-US", "ru-RU", "ko-KR"] as const;
 const INTL_LOCALE_BY_APP_LOCALE: Record<Exclude<AppLocale, "zh-CN">, string> = {
@@ -99,22 +103,44 @@ export function AdminUsageTrendChart({
   granularity,
   onGranularityChange,
   hourlyAvailable,
+  isRefreshing,
 }: {
   summary: DashboardAdminUsageSummary;
   granularity: AdminUsageGranularity;
   onGranularityChange: (granularity: AdminUsageGranularity) => void;
   hourlyAvailable: boolean;
+  isRefreshing: boolean;
 }) {
   const { t, locale } = useI18n();
   const [metric, setMetric] = useState<AdminUsageMetric>("tokens");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [showTotal, setShowTotal] = useState(false);
+  const [hoveredModel, setHoveredModel] = useState<string | null>(null);
   const [zoomWindow, setZoomWindow] = useState<{
     startIndex: number;
     endIndex: number;
   } | null>(null);
 
+  const rankedModelSeries = useMemo(
+    () =>
+      [...summary.modelUsage].sort((left, right) => {
+        const valueDifference =
+          metricValue(right.usage, metric) - metricValue(left.usage, metric);
+        return valueDifference !== 0
+          ? valueDifference
+          : left.model.localeCompare(right.model);
+      }),
+    [metric, summary.modelUsage],
+  );
   const availableModelNames = useMemo(
-    () => summary.modelUsage.map((series) => series.model),
+    () => rankedModelSeries.map((series) => series.model),
+    [rankedModelSeries],
+  );
+  const stableModelIndexByName = useMemo(
+    () =>
+      new Map(
+        summary.modelUsage.map((series, index) => [series.model, index] as const),
+      ),
     [summary.modelUsage],
   );
   const activeModels = useMemo(() => {
@@ -127,18 +153,21 @@ export function AdminUsageTrendChart({
   const activeModelSet = useMemo(() => new Set(activeModels), [activeModels]);
   const modelDefinitions = useMemo(
     () =>
-      activeModels.map((model, index) => ({
-        model,
-        key: `model${index}`,
-        color: MODEL_SERIES_COLORS[index],
-      })),
-    [activeModels],
+      activeModels.map((model) => {
+        const stableIndex = stableModelIndexByName.get(model) ?? 0;
+        return {
+          model,
+          key: `model${stableIndex}`,
+          color: MODEL_SERIES_COLORS[stableIndex % MODEL_SERIES_COLORS.length],
+        };
+      }),
+    [activeModels, stableModelIndexByName],
   );
   const chartConfig = useMemo(() => {
     const config: ChartConfig = {
       total: {
         label: t("全部模型"),
-        color: "var(--primary)",
+        color: "var(--usage-total-line)",
       },
     };
     for (const definition of modelDefinitions) {
@@ -159,9 +188,15 @@ export function AdminUsageTrendChart({
       ]),
     );
     return points.map((point) => {
+      const label = formatBucketLabel(
+        point.bucketStartTs,
+        granularity,
+        locale,
+      );
       const row: Record<string, number | string> = {
         bucketStartTs: point.bucketStartTs,
-        label: formatBucketLabel(point.bucketStartTs, granularity, locale),
+        label,
+        name: label,
         total: metricValue(point.usage, metric),
       };
       for (const definition of modelDefinitions) {
@@ -196,6 +231,22 @@ export function AdminUsageTrendChart({
   const hasZoomWindow =
     chartData.length > 1 &&
     (visibleStartIndex > 0 || visibleEndIndex < chartData.length - 1);
+  const visibleRangeLabel =
+    visibleChartData.length > 0
+      ? `${String(visibleChartData[0]?.label ?? "")} – ${String(
+          visibleChartData[visibleChartData.length - 1]?.label ?? "",
+        )}`
+      : "";
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (active) setZoomWindow(null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [summary.rangeEndTs, summary.rangeStartTs, summary.seriesBucketSeconds]);
 
   const formatMetric = (value: number) =>
     metric === "requests"
@@ -208,7 +259,7 @@ export function AdminUsageTrendChart({
     [
       0,
       ...visibleChartData.flatMap((row) => [
-        Number(row.total),
+        ...(showTotal ? [Number(row.total)] : []),
         ...modelDefinitions.map((definition) => Number(row[definition.key] ?? 0)),
       ]),
     ],
@@ -255,6 +306,10 @@ export function AdminUsageTrendChart({
     if (activeModels.length >= MAX_SELECTED_MODELS) return;
     setSelectedModels([...activeModels, model]);
   };
+  const totalMetricForRange = fallbackSeries(summary).reduce(
+    (total, point) => total + metricValue(point.usage, metric),
+    0,
+  );
 
   return (
     <div className="space-y-3">
@@ -264,6 +319,9 @@ export function AdminUsageTrendChart({
             className="inline-flex rounded-md border border-border/70 bg-background/40 p-0.5"
             role="group"
             aria-label={t("时间粒度")}
+            title={
+              hourlyAvailable ? undefined : t("小时曲线最多支持 31 天区间")
+            }
           >
             {(["day", "hour"] as const).map((value) => (
               <Button
@@ -315,49 +373,152 @@ export function AdminUsageTrendChart({
             </Button>
           ) : null}
         </div>
-        <p className="text-[11px] text-muted-foreground">
-          {hourlyAvailable
-            ? t("滚轮缩放时间区间，点击模型切换曲线")
-            : t("小时曲线最多支持 31 天区间")}
-        </p>
+        {isRefreshing ? (
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-primary">
+            <LoaderCircle className="size-3 animate-spin" />
+            {t("正在更新曲线")}
+          </span>
+        ) : null}
       </div>
 
       {availableModelNames.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1.5" aria-label={t("模型曲线")}>
-          {availableModelNames.map((model, index) => {
-            const selectedIndex = activeModels.indexOf(model);
-            const isSelected = selectedIndex >= 0;
-            const disabled = !isSelected && activeModels.length >= MAX_SELECTED_MODELS;
-            const color = isSelected
-              ? MODEL_SERIES_COLORS[selectedIndex]
-              : MODEL_SERIES_COLORS[index % MODEL_SERIES_COLORS.length];
-            return (
+        <div className="mission-panel space-y-2.5 rounded-lg border border-primary/15 bg-background/25 p-2.5 shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div className="rounded-md bg-primary/8 px-2 py-1 text-[11px] font-medium text-foreground">
+              {t("模型曲线")} · {t("已选 {selected}/{max}", {
+                selected: activeModels.length,
+                max: MAX_SELECTED_MODELS,
+              })}
+            </div>
+            {selectedModels.length > 0 ? (
               <Button
-                key={model}
                 type="button"
                 size="sm"
-                variant={isSelected ? "secondary" : "outline"}
-                className="h-7 max-w-full gap-1.5 px-2 text-xs"
-                aria-pressed={isSelected}
-                disabled={disabled}
-                onClick={() => toggleModel(model)}
+                variant="outline"
+                className="h-7 gap-1.5 border-primary/25 bg-background/45 px-2 text-xs shadow-sm"
+                onClick={() => setSelectedModels([])}
               >
-                <span
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: color }}
-                  aria-hidden="true"
-                />
-                <span className="truncate">{model}</span>
+                <RotateCcw className="size-3" />
+                {t("恢复默认")}
               </Button>
-            );
-          })}
+            ) : null}
+            <span className="text-[11px] text-muted-foreground">
+              {hourlyAvailable
+                ? t("拖动底部时间滑块调整范围，滚轮可快速缩放")
+                : t("小时曲线最多支持 31 天区间")}
+            </span>
+          </div>
+          <div
+            className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible"
+            aria-label={t("模型曲线")}
+          >
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={
+                showTotal
+                  ? "h-9 shrink-0 gap-1.5 border-primary/50 bg-primary/10 px-2.5 text-xs text-foreground shadow-sm"
+                  : "h-9 shrink-0 gap-1.5 border-border/60 bg-background/30 px-2.5 text-xs text-muted-foreground"
+              }
+              aria-pressed={showTotal}
+              onClick={() => setShowTotal((value) => !value)}
+            >
+              <span className="flex size-4 shrink-0 items-center justify-center rounded border border-(--usage-total-line) bg-background/70">
+                {showTotal ? (
+                  <Check className="size-3 text-(--usage-total-line)" />
+                ) : (
+                  <span className="size-1.5 rounded-full bg-(--usage-total-line)" />
+                )}
+              </span>
+              {t("全部模型")}
+            </Button>
+            {rankedModelSeries.map((series) => {
+              const model = series.model;
+              const isSelected = activeModelSet.has(model);
+              const disabled =
+                !isSelected && activeModels.length >= MAX_SELECTED_MODELS;
+              const stableIndex = stableModelIndexByName.get(model) ?? 0;
+              const color =
+                MODEL_SERIES_COLORS[stableIndex % MODEL_SERIES_COLORS.length];
+              const value = metricValue(series.usage, metric);
+              const share =
+                totalMetricForRange > 0 ? (value / totalMetricForRange) * 100 : 0;
+              return (
+                <Button
+                  key={model}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className={
+                    isSelected
+                      ? "h-9 max-w-[19rem] shrink-0 gap-1.5 bg-background/70 px-2.5 text-xs text-foreground shadow-sm"
+                      : "h-9 max-w-[19rem] shrink-0 gap-1.5 border-border/60 bg-background/25 px-2.5 text-xs text-muted-foreground opacity-75 hover:opacity-100"
+                  }
+                  style={
+                    isSelected
+                      ? {
+                          borderColor: color,
+                          background: `color-mix(in srgb, ${color} 11%, var(--background))`,
+                          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 28%, transparent), 0 3px 10px rgb(15 23 42 / 0.08)`,
+                        }
+                      : undefined
+                  }
+                  aria-label={`${model}: ${formatMetric(value)}, ${share.toFixed(1)}%`}
+                  aria-pressed={isSelected}
+                  disabled={disabled}
+                  title={`${model} · ${formatMetric(value)} · ${share.toFixed(1)}%`}
+                  onClick={() => toggleModel(model)}
+                  onMouseEnter={() => isSelected && setHoveredModel(model)}
+                  onMouseLeave={() => setHoveredModel(null)}
+                  onFocus={() => isSelected && setHoveredModel(model)}
+                  onBlur={() => setHoveredModel(null)}
+                >
+                  <span
+                    className="flex size-4 shrink-0 items-center justify-center rounded border bg-background/75"
+                    style={{ borderColor: color }}
+                    aria-hidden="true"
+                  >
+                    {isSelected ? (
+                      <Check className="size-3" style={{ color }} />
+                    ) : (
+                      <span
+                        className="size-1.5 rounded-full"
+                        style={{ backgroundColor: color }}
+                      />
+                    )}
+                  </span>
+                  <span className="max-w-32 truncate">{model}</span>
+                  <span
+                    className={
+                      isSelected
+                        ? "font-mono text-[10px] text-foreground/70"
+                        : "font-mono text-[10px] text-muted-foreground"
+                    }
+                  >
+                    {formatMetric(value)} · {share.toFixed(0)}%
+                  </span>
+                </Button>
+              );
+            })}
+          </div>
+          {activeModels.length >= MAX_SELECTED_MODELS ? (
+            <p className="text-[11px] text-muted-foreground">
+              {t("最多同时比较 {count} 个模型", {
+                count: MAX_SELECTED_MODELS,
+              })}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
       <div
-        className="mission-panel rounded-lg border border-primary/20 bg-background/30 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)]"
+        className="mission-panel overflow-hidden rounded-lg border border-primary/20 bg-gradient-to-b from-background/45 to-background/20 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)]"
         onWheel={handleWheelZoom}
       >
+        <p id="usage-chart-range-help" className="sr-only">
+          {t("拖动底部时间滑块调整范围，滚轮可快速缩放")}
+        </p>
         {chartData.length === 0 ? (
           <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
             {t("暂无模型用量数据")}
@@ -365,29 +526,16 @@ export function AdminUsageTrendChart({
         ) : (
           <ChartContainer
             config={chartConfig}
-            className="h-72 w-full rounded-md bg-transparent p-3"
-            initialDimension={{ width: 720, height: 288 }}
+            className="h-80 w-full rounded-md bg-transparent p-3"
+            initialDimension={{ width: 720, height: 320 }}
             aria-label={t("模型用量趋势图")}
+            aria-describedby="usage-chart-range-help usage-chart-visible-range"
           >
             <ComposedChart
               accessibilityLayer
-              data={visibleChartData}
-              margin={{ top: 18, right: 14, left: 10, bottom: 4 }}
+              data={chartData}
+              margin={{ top: 18, right: 14, left: 10, bottom: 8 }}
             >
-              <defs>
-                <linearGradient id="fillAdminUsageTotal" x1="0" y1="0" x2="0" y2="1">
-                  <stop
-                    offset="5%"
-                    stopColor="var(--color-total)"
-                    stopOpacity={0.28}
-                  />
-                  <stop
-                    offset="95%"
-                    stopColor="var(--color-total)"
-                    stopOpacity={0.02}
-                  />
-                </linearGradient>
-              </defs>
               <CartesianGrid
                 vertical={false}
                 stroke="rgb(var(--primary-rgb) / 0.16)"
@@ -409,32 +557,38 @@ export function AdminUsageTrendChart({
               />
               <ChartTooltip
                 cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
+                itemSorter={(item) => -Number(item.value ?? 0)}
                 content={
                   <ChartTooltipContent
                     indicator="line"
                     labelFormatter={(value) => value}
-                    formatter={(value, name) => (
-                      <div className="flex min-w-40 items-center justify-between gap-4">
-                        <span className="truncate text-muted-foreground">
-                          {String(name)}
-                        </span>
-                        <span className="font-mono font-medium text-foreground">
-                          {formatMetric(Number(value))}
-                        </span>
-                      </div>
-                    )}
+                    formatter={(value, name) =>
+                      Number(value) === 0 && String(name) !== "total" ? null : (
+                        <div className="flex min-w-40 items-center justify-between gap-4">
+                          <span className="truncate text-muted-foreground">
+                            {String(name) === "total" ? t("全部模型") : String(name)}
+                          </span>
+                          <span className="font-mono font-medium text-foreground">
+                            {formatMetric(Number(value))}
+                          </span>
+                        </div>
+                      )
+                    }
                   />
                 }
               />
-              <Area
-                dataKey="total"
-                type="monotone"
-                fill="url(#fillAdminUsageTotal)"
-                stroke="var(--color-total)"
-                strokeWidth={2.5}
-                dot={visibleChartData.length <= 31 ? { r: 3, strokeWidth: 2 } : false}
-                activeDot={{ r: 5, strokeWidth: 2 }}
-              />
+              {showTotal ? (
+                <Line
+                  dataKey="total"
+                  name="total"
+                  type="monotone"
+                  stroke="var(--color-total)"
+                  strokeWidth={1.5}
+                  strokeDasharray="7 5"
+                  dot={false}
+                  activeDot={{ r: 4, strokeWidth: 2 }}
+                />
+              ) : null}
               {modelDefinitions.map((definition) => (
                 <Line
                   key={definition.model}
@@ -442,16 +596,50 @@ export function AdminUsageTrendChart({
                   name={definition.model}
                   type="monotone"
                   stroke={`var(--color-${definition.key})`}
-                  strokeWidth={2}
+                  strokeWidth={2.25}
+                  opacity={
+                    hoveredModel == null || hoveredModel === definition.model
+                      ? 1
+                      : 0.18
+                  }
                   dot={false}
                   activeDot={{ r: 4, strokeWidth: 2 }}
                   connectNulls
                 />
               ))}
+              <Brush
+                dataKey="label"
+                height={28}
+                travellerWidth={16}
+                startIndex={visibleStartIndex}
+                endIndex={visibleEndIndex}
+                stroke="rgb(var(--primary-rgb) / 0.55)"
+                fill="var(--card)"
+                onChange={(nextWindow) => {
+                  if (
+                    typeof nextWindow.startIndex === "number" &&
+                    typeof nextWindow.endIndex === "number"
+                  ) {
+                    setZoomWindow({
+                      startIndex: nextWindow.startIndex,
+                      endIndex: nextWindow.endIndex,
+                    });
+                  }
+                }}
+              />
             </ComposedChart>
           </ChartContainer>
         )}
       </div>
+      {visibleRangeLabel ? (
+        <div
+          id="usage-chart-visible-range"
+          className="text-right text-[11px] text-muted-foreground"
+          aria-live="polite"
+        >
+          {t("当前可视区间")}: {visibleRangeLabel}
+        </div>
+      ) : null}
     </div>
   );
 }

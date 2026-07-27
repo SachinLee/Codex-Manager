@@ -6,7 +6,7 @@ use super::{
     PassthroughSseProtocol, Read, SseKeepAliveFrame, SseTerminal, UpstreamSseFramePump,
     UpstreamSseFramePumpItem,
 };
-use crate::gateway::http_bridge::extract_error_hint_from_body;
+use crate::gateway::http_bridge::{extract_error_hint_from_body, extract_error_message_from_json};
 use std::time::Instant;
 
 pub(crate) struct PassthroughSseUsageReader {
@@ -71,11 +71,9 @@ impl PassthroughSseUsageReader {
             if let Some(event_type) = inspection.last_event_type {
                 collector.last_event_type = Some(event_type);
             }
-            // 上游偶尔会用 200 + 正常 data: 帧夹带 "You've hit your usage limit..."
-            // 回覆（不走 response.failed）。这类帧里 delta 文本会让 inspection.usage 被
-            // 初始化为 Some，直接落到下面的 merge_usage 分支，永远不会触发 terminal。
-            // 所以必须在进任何分支前先扫一遍正文；命中 usage-limit 关键字就标 terminal 错误，
-            // 让后续 response_finalize 走 failover + cooldown。
+            // Only explicit error fields may affect persistent account state here. A normal
+            // output_text delta can legitimately quote a quota message; compatible upstreams
+            // that emit quota notices as output are handled before delivery by stream preflight.
             if collector.terminal_error.is_none() {
                 if let Some(msg) = extract_usage_limit_from_sse_data(lines) {
                     collector.saw_terminal = true;
@@ -231,8 +229,10 @@ fn extract_usage_limit_from_sse_data(lines: &[String]) -> Option<String> {
     if data_payload.is_empty() {
         return None;
     }
-    crate::account_status::usage_limit_reason_from_message(&data_payload)?;
-    Some(data_payload)
+    let value = serde_json::from_str::<serde_json::Value>(&data_payload).ok()?;
+    let message = extract_error_message_from_json(&value)?;
+    crate::account_status::usage_limit_reason_from_message(&message)?;
+    Some(message)
 }
 
 #[cfg(test)]

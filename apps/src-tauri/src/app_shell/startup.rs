@@ -34,6 +34,13 @@ pub(crate) fn sync_startup_window_state() {
 }
 
 pub(crate) fn schedule_startup_main_window(app: &tauri::AppHandle) {
+    let tray_available = TRAY_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed);
+    let configured = codexmanager_service::current_show_main_window_on_startup_setting();
+    if !should_show_main_window_on_startup(configured, tray_available) {
+        log::info!("startup main window remains hidden by app setting");
+        return;
+    }
+
     let app = app.clone();
     std::thread::spawn(move || {
         if let Err(err) = request_show_main_window(&app) {
@@ -43,6 +50,10 @@ pub(crate) fn schedule_startup_main_window(app: &tauri::AppHandle) {
         wait_for_startup_webview_content();
         navigate_main_window_to_startup_app_when_ready(&app);
     });
+}
+
+fn should_show_main_window_on_startup(configured: bool, tray_available: bool) -> bool {
+    configured || !tray_available
 }
 
 fn navigate_main_window_to_startup_app_when_ready(app: &tauri::AppHandle) {
@@ -103,3 +114,19 @@ fn wait_for_startup_webview_content() {
 
 #[cfg(not(debug_assertions))]
 fn wait_for_startup_webview_content() {}
+
+#[cfg(test)]
+mod tests {
+    use super::should_show_main_window_on_startup;
+
+    #[test]
+    fn startup_window_respects_setting_when_tray_is_available() {
+        assert!(should_show_main_window_on_startup(true, true));
+        assert!(!should_show_main_window_on_startup(false, true));
+    }
+
+    #[test]
+    fn startup_window_is_shown_when_tray_is_unavailable() {
+        assert!(should_show_main_window_on_startup(false, false));
+    }
+}
