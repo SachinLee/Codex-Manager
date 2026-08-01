@@ -3936,7 +3936,7 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
         summary_result
             .get("totalTokens")
             .and_then(|value| value.as_i64()),
-        Some(45)
+        Some(0)
     );
 }
 
@@ -4295,6 +4295,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         1,
         0,
         0,
+        0,
         None,
         true,
         None,
@@ -4414,6 +4415,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         None,
         "actual",
         333_333,
+        0,
         0,
         0,
         Some(r#"{"test":true}"#.to_string()),

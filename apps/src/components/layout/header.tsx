@@ -178,38 +178,40 @@ export function Header() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex min-h-[68px] items-center justify-between gap-1.5 glass-header px-2 sm:gap-3 sm:px-4 xl:min-h-[96px] xl:gap-4 xl:pl-9 xl:pr-[45px]">
+      <header className="sticky top-0 z-30 flex min-h-[68px] items-center justify-between gap-2 glass-header px-2 sm:gap-3 sm:px-4 xl:min-h-[96px] xl:gap-5 xl:pl-9 xl:pr-[45px]">
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-4 xl:gap-5">
-          <h1 className="truncate text-lg font-semibold tracking-[-0.015em] text-foreground sm:text-[21px] xl:text-[27px]">
+        <div className="header-title-group flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-4 xl:gap-5">
+          <h1 className="header-page-title min-w-0 truncate text-lg font-semibold tracking-[-0.015em] text-foreground sm:text-[21px] xl:text-[27px]">
             {getPageTitle()}
           </h1>
-          <span className="hidden items-center gap-2 text-sm text-muted-foreground md:flex xl:text-[15px]" suppressHydrationWarning>
+          <span className="header-page-date hidden shrink-0 items-center gap-2 whitespace-nowrap text-sm text-muted-foreground md:flex xl:text-[15px]" suppressHydrationWarning>
             {!isCommandCenter ? <CalendarDays className="h-3.5 w-3.5" /> : null}
             {currentDate}
           </span>
         </div>
 
-        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-2">
-          <div className={`hidden h-10 items-center rounded-full border border-border/55 bg-background/70 px-1.5 shadow-[0_14px_30px_-22px_rgb(15_23_42/0.45)] backdrop-blur-2xl sm:flex xl:h-12 xl:px-2 ${isCommandCenter ? "min-w-[320px] justify-center xl:min-w-[430px]" : ""}`}>
+        <div className="header-action-cluster ml-auto flex max-w-full min-w-0 shrink-0 items-center gap-1.5 sm:gap-2">
+          <div className={`header-service-strip hidden h-10 min-w-0 items-center rounded-full border border-border/55 bg-background/70 px-1.5 shadow-[0_14px_30px_-22px_rgb(15_23_42/0.45)] backdrop-blur-2xl sm:flex xl:h-12 xl:px-2 ${isCommandCenter ? "min-w-[320px] justify-center xl:min-w-[430px]" : ""}`}>
             <Badge
               variant="secondary"
-              className="h-8 shrink-0 rounded-full border-0 bg-transparent px-2.5 text-xs font-medium text-foreground shadow-none xl:h-9 xl:px-3.5 xl:text-sm"
+              className="header-service-badge h-8 shrink-0 rounded-full border-0 bg-transparent px-2.5 text-xs font-medium text-foreground shadow-none xl:h-9 xl:px-3.5 xl:text-sm"
             >
               <span className={serviceStatus.connected ? "mr-2 h-2 w-2 rounded-full bg-emerald-500" : "mr-2 h-2 w-2 rounded-full bg-rose-500"} />
-              {serviceStatus.connected ? t("服务已连接") : t("服务未连接")}
+              <span className="header-service-status-label">
+                {serviceStatus.connected ? t("服务已连接") : t("服务未连接")}
+              </span>
               {serviceStatus.version ? (
-                <span className="ml-2 border-l border-border/70 pl-2 font-mono text-[10px] text-muted-foreground xl:text-xs">
+                <span className="header-service-version ml-2 border-l border-border/70 pl-2 font-mono text-[10px] text-muted-foreground xl:text-xs">
                   v{serviceStatus.version}
                 </span>
               ) : null}
             </Badge>
 
             {canManageService ? (
-              <div className="flex h-7 items-center gap-2 border-l border-border/60 px-3 xl:h-8 xl:gap-2.5 xl:px-4">
+              <div className="header-service-port flex h-7 shrink-0 items-center gap-2 border-l border-border/60 px-3 xl:h-8 xl:gap-2.5 xl:px-4">
                 <span className="flex items-center gap-1.5 text-xs text-muted-foreground xl:text-sm">
                 <Gauge className="h-3.5 w-3.5 text-primary" />
-                  <span className="hidden lg:inline">{t("端口")}</span>
+                  <span className="header-service-port-label hidden lg:inline">{t("端口")}</span>
                 </span>
                 <Input
                   className="h-7 w-12 border-0 bg-transparent p-0 font-mono text-xs text-foreground focus-visible:ring-0 xl:h-8 xl:w-14 xl:text-sm"
@@ -234,19 +236,20 @@ export function Header() {
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 gap-1.5 rounded-full border-l border-border/60 px-3 text-xs text-muted-foreground hover:bg-primary/5 hover:text-foreground xl:h-9 xl:gap-2 xl:px-4 xl:text-sm"
+              className="header-service-refresh h-8 gap-1.5 rounded-full border-l border-border/60 px-3 text-xs text-muted-foreground hover:bg-primary/5 hover:text-foreground xl:h-9 xl:gap-2 xl:px-4 xl:text-sm"
               onClick={() => window.location.reload()}
               title={t("刷新数据")}
             >
               <RefreshCw className="h-3.5 w-3.5" />
-              <span className="hidden lg:inline">{t("刚刚更新")}</span>
+              <span className="header-refresh-label hidden lg:inline">{t("刚刚更新")}</span>
             </Button>
           </div>
 
           <DisclaimerTicker compact />
           <LanguageSwitcher
             compact
-            triggerClassName="w-9 min-w-9 px-0 sm:w-[106px] sm:min-w-[106px] sm:px-3"
+            className="header-language-switcher"
+            triggerClassName="w-[124px] min-w-[124px] gap-2 px-2.5"
           />
 
           {canLogoutWebSession ? (

@@ -7,6 +7,7 @@ import { EN_ACCOUNTS_MESSAGES } from "./sections/en-accounts";
 import { EN_API_KEYS_MESSAGES } from "./sections/en-api-keys";
 import { EN_AGGREGATE_API_MESSAGES } from "./sections/en-aggregate-api";
 import { EN_DASHBOARD_MESSAGES } from "./sections/en-dashboard";
+import { EN_DESKTOP_DIAGNOSTICS_MESSAGES } from "./sections/en-desktop-diagnostics";
 import { EN_DYNAMIC_UI_MESSAGES } from "./sections/en-dynamic-ui";
 import { EN_MODEL_CATALOG_MESSAGES } from "./sections/en-model-catalog";
 import { EN_MODEL_GROUPS_MESSAGES } from "./sections/en-model-groups";
@@ -19,6 +20,7 @@ import { EN_SKILLS_MESSAGES } from "./sections/en-skills";
 export const EN_MESSAGES: MessageCatalog = {
   ...EN_PROJECTS_MESSAGES,
   ...EN_SKILLS_MESSAGES,
+  ...EN_DESKTOP_DIAGNOSTICS_MESSAGES,
   "延迟测试设置": "Latency test settings",
   "速度测试设置": "Speed test settings",
   "下载预设": "Download preset",
@@ -452,6 +454,8 @@ export const EN_MESSAGES: MessageCatalog = {
   未提供: "Unavailable",
   上移一位: "Move up",
   下移一位: "Move down",
+  移到顶部: "Move to top",
+  移到底部: "Move to bottom",
   编辑账号信息: "Edit account info",
   用量详情: "Usage details",
   套餐信息: "Subscription info",
@@ -505,6 +509,8 @@ export const EN_MESSAGES: MessageCatalog = {
   保存: "Save",
   清除: "Clear",
   确定: "Confirm",
+  首页: "First page",
+  跳至: "Go to",
   "服务未连接，暂时无法": "Service is disconnected, unable to",
   更新密钥: "update key",
   启用密钥: "enable key",

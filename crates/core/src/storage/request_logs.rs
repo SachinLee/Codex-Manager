@@ -291,8 +291,8 @@ impl Storage {
                     aggregate_api_id, aggregate_api_supplier_name, aggregate_api_url,
                     model, actual_source_kind, actual_source_id,
                     input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
-                    estimated_cost_usd, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, 0), ?13, ?14, ?15, ?16, ?17)",
+                    estimated_cost_usd, usage_included, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, 0), ?13, ?14, ?15, ?16, ?17, ?18)",
                 (
                     request_log_id,
                     &stat.key_id,
@@ -310,6 +310,10 @@ impl Storage {
                     stat.total_tokens,
                     stat.reasoning_output_tokens,
                     stat.estimated_cost_usd,
+                    i64::from(
+                        log.status_code
+                            .is_some_and(|status| (200..=299).contains(&status)),
+                    ),
                     stat.created_at,
                 ),
             )
@@ -1201,6 +1205,7 @@ fn request_log_summary_sql(filters: &RequestLogSqlFilters) -> String {
             IFNULL(SUM(CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN 1 ELSE 0 END), 0),
             IFNULL(SUM(
                 CASE
+                    WHEN t.usage_included <> 1 THEN 0
                     WHEN t.total_tokens IS NOT NULL THEN
                         CASE WHEN t.total_tokens > 0 THEN t.total_tokens ELSE 0 END
                     ELSE
@@ -1211,7 +1216,13 @@ fn request_log_summary_sql(filters: &RequestLogSqlFilters) -> String {
                         END
                 END
             ), 0),
-            IFNULL(SUM(IFNULL(t.estimated_cost_usd, 0.0)), 0.0)
+            IFNULL(SUM(
+                CASE
+                    WHEN t.usage_included = 1
+                        THEN IFNULL(t.estimated_cost_usd, 0.0)
+                    ELSE 0.0
+                END
+            ), 0.0)
          FROM request_logs r
          {account_join}
          LEFT JOIN request_token_stats t ON t.request_log_id = r.id

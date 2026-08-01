@@ -54,13 +54,15 @@ export function DisclaimerTicker({ compact = false }: { compact?: boolean }) {
         <Button
           type="button"
           variant="outline"
-          size="icon"
-          className="h-9 w-9 shrink-0 rounded-xl border-border/55 bg-background/70 text-muted-foreground shadow-none hover:bg-primary/5 hover:text-primary"
+          className="header-disclaimer h-9 w-auto min-w-9 shrink-0 gap-2 rounded-xl border-border/55 bg-background/70 px-3 text-xs text-muted-foreground shadow-none hover:bg-primary/5 hover:text-primary"
           onClick={() => setOpen(true)}
           title={t("免责声明")}
           aria-label={t("免责声明")}
         >
           <ShieldAlert className="h-4 w-4" />
+          <span className="header-disclaimer-label whitespace-nowrap">
+            {t("免责声明")}
+          </span>
         </Button>
       ) : (
         <Button

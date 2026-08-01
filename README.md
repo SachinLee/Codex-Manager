@@ -16,13 +16,13 @@
 
 <p align="center">
   <a href="https://github.com/qxcnm/Codex-Manager">
-    <img alt="GitHub 仓库" src="https://img.shields.io/badge/GitHub-%E4%BB%93%E5%BA%93-181717?logo=github&logoColor=white" />
+    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
   </a>
   <a href="https://atomgit.com/qxnm/Codex-Manager">
-    <img alt="AtomGit 仓库" src="https://img.shields.io/badge/AtomGit-%E4%BB%93%E5%BA%93-DA203E" />
+    <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
   </a>
   <a href="https://gitee.com/hongshungao/Codex-Manager">
-    <img alt="Gitee 仓库" src="https://img.shields.io/badge/Gitee-%E4%BB%93%E5%BA%93-C71D23?logo=gitee&logoColor=C71D23" />
+    <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
   </a>
 </p>
 
@@ -75,7 +75,7 @@
       </a>
     </td>
     <td valign="top">
-      感谢 <strong>AI夏末 AIXiamo</strong> 赞助本项目！国内没有海外银行卡？AIXiamo 提供 ChatGPT、Claude、Codex 等 AI 服务正规代充，支持支付宝 / 微信，售后有保障。可前往<a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">官网</a>查看服务。
+      <strong><a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=sponsor_text">AIXiamo（独立 AI 订阅服务）</a></strong>：提供 <a href="https://www.aixiamo.com/articles/codex-quota-not-enough-plus-pro-api-2026?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=developer_codex_quota">ChatGPT Plus / Pro 国内充值与 Codex 额度选择</a>，也覆盖 Claude Max 5x / 20x、Google AI Pro（Gemini）和 SuperGrok；支持支付宝，无需海外银行卡，订单状态可查询。
     </td>
   </tr>
   <tr>
@@ -179,6 +179,9 @@
 - Windows：`%APPDATA%\\com.codexmanager.desktop\\codexmanager.db`
 - macOS：`~/Library/Application Support/com.codexmanager.desktop/codexmanager.db`
 - Linux：`~/.local/share/com.codexmanager.desktop/codexmanager.db`
+- 桌面端每次升级首次初始化数据库前，会在数据库同目录保留 `codexmanager.db.pre-<版本>.bak` 快照；同一版本失败重试时不会覆盖该备份。
+- 设置页“桌面诊断”可启用 Debug 模式、关闭普通桌面文件日志并打开日志目录。普通运行日志限制为 512 KB 并自动覆盖；请求日志与 Token / 费用统计不受这个开关影响。
+- 如果界面无法启动，可使用 `CodexManager.exe --debug`（macOS / Linux 为 `CodexManager --debug`）临时启用详细日志。启动失败会弹出具体原因，并将 `startup-error.log` 写入弹窗所示的日志目录。
 - 如需调整数据库、代理、监听地址等运行配置，可继续查看 [环境变量与运行配置](docs/zh-CN/report/环境变量与运行配置说明.md)。
 - Docker 镜像默认使用 `TZ=Asia/Shanghai`；compose 示例会优先沿用部署环境里的 `TZ`，没有设置时回退到 `Asia/Shanghai`，其他地区部署时请改成对应 IANA 时区。
 

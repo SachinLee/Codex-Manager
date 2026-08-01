@@ -335,7 +335,7 @@ fn gateway_usage_limit_after_semantic_delta_does_not_fail_over_same_request() {
                     "text/event-stream".to_string(),
                 ),
             ],
-            Duration::from_millis(300),
+            Duration::from_secs(3),
         );
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
     let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);

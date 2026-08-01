@@ -58,7 +58,8 @@ fn api_key_remaining_quota_usage_scopes_stats_to_limited_keys() {
     assert!(
         details.iter().any(|detail| {
             detail.contains("search s")
-                && detail.contains("idx_request_token_stats_key")
+                && (detail.contains("idx_request_token_stats_success_key_model_created_at")
+                    || detail.contains("idx_request_token_stats_key_id_created_at"))
                 && detail.contains("key_id=?")
         }),
         "expected limited-key raw usage lookup by key index, got {details:?}"
@@ -97,10 +98,12 @@ fn api_key_quota_overview_stats_reads_key_and_usage_tables_directly() {
             .any(|detail| detail.contains("sqlite_autoindex_api_key_quota_limits_1")),
         "expected quota overview to join quota limits by primary key, got {details:?}"
     );
-    for alias in ["scan s", "scan r"] {
+    for aliases in [["scan s", "search s"], ["scan r", "search r"]] {
         assert!(
-            details.iter().any(|detail| detail.contains(alias)),
-            "expected quota overview to aggregate token usage source {alias}, got {details:?}"
+            details
+                .iter()
+                .any(|detail| aliases.iter().any(|alias| detail.contains(alias))),
+            "expected quota overview to aggregate token usage source {aliases:?}, got {details:?}"
         );
     }
     assert!(

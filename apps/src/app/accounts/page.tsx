@@ -13,10 +13,14 @@ import {
 } from "@/lib/api/account-client";
 import { useI18n } from "@/lib/i18n/provider";
 import {
+  buildAccountsByMovedOrder,
   buildAccountsBySizeOrder,
   buildAccountOrderUpdates,
   type AccountEditorState,
+  type AccountMoveDirection,
+  type AccountMovePlacement,
   type DeleteDialogState,
+  getAccountStatusActionType,
   normalizeAccountPlanKey,
   normalizeTagsDraft,
   type StatusFilter,
@@ -47,6 +51,14 @@ function normalizeCleanupStatus(status: string): CleanupStatus | null {
   return CLEANUP_STATUSES.includes(normalized as CleanupStatus)
     ? (normalized as CleanupStatus)
     : null;
+}
+
+function canBulkEnableAccount(account: Account): boolean {
+  return getAccountStatusActionType(account) === "enable";
+}
+
+function canBulkDisableAccount(account: Account): boolean {
+  return getAccountStatusActionType(account) === "disable";
 }
 
 export default function AccountsPage() {
@@ -94,7 +106,9 @@ export default function AccountsPage() {
     updateAccountProfile,
     isUpdatingProfileAccountId,
     toggleAccountStatus,
+    toggleManyAccountStatuses,
     isUpdatingStatusAccountId,
+    isUpdatingManyStatuses,
   } = useAccounts();
   const isPageActive = useDesktopPageActive("/accounts/");
   usePageTransitionReady("/accounts/", !isServiceReady || !isLoading);
@@ -264,6 +278,27 @@ export default function AccountsPage() {
     () => selectedIds.filter((id) => accountIdSet.has(id)),
     [accountIdSet, selectedIds],
   );
+  const selectedAccounts = useMemo(
+    () =>
+      effectiveSelectedIds
+        .map((id) => accounts.find((account) => account.id === id))
+        .filter((account): account is Account => Boolean(account)),
+    [accounts, effectiveSelectedIds],
+  );
+  const selectedEnableTargetIds = useMemo(
+    () =>
+      selectedAccounts
+        .filter((account) => canBulkEnableAccount(account))
+        .map((account) => account.id),
+    [selectedAccounts],
+  );
+  const selectedDisableTargetIds = useMemo(
+    () =>
+      selectedAccounts
+        .filter((account) => canBulkDisableAccount(account))
+        .map((account) => account.id),
+    [selectedAccounts],
+  );
   const exportSelectionCount = effectiveSelectedIds.length;
   const exportTargetCount =
     exportSelectionCount > 0 ? exportSelectionCount : accounts.length;
@@ -360,6 +395,32 @@ export default function AccountsPage() {
       ids: [...effectiveSelectedIds],
       count: effectiveSelectedIds.length,
     });
+  };
+
+  const handleToggleSelectedStatus = async (enabled: boolean) => {
+    if (!effectiveSelectedIds.length) {
+      toast.error(t("请先选择账号"));
+      return;
+    }
+    const targetIds = enabled ? selectedEnableTargetIds : selectedDisableTargetIds;
+    if (targetIds.length === 0) {
+      toast.info(
+        enabled
+          ? t("当前选中账号没有可开启项")
+          : t("当前选中账号没有可关闭项"),
+      );
+      return;
+    }
+
+    try {
+      await toggleManyAccountStatuses(
+        targetIds,
+        enabled,
+        effectiveSelectedIds.length,
+      );
+    } catch {
+      // hook 内统一处理 toast，这里保留当前选择
+    }
   };
 
   const openCleanupDialog = () => {
@@ -604,42 +665,67 @@ const toggleCleanupStatus = (rawStatus: string) => {
     );
   };
 
-  const handleMoveAccount = async (
+  // 顶部/底部按全量列表定位，上移/下移仍按当前筛选结果取相邻账号。
+  const resolveAccountMovePlacement = (
     account: Account,
-    direction: "up" | "down",
-  ) => {
+    direction: AccountMoveDirection,
+  ): AccountMovePlacement | null => {
+    if (direction === "top" || direction === "bottom") {
+      const boundaryAccount =
+        direction === "top" ? accounts[0] : accounts[accounts.length - 1];
+      if (boundaryAccount?.id === account.id) {
+        toast.info(
+          direction === "top"
+            ? t("当前账号已经在最前面")
+            : t("当前账号已经在最后面"),
+        );
+        return null;
+      }
+      return { type: direction };
+    }
+
     const filteredIndex = filteredAccountIndexMap.get(account.id);
     if (filteredIndex == null) {
       toast.error(t("未找到当前账号，请刷新后重试"));
-      return;
+      return null;
     }
 
     const targetFilteredIndex =
       direction === "up" ? filteredIndex - 1 : filteredIndex + 1;
     if (targetFilteredIndex < 0) {
       toast.info(t("当前账号已经在最前面"));
-      return;
+      return null;
     }
     if (targetFilteredIndex >= filteredAccounts.length) {
       toast.info(t("当前账号已经在最后面"));
+      return null;
+    }
+
+    return {
+      type: direction === "up" ? "before" : "after",
+      anchorAccountId: filteredAccounts[targetFilteredIndex].id,
+    };
+  };
+
+  const handleMoveAccount = async (
+    account: Account,
+    direction: AccountMoveDirection,
+  ) => {
+    const placement = resolveAccountMovePlacement(account, direction);
+    if (!placement) {
       return;
     }
 
-    const targetAccount = filteredAccounts[targetFilteredIndex];
-    const reorderedAccounts = accounts.filter((item) => item.id !== account.id);
-    const anchorIndex = reorderedAccounts.findIndex(
-      (item) => item.id === targetAccount.id,
+    const reorderedAccounts = buildAccountsByMovedOrder(
+      accounts,
+      account,
+      placement,
     );
-    if (anchorIndex === -1) {
+    if (!reorderedAccounts) {
       toast.error(t("未找到目标账号，请刷新后重试"));
       return;
     }
 
-    reorderedAccounts.splice(
-      direction === "up" ? anchorIndex : anchorIndex + 1,
-      0,
-      account,
-    );
     const updates = buildAccountOrderUpdates(reorderedAccounts);
     if (!updates.length) {
       toast.info(t("账号顺序未变化"));
@@ -776,6 +862,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
       visibleAccounts={visibleAccounts}
       filteredAccountIndexMap={filteredAccountIndexMap}
       effectiveSelectedIds={effectiveSelectedIds}
+      selectedEnableTargetCount={selectedEnableTargetIds.length}
+      selectedDisableTargetCount={selectedDisableTargetIds.length}
       addAccountModalOpen={addAccountModalOpen}
       usageModalOpen={usageModalOpen}
       exportDialogOpen={exportDialogOpen}
@@ -819,6 +907,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       isReorderingAccounts={isReorderingAccounts}
       isUpdatingProfileAccountId={isUpdatingProfileAccountId}
       isUpdatingStatusAccountId={isUpdatingStatusAccountId}
+      isUpdatingManyStatuses={isUpdatingManyStatuses}
       statusFilterOptions={statusFilterOptions}
       importFileActionLabel={importFileActionLabel}
       importDirectoryActionLabel={importDirectoryActionLabel}
@@ -851,6 +940,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
       openUsage={openUsage}
       handleUsageModalOpenChange={handleUsageModalOpenChange}
       handleDeleteSelected={handleDeleteSelected}
+      handleEnableSelected={() => void handleToggleSelectedStatus(true)}
+      handleDisableSelected={() => void handleToggleSelectedStatus(false)}
       openCleanupDialog={openCleanupDialog}
       toggleCleanupStatus={toggleCleanupStatus}
       handleConfirmCleanupStatuses={handleConfirmCleanupStatuses}

@@ -7,6 +7,7 @@ import { RU_ACCOUNTS_MESSAGES } from "./sections/ru-accounts";
 import { RU_API_KEYS_MESSAGES } from "./sections/ru-api-keys";
 import { RU_AGGREGATE_API_MESSAGES } from "./sections/ru-aggregate-api";
 import { RU_DASHBOARD_MESSAGES } from "./sections/ru-dashboard";
+import { RU_DESKTOP_DIAGNOSTICS_MESSAGES } from "./sections/ru-desktop-diagnostics";
 import { RU_DYNAMIC_UI_MESSAGES } from "./sections/ru-dynamic-ui";
 import { RU_MODEL_CATALOG_MESSAGES } from "./sections/ru-model-catalog";
 import { RU_MODEL_GROUPS_MESSAGES } from "./sections/ru-model-groups";
@@ -19,6 +20,7 @@ import { RU_SKILLS_MESSAGES } from "./sections/ru-skills";
 export const RU_MESSAGES: MessageCatalog = {
   ...RU_PROJECTS_MESSAGES,
   ...RU_SKILLS_MESSAGES,
+  ...RU_DESKTOP_DIAGNOSTICS_MESSAGES,
   "延迟测试设置": "Настройки теста задержки",
   "速度测试设置": "Настройки теста скорости",
   "下载预设": "Пресет для скачивания",
@@ -407,6 +409,8 @@ export const RU_MESSAGES: MessageCatalog = {
   未提供: "Нет данных",
   上移一位: "Переместить вверх",
   下移一位: "Переместить вниз",
+  移到顶部: "В начало списка",
+  移到底部: "В конец списка",
   编辑账号信息: "Изменить аккаунт",
   用量详情: "Детали использования",
   套餐信息: "Информация о подписке",
@@ -460,6 +464,8 @@ export const RU_MESSAGES: MessageCatalog = {
   保存: "Сохранить",
   清除: "Очистить",
   确定: "ОК",
+  首页: "Первая страница",
+  跳至: "Перейти к",
   "服务未连接，暂时无法": "Сервис отключён, невозможно",
   更新密钥: "обновить ключ",
   启用密钥: "включить ключ",
@@ -1530,8 +1536,6 @@ export const RU_MESSAGES: MessageCatalog = {
   令牌刷新轮询: "Опрос обновления токенов",
   "控制 OpenAI Images 兼容入口是否启用；默认 1，填 0 会关闭 /v1/images/generations 和 /v1/images/edits。":
     "Включить вход OpenAI Images",
-  "控制普通 Responses 请求是否自动注入 image_generation tool；默认 0，填 1 时会在客户端未显式传入 tool 时自动注入。":
-    "Автоинъекция инструмента",
   "控制 Images API 兼容入口内部使用的 Codex 主模型；默认 gpt-5.4-mini。":
     "Основная модель Images API",
   "控制 Images API 兼容入口注入的图片工具模型；默认 gpt-image-2。":

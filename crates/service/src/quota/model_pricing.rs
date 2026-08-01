@@ -14,6 +14,8 @@ pub(crate) struct ModelPriceMatch {
     pub(crate) input_price_per_1m: f64,
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) cached_input_price_per_1m: f64,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) cache_write_price_per_1m: f64,
     pub(crate) output_price_per_1m: f64,
 }
 
@@ -122,13 +124,17 @@ pub(crate) fn resolve_model_price_from_catalog_with_long_context_billing(
         .iter()
         .filter(|tier| {
             tier.min_input_tokens == 0
-                || (long_context_billing_enabled && tier.min_input_tokens < input_tokens.max(0))
+                || (long_context_billing_enabled && tier.min_input_tokens <= input_tokens.max(0))
         })
         .max_by_key(|tier| tier.min_input_tokens)?;
     Some(ModelPriceMatch {
         provider: price.provider.clone(),
         input_price_per_1m: tier.input_microusd_per_1m as f64 / 1_000_000.0,
         cached_input_price_per_1m: tier.cached_input_microusd_per_1m as f64 / 1_000_000.0,
+        cache_write_price_per_1m: tier
+            .cache_write_microusd_per_1m
+            .unwrap_or(tier.input_microusd_per_1m) as f64
+            / 1_000_000.0,
         output_price_per_1m: tier.output_microusd_per_1m as f64 / 1_000_000.0,
     })
 }

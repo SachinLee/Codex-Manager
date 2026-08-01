@@ -29,6 +29,11 @@ struct MainWindowHandle {
     created_after_initial: bool,
 }
 
+struct TrayPreviewWindowHandle {
+    window: tauri::WebviewWindow,
+    created: bool,
+}
+
 /// 函数 `show_main_window`
 ///
 /// 作者: gaohongshun
@@ -173,14 +178,22 @@ pub(crate) fn toggle_tray_preview_window(
     click_position: PhysicalPosition<f64>,
     tray_rect: Rect,
 ) {
-    let Some(window) = ensure_tray_preview_window(app) else {
+    let Some(tray_preview) = ensure_tray_preview_window(app) else {
         return;
     };
+    let window = tray_preview.window;
     if window.is_visible().unwrap_or(false) {
         dismiss_tray_preview_window(app);
         return;
     }
 
+    // A request can remain pending forever when WebView2 suspends a hidden
+    // retained window. Reloading before the next show resets that stale state.
+    if should_reload_tray_preview_window(tray_preview.created) {
+        if let Err(err) = window.reload() {
+            log::warn!("reload retained tray preview window failed: {}", err);
+        }
+    }
     position_tray_preview_window(app, &window, click_position, tray_rect);
     if let Err(err) = window.show() {
         log::warn!("show tray preview window failed: {}", err);
@@ -298,10 +311,13 @@ fn navigate_window_to_app_url(_window: &tauri::WebviewWindow) -> tauri::Result<(
     Ok(())
 }
 
-fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<TrayPreviewWindowHandle> {
     if let Some(window) = app.get_webview_window(TRAY_PREVIEW_WINDOW_LABEL) {
         apply_tray_preview_window_size(&window);
-        return Some(window);
+        return Some(TrayPreviewWindowHandle {
+            window,
+            created: false,
+        });
     }
 
     let builder = WebviewWindowBuilder::new(
@@ -338,17 +354,27 @@ fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWi
     match builder.build() {
         Ok(window) => {
             apply_tray_preview_window_size(&window);
-            Some(window)
+            Some(TrayPreviewWindowHandle {
+                window,
+                created: true,
+            })
         }
         Err(err) => {
             if let Some(window) = app.get_webview_window(TRAY_PREVIEW_WINDOW_LABEL) {
                 apply_tray_preview_window_size(&window);
-                return Some(window);
+                return Some(TrayPreviewWindowHandle {
+                    window,
+                    created: false,
+                });
             }
             log::warn!("create tray preview window failed: {}", err);
             None
         }
     }
+}
+
+fn should_reload_tray_preview_window(created: bool) -> bool {
+    !created
 }
 
 fn tray_preview_window_size() -> Size {
@@ -431,7 +457,10 @@ fn resolve_tray_preview_position(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_tray_preview_position, should_navigate_created_main_window_to_app};
+    use super::{
+        resolve_tray_preview_position, should_navigate_created_main_window_to_app,
+        should_reload_tray_preview_window,
+    };
     use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalRect, PhysicalSize, Rect};
 
     #[test]
@@ -476,5 +505,11 @@ mod tests {
         assert!(should_navigate_created_main_window_to_app(true, true));
         #[cfg(not(debug_assertions))]
         assert!(!should_navigate_created_main_window_to_app(true, true));
+    }
+
+    #[test]
+    fn retained_tray_preview_is_reloaded_before_it_is_shown_again() {
+        assert!(should_reload_tray_preview_window(false));
+        assert!(!should_reload_tray_preview_window(true));
     }
 }

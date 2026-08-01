@@ -34,6 +34,8 @@ static TRACE_BODY_PREVIEW_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES);
 static FRONT_PROXY_MAX_BODY_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_FRONT_PROXY_MAX_BODY_BYTES);
+static FRONT_PROXY_ZSTD_MAX_BODY_BYTES: AtomicUsize =
+    AtomicUsize::new(DEFAULT_FRONT_PROXY_ZSTD_MAX_BODY_BYTES);
 static UPSTREAM_CONNECT_TIMEOUT_SECS: AtomicU64 =
     AtomicU64::new(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS);
 static UPSTREAM_TOTAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS);
@@ -59,8 +61,6 @@ static ENABLE_REQUEST_COMPRESSION: AtomicBool = AtomicBool::new(DEFAULT_ENABLE_R
 static USE_WEBSOCKET_UPSTREAM: AtomicBool = AtomicBool::new(DEFAULT_USE_WEBSOCKET_UPSTREAM);
 static CODEX_IMAGE_GENERATION_ENABLED: AtomicBool =
     AtomicBool::new(DEFAULT_CODEX_IMAGE_GENERATION_ENABLED);
-static CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL: AtomicBool =
-    AtomicBool::new(DEFAULT_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL);
 static UPSTREAM_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static UPSTREAM_PROXY_BYPASS_HOSTS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
 static FREE_ACCOUNT_MAX_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
@@ -105,10 +105,10 @@ const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = false;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_USE_WEBSOCKET_UPSTREAM: bool = false;
 const DEFAULT_CODEX_IMAGE_GENERATION_ENABLED: bool = true;
-const DEFAULT_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL: bool = false;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 0;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 0;
+const DEFAULT_FRONT_PROXY_ZSTD_MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "auto";
 const DEFAULT_COMPACT_MODEL: &str = "auto";
 const DEFAULT_COMPACT_API_PATH: &str = "/v1/responses/compact";
@@ -123,6 +123,7 @@ const MAX_CANDIDATE_CLIENT_CACHE_ENTRIES: usize = 512;
 const ENV_REQUEST_GATE_WAIT_TIMEOUT_MS: &str = "CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS";
 const ENV_TRACE_BODY_PREVIEW_MAX_BYTES: &str = "CODEXMANAGER_TRACE_BODY_PREVIEW_MAX_BYTES";
 const ENV_FRONT_PROXY_MAX_BODY_BYTES: &str = "CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES";
+const ENV_FRONT_PROXY_ZSTD_MAX_BODY_BYTES: &str = "CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES";
 const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS";
 const ENV_UPSTREAM_TOTAL_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS";
 const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS";
@@ -147,8 +148,6 @@ const ENV_STRICT_REQUEST_PARAM_ALLOWLIST: &str = "CODEXMANAGER_STRICT_REQUEST_PA
 const ENV_ENABLE_REQUEST_COMPRESSION: &str = "CODEXMANAGER_ENABLE_REQUEST_COMPRESSION";
 const ENV_USE_WEBSOCKET_UPSTREAM: &str = "CODEXMANAGER_USE_WEBSOCKET_UPSTREAM";
 const ENV_CODEX_IMAGE_GENERATION_ENABLED: &str = "CODEXMANAGER_CODEX_IMAGE_GENERATION_ENABLED";
-const ENV_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL: &str =
-    "CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL";
 const ENV_CODEX_IMAGE_MAIN_MODEL: &str = "CODEXMANAGER_CODEX_IMAGE_MAIN_MODEL";
 const ENV_CODEX_IMAGE_TOOL_MODEL: &str = "CODEXMANAGER_CODEX_IMAGE_TOOL_MODEL";
 const ENV_TOKEN_EXCHANGE_CLIENT_ID: &str = "CODEXMANAGER_CLIENT_ID";
@@ -954,12 +953,6 @@ pub(crate) fn codex_image_generation_enabled() -> bool {
     CODEX_IMAGE_GENERATION_ENABLED.load(Ordering::Relaxed)
 }
 
-#[allow(dead_code)]
-pub(crate) fn codex_image_generation_auto_inject_tool_enabled() -> bool {
-    ensure_runtime_config_loaded();
-    CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL.load(Ordering::Relaxed)
-}
-
 pub(crate) fn current_codex_image_main_model() -> String {
     ensure_runtime_config_loaded();
     crate::lock_utils::read_recover(codex_image_main_model_cell(), "codex_image_main_model").clone()
@@ -1253,6 +1246,11 @@ pub(crate) fn trace_body_preview_max_bytes() -> usize {
 pub(crate) fn front_proxy_max_body_bytes() -> usize {
     ensure_runtime_config_loaded();
     FRONT_PROXY_MAX_BODY_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn front_proxy_zstd_max_body_bytes() -> usize {
+    ensure_runtime_config_loaded();
+    FRONT_PROXY_ZSTD_MAX_BODY_BYTES.load(Ordering::Relaxed)
 }
 
 /// 函数 `upstream_proxy_url`
@@ -1815,6 +1813,18 @@ pub(super) fn reload_from_env() {
         ),
         Ordering::Relaxed,
     );
+    let zstd_max_body_bytes = env_usize_or(
+        ENV_FRONT_PROXY_ZSTD_MAX_BODY_BYTES,
+        DEFAULT_FRONT_PROXY_ZSTD_MAX_BODY_BYTES,
+    );
+    FRONT_PROXY_ZSTD_MAX_BODY_BYTES.store(
+        if zstd_max_body_bytes == 0 {
+            DEFAULT_FRONT_PROXY_ZSTD_MAX_BODY_BYTES
+        } else {
+            zstd_max_body_bytes
+        },
+        Ordering::Relaxed,
+    );
     UPSTREAM_CONNECT_TIMEOUT_SECS.store(
         env_u64_or(
             ENV_UPSTREAM_CONNECT_TIMEOUT_SECS,
@@ -1909,13 +1919,6 @@ pub(super) fn reload_from_env() {
         env_bool_or(
             ENV_CODEX_IMAGE_GENERATION_ENABLED,
             DEFAULT_CODEX_IMAGE_GENERATION_ENABLED,
-        ),
-        Ordering::Relaxed,
-    );
-    CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL.store(
-        env_bool_or(
-            ENV_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL,
-            DEFAULT_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL,
         ),
         Ordering::Relaxed,
     );

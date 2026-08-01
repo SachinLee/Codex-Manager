@@ -29,8 +29,11 @@ export const EN_MODEL_CATALOG_MESSAGES: MessageCatalog = {
   "基础价格（美元 / 百万令牌）": "Base prices (USD / 1M tokens)",
   输入价格: "Input price",
   缓存输入价格: "Cached-input price",
+  缓存读取价格: "Cache-read price",
+  缓存写入价格: "Cache-write price",
   输出价格: "Output price",
   留空表示价格缺失: "Leave blank for price missing",
+  留空按普通输入价格计费: "Leave blank to use the regular input price",
   "价格必须是非负十进制数": "Price must be a non-negative decimal number",
   "价格最多支持 6 位有效小数":
     "Price supports at most six significant decimal places",
@@ -43,6 +46,8 @@ export const EN_MODEL_CATALOG_MESSAGES: MessageCatalog = {
   长上下文阶梯计费: "Long-context tiered billing",
   "开启后，输入超过模型阈值时按该模型的长上下文价格阶梯计算；关闭后始终使用基础价格。上游实际费用不受影响。":
     "When enabled, input above the model threshold uses that model's long-context price tier. When disabled, base pricing is always used. Upstream-reported actual cost is unaffected.",
+  "配置缓存写入或长上下文价格前必须先填写基础三价":
+    "Fill all three base prices before configuring cache-write or long-context prices",
   可选长上下文阶梯价: "Optional long-context price tier",
   输入令牌阈值: "Input-token threshold",
   长上下文阈值: "Long-context threshold",

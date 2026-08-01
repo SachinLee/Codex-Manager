@@ -582,6 +582,7 @@ fn format_refresh_token_status_error_with_headers(
 fn build_usage_http_client() -> Client {
     let default_headers = build_usage_http_default_headers();
     let builder = Client::builder()
+        .no_proxy()
         // 中文注释：轮询链路复用连接池可降低握手开销；不复用会在多账号刷新时放大短连接抖动。
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
@@ -598,6 +599,7 @@ fn build_usage_http_client() -> Client {
 }
 fn build_subscription_http_client() -> Client {
     let builder = Client::builder()
+        .no_proxy()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(4)
@@ -1776,6 +1778,7 @@ fn normalize_explicit_proxy_url(proxy_url: &str) -> Result<String, String> {
 
 fn build_usage_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client, String> {
     let builder = Client::builder()
+        .no_proxy()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(8)
@@ -1792,6 +1795,7 @@ fn build_usage_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client
 
 fn build_subscription_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client, String> {
     let builder = Client::builder()
+        .no_proxy()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(4)
@@ -1807,6 +1811,7 @@ fn build_subscription_http_client_with_explicit_proxy(proxy_url: &str) -> Result
 
 fn build_token_refresh_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client, String> {
     let builder = Client::builder()
+        .no_proxy()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(8)

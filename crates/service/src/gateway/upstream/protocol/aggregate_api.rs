@@ -168,7 +168,7 @@ fn record_aggregate_api_reasoning_guard_event(
         upstream_model,
         usage.input_tokens,
         usage.cached_input_tokens,
-        usage.cache_write_input_tokens,
+        usage.cache_write_tokens,
         usage.output_tokens,
     );
     crate::gateway::record_gateway_reasoning_guard_event(GatewayReasoningGuardEvent {
@@ -2127,7 +2127,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     RequestLogUsage {
                         input_tokens: bridge.usage.input_tokens,
                         cached_input_tokens: bridge.usage.cached_input_tokens,
-                        cache_write_input_tokens: bridge.usage.cache_write_input_tokens,
+                        cache_write_tokens: bridge.usage.cache_write_tokens,
                         output_tokens: bridge.usage.output_tokens,
                         total_tokens: bridge.usage.total_tokens,
                         reasoning_output_tokens: bridge.usage.reasoning_output_tokens,
@@ -2359,7 +2359,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 RequestLogUsage {
                     input_tokens: usage.input_tokens,
                     cached_input_tokens: usage.cached_input_tokens,
-                    cache_write_input_tokens: usage.cache_write_input_tokens,
+                    cache_write_tokens: usage.cache_write_tokens,
                     output_tokens: usage.output_tokens,
                     total_tokens: usage.total_tokens,
                     reasoning_output_tokens: usage.reasoning_output_tokens,

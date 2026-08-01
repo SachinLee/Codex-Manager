@@ -255,20 +255,6 @@ pub(in super::super) fn execute_candidate_sequence(
     let mut last_attempt_url = None;
     let mut last_attempt_error = None;
     let mut force_strip_session_affinity_after_challenge = false;
-    let account_model_override = model_for_log
-        .and_then(|model| storage.get_enabled_model_v2(model).ok().flatten())
-        .and_then(|model| {
-            model
-                .routes
-                .into_iter()
-                .filter(|route| {
-                    route.enabled
-                        && route.source_kind == "account_pool"
-                        && route.source_id == "default"
-                })
-                .max_by_key(|route| route.priority)
-                .map(|route| route.upstream_model)
-        });
     let usage_snapshots = usage_snapshots_for_candidate_plans(storage, &candidates);
     let ordered_account_ids = candidates
         .iter()
@@ -305,13 +291,15 @@ pub(in super::super) fn execute_candidate_sequence(
                 )
             })
             .unwrap_or_else(|| incoming_headers.clone());
-        let attempt_model_override = account_model_override.as_deref();
+        // Account source mappings select eligible accounts, but OpenAI account requests keep
+        // the client model unchanged. Aggregate API routes apply their own upstream mapping.
+        let attempt_model_override: Option<&str> = None;
         let attempt_allow_openai_fallback = allow_openai_fallback
             && allow_openai_fallback_for_account_with_snapshot(
                 &token,
                 usage_snapshots.get(account.id.as_str()),
             );
-        let attempt_model_for_log = attempt_model_override.or(model_for_log);
+        let attempt_model_for_log = model_for_log;
         let attempt_prompt_cache_key =
             if should_forward_thread_anchor_as_prompt_cache_key(context.protocol_type()) {
                 attempt_thread

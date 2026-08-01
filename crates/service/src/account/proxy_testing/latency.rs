@@ -399,7 +399,8 @@ mod tests {
                             while Instant::now() < tail_deadline {
                                 match listener.accept() {
                                     Ok((mut stream, _)) => {
-                                        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                                        let _ = stream
+                                            .set_read_timeout(Some(Duration::from_millis(200)));
                                         let mut drain = [0_u8; 1024];
                                         let _ = stream.read(&mut drain);
                                         let _ = stream.write_all(response.as_bytes());

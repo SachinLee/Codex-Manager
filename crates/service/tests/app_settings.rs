@@ -8,12 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod support;
 use support::{test_env_guard, EnvGuard};
 
-const CODEX_IMAGE_AUTO_INJECT_TOOL_ENV: &str =
-    "CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL";
 const LEGACY_COMPACT_MODEL_FORWARD_RULES_SETTING_KEY: &str = "gateway.compact_model_forward_rules";
 
 const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
-    CODEX_IMAGE_AUTO_INJECT_TOOL_ENV,
     "CODEXMANAGER_SERVICE_ADDR",
     "CODEXMANAGER_WEB_ADDR",
     "CODEXMANAGER_ROUTE_STRATEGY",
@@ -31,6 +28,7 @@ const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
     "CODEXMANAGER_UPSTREAM_PROXY_URL",
     "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS",
     "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS",
+    "CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES",
     "CODEXMANAGER_SSE_KEEPALIVE_ENABLED",
     "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS",
     "CODEXMANAGER_USAGE_POLLING_ENABLED",
@@ -620,42 +618,6 @@ fn sync_runtime_settings_from_storage_preserves_explicit_process_env_over_persis
         assert_eq!(
             std::env::var("CODEXMANAGER_WEB_ADDR").ok().as_deref(),
             Some("0.0.0.0:48761")
-        );
-    });
-}
-
-#[test]
-fn sync_runtime_settings_from_storage_preserves_explicit_image_auto_inject_override() {
-    with_temp_db(|db_path| {
-        let storage = Storage::open(db_path).expect("open storage");
-        storage
-            .set_app_setting(
-                codexmanager_service::APP_SETTING_ENV_OVERRIDES_KEY,
-                &serde_json::to_string(&json!({
-                    CODEX_IMAGE_AUTO_INJECT_TOOL_ENV: "0"
-                }))
-                .expect("serialize env overrides"),
-                now_ts(),
-            )
-            .expect("save legacy env overrides");
-        drop(storage);
-
-        let _env = override_env_vars(&[(CODEX_IMAGE_AUTO_INJECT_TOOL_ENV, None)]);
-
-        codexmanager_service::sync_runtime_settings_from_storage();
-
-        assert_eq!(
-            std::env::var(CODEX_IMAGE_AUTO_INJECT_TOOL_ENV)
-                .ok()
-                .as_deref(),
-            Some("0")
-        );
-        let stored = read_env_overrides_map(db_path);
-        assert_eq!(
-            stored
-                .get(CODEX_IMAGE_AUTO_INJECT_TOOL_ENV)
-                .and_then(|value| value.as_str()),
-            Some("0")
         );
     });
 }
@@ -2012,6 +1974,7 @@ fn app_settings_set_persists_env_overrides_and_exposes_catalog() {
         let snapshot = codexmanager_service::app_settings_set(Some(&json!({
             "envOverrides": {
                 "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS": "321000",
+                "CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES": "134217728",
                 "CODEXMANAGER_WEB_ROOT": "D:/tmp/web"
             }
         })))
@@ -2036,6 +1999,12 @@ fn app_settings_set_persists_env_overrides_and_exposes_catalog() {
                 .ok()
                 .as_deref(),
             Some("321000")
+        );
+        assert_eq!(
+            std::env::var("CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES")
+                .ok()
+                .as_deref(),
+            Some("134217728")
         );
         let catalog = snapshot
             .get("envOverrideCatalog")
@@ -2087,6 +2056,25 @@ fn app_settings_set_persists_env_overrides_and_exposes_catalog() {
                 .and_then(|value| value.as_str()),
             Some("1")
         );
+        let zstd_body_limit = catalog
+            .iter()
+            .find(|item| {
+                item.get("key").and_then(|value| value.as_str())
+                    == Some("CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES")
+            })
+            .expect("zstd body limit catalog item");
+        assert_eq!(
+            zstd_body_limit
+                .get("applyMode")
+                .and_then(|value| value.as_str()),
+            Some("runtime")
+        );
+        assert_eq!(
+            zstd_body_limit
+                .get("label")
+                .and_then(|value| value.as_str()),
+            Some("zstd 解压后最大请求体（字节）")
+        );
         let token_refresh_ahead = catalog
             .iter()
             .find(|item| {
@@ -2131,6 +2119,12 @@ fn app_settings_set_persists_env_overrides_and_exposes_catalog() {
                 .get("CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS")
                 .and_then(|value| value.as_str()),
             Some("321000")
+        );
+        assert_eq!(
+            stored
+                .get("CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES")
+                .and_then(|value| value.as_str()),
+            Some("134217728")
         );
         assert_eq!(
             stored

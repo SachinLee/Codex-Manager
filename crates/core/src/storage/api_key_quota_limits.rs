@@ -154,6 +154,7 @@ fn api_key_total_token_usage_sql() -> String {
         FROM request_token_stats
         WHERE key_id = ?1
           AND TRIM(key_id) <> ''
+          AND usage_included = 1
         UNION ALL
         SELECT
             input_tokens,
@@ -247,7 +248,10 @@ fn api_key_usage_cte_sql(include_cost: bool, scope: ApiKeyUsageScope) -> String 
     };
     let raw_from = api_key_usage_from_sql("request_token_stats", "s", scope);
     let legacy_from = api_key_usage_from_sql("request_token_stat_rollups", "r", scope);
-    let raw_where = api_key_usage_where_sql("s", scope);
+    let raw_where = format!(
+        "{} AND s.usage_included = 1",
+        api_key_usage_where_sql("s", scope)
+    );
     let legacy_where = api_key_usage_where_sql("r", scope);
     let legacy_cost_select = rollup_cost_select.replace("{rollup_alias}", "r");
     let raw_total = token_total_sql_expr_for("s.");

@@ -2507,14 +2507,29 @@ impl Storage {
             "124_codex_skill_repositories",
             include_str!("../../migrations/124_codex_skill_repositories.sql"),
         )?;
+        self.apply_sql_or_compat_migration(
+            "125_request_token_stats_successful_usage",
+            include_str!("../../migrations/125_request_token_stats_successful_usage.sql"),
+            |s| s.ensure_request_token_stats_usage_included_column(),
+        )?;
         self.apply_sql_migration(
             "125_unbill_unsuccessful_request_logs",
             include_str!("../../migrations/125_unbill_unsuccessful_request_logs.sql"),
         )?;
         self.apply_gpt56_price_reduction_migration()?;
+        self.apply_gpt56_current_pricing_migration()?;
         self.apply_sql_migration(
             "127_request_charge_snapshot_long_context_billing",
             include_str!("../../migrations/127_request_charge_snapshot_long_context_billing.sql"),
+        )?;
+        self.apply_sql_migration(
+            "127_model_catalog_cache_write_prices",
+            include_str!("../../migrations/127_model_catalog_cache_write_prices.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "128_request_token_stat_rollup_hourly_coverage",
+            include_str!("../../migrations/128_request_token_stat_rollup_hourly_coverage.sql"),
+            |s| s.ensure_request_token_stat_rollup_hourly_coverage_column(),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

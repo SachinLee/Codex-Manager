@@ -86,13 +86,6 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         DEFAULT_CLIENT_ID,
     ),
     EnvOverrideCatalogItem::new(
-        "CODEXMANAGER_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL",
-        "Codex 图片 Tool 自动注入",
-        ENV_OVERRIDE_SCOPE_SERVICE,
-        ENV_OVERRIDE_APPLY_MODE_RUNTIME,
-        "0",
-    ),
-    EnvOverrideCatalogItem::new(
         "CODEXMANAGER_CODEX_IMAGE_GENERATION_ENABLED",
         "Codex 图片生成兼容开关",
         ENV_OVERRIDE_SCOPE_SERVICE,
@@ -126,6 +119,13 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         ENV_OVERRIDE_SCOPE_SERVICE,
         ENV_OVERRIDE_APPLY_MODE_RUNTIME,
         "0",
+    ),
+    EnvOverrideCatalogItem::new(
+        "CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES",
+        "zstd 解压后最大请求体（字节）",
+        ENV_OVERRIDE_SCOPE_SERVICE,
+        ENV_OVERRIDE_APPLY_MODE_RUNTIME,
+        "268435456",
     ),
     EnvOverrideCatalogItem::new(
         "CODEXMANAGER_GATEWAY_BLOCKED_PATHS",

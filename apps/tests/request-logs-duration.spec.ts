@@ -54,6 +54,7 @@ const SETTINGS_SNAPSHOT = {
 test("request logs display session title, total duration, first-response latency, and output rate", async ({
   page,
 }) => {
+  const requestedPages: number[] = [];
   await page.route("**/api/runtime*", async (route) => {
     await route.fulfill({
       contentType: "application/json; charset=utf-8",
@@ -128,7 +129,9 @@ test("request logs display session title, total duration, first-response latency
       ]);
       return;
     }
-    if (method === "requestlog/list") {
+    if (method === "requestlog/list" || method === "requestlog/list_with_summary") {
+      const requestedPage = Number(payload?.params?.page) || 1;
+      requestedPages.push(requestedPage);
       await ok({
         items: [
           {
@@ -156,9 +159,17 @@ test("request logs display session title, total duration, first-response latency
             created_at: 1770000000,
           },
         ],
-        total: 1,
-        page: 1,
+        total: 30,
+        page: requestedPage,
         pageSize: 10,
+        summary: {
+          totalCount: 30,
+          filteredCount: 30,
+          successCount: 1,
+          errorCount: 0,
+          totalTokens: 154,
+          totalCostUsd: 0,
+        },
       });
       return;
     }
@@ -208,4 +219,17 @@ test("request logs display session title, total duration, first-response latency
     page.getByText("=> chatgpt.com/backend-api/codex/responses"),
   ).toBeVisible();
   await expect(page.getByText("转发 gpt-5.4-openai-compact")).toBeVisible();
+
+  await page.waitForTimeout(350);
+  await page.getByLabel("跳至").fill("999");
+  await page.getByRole("button", { name: "确定" }).click();
+
+  await expect.poll(() => requestedPages).toContain(3);
+  await expect(page.getByText("第 3 / 3 页")).toBeVisible();
+
+  await page.getByRole("button", { name: "首页" }).click();
+
+  await expect.poll(() => requestedPages).toContain(1);
+  await expect(page.getByText("第 1 / 3 页")).toBeVisible();
+  await expect(page.getByRole("button", { name: "首页" })).toBeDisabled();
 });

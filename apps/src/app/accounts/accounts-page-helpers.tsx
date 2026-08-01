@@ -24,6 +24,12 @@ import type { Account } from "@/types";
 export type StatusFilter = "all" | "available" | "low_quota" | "limited" | "banned";
 export type AccountExportMode = "single" | "multiple";
 export type AccountSizeSortMode = "large-first" | "small-first";
+export type AccountMoveDirection = "up" | "down" | "top" | "bottom";
+export type AccountMovePlacement =
+  | { type: "top" }
+  | { type: "bottom" }
+  | { type: "before"; anchorAccountId: string }
+  | { type: "after"; anchorAccountId: string };
 
 const ACCOUNT_SORT_STEP = 5;
 
@@ -44,6 +50,8 @@ export type TranslateFn = (
   key: string,
   values?: Record<string, string | number>,
 ) => string;
+
+export type AccountStatusAction = "enable" | "disable" | null;
 
 export function formatAccountPlanValueLabel(value: string, t: TranslateFn) {
   const normalized = String(value || "")
@@ -324,27 +332,42 @@ export function QuotaOverviewCell({ items }: { items: QuotaSummaryItem[] }) {
   );
 }
 
+export function getAccountStatusActionType(account: Account): AccountStatusAction {
+  const normalizedStatus = String(account.status || "")
+    .trim()
+    .toLowerCase();
+  if (normalizedStatus === "disabled" || normalizedStatus === "inactive") {
+    return "enable";
+  }
+  if (normalizedStatus === "banned") {
+    return null;
+  }
+  return "disable";
+}
+
 export function getAccountStatusAction(
   account: Account,
   t: TranslateFn,
 ): {
-  action: "enable" | "disable" | null;
+  action: AccountStatusAction;
   label: string;
   icon: LucideIcon;
 } {
   const normalizedStatus = String(account.status || "")
     .trim()
     .toLowerCase();
-  if (normalizedStatus === "disabled") {
-    return { action: "enable", label: t("启用账号"), icon: Power };
+  const action = getAccountStatusActionType(account);
+  if (action === "enable") {
+    return {
+      action,
+      label: normalizedStatus === "inactive" ? t("恢复账号") : t("启用账号"),
+      icon: Power,
+    };
   }
-  if (normalizedStatus === "inactive") {
-    return { action: "enable", label: t("恢复账号"), icon: Power };
-  }
-  if (normalizedStatus === "banned") {
+  if (action === null) {
     return { action: null, label: t("封禁账号"), icon: PowerOff };
   }
-  return { action: "disable", label: t("禁用账号"), icon: PowerOff };
+  return { action, label: t("禁用账号"), icon: PowerOff };
 }
 
 export function getAccountStatusReasonCode(account: Account): string {
@@ -594,6 +617,39 @@ export function buildAccountOrderUpdates(orderedAccounts: Account[]) {
     },
     [],
   );
+}
+
+// 按目标位置重排账号；锚点账号不存在时返回 null，由调用方提示刷新。
+export function buildAccountsByMovedOrder(
+  orderedAccounts: Account[],
+  account: Account,
+  placement: AccountMovePlacement,
+): Account[] | null {
+  const reorderedAccounts = orderedAccounts.filter(
+    (item) => item.id !== account.id,
+  );
+
+  if (placement.type === "top") {
+    reorderedAccounts.unshift(account);
+    return reorderedAccounts;
+  }
+  if (placement.type === "bottom") {
+    reorderedAccounts.push(account);
+    return reorderedAccounts;
+  }
+
+  const anchorIndex = reorderedAccounts.findIndex(
+    (item) => item.id === placement.anchorAccountId,
+  );
+  if (anchorIndex === -1) {
+    return null;
+  }
+  reorderedAccounts.splice(
+    placement.type === "before" ? anchorIndex : anchorIndex + 1,
+    0,
+    account,
+  );
+  return reorderedAccounts;
 }
 
 export function getAccountSizeGroup(
