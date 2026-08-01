@@ -9,18 +9,6 @@
 # Keep AGENTS.md as the primary project instruction file.
 project_doc_fallback_filenames = ["AGENTS.md"]
 
-[agents.trellis-research]
-description = "Trellis researcher for specs, code patterns, and affected files."
-config_file = "agents/trellis-research.toml"
-
-[agents.trellis-implement]
-description = "Trellis implementer for reviewed task artifacts and routine code execution."
-config_file = "agents/trellis-implement.toml"
-
-[agents.trellis-check]
-description = "Trellis reviewer for spec compliance, tests, and final verification."
-config_file = "agents/trellis-check.toml"
-
 # Codex hooks (`hooks.json` in this directory) only fire when the user
 # has enabled them in their USER-level config: `[features].hooks = true`
 # in ~/.codex/config.toml (Codex 0.129+; legacy name: `codex_hooks = true`,
@@ -38,3 +26,14 @@ config_file = "agents/trellis-check.toml"
 # aborts the entire config load and blocks Codex from starting. Codex's own
 # default for multi_agent_v2 is used instead; tune it in your user-level
 # config if needed.
+
+# Pin the subagent recursion depth explicitly instead of relying on Codex's
+# default. #445 removed the per-agent `[features] multi_agent = false` guard
+# (the #240/#241 wait_agent-deadlock structural fix) because native subagent
+# dispatch already caps recursion via `agents.max_depth` — but that key is
+# global/user-level, not settable inside an individual agent's .toml. Pinning
+# it here means an upstream default change, or a user's own global override,
+# can't silently reopen the recursion the #240/#241 fix closed. Project config
+# (this file) takes precedence over user-level `~/.codex/config.toml`.
+[agents]
+max_depth = 1
