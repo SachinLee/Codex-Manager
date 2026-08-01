@@ -975,6 +975,7 @@ pub struct AggregateApiListResult {
 #[serde(rename_all = "camelCase")]
 pub struct AggregateApiRuntimeStatus {
     pub aggregate_api_id: String,
+    pub upstream_model: Option<String>,
     pub is_cooling_down: bool,
     pub consecutive_failures: u32,
     pub failure_threshold: u32,
@@ -1584,6 +1585,9 @@ pub struct RequestLogSummary {
     pub cached_input_cost_usd: Option<f64>,
     pub cache_write_cost_usd: Option<f64>,
     pub output_cost_usd: Option<f64>,
+    pub base_cost_usd: Option<f64>,
+    pub charged_cost_usd: Option<f64>,
+    pub rate_multiplier_millis: Option<i64>,
     pub short_baseline_cost_usd: Option<f64>,
     pub long_context_uplift_usd: Option<f64>,
     pub guard_event_count: i64,
@@ -1768,6 +1772,27 @@ pub struct AccountDailyUsageStatSummary {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccountDailyUsageStatsResult {
     pub items: Vec<AccountDailyUsageStatSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDailyUsageStatSummary {
+    pub model: String,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub billable_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub cache_hit_rate: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelDailyUsageStatsResult {
+    pub items: Vec<ModelDailyUsageStatSummary>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

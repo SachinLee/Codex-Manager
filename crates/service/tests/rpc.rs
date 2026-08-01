@@ -4297,6 +4297,8 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         0,
         None,
         true,
+        None,
+        None,
     )
     .expect("unassigned api key should record an uncharged snapshot");
     assert_eq!(missing_owner_charge.rate_multiplier_millis, 1_000);
@@ -4416,6 +4418,8 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         0,
         Some(r#"{"test":true}"#.to_string()),
         true,
+        None,
+        None,
     )
     .expect("charge wallet");
     assert_eq!(charge_snapshot.base_cost_microusd, 250_000);

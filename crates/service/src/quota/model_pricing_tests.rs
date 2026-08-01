@@ -31,13 +31,13 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(sol.cached_input_price_per_1m, 0.5);
     assert_close(sol.output_price_per_1m, 30.0);
     let terra = resolve_model_price_from_catalog(&prices, "gpt-5.6-terra", 0).expect("terra");
-    assert_close(terra.input_price_per_1m, 2.5);
-    assert_close(terra.cached_input_price_per_1m, 0.25);
-    assert_close(terra.output_price_per_1m, 15.0);
+    assert_close(terra.input_price_per_1m, 2.0);
+    assert_close(terra.cached_input_price_per_1m, 0.2);
+    assert_close(terra.output_price_per_1m, 12.0);
     let luna = resolve_model_price_from_catalog(&prices, "gpt-5.6-luna", 0).expect("luna");
-    assert_close(luna.input_price_per_1m, 1.0);
-    assert_close(luna.cached_input_price_per_1m, 0.1);
-    assert_close(luna.output_price_per_1m, 6.0);
+    assert_close(luna.input_price_per_1m, 0.2);
+    assert_close(luna.cached_input_price_per_1m, 0.02);
+    assert_close(luna.output_price_per_1m, 1.2);
     let image = resolve_model_price_from_catalog(&prices, "gpt-image-2", 0).expect("image");
     assert_close(image.input_price_per_1m, 8.0);
     assert_close(image.cached_input_price_per_1m, 2.0);
@@ -52,7 +52,15 @@ fn catalog_price_switches_at_272k_boundary() {
     let standard = resolve_model_price_from_catalog(&prices, "gpt-5.4", 271_999).expect("standard");
     assert_close(standard.input_price_per_1m, 2.5);
     assert_close(standard.output_price_per_1m, 15.0);
-    let long = resolve_model_price_from_catalog(&prices, "gpt-5.4", 272_000).expect("long");
+    let exact = resolve_model_price_from_catalog_with_long_context_billing(
+        &prices, "gpt-5.4", 272_000, true,
+    )
+    .expect("exact threshold");
+    assert_close(exact.input_price_per_1m, 2.5);
+    let long = resolve_model_price_from_catalog_with_long_context_billing(
+        &prices, "gpt-5.4", 272_001, true,
+    )
+    .expect("long");
     assert_close(long.input_price_per_1m, 5.0);
     assert_close(long.cached_input_price_per_1m, 0.5);
     assert_close(long.output_price_per_1m, 22.5);
@@ -63,8 +71,8 @@ fn gpt56_catalog_prices_switch_to_official_long_context_rates() {
     let (_storage, prices) = prices();
     for (slug, base, long_rates) in [
         ("gpt-5.6-sol", (5.0, 0.5, 30.0), (10.0, 1.0, 45.0)),
-        ("gpt-5.6-terra", (2.5, 0.25, 15.0), (5.0, 0.5, 22.5)),
-        ("gpt-5.6-luna", (1.0, 0.1, 6.0), (2.0, 0.2, 9.0)),
+        ("gpt-5.6-terra", (2.0, 0.2, 12.0), (4.0, 0.4, 18.0)),
+        ("gpt-5.6-luna", (0.2, 0.02, 1.2), (0.4, 0.04, 1.8)),
     ] {
         let standard =
             resolve_model_price_from_catalog(&prices, slug, 271_999).expect("standard tier");
@@ -72,11 +80,34 @@ fn gpt56_catalog_prices_switch_to_official_long_context_rates() {
         assert_close(standard.cached_input_price_per_1m, base.1);
         assert_close(standard.output_price_per_1m, base.2);
 
-        let long = resolve_model_price_from_catalog(&prices, slug, 272_000).expect("long tier");
+        let exact = resolve_model_price_from_catalog_with_long_context_billing(
+            &prices, slug, 272_000, true,
+        )
+        .expect("exact threshold");
+        assert_close(exact.input_price_per_1m, base.0);
+        let long = resolve_model_price_from_catalog_with_long_context_billing(
+            &prices, slug, 272_001, true,
+        )
+        .expect("long tier");
         assert_close(long.input_price_per_1m, long_rates.0);
         assert_close(long.cached_input_price_per_1m, long_rates.1);
         assert_close(long.output_price_per_1m, long_rates.2);
     }
+}
+
+#[test]
+fn catalog_price_uses_base_tier_when_long_context_billing_is_disabled() {
+    let (_storage, prices) = prices();
+    let price = resolve_model_price_from_catalog_with_long_context_billing(
+        &prices,
+        "gpt-5.6-terra",
+        300_000,
+        false,
+    )
+    .expect("base tier");
+    assert_close(price.input_price_per_1m, 2.0);
+    assert_close(price.cached_input_price_per_1m, 0.2);
+    assert_close(price.output_price_per_1m, 12.0);
 }
 
 #[test]
@@ -113,6 +144,32 @@ fn request_log_estimate_does_not_double_count_cache_write_tokens() {
     );
 
     assert_close(with_cache_write, without_cache_write);
+}
+
+#[test]
+fn request_log_estimate_uses_the_charge_snapshot_billing_policy() {
+    let (storage, _) = prices();
+    let base = estimate_cost_usd_for_log_with_long_context_billing(
+        &storage,
+        Some("gpt-5.6-terra"),
+        Some(300_000),
+        Some(0),
+        None,
+        Some(0),
+        false,
+    );
+    let long = estimate_cost_usd_for_log_with_long_context_billing(
+        &storage,
+        Some("gpt-5.6-terra"),
+        Some(300_000),
+        Some(0),
+        None,
+        Some(0),
+        true,
+    );
+
+    assert_close(base, 0.6);
+    assert_close(long, 1.2);
 }
 
 #[test]

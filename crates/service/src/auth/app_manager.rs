@@ -878,6 +878,9 @@ pub fn record_request_charge_v2(
             cached_input_tokens,
             output_tokens,
             rate_multiplier_millis: multiplier_millis,
+            long_context_billing_enabled: Some(
+                crate::app_settings::current_gateway_long_context_billing_enabled(),
+            ),
             wallet_id,
             api_key_id,
             pricing_rule_id: billing_rule.as_ref().map(|rule| rule.id.clone()),

@@ -40,6 +40,9 @@ export const EN_MODEL_CATALOG_MESSAGES: MessageCatalog = {
     "Input, cached-input, and output prices must all be filled together",
   "配置长上下文价格前必须先填写基础三价":
     "Fill all three base prices before configuring long-context prices",
+  长上下文阶梯计费: "Long-context tiered billing",
+  "开启后，输入超过模型阈值时按该模型的长上下文价格阶梯计算；关闭后始终使用基础价格。上游实际费用不受影响。":
+    "When enabled, input above the model threshold uses that model's long-context price tier. When disabled, base pricing is always used. Upstream-reported actual cost is unaffected.",
   可选长上下文阶梯价: "Optional long-context price tier",
   输入令牌阈值: "Input-token threshold",
   长上下文阈值: "Long-context threshold",

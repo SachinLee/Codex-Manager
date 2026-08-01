@@ -1,0 +1,2 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"刷新链路跨越数据库、Service RPC、TanStack Query 与 keep-alive UI，实施时需维持单一数据契约。"}
+{"file":".trellis/tasks/07-28-fix-aggregate-api-usage-refresh/research/refresh-logic.md","reason":"包含当前刷新配置、数据库/RPC 对照证据与前端根因边界。"}

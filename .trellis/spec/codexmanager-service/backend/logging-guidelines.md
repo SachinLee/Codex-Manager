@@ -217,6 +217,64 @@ let continuation_body =
 return retry_same_candidate_with_body(continuation_body);
 ```
 
+## Scenario: Aggregate API Capacity Recovery
+
+### 1. Scope / Trigger
+- Trigger: changing Aggregate API upstream retries, SSE terminal delivery, capacity-error classification, or gateway capacity metrics.
+- Applies to `gateway/upstream/protocol/aggregate_api.rs`, `gateway/observability/metrics.rs`, and the Aggregate API request-log finalizer.
+
+### 2. Signatures
+- Capacity classifier: `gateway::is_selected_model_capacity_error(message)`.
+- Prometheus counters:
+  - `codexmanager_gateway_upstream_capacity_errors_total`
+  - `codexmanager_gateway_upstream_capacity_internal_retries_total`
+  - `codexmanager_gateway_upstream_capacity_exhausted_total`
+
+### 3. Contracts
+- Only the exact selected-model capacity message is eligible; generic `capacity` text is not.
+- Aggregate API recovery replays the same candidate at most twice after the initial request, with jittered backoff and the existing request deadline.
+- A recognized capacity error never consumes the generic transport retry budget, enters Aggregate API cooldown, or moves to a later Aggregate API candidate.
+- An HTTP 200 SSE error can be replayed only while the bridge returns `pending_failover_request`; that proves no client-visible business event has been delivered.
+- When retries are exhausted, return the normalized capacity message with HTTP 503 and the existing trace header. Do not silently close the request.
+- Log recovery decisions with trace ID, Aggregate API ID, upstream model, stream flag, retry attempt, and delay. Never log secrets, headers, or request bodies.
+
+### 4. Validation & Error Matrix
+- Exact capacity error with retry budget -> wait with jitter and retry the same candidate.
+- Exact capacity error with exhausted budget -> 503 to the client; no candidate failover.
+- Capacity error after client delivery begins -> do not replay; remain health-neutral and log `reason=client_delivery_started`.
+- Retry wait exceeds the request deadline -> 504 timeout; do not sleep past the deadline.
+- Near-match capacity text -> existing non-capacity error handling.
+
+### 5. Good / Base / Bad Cases
+- Good: two capacity errors followed by a successful third response result in one client-visible success and two capacity retry metric increments.
+- Base: all three requests return the exact capacity error; the client receives one 503 response with its trace ID.
+- Bad: capacity exhaustion falls through to generic transport retries or the next Aggregate API candidate.
+- Bad: a capacity SSE frame after visible output causes a replay and duplicates text or tool calls.
+
+### 6. Tests Required
+- Assert the retry budget permits exactly two replays and each jitter delay stays within its configured cap.
+- Assert a past deadline does not schedule a wait.
+- Assert Prometheus output contains the capacity detection and exhaustion counters.
+- Add transport-level coverage when changing the Aggregate API loop: HTTP error recovery, pre-delivery SSE recovery, exhausted 503, and no retry after delivered stream content.
+
+### 7. Wrong vs Correct
+#### Wrong
+```rust
+if capacity_error && transport_retry_budget_remaining > 0 {
+    transport_retry_budget_remaining -= 1;
+    continue;
+}
+```
+
+#### Correct
+```rust
+match schedule_aggregate_api_capacity_retry(&mut capacity_budget, deadline, ...) {
+    Retry => continue,
+    Exhausted => return_capacity_503(),
+    DeadlineExceeded => return_timeout_504(),
+}
+```
+
 #### Wrong
 ```rust
 let follow_up = context.apply_gateway_error_follow_up(account_id, error, has_more_candidates);

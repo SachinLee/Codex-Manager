@@ -77,6 +77,48 @@ fn successful_request_log_touches_key_and_records_v2_snapshot() {
 }
 
 #[test]
+fn unsuccessful_upstream_response_does_not_create_charge_snapshot() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    super::write_request_log(
+        &storage,
+        super::RequestLogTraceContext {
+            trace_id: Some("trace-upstream-502"),
+            original_path: Some("/v1/responses"),
+            adapted_path: Some("/v1/responses"),
+            request_type: Some("http"),
+            ..Default::default()
+        },
+        None,
+        None,
+        "/v1/responses",
+        "POST",
+        Some("gpt-5.4"),
+        None,
+        Some("https://example.test/v1/responses"),
+        Some(502),
+        super::RequestLogUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            total_tokens: Some(120),
+            ..Default::default()
+        },
+        Some("upstream failed"),
+        Some(10),
+    );
+
+    assert!(storage
+        .get_charge_snapshot_v2(1)
+        .expect("read snapshot")
+        .is_none());
+    let logs = storage
+        .list_request_logs(None, 10)
+        .expect("read request logs");
+    assert_eq!(logs[0].estimated_cost_usd, None);
+}
+
+#[test]
 fn missing_usage_uses_deterministic_nonzero_input_estimate() {
     let estimate = super::estimate_input_tokens_from_body(br#"{"input":"hello world"}"#);
     assert!(estimate > 0);

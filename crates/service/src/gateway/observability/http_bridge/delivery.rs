@@ -2429,7 +2429,6 @@ fn resolve_stream_keepalive_frame(
     }
 }
 
-
 #[cfg(test)]
 #[path = "delivery_tests.rs"]
 mod tests;

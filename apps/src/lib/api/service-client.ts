@@ -18,23 +18,27 @@ import {
   normalizeAppSettings,
   normalizeAccountDailyUsageStats,
   normalizeAggregateApiDailyUsageStats,
+  normalizeModelDailyUsageStats,
   normalizeAggregateApiReasoningGuardStats,
   normalizeBackgroundTasks,
   normalizeRequestLogFilterSummary,
   normalizeRequestLogListResult,
   normalizeRequestLogListWithSummaryResult,
   normalizeStartupSnapshot,
+  normalizeRequestLogSessionTitles,
   normalizeTodaySummary,
 } from "./normalize";
 import {
   BackgroundTaskSettings,
   AccountDailyUsageStat,
   AggregateApiDailyUsageStat,
+  ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   RequestLogFilterSummary,
   RequestLogListResult,
   RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
+  RequestLogSessionTitle,
   ServiceInitializationResult,
   StartupSnapshot,
 } from "../../types";
@@ -154,6 +158,13 @@ export const serviceClient = {
     );
     return normalizeRequestLogListResult(result);
   },
+  async listRequestLogSessionTitles(options?: { limit?: number }): Promise<RequestLogSessionTitle[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_session_titles",
+      withAddr({ limit: options?.limit ?? 2000 })
+    );
+    return normalizeRequestLogSessionTitles(result);
+  },
   async listRequestLogsWithSummary(params?: {
     query?: string;
     statusFilter?: string;
@@ -227,6 +238,16 @@ export const serviceClient = {
       withAddr(params)
     );
     return normalizeAggregateApiDailyUsageStats(result);
+  },
+  async listModelDailyUsageStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<ModelDailyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_model_daily_usage",
+      withAddr(params)
+    );
+    return normalizeModelDailyUsageStats(result);
   },
   async listAggregateApiReasoningGuardStats(params?: {
     dayStartTs?: number;

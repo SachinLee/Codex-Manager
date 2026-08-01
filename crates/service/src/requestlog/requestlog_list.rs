@@ -581,6 +581,9 @@ fn apply_pricing_snapshot(item: &mut RequestLogSummary, snapshot: &RequestPricin
     item.cached_input_cost_usd = snapshot.cached_input_cost_usd;
     item.cache_write_cost_usd = snapshot.cache_write_cost_usd;
     item.output_cost_usd = snapshot.output_cost_usd;
+    item.base_cost_usd = snapshot.base_cost_usd;
+    item.charged_cost_usd = snapshot.charged_cost_usd;
+    item.rate_multiplier_millis = snapshot.rate_multiplier_millis;
     item.short_baseline_cost_usd = snapshot.short_baseline_cost_usd;
     item.long_context_uplift_usd = snapshot.long_context_uplift_usd;
 }
@@ -753,6 +756,9 @@ fn to_request_log_summary(item: RequestLog, include_route_details: bool) -> Requ
         cached_input_cost_usd: None,
         cache_write_cost_usd: None,
         output_cost_usd: None,
+        base_cost_usd: None,
+        charged_cost_usd: None,
+        rate_multiplier_millis: None,
         short_baseline_cost_usd: None,
         long_context_uplift_usd: None,
         guard_event_count: 0,

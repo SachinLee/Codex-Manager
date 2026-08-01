@@ -54,6 +54,7 @@ export function buildRequestLogSearchQuery(
     .filter(
       (session) =>
         session.id &&
+        !session.id.includes(",") &&
         (session.title.toLowerCase().includes(needle) ||
           session.id.toLowerCase().includes(needle)),
     )
@@ -303,6 +304,18 @@ export function formatDuration(value: number | null): string {
   if (value >= 10_000) return `${Math.round(value / 1000)}s`;
   if (value >= 1000) return `${(value / 1000).toFixed(1).replace(/\.0$/, "")}s`;
   return `${Math.round(value)}ms`;
+}
+
+export function getFirstResponseLatencyClass(
+  value: number | null | undefined,
+): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "text-muted-foreground";
+  }
+  if (value <= 10_000) return "text-emerald-600 dark:text-emerald-400";
+  if (value <= 20_000) return "text-orange-600 dark:text-orange-400";
+  if (value <= 30_000) return "text-yellow-600 dark:text-yellow-400";
+  return "text-red-600 dark:text-red-400";
 }
 
 function formatTokenAmount(value: number | null | undefined): string {

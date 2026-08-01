@@ -24,9 +24,15 @@ export function useAggregateApiRuntimeStatuses(enabled: boolean) {
   }, [enabled]);
 
   const byApiId = useMemo(
-    () => new Map<string, AggregateApiRuntimeStatus>(
-      (query.data || []).map((item) => [item.aggregateApiId, item]),
-    ),
+    () => {
+      const statuses = new Map<string, AggregateApiRuntimeStatus[]>();
+      for (const item of query.data || []) {
+        const entries = statuses.get(item.aggregateApiId) || [];
+        entries.push(item);
+        statuses.set(item.aggregateApiId, entries);
+      }
+      return statuses;
+    },
     [query.data],
   );
 

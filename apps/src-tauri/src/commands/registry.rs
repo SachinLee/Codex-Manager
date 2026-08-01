@@ -53,12 +53,14 @@ macro_rules! invoke_handler {
             crate::commands::quota::service_quota_refresh_sources,
             // request log
             crate::commands::requestlog::service_requestlog_list,
+            crate::commands::requestlog::service_requestlog_session_titles,
             crate::commands::requestlog::service_requestlog_list_with_summary,
             crate::commands::requestlog::service_requestlog_summary,
             crate::commands::requestlog::service_requestlog_clear,
             crate::commands::requestlog::service_requestlog_today_summary,
             crate::commands::requestlog::service_requestlog_account_daily_usage,
             crate::commands::requestlog::service_requestlog_aggregate_api_daily_usage,
+            crate::commands::requestlog::service_requestlog_model_daily_usage,
             crate::commands::requestlog::service_requestlog_aggregate_api_reasoning_guard,
             // plugin
             crate::commands::plugin::service_plugin_catalog_list,
@@ -99,7 +101,6 @@ macro_rules! invoke_handler {
             crate::commands::settings::proxy_profiles::service_system_proxy_speed_test,
             crate::commands::settings::proxy_profiles::service_system_proxy_cloudflare_speed_test,
             crate::commands::settings::proxy_profiles::service_system_proxy_test_job,
-
             crate::commands::settings::proxy_profiles::service_system_proxy_cancel_test,
             crate::commands::settings::proxy_profiles::service_system_proxy_speed_test_history,
             crate::commands::settings::proxy_profiles::service_system_proxy_latency_test_history,
@@ -136,7 +137,6 @@ macro_rules! invoke_handler {
             crate::commands::account::remote::service_account_proxy_speed_test,
             crate::commands::account::remote::service_account_proxy_cloudflare_speed_test,
             crate::commands::account::remote::service_account_proxy_test_job,
-
             crate::commands::account::remote::service_account_proxy_cancel_test,
             crate::commands::account::remote::service_account_proxy_speed_test_history,
             crate::commands::account::remote::service_account_proxy_latency_test_history,

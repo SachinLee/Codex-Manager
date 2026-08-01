@@ -5,7 +5,8 @@ use codexmanager_core::rpc::types::{
 use crate::{
     requestlog_account_daily_usage, requestlog_aggregate_api_daily_usage,
     requestlog_aggregate_api_reasoning_guard, requestlog_clear, requestlog_list,
-    requestlog_summary, requestlog_today_summary,
+    requestlog_model_daily_usage, requestlog_session_titles, requestlog_summary,
+    requestlog_today_summary,
 };
 use crate::{storage_helpers, RpcActor};
 
@@ -103,6 +104,16 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 }
             }))
         }
+        "requestlog/sessionTitles" => {
+            let result = if actor.is_admin() {
+                requestlog_session_titles::list_request_log_session_titles(super::i64_param(
+                    req, "limit",
+                ))
+            } else {
+                Err(super::permission_denied("requestlog/sessionTitles"))
+            };
+            super::value_or_error(result)
+        }
         "requestlog/clear" => super::ok_or_error(requestlog_clear::clear_request_logs()),
         "requestlog/today_summary" => {
             let day_start_ts = super::i64_param(req, "dayStartTs");
@@ -144,6 +155,18 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             super::value_or_error(params.and_then(
                 requestlog_aggregate_api_daily_usage::read_aggregate_api_daily_usage_stats,
             ))
+        }
+        "requestlog/model_daily_usage" => {
+            let params = req
+                .params
+                .clone()
+                .map(serde_json::from_value::<DailyUsageStatsParams>)
+                .transpose()
+                .map(|params| params.unwrap_or_default())
+                .map_err(|err| format!("invalid requestlog/model_daily_usage params: {err}"));
+            super::value_or_error(
+                params.and_then(requestlog_model_daily_usage::read_model_daily_usage_stats),
+            )
         }
         "requestlog/aggregate_api_reasoning_guard" => {
             let params = req

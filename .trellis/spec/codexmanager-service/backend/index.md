@@ -20,6 +20,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
 | [Grok / xAI Request Billing](./grok-billing.md) | Provider actual-cost capture and local fallback | Active |
+| [Model Catalog Long-Context Billing](./model-catalog-billing.md) | Global tier selection and immutable billing audit | Active |
 
 ---
 

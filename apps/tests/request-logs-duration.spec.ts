@@ -117,16 +117,13 @@ test("request logs display session title, total duration, first-response latency
       await ok({ items: [] });
       return;
     }
-    if (method === "codexSession/list") {
+    if (method === "requestlog/sessionTitles") {
       await ok([
         {
           sessionId: "session-duration-1",
-          title:
-            "请求日志会话标题展示和长标题截断验证用的非常长会话标题",
-          createdAt: 1769999000,
-          updatedAt: 1770000000,
+          title: "OMP 请求日志会话标题展示和长标题截断验证用的非常长会话标题",
           cwd: "D:/my-works/codex-extends/Codex-Manager",
-          archived: false,
+          source: "omp",
         },
       ]);
       return;
@@ -199,10 +196,11 @@ test("request logs display session title, total duration, first-response latency
   await expect(page.getByText("2.3s/340ms/14.50 tok/s")).toBeVisible();
   await expect(page.getByText("25%")).toBeVisible();
   await expect(page.getByText("$0.0004")).toBeVisible();
-  await expect(
-    page.getByText("请求日志会话标题展示和长标题截断验证用的非常长会话标题"),
-  ).toBeVisible();
-  await expect(page.getByText("session-duration-1")).toBeVisible();
+  const ompTitle = "OMP 请求日志会话标题展示和长标题截断验证用的非常长会话标题";
+  await expect(page.getByText(ompTitle)).toBeVisible();
+  await page.getByText(ompTitle).hover();
+  await expect(page.getByText("OMP", { exact: true })).toBeVisible();
+  await expect(page.getByText("session-duration-1", { exact: true })).toBeVisible();
   await expect(page.getByText("/v1/responses")).toBeVisible();
   await expect(page.getByText("压缩", { exact: true })).toBeVisible();
   await expect(page.getByText("-> /v1/chat/completions")).toBeVisible();

@@ -5,7 +5,7 @@ use codexmanager_core::storage::{
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tiny_http::Request;
 
 use super::super::GatewayUpstreamResponse;
@@ -52,7 +52,101 @@ fn aggregate_api_has_daily_budget(
         .map_err(|err| format!("read aggregate api daily spend failed: {err}"))?;
     Ok(charged_microusd < limit_microusd)
 }
-const AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS: usize = 1;
+const AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS: usize = 2;
+const AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE: Duration = Duration::from_millis(500);
+const AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AggregateApiCapacityRetryAction {
+    Retry { retry_attempt: u32, delay: Duration },
+    Exhausted,
+    DeadlineExceeded,
+}
+
+fn next_aggregate_api_capacity_retry(
+    remaining_retries: &mut usize,
+) -> AggregateApiCapacityRetryAction {
+    if *remaining_retries == 0 {
+        return AggregateApiCapacityRetryAction::Exhausted;
+    }
+
+    let retry_attempt =
+        AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS.saturating_sub(*remaining_retries) as u32;
+    *remaining_retries = remaining_retries.saturating_sub(1);
+    let delay = super::super::support::backoff::exponential_jitter_delay(
+        AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE,
+        AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP,
+        retry_attempt,
+    );
+    AggregateApiCapacityRetryAction::Retry {
+        retry_attempt: retry_attempt.saturating_add(1),
+        delay,
+    }
+}
+
+fn wait_for_aggregate_api_capacity_retry(
+    delay: Duration,
+    request_deadline: Option<Instant>,
+) -> bool {
+    let Some(delay) = super::super::support::deadline::cap_wait(delay, request_deadline) else {
+        return false;
+    };
+    if !delay.is_zero() {
+        std::thread::sleep(delay);
+    }
+    !super::super::support::deadline::is_expired(request_deadline)
+}
+
+fn schedule_aggregate_api_capacity_retry(
+    remaining_retries: &mut usize,
+    request_deadline: Option<Instant>,
+    trace_id: &str,
+    aggregate_api_id: &str,
+    upstream_model: Option<&str>,
+    is_stream: bool,
+) -> AggregateApiCapacityRetryAction {
+    super::super::super::record_gateway_upstream_capacity_error();
+    let action = next_aggregate_api_capacity_retry(remaining_retries);
+    let AggregateApiCapacityRetryAction::Retry {
+        retry_attempt,
+        delay,
+    } = action
+    else {
+        super::super::super::record_gateway_upstream_capacity_exhausted();
+        log::warn!(
+            "event=aggregate_api_capacity_recovery_exhausted trace_id={} aggregate_api_id={} upstream_model={} stream={}",
+            trace_id,
+            aggregate_api_id,
+            upstream_model.unwrap_or("-"),
+            is_stream,
+        );
+        return action;
+    };
+
+    if !wait_for_aggregate_api_capacity_retry(delay, request_deadline) {
+        log::warn!(
+            "event=aggregate_api_capacity_recovery_deadline trace_id={} aggregate_api_id={} upstream_model={} stream={} retry_attempt={}",
+            trace_id,
+            aggregate_api_id,
+            upstream_model.unwrap_or("-"),
+            is_stream,
+            retry_attempt,
+        );
+        return AggregateApiCapacityRetryAction::DeadlineExceeded;
+    }
+
+    super::super::super::record_gateway_upstream_capacity_internal_retry();
+    log::warn!(
+        "event=aggregate_api_capacity_recovery_retry trace_id={} aggregate_api_id={} upstream_model={} stream={} retry_attempt={} delay_ms={}",
+        trace_id,
+        aggregate_api_id,
+        upstream_model.unwrap_or("-"),
+        is_stream,
+        retry_attempt,
+        delay.as_millis(),
+    );
+    action
+}
 
 #[allow(clippy::too_many_arguments)]
 fn record_aggregate_api_reasoning_guard_event(
@@ -1313,13 +1407,17 @@ pub(in super::super) fn proxy_aggregate_request(
     let aggregate_api_candidates = aggregate_api_candidates
         .into_iter()
         .filter(|candidate| {
-            let is_cooling_down =
-                super::super::super::gateway_is_aggregate_api_in_cooldown(candidate.id.as_str());
+            let upstream_model = aggregate_upstream_model_for_log(candidate, model_for_log);
+            let is_cooling_down = super::super::super::gateway_is_aggregate_api_in_cooldown(
+                candidate.id.as_str(),
+                upstream_model,
+            );
             if is_cooling_down {
                 log::info!(
-                    "event=aggregate_api_candidate_skipped_cooldown trace_id={} aggregate_api_id={}",
+                    "event=aggregate_api_candidate_skipped_cooldown trace_id={} aggregate_api_id={} upstream_model={}",
                     trace_id,
-                    candidate.id
+                    candidate.id,
+                    upstream_model.unwrap_or("unspecified")
                 );
                 cooling_down_candidate_ids.push(candidate.id.clone());
             }
@@ -1914,14 +2012,27 @@ pub(in super::super) fn proxy_aggregate_request(
                     last_attempt_error.as_deref().unwrap_or_default(),
                 );
                 if capacity_error {
-                    // Capacity handling has its own retry budget and must not
-                    // make a supplier appear unhealthy.
                     cooldown_eligible_failure = false;
-                    if capacity_retry_budget_remaining > 0 {
-                        capacity_retry_budget_remaining =
-                            capacity_retry_budget_remaining.saturating_sub(1);
-                        super::super::super::record_gateway_upstream_capacity_internal_retry();
-                        continue;
+                    match schedule_aggregate_api_capacity_retry(
+                        &mut capacity_retry_budget_remaining,
+                        request_deadline,
+                        trace_id,
+                        candidate_id.as_str(),
+                        candidate_upstream_model.as_deref(),
+                        is_stream,
+                    ) {
+                        AggregateApiCapacityRetryAction::Retry { .. } => continue,
+                        AggregateApiCapacityRetryAction::Exhausted => {
+                            last_failure_status = 503;
+                            terminal_failure = true;
+                            break;
+                        }
+                        AggregateApiCapacityRetryAction::DeadlineExceeded => {
+                            last_attempt_error = Some("aggregate api request timeout".to_string());
+                            last_failure_status = 504;
+                            terminal_failure = true;
+                            break;
+                        }
                     }
                 }
                 if transport_retry_budget_remaining > 0 {
@@ -2074,17 +2185,57 @@ pub(in super::super) fn proxy_aggregate_request(
                         "aggregate api upstream response incomplete".to_string()
                     }));
             }
-            if final_error
+            let is_capacity_error = final_error
                 .as_deref()
-                .is_some_and(crate::gateway::is_selected_model_capacity_error)
-                && capacity_retry_budget_remaining > 0
-                && bridge.pending_failover_request.is_some()
-            {
+                .is_some_and(crate::gateway::is_selected_model_capacity_error);
+            let is_pending_capacity_error =
+                is_capacity_error && bridge.pending_failover_request.is_some();
+            if is_capacity_error && !is_pending_capacity_error {
+                // The client has already received a stream event, so retrying could duplicate
+                // visible output or tool calls. Keep the error health-neutral instead.
                 cooldown_eligible_failure = false;
-                request = bridge.pending_failover_request.take();
-                capacity_retry_budget_remaining = capacity_retry_budget_remaining.saturating_sub(1);
-                super::super::super::record_gateway_upstream_capacity_internal_retry();
-                continue;
+                super::super::super::record_gateway_upstream_capacity_error();
+                log::warn!(
+                    "event=aggregate_api_capacity_recovery_not_replayed trace_id={} aggregate_api_id={} upstream_model={} stream={} reason=client_delivery_started",
+                    trace_id,
+                    candidate_id,
+                    candidate_upstream_model.as_deref().unwrap_or("-"),
+                    is_stream,
+                );
+            }
+            if is_pending_capacity_error {
+                cooldown_eligible_failure = false;
+                let returned_request = bridge
+                    .pending_failover_request
+                    .take()
+                    .expect("checked pending capacity error request");
+                match schedule_aggregate_api_capacity_retry(
+                    &mut capacity_retry_budget_remaining,
+                    request_deadline,
+                    trace_id,
+                    candidate_id.as_str(),
+                    candidate_upstream_model.as_deref(),
+                    is_stream,
+                ) {
+                    AggregateApiCapacityRetryAction::Retry { .. } => {
+                        request = Some(returned_request);
+                        continue;
+                    }
+                    AggregateApiCapacityRetryAction::Exhausted => {
+                        request = Some(returned_request);
+                        last_attempt_error = final_error;
+                        last_failure_status = 503;
+                        terminal_failure = true;
+                        break;
+                    }
+                    AggregateApiCapacityRetryAction::DeadlineExceeded => {
+                        request = Some(returned_request);
+                        last_attempt_error = Some("aggregate api request timeout".to_string());
+                        last_failure_status = 504;
+                        terminal_failure = true;
+                        break;
+                    }
+                }
             }
             let status_code =
                 bridge
@@ -2098,7 +2249,10 @@ pub(in super::super) fn proxy_aggregate_request(
             let usage = bridge.usage;
 
             if bridge_ok && final_error.is_none() && bridge.reasoning_guard_action.is_none() {
-                super::super::super::gateway_clear_aggregate_api_cooldown(candidate_id.as_str());
+                super::super::super::gateway_clear_aggregate_api_cooldown(
+                    candidate_id.as_str(),
+                    candidate_upstream_model.as_deref(),
+                );
                 // A clean terminal response supersedes any earlier retryable
                 // transport failure for this candidate.
                 cooldown_eligible_failure = false;
@@ -2223,7 +2377,10 @@ pub(in super::super) fn proxy_aggregate_request(
         }
 
         if cooldown_eligible_failure {
-            super::super::super::gateway_record_aggregate_api_failure(candidate_id.as_str());
+            super::super::super::gateway_record_aggregate_api_failure(
+                candidate_id.as_str(),
+                candidate_upstream_model.as_deref(),
+            );
         }
 
         if succeeded {

@@ -18,6 +18,7 @@ use super::response_finalize::{
     finalize_terminal_candidate, finalize_upstream_response, respond_total_timeout,
     FinalizeUpstreamResponseOutcome, RetrySameCandidateReason,
 };
+use super::stream_preflight::{preflight_stream_response, StreamPreflightOutcome};
 
 const MAX_UPSTREAM_CAPACITY_RETRIES: usize = 1;
 
@@ -572,8 +573,9 @@ pub(in super::super) fn execute_candidate_sequence(
                                 &account.id,
                                 super::super::super::CooldownReason::Default,
                             );
-                            let _ =
-                                crate::usage_refresh::enqueue_usage_refresh_for_account(&account.id);
+                            let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(
+                                &account.id,
+                            );
                             attempt_trace.last_attempt_error = Some(message);
                             record_failover_attempt(
                                 &mut attempt_trace,

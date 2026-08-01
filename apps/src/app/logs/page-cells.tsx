@@ -27,12 +27,12 @@ import {
   resolveUpstreamDisplay,
   ServiceTierBadge,
 } from "./page-helpers";
-import type { CodexSession } from "@/lib/api/codex-launcher";
 import type {
   AggregateApi,
   ApiKey,
   RequestLog,
   RequestLogFilterSummary,
+  RequestLogSessionTitle,
 } from "@/types";
 
 export function SessionInfoCell({
@@ -42,7 +42,7 @@ export function SessionInfoCell({
 }: {
   sessionId: string;
   conversationAnchor: string;
-  session?: CodexSession;
+  session?: RequestLogSessionTitle;
 }) {
   const { t } = useI18n();
   const normalizedSessionId = String(sessionId || "").trim();
@@ -53,6 +53,7 @@ export function SessionInfoCell({
 
   const title = String(session?.title || "").trim();
   const cwd = String(session?.cwd || "").trim();
+  const source = session?.source === "omp" ? "OMP" : "Codex";
   const displayTitle = normalizedSessionId
     ? title || (session ? t("无标题会话") : t("未匹配会话"))
     : t("未记录会话 ID");
@@ -67,13 +68,13 @@ export function SessionInfoCell({
           <div
             className={
               title
-                ? "min-w-0 truncate text-[11px] font-medium text-foreground"
-                : "min-w-0 truncate text-[11px] font-medium text-muted-foreground italic"
+                ? "min-w-0 truncate text-xs leading-4 font-medium text-foreground"
+                : "min-w-0 truncate text-xs leading-4 font-medium text-muted-foreground italic"
             }
           >
             {displayTitle}
           </div>
-          <div className="min-w-0 truncate font-mono text-[9px] text-muted-foreground">
+          <div className="min-w-0 truncate font-mono text-[10px] leading-3 text-muted-foreground/80">
             session: {shortSessionId}
           </div>
         </div>
@@ -96,6 +97,12 @@ export function SessionInfoCell({
               <div className="break-all font-mono text-[11px]">
                 {normalizedConversationAnchor}
               </div>
+            </div>
+          ) : null}
+          {session ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">{t("来源")}</div>
+              <div className="text-[11px]">{source}</div>
             </div>
           ) : null}
           {cwd ? (

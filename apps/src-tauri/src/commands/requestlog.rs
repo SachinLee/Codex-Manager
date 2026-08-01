@@ -37,6 +37,19 @@ pub async fn service_requestlog_list(
 }
 
 #[tauri::command]
+pub async fn service_requestlog_session_titles(
+    addr: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "requestlog/sessionTitles",
+        addr,
+        Some(serde_json::json!({ "limit": limit })),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn service_requestlog_list_with_summary(
     addr: Option<String>,
     query: Option<String>,
@@ -154,6 +167,19 @@ pub async fn service_requestlog_aggregate_api_daily_usage(
 }
 
 #[tauri::command]
+pub async fn service_requestlog_model_daily_usage(
+    addr: Option<String>,
+    day_start_ts: Option<i64>,
+    day_end_ts: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "dayStartTs": day_start_ts,
+        "dayEndTs": day_end_ts
+    });
+    rpc_call_in_background("requestlog/model_daily_usage", addr, Some(params)).await
+}
+
+#[tauri::command]
 pub async fn service_requestlog_aggregate_api_reasoning_guard(
     addr: Option<String>,
     day_start_ts: Option<i64>,
@@ -163,5 +189,10 @@ pub async fn service_requestlog_aggregate_api_reasoning_guard(
         "dayStartTs": day_start_ts,
         "dayEndTs": day_end_ts
     });
-    rpc_call_in_background("requestlog/aggregate_api_reasoning_guard", addr, Some(params)).await
+    rpc_call_in_background(
+        "requestlog/aggregate_api_reasoning_guard",
+        addr,
+        Some(params),
+    )
+    .await
 }

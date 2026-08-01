@@ -137,6 +137,7 @@ fn member_actor_cannot_call_admin_only_rpc() {
         "codexSkills/marketplacePluginInstall",
         "apikey/managedModelUpdateStateV2",
         "apikey/managedModelBatchUpdateStateV2",
+        "requestlog/sessionTitles",
     ] {
         let req = JsonRpcRequest {
             id: 21.into(),
@@ -156,6 +157,28 @@ fn member_actor_cannot_call_admin_only_rpc() {
             .unwrap_or("");
         assert!(err.contains("permission_denied"), "{method}: {err}");
     }
+}
+
+#[test]
+fn admin_actor_can_list_request_log_session_titles() {
+    let response = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/sessionTitles",
+            serde_json::json!({ "limit": 1 }),
+        ),
+        RpcActor::system_admin(),
+    ));
+
+    assert!(
+        response.result.get("error").is_none(),
+        "{:?}",
+        response.result
+    );
+    assert!(
+        response.result.as_array().is_some(),
+        "{:?}",
+        response.result
+    );
 }
 
 #[test]

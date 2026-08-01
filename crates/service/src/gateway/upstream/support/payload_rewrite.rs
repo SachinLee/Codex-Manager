@@ -311,5 +311,4 @@ mod tests {
         );
         assert_eq!(input[1]["type"], "message");
     }
-
 }

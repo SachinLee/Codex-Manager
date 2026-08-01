@@ -76,6 +76,7 @@ export interface AppSettings extends GatewayTransportValues {
   routeStrategyOptions: string[];
   freeAccountMaxModel: string;
   freeAccountMaxModelOptions: string[];
+  longContextBillingEnabled: boolean;
   modelForwardRules: string;
   compactModelForwardRules: string;
   accountMaxInflight: number;

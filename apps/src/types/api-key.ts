@@ -58,6 +58,7 @@ export interface AggregateApi {
 
 export interface AggregateApiRuntimeStatus {
   aggregateApiId: string;
+  upstreamModel: string | null;
   isCoolingDown: boolean;
   consecutiveFailures: number;
   failureThreshold: number;

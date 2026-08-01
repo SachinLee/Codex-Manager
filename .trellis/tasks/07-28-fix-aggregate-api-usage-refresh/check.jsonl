@@ -1,0 +1,2 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查查询恢复策略未破坏 RPC 数据契约或引入第二份派生状态。"}
+{"file":".trellis/tasks/07-28-fix-aggregate-api-usage-refresh/research/refresh-logic.md","reason":"按调查证据核对修复是否命中前端停滞，而非误改后端统计。"}

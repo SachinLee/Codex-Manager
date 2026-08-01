@@ -9,10 +9,6 @@ import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { accountClient } from "@/lib/api/account-client";
 import {
-  codexLauncherClient,
-  type CodexSession,
-} from "@/lib/api/codex-launcher";
-import {
   buildStartupSnapshotQueryKey,
   STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
 } from "@/lib/api/startup-snapshot";
@@ -44,11 +40,7 @@ import {
 import { buildSummaryPlaceholder } from "./page-cells";
 import { AccountListResult, ApiKey, RequestLogListResult, StartupSnapshot } from "@/types";
 
-const REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY = [
-  "codex-launcher",
-  "sessions",
-  "request-log-lookup",
-] as const;
+const REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY = ["requestlog", "session-titles"] as const;
 
 function LogsPageContent() {
   const { t } = useI18n();
@@ -139,18 +131,18 @@ function LogsPageContent() {
     retry: 1,
   });
 
-  const { data: codexSessions = [] } = useQuery({
+  const { data: requestLogSessions = [] } = useQuery({
     queryKey: REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY,
-    queryFn: () => codexLauncherClient.listSessions({ limit: 2000 }),
-    enabled: areLogQueriesEnabled && isPageActive,
+    queryFn: () => serviceClient.listRequestLogSessionTitles({ limit: 2000 }),
+    enabled: areLogQueriesEnabled && isPageActive && isAdminMode,
     staleTime: 5_000,
-    refetchInterval: 5000,
+    refetchInterval: 5_000,
     retry: 1,
   });
 
   const effectiveSearchQuery = useMemo(
-    () => buildRequestLogSearchQuery(searchField, search, codexSessions),
-    [searchField, search, codexSessions],
+    () => buildRequestLogSearchQuery(searchField, search, requestLogSessions),
+    [searchField, search, requestLogSessions],
   );
 
   const { data: logsResult, isLoading, isError: isLogsError } = useQuery({
@@ -235,16 +227,11 @@ function LogsPageContent() {
     );
   }, [aggregateApisResult]);
 
-  const codexSessionMap = useMemo(() => {
-    return new Map<string, CodexSession>(
-      (codexSessions || [])
-        .map((session) => {
-          const id = String(session.sessionId || "").trim();
-          return id ? ([id, session] as const) : null;
-        })
-        .filter((entry): entry is readonly [string, CodexSession] => entry != null),
+  const requestLogSessionMap = useMemo(() => {
+    return new Map(
+      requestLogSessions.map((session) => [session.sessionId, session]),
     );
-  }, [codexSessions]);
+  }, [requestLogSessions]);
 
   const logs = logsResult?.items || [];
   const isLogsLoading =
@@ -414,7 +401,7 @@ function LogsPageContent() {
             accountNameMap={accountNameMap}
             apiKeyMap={apiKeyMap}
             aggregateApiMap={aggregateApiMap}
-            codexSessionMap={codexSessionMap}
+            sessionTitleMap={requestLogSessionMap}
             clearMutationPending={clearMutation.isPending}
             onSearchChange={(value) => {
               setSearch(value);

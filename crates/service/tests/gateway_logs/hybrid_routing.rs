@@ -57,6 +57,8 @@ fn insert_aggregate_api(storage: &Storage, aggregate_id: &str, addr: &str, actio
             auth_params_json: None,
             action: Some(action.to_string()),
             model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,

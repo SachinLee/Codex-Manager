@@ -959,6 +959,9 @@ pub struct RequestPricingSnapshot {
     pub cached_input_cost_usd: Option<f64>,
     pub cache_write_cost_usd: Option<f64>,
     pub output_cost_usd: Option<f64>,
+    pub base_cost_usd: Option<f64>,
+    pub charged_cost_usd: Option<f64>,
+    pub rate_multiplier_millis: Option<i64>,
     pub total_cost_usd: Option<f64>,
     pub short_baseline_cost_usd: Option<f64>,
     pub long_context_uplift_usd: Option<f64>,
@@ -1360,6 +1363,21 @@ pub struct ModelPriceRule {
 #[derive(Debug, Clone)]
 pub struct AccountDailyUsageSummary {
     pub account_id: String,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub billable_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub cache_hit_rate: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelDailyUsageSummary {
+    pub model: String,
     pub request_count: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
@@ -2488,6 +2506,15 @@ impl Storage {
         self.apply_sql_migration(
             "124_codex_skill_repositories",
             include_str!("../../migrations/124_codex_skill_repositories.sql"),
+        )?;
+        self.apply_sql_migration(
+            "125_unbill_unsuccessful_request_logs",
+            include_str!("../../migrations/125_unbill_unsuccessful_request_logs.sql"),
+        )?;
+        self.apply_gpt56_price_reduction_migration()?;
+        self.apply_sql_migration(
+            "127_request_charge_snapshot_long_context_billing",
+            include_str!("../../migrations/127_request_charge_snapshot_long_context_billing.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

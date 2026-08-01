@@ -12,9 +12,10 @@ use super::author_links::{
 use super::{
     current_background_tasks_snapshot_value, current_env_overrides,
     current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
-    current_gateway_free_account_max_model, current_gateway_model_forward_rules,
-    current_gateway_originator, current_gateway_quota_guard, current_gateway_residency_requirement,
-    current_gateway_sse_keepalive_enabled, current_gateway_sse_keepalive_interval_ms,
+    current_gateway_free_account_max_model, current_gateway_long_context_billing_enabled,
+    current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
+    current_gateway_residency_requirement, current_gateway_sse_keepalive_enabled,
+    current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
     current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
@@ -28,10 +29,11 @@ use super::{
     APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
     APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
-    APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+    APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
+    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+    APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
@@ -207,6 +209,11 @@ fn current_app_settings_value_inner(
     };
     let route_strategy = crate::gateway::current_route_strategy().to_string();
     let free_account_max_model = current_gateway_free_account_max_model();
+    let long_context_billing_enabled = setting_bool(
+        &settings,
+        APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
+        current_gateway_long_context_billing_enabled(),
+    );
     let model_forward_rules = current_gateway_model_forward_rules();
     let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
     let account_max_inflight = current_gateway_account_max_inflight();
@@ -382,6 +389,10 @@ fn current_app_settings_value_inner(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "longContextBillingEnabled".to_string(),
+            long_context_billing_enabled.into(),
+        );
         object.insert(
             "keepWindowUiMounted".to_string(),
             serde_json::json!(keep_window_ui_mounted),

@@ -11,6 +11,7 @@ const MIGRATION_VERSION: &str = "112_model_catalog_v2";
 const GPT56_PRICING_MIGRATION_VERSION: &str = "114_model_catalog_gpt56_prices";
 const CODEX_METADATA_MIGRATION_VERSION: &str = "115_model_catalog_codex_metadata";
 const GPT56_OFFICIAL_PRICING_MIGRATION_VERSION: &str = "121_model_catalog_gpt56_official_prices";
+const GPT56_PRICE_REDUCTION_MIGRATION_VERSION: &str = "126_model_catalog_gpt56_price_reduction";
 const GPT56_OFFICIAL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/compare";
 #[cfg(test)]
 const GPT_IMAGE_2_PRICE_SOURCE: &str =
@@ -1091,7 +1092,13 @@ fn backfill_missing_grok_prices(conn: &Connection) -> Result<()> {
                model_id,min_input_tokens,input_microusd_per_1m,
                cached_input_microusd_per_1m,output_microusd_per_1m
              ) VALUES(?1,?2,?3,?4,?5)",
-            params![model_id, LONG_THRESHOLD, LONG_INPUT, LONG_CACHED, LONG_OUTPUT],
+            params![
+                model_id,
+                LONG_THRESHOLD,
+                LONG_INPUT,
+                LONG_CACHED,
+                LONG_OUTPUT
+            ],
         )?;
     }
     Ok(())
@@ -1525,6 +1532,26 @@ impl Storage {
         tx.commit()?;
         if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
             migrations.insert(GPT56_OFFICIAL_PRICING_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
+    pub(super) fn apply_gpt56_price_reduction_migration(&self) -> Result<()> {
+        if self.has_migration(GPT56_PRICE_REDUCTION_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(include_str!(
+            "../../migrations/126_model_catalog_gpt56_price_reduction.sql"
+        ))?;
+        tx.execute("DROP TABLE _gpt56_price_reduction_candidates", [])?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![GPT56_PRICE_REDUCTION_MIGRATION_VERSION, now_ts()],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(GPT56_PRICE_REDUCTION_MIGRATION_VERSION.to_string());
         }
         Ok(())
     }
@@ -1995,21 +2022,21 @@ mod tests {
             ),
             (
                 "gpt-5.6-terra",
-                2_500_000,
-                250_000,
-                15_000_000,
-                5_000_000,
-                500_000,
-                22_500_000,
+                2_000_000,
+                200_000,
+                12_000_000,
+                4_000_000,
+                400_000,
+                18_000_000,
             ),
             (
                 "gpt-5.6-luna",
-                1_000_000,
-                100_000,
-                6_000_000,
-                2_000_000,
                 200_000,
-                9_000_000,
+                20_000,
+                1_200_000,
+                400_000,
+                40_000,
+                1_800_000,
             ),
         ] {
             let model = all.iter().find(|model| model.slug == slug).unwrap();
@@ -2037,7 +2064,7 @@ mod tests {
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(5));
+        assert_eq!(sol.builtin_revision, Some(6));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["tool_mode"], "code_mode_only");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
@@ -2399,6 +2426,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn gpt56_price_reduction_migration_updates_only_matching_builtin_prices() {
+        let storage = storage();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_PRICE_REDUCTION_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+        storage
+            .conn
+            .execute_batch(
+                "UPDATE models
+                 SET user_edited=0
+                 WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna');
+                 UPDATE model_prices
+                 SET input_microusd_per_1m=CASE lower((SELECT slug FROM models WHERE id=model_prices.model_id))
+                       WHEN 'gpt-5.6-sol' THEN 5000000
+                       WHEN 'gpt-5.6-terra' THEN 2500000
+                       WHEN 'gpt-5.6-luna' THEN 1000000
+                     END,
+                     cached_input_microusd_per_1m=CASE lower((SELECT slug FROM models WHERE id=model_prices.model_id))
+                       WHEN 'gpt-5.6-sol' THEN 500000
+                       WHEN 'gpt-5.6-terra' THEN 250000
+                       WHEN 'gpt-5.6-luna' THEN 100000
+                     END,
+                     output_microusd_per_1m=CASE lower((SELECT slug FROM models WHERE id=model_prices.model_id))
+                       WHEN 'gpt-5.6-sol' THEN 30000000
+                       WHEN 'gpt-5.6-terra' THEN 15000000
+                       WHEN 'gpt-5.6-luna' THEN 6000000
+                     END,
+                     price_status='official',
+                     price_source='https://developers.openai.com/api/docs/models/compare'
+                 WHERE model_id IN (SELECT id FROM models WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'));
+                 UPDATE model_price_tiers
+                 SET input_microusd_per_1m=CASE lower((SELECT slug FROM models WHERE id=model_price_tiers.model_id))
+                       WHEN 'gpt-5.6-sol' THEN CASE min_input_tokens WHEN 0 THEN 5000000 ELSE 10000000 END
+                       WHEN 'gpt-5.6-terra' THEN CASE min_input_tokens WHEN 0 THEN 2500000 ELSE 5000000 END
+                       WHEN 'gpt-5.6-luna' THEN CASE min_input_tokens WHEN 0 THEN 1000000 ELSE 2000000 END
+                     END,
+                     cached_input_microusd_per_1m=CASE lower((SELECT slug FROM models WHERE id=model_price_tiers.model_id))
+                       WHEN 'gpt-5.6-sol' THEN CASE min_input_tokens WHEN 0 THEN 500000 ELSE 1000000 END
+                       WHEN 'gpt-5.6-terra' THEN CASE min_input_tokens WHEN 0 THEN 250000 ELSE 500000 END
+                       WHEN 'gpt-5.6-luna' THEN CASE min_input_tokens WHEN 0 THEN 100000 ELSE 200000 END
+                     END,
+                     output_microusd_per_1m=CASE lower((SELECT slug FROM models WHERE id=model_price_tiers.model_id))
+                       WHEN 'gpt-5.6-sol' THEN CASE min_input_tokens WHEN 0 THEN 30000000 ELSE 45000000 END
+                       WHEN 'gpt-5.6-terra' THEN CASE min_input_tokens WHEN 0 THEN 15000000 ELSE 22500000 END
+                       WHEN 'gpt-5.6-luna' THEN CASE min_input_tokens WHEN 0 THEN 6000000 ELSE 9000000 END
+                     END
+                 WHERE model_id IN (SELECT id FROM models WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'));
+                 UPDATE models SET user_edited=1 WHERE slug='gpt-5.6-terra';",
+            )
+            .unwrap();
+
+        storage.apply_gpt56_price_reduction_migration().unwrap();
+        storage.apply_gpt56_price_reduction_migration().unwrap();
+
+        let sol = storage
+            .get_managed_model_v2("gpt-5.6-sol")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sol.price.input_microusd_per_1m, Some(5_000_000));
+        assert_eq!(sol.price_tiers[1].input_microusd_per_1m, 10_000_000);
+
+        let luna = storage
+            .get_managed_model_v2("gpt-5.6-luna")
+            .unwrap()
+            .unwrap();
+        assert_eq!(luna.price.input_microusd_per_1m, Some(200_000));
+        assert_eq!(luna.price_tiers[1].input_microusd_per_1m, 400_000);
+        assert_eq!(luna.price_tiers[1].output_microusd_per_1m, 1_800_000);
+
+        let terra = storage
+            .get_managed_model_v2("gpt-5.6-terra")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terra.price.input_microusd_per_1m, Some(2_500_000));
+        assert_eq!(terra.price_tiers[1].input_microusd_per_1m, 5_000_000);
+        assert!(terra.user_edited);
     }
 
     #[test]

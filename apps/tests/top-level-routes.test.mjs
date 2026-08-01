@@ -99,7 +99,6 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
         "/plugins",
         "/codex-launcher",
         "/skills",
-        "/author",
       ]);
       assert.equal(
         routes.isTopLevelRouteAllowedForRole("/account-manager", access),

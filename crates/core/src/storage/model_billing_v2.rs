@@ -1,9 +1,20 @@
 use rusqlite::{params, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use super::{now_ts, Storage};
 
 const HARDENING_MIGRATION_VERSION: &str = "113_model_billing_v2_hardening";
+const CHARGE_SNAPSHOT_LOCK_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+fn is_retryable_sqlite_write_error(error: &rusqlite::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("database is locked")
+        || message.contains("database table is locked")
+        || message.contains("database is busy")
+        || message.contains("sqlite_busy")
+        || message.contains("sqlite_locked")
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +48,10 @@ pub struct ChargeSnapshotInputV2 {
     pub cached_input_tokens: i64,
     pub output_tokens: i64,
     pub rate_multiplier_millis: i64,
+    /// Controls whether this new local charge may select a non-base price tier.
+    /// `None` preserves the historical default of enabling long-context billing.
+    #[serde(default)]
+    pub long_context_billing_enabled: Option<bool>,
     /// A validated provider-reported pre-multiplier charge, in micro-USD.
     /// When set, this remains immutable in the snapshot and is multiplied once
     /// by `rate_multiplier_millis` to produce the final charged amount.
@@ -61,6 +76,7 @@ pub struct ChargeSnapshotV2 {
     pub model_id: Option<String>,
     pub model_slug: String,
     pub tier_min_input_tokens: i64,
+    pub long_context_billing_enabled: bool,
     pub usage_source: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
@@ -163,23 +179,24 @@ fn map_snapshot(row: &rusqlite::Row<'_>) -> Result<ChargeSnapshotV2> {
         model_id: row.get(1)?,
         model_slug: row.get(2)?,
         tier_min_input_tokens: row.get(3)?,
-        usage_source: row.get(4)?,
-        input_tokens: row.get(5)?,
-        cached_input_tokens: row.get(6)?,
-        output_tokens: row.get(7)?,
-        input_microusd_per_1m: row.get(8)?,
-        cached_input_microusd_per_1m: row.get(9)?,
-        output_microusd_per_1m: row.get(10)?,
-        rate_multiplier_millis: row.get(11)?,
-        base_cost_microusd: row.get(12)?,
-        charged_cost_microusd: row.get(13)?,
-        currency: row.get(14)?,
-        created_at: row.get(15)?,
+        long_context_billing_enabled: row.get::<_, i64>(4)? != 0,
+        usage_source: row.get(5)?,
+        input_tokens: row.get(6)?,
+        cached_input_tokens: row.get(7)?,
+        output_tokens: row.get(8)?,
+        input_microusd_per_1m: row.get(9)?,
+        cached_input_microusd_per_1m: row.get(10)?,
+        output_microusd_per_1m: row.get(11)?,
+        rate_multiplier_millis: row.get(12)?,
+        base_cost_microusd: row.get(13)?,
+        charged_cost_microusd: row.get(14)?,
+        currency: row.get(15)?,
+        created_at: row.get(16)?,
     })
 }
 
 const SNAPSHOT_SELECT: &str = "SELECT request_log_id,model_id,model_slug,tier_min_input_tokens,
-    usage_source,input_tokens,cached_input_tokens,output_tokens,input_microusd_per_1m,
+    long_context_billing_enabled,usage_source,input_tokens,cached_input_tokens,output_tokens,input_microusd_per_1m,
     cached_input_microusd_per_1m,output_microusd_per_1m,rate_multiplier_millis,
     base_cost_microusd,charged_cost_microusd,currency,created_at
   FROM request_charge_snapshots";
@@ -227,6 +244,15 @@ impl Storage {
         model_slug: &str,
         input_tokens: i64,
     ) -> Result<Option<(String, ModelPriceTierV2)>> {
+        self.select_model_price_tier_with_long_context_billing_v2(model_slug, input_tokens, true)
+    }
+
+    pub fn select_model_price_tier_with_long_context_billing_v2(
+        &self,
+        model_slug: &str,
+        input_tokens: i64,
+        long_context_billing_enabled: bool,
+    ) -> Result<Option<(String, ModelPriceTierV2)>> {
         if input_tokens < 0 {
             return Err(rusqlite::Error::InvalidParameterName(
                 "input tokens cannot be negative".to_string(),
@@ -238,10 +264,15 @@ impl Storage {
                         t.cached_input_microusd_per_1m,t.output_microusd_per_1m
                  FROM models m
                  JOIN model_prices p ON p.model_id=m.id AND p.price_status<>'missing'
-                 JOIN model_price_tiers t ON t.model_id=m.id AND t.min_input_tokens<=?2
+                 JOIN model_price_tiers t ON t.model_id=m.id
+                    AND (t.min_input_tokens=0 OR (?3<>0 AND t.min_input_tokens<?2))
                  WHERE m.slug=?1 COLLATE NOCASE
                  ORDER BY t.min_input_tokens DESC LIMIT 1",
-                params![model_slug.trim(), input_tokens],
+                params![
+                    model_slug.trim(),
+                    input_tokens,
+                    i64::from(long_context_billing_enabled)
+                ],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -307,6 +338,15 @@ impl Storage {
                 "usage_source must be actual or estimated".to_string(),
             ));
         }
+        if input.input_tokens < 0
+            || input.cached_input_tokens < 0
+            || input.output_tokens < 0
+            || input.rate_multiplier_millis < 0
+        {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "tokens and multiplier must be non-negative".to_string(),
+            ));
+        }
         if input
             .base_cost_override_microusd
             .is_some_and(|cost| cost < 0)
@@ -315,6 +355,21 @@ impl Storage {
                 "base_cost_override_microusd must be non-negative".to_string(),
             ));
         }
+
+        match self.record_charge_snapshot_v2_once(input) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) if is_retryable_sqlite_write_error(&error) => {
+                std::thread::sleep(CHARGE_SNAPSHOT_LOCK_RETRY_DELAY);
+                self.record_charge_snapshot_v2_once(input)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn record_charge_snapshot_v2_once(
+        &self,
+        input: &ChargeSnapshotInputV2,
+    ) -> Result<ChargeSnapshotV2> {
         let tx = self.conn.unchecked_transaction()?;
         if let Some(existing) = tx
             .query_row(
@@ -328,75 +383,95 @@ impl Storage {
                 "UPDATE request_token_stats
                  SET estimated_cost_usd=CAST(?2 AS REAL)/1000000.0
                  WHERE request_log_id=?1",
-                params![input.request_log_id, existing.base_cost_microusd],
+                params![input.request_log_id, existing.charged_cost_microusd],
             )?;
             tx.commit()?;
             return Ok(existing);
         }
-        let price_status: Option<String> = tx
-            .query_row(
-                "SELECT p.price_status FROM models m JOIN model_prices p ON p.model_id=m.id
-                 WHERE m.slug=?1 COLLATE NOCASE",
-                [input.model_slug.trim()],
-                |row| row.get(0),
+        let read_catalog_tier = || {
+            tx.query_row(
+                "SELECT m.id,t.min_input_tokens,t.input_microusd_per_1m,
+                        t.cached_input_microusd_per_1m,t.output_microusd_per_1m
+                 FROM models m JOIN model_price_tiers t ON t.model_id=m.id
+                    AND (t.min_input_tokens=0 OR (?3<>0 AND t.min_input_tokens<?2))
+                 WHERE m.slug=?1 COLLATE NOCASE ORDER BY t.min_input_tokens DESC LIMIT 1",
+                params![
+                    input.model_slug.trim(),
+                    input.input_tokens,
+                    i64::from(input.long_context_billing_enabled.unwrap_or(true)),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        ModelPriceTierV2 {
+                            min_input_tokens: row.get(1)?,
+                            input_microusd_per_1m: row.get(2)?,
+                            cached_input_microusd_per_1m: row.get(3)?,
+                            output_microusd_per_1m: row.get(4)?,
+                        },
+                    ))
+                },
             )
-            .optional()?;
-        match price_status.as_deref() {
-            None => return Err(rusqlite::Error::QueryReturnedNoRows),
-            Some("missing") => {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    "model_price_missing".to_string(),
-                ))
-            }
-            _ => {}
-        }
-        let (model_id, tier) = tx.query_row(
-            "SELECT m.id,t.min_input_tokens,t.input_microusd_per_1m,
-                    t.cached_input_microusd_per_1m,t.output_microusd_per_1m
-             FROM models m JOIN model_price_tiers t ON t.model_id=m.id AND t.min_input_tokens<=?2
-             WHERE m.slug=?1 COLLATE NOCASE ORDER BY t.min_input_tokens DESC LIMIT 1",
-            params![input.model_slug.trim(), input.input_tokens],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    ModelPriceTierV2 {
-                        min_input_tokens: row.get(1)?,
-                        input_microusd_per_1m: row.get(2)?,
-                        cached_input_microusd_per_1m: row.get(3)?,
-                        output_microusd_per_1m: row.get(4)?,
-                    },
-                ))
-            },
-        )?;
-        let computation = compute_charge_v2(
-            input.input_tokens,
-            input.cached_input_tokens,
-            input.output_tokens,
-            &tier,
-            input.rate_multiplier_millis,
-        )?;
-        let base_cost_microusd = input
-            .base_cost_override_microusd
-            .unwrap_or(computation.base_cost_microusd);
-        let charged_cost_microusd = match input.base_cost_override_microusd {
-            Some(_) => {
-                apply_rate_multiplier_millis(base_cost_microusd, input.rate_multiplier_millis)?
-            }
-            None => computation.charged_cost_microusd,
         };
+        let (model_id, tier, base_cost_microusd, charged_cost_microusd) =
+            if let Some(base_cost_microusd) = input.base_cost_override_microusd {
+                // A provider-reported amount is authoritative even when the model is
+                // not present in the local catalog. Keep catalog metadata when it is
+                // available, but never drop a valid upstream cost because it is not.
+                let (model_id, tier) = read_catalog_tier()
+                    .optional()?
+                    .map(|(id, tier)| (Some(id), tier))
+                    .unwrap_or((None, ModelPriceTierV2::default()));
+                let charged_cost_microusd =
+                    apply_rate_multiplier_millis(base_cost_microusd, input.rate_multiplier_millis)?;
+                (model_id, tier, base_cost_microusd, charged_cost_microusd)
+            } else {
+                let price_status: Option<String> = tx
+                    .query_row(
+                        "SELECT p.price_status FROM models m JOIN model_prices p ON p.model_id=m.id
+                         WHERE m.slug=?1 COLLATE NOCASE",
+                        [input.model_slug.trim()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                match price_status.as_deref() {
+                    None => return Err(rusqlite::Error::QueryReturnedNoRows),
+                    Some("missing") => {
+                        return Err(rusqlite::Error::InvalidParameterName(
+                            "model_price_missing".to_string(),
+                        ))
+                    }
+                    _ => {}
+                }
+                let (model_id, tier) = read_catalog_tier()?;
+                let computation = compute_charge_v2(
+                    input.input_tokens,
+                    input.cached_input_tokens,
+                    input.output_tokens,
+                    &tier,
+                    input.rate_multiplier_millis,
+                )?;
+                (
+                    Some(model_id),
+                    tier,
+                    computation.base_cost_microusd,
+                    computation.charged_cost_microusd,
+                )
+            };
         let cached_input_tokens = input.cached_input_tokens.min(input.input_tokens);
         let now = now_ts();
         tx.execute(
             "INSERT INTO request_charge_snapshots(request_log_id,model_id,model_slug,
-               tier_min_input_tokens,usage_source,input_tokens,cached_input_tokens,output_tokens,
+               tier_min_input_tokens,long_context_billing_enabled,usage_source,input_tokens,cached_input_tokens,output_tokens,
                input_microusd_per_1m,cached_input_microusd_per_1m,output_microusd_per_1m,
                rate_multiplier_millis,base_cost_microusd,charged_cost_microusd,currency,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'USD',?15)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'USD',?16)",
             params![
                 input.request_log_id,
                 model_id,
                 input.model_slug.trim(),
                 tier.min_input_tokens,
+                i64::from(input.long_context_billing_enabled.unwrap_or(true)),
                 input.usage_source,
                 input.input_tokens,
                 cached_input_tokens,
@@ -414,7 +489,7 @@ impl Storage {
             "UPDATE request_token_stats
              SET estimated_cost_usd=CAST(?2 AS REAL)/1000000.0
              WHERE request_log_id=?1",
-            params![input.request_log_id, base_cost_microusd],
+            params![input.request_log_id, charged_cost_microusd],
         )?;
         if let Some(wallet_id) = input
             .wallet_id
@@ -512,18 +587,23 @@ mod tests {
     }
 
     #[test]
-    fn cached_above_input_is_clamped_and_tier_boundary_is_exact() {
+    fn cached_above_input_is_clamped_and_long_tier_is_strictly_above_threshold() {
         let storage = Storage::open_in_memory().unwrap();
         storage.init().unwrap();
         let (_, low) = storage
             .select_model_price_tier_v2("gpt-5.4", 271_999)
             .unwrap()
             .unwrap();
-        let (_, high) = storage
+        let (_, exact) = storage
             .select_model_price_tier_v2("gpt-5.4", 272_000)
             .unwrap()
             .unwrap();
+        let (_, high) = storage
+            .select_model_price_tier_v2("gpt-5.4", 272_001)
+            .unwrap()
+            .unwrap();
         assert_eq!(low.min_input_tokens, 0);
+        assert_eq!(exact.min_input_tokens, 0);
         assert_eq!(high.min_input_tokens, 272_000);
         let result = compute_charge_v2(10, 20, 0, &low, 1_000).unwrap();
         assert_eq!(result.uncached_input_tokens, 0);
@@ -615,6 +695,98 @@ mod tests {
                 .unwrap(),
             152
         );
+    }
+
+    #[test]
+    fn long_context_billing_can_force_the_base_tier() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.init().unwrap();
+        let (_, long) = storage
+            .select_model_price_tier_with_long_context_billing_v2("gpt-5.4", 300_000, true)
+            .unwrap()
+            .unwrap();
+        let (_, base) = storage
+            .select_model_price_tier_with_long_context_billing_v2("gpt-5.4", 300_000, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(long.min_input_tokens, 272_000);
+        assert_eq!(base.min_input_tokens, 0);
+    }
+
+    #[test]
+    fn charge_snapshot_records_when_long_context_billing_is_disabled() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.init().unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO request_logs(request_path,method,created_at) VALUES('/v1/responses','POST',1)",
+                [],
+            )
+            .unwrap();
+        let request_log_id = storage.conn.last_insert_rowid();
+
+        let snapshot = storage
+            .record_charge_snapshot_v2(&ChargeSnapshotInputV2 {
+                request_log_id,
+                model_slug: "gpt-5.6-terra".into(),
+                usage_source: "actual".into(),
+                input_tokens: 300_000,
+                output_tokens: 0,
+                rate_multiplier_millis: 1_000,
+                long_context_billing_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(!snapshot.long_context_billing_enabled);
+        assert_eq!(snapshot.tier_min_input_tokens, 0);
+    }
+
+    #[test]
+    fn provider_base_override_can_charge_unknown_model() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.init().unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO request_logs(request_path,method,created_at) VALUES('/v1/responses','POST',1)",
+                [],
+            )
+            .unwrap();
+        let request_log_id = storage.conn.last_insert_rowid();
+        storage
+            .insert_request_token_stat(&super::super::RequestTokenStat {
+                request_log_id,
+                model: Some("provider-only-model".into()),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        let snapshot = storage
+            .record_charge_snapshot_v2(&ChargeSnapshotInputV2 {
+                request_log_id,
+                model_slug: "provider-only-model".into(),
+                usage_source: "actual".into(),
+                input_tokens: 10,
+                output_tokens: 2,
+                rate_multiplier_millis: 1_250,
+                base_cost_override_microusd: Some(800),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(snapshot.model_id, None);
+        assert_eq!(snapshot.base_cost_microusd, 800);
+        assert_eq!(snapshot.charged_cost_microusd, 1_000);
+        let cost: f64 = storage
+            .conn
+            .query_row(
+                "SELECT estimated_cost_usd FROM request_token_stats WHERE request_log_id=?1",
+                [request_log_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!((cost - 0.001).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -713,5 +885,81 @@ mod tests {
             )
             .unwrap();
         assert_eq!(balance, 1);
+    }
+
+    #[test]
+    fn charge_snapshot_retries_after_transient_sqlite_write_lock() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "codexmanager-charge-snapshot-lock-{}-{nonce}.db",
+            std::process::id()
+        ));
+        let storage = Storage::open(&path).unwrap();
+        storage.init().unwrap();
+        let request_log_id = storage
+            .insert_request_log(&super::super::RequestLog {
+                request_path: "/v1/responses".into(),
+                method: "POST".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        storage
+            .insert_request_token_stat(&super::super::RequestTokenStat {
+                request_log_id,
+                model: Some("gpt-5.4-mini".into()),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let retrying_storage = Storage::open(&path).unwrap();
+        retrying_storage
+            .conn
+            .busy_timeout(Duration::from_millis(1))
+            .unwrap();
+        let blocking_storage = Storage::open(&path).unwrap();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let transaction = blocking_storage.conn.unchecked_transaction().unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            transaction.commit().unwrap();
+        });
+        locked_rx.recv().unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            release_tx.send(()).unwrap();
+        });
+
+        let snapshot = retrying_storage
+            .record_charge_snapshot_v2(&ChargeSnapshotInputV2 {
+                request_log_id,
+                model_slug: "gpt-5.4-mini".into(),
+                usage_source: "actual".into(),
+                input_tokens: 100,
+                output_tokens: 10,
+                rate_multiplier_millis: 1_000,
+                ..Default::default()
+            })
+            .expect("a transient write lock should be retried");
+
+        releaser.join().unwrap();
+        blocker.join().unwrap();
+        assert!(snapshot.charged_cost_microusd > 0);
+        assert!(retrying_storage
+            .get_charge_snapshot_v2(request_log_id)
+            .unwrap()
+            .is_some());
+
+        drop(retrying_storage);
+        drop(storage);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

@@ -25,13 +25,15 @@ struct CodexNpmLatestResponse {
 }
 
 use super::{
-    normalize_optional_text, save_persisted_app_setting, save_persisted_bool_setting,
+    get_persisted_app_setting, normalize_optional_text, parse_bool_with_default,
+    save_persisted_app_setting, save_persisted_bool_setting,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
     APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
-    APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
-    APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+    APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
+    APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
@@ -40,6 +42,20 @@ use super::{
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
 };
+
+pub fn current_gateway_long_context_billing_enabled() -> bool {
+    get_persisted_app_setting(APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY)
+        .map(|value| parse_bool_with_default(&value, true))
+        .unwrap_or(true)
+}
+
+pub fn set_gateway_long_context_billing_enabled(enabled: bool) -> Result<bool, String> {
+    save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
+        enabled,
+    )?;
+    Ok(enabled)
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]

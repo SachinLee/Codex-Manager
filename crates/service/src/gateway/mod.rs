@@ -159,6 +159,7 @@ use metrics::{
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
     record_gateway_reasoning_guard_block, record_gateway_reasoning_guard_internal_retry,
     record_gateway_reasoning_guard_match, record_gateway_request_outcome,
+    record_gateway_upstream_capacity_error, record_gateway_upstream_capacity_exhausted,
     record_gateway_upstream_capacity_internal_retry, AccountInFlightGuard,
 };
 pub(crate) use metrics::{
@@ -1244,16 +1245,22 @@ pub(crate) fn gateway_record_failover_attempt() {
     record_gateway_failover_attempt();
 }
 
-pub(crate) fn gateway_is_aggregate_api_in_cooldown(api_id: &str) -> bool {
-    aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id)
+pub(crate) fn gateway_is_aggregate_api_in_cooldown(
+    api_id: &str,
+    upstream_model: Option<&str>,
+) -> bool {
+    aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id, upstream_model)
 }
 
-pub(crate) fn gateway_record_aggregate_api_failure(api_id: &str) -> bool {
-    aggregate_api_cooldown::record_aggregate_api_failure(api_id)
+pub(crate) fn gateway_record_aggregate_api_failure(
+    api_id: &str,
+    upstream_model: Option<&str>,
+) -> bool {
+    aggregate_api_cooldown::record_aggregate_api_failure(api_id, upstream_model)
 }
 
-pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str) {
-    aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id);
+pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str, upstream_model: Option<&str>) {
+    aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id, upstream_model);
 }
 
 pub(crate) fn gateway_list_aggregate_api_runtime_statuses(
@@ -1264,7 +1271,7 @@ pub(crate) fn gateway_list_aggregate_api_runtime_statuses(
 pub(crate) fn gateway_reset_aggregate_api_runtime_status(
     api_id: &str,
 ) -> codexmanager_core::rpc::types::AggregateApiRuntimeStatus {
-    aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id);
+    aggregate_api_cooldown::clear_aggregate_api_cooldowns(api_id);
     aggregate_api_cooldown::aggregate_api_cooldown_status(api_id)
 }
 

@@ -451,9 +451,14 @@ fn prepare_managed_model(model: &mut codexmanager_core::rpc::types::ModelInfo) {
         "use_responses_lite".to_string(),
         serde_json::Value::Bool(false),
     );
+    let supports_reasoning_summaries = model.supports_reasoning_summaries.unwrap_or(false);
     model.extra.insert(
         "supports_reasoning_summary_parameter".to_string(),
-        serde_json::Value::Bool(model.supports_reasoning_summaries.unwrap_or(false)),
+        serde_json::Value::Bool(supports_reasoning_summaries),
+    );
+    model.extra.insert(
+        "supports_reasoning_summaries".to_string(),
+        serde_json::Value::Bool(supports_reasoning_summaries),
     );
     model
         .extra
@@ -567,6 +572,10 @@ mod tests {
         );
         assert_eq!(
             value["models"][0]["supports_reasoning_summary_parameter"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            value["models"][0]["supports_reasoning_summaries"].as_bool(),
             Some(false)
         );
         assert!(value["models"][0]["availability_nux"].is_null());

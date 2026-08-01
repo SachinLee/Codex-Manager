@@ -4,12 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
+  ChevronDown,
+  CircleDollarSign,
+  Coins,
   Copy,
   Database,
   Eye,
   EyeOff,
   Gauge,
   PencilLine,
+  Percent,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -52,6 +56,7 @@ import {
 } from "@/components/ui/table";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
+import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useAggregateApiRuntimeStatuses } from "@/hooks/useAggregateApiRuntimeStatuses";
@@ -60,14 +65,21 @@ import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider"
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
+import {
+  formatCacheRateValue,
+  formatMillionTokenAmount,
+  formatUsdAmount,
+} from "@/lib/utils/billing";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
 import { formatTsFromSeconds } from "@/lib/utils/usage";
 import type {
   AggregateApi,
   AggregateApiCapabilityDiagnosticsResult,
   AggregateApiBalanceSnapshot,
+  AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
 } from "@/types/api-key";
+import type { ModelDailyUsageStat } from "@/types/request-log";
 
 const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
@@ -75,6 +87,41 @@ const PROVIDER_LABELS: Record<string, string> = {
   gemini: "Gemini",
   compatible: "Codex + Claude",
 };
+
+const AGGREGATE_API_TABLE_COLUMNS = 11;
+
+function buildAggregateApiDailyUsageMap(
+  items: AggregateApiDailyUsageStat[],
+): Map<string, AggregateApiDailyUsageStat> {
+  return new Map(items.map((item) => [item.aggregateApiId, item]));
+}
+
+function buildDailyUsageTooltip(
+  usage: AggregateApiDailyUsageStat,
+  t: (key: string) => string,
+): string {
+  return [
+    `${t("请求")} ${usage.requestCount}`,
+    `${t("输入")} ${formatMillionTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(usage.cachedInputTokens)} / ${t("缓存写入")} ${formatMillionTokenAmount(usage.cacheWriteInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(usage.billableInputTokens)}`,
+    `${t("输出")} ${formatMillionTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(usage.reasoningOutputTokens)}`,
+    `${t("Guard 重试")} ${formatMillionTokenAmount(usage.guardRetryTotalTokens)} tok / ${formatUsdAmount(usage.guardRetryEstimatedCostUsd)}`,
+    `${t("计费合计")} ${formatMillionTokenAmount(usage.billableTotalTokens)} tok / ${formatUsdAmount(usage.billableEstimatedCostUsd)}`,
+    t("含 Guard 重试"),
+  ].join("\n");
+}
+
+function buildModelDailyUsageTooltip(
+  usage: ModelDailyUsageStat,
+  t: (key: string) => string,
+): string {
+  return [
+    `${t("请求")} ${usage.requestCount}`,
+    `${t("输入")} ${formatMillionTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(usage.cachedInputTokens)} / ${t("缓存写入")} ${formatMillionTokenAmount(usage.cacheWriteInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(usage.billableInputTokens)}`,
+    `${t("输出")} ${formatMillionTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(usage.reasoningOutputTokens)}`,
+    `${t("合计")} ${formatMillionTokenAmount(usage.totalTokens)} tok / ${formatUsdAmount(usage.estimatedCostUsd)}`,
+    `${t("缓存率")} ${formatCacheRateValue(usage.cacheHitRate)}`,
+  ].join("\n");
+}
 
 function parseBalanceSnapshot(api: AggregateApi): AggregateApiBalanceSnapshot | null {
   const raw = String(api.lastBalanceJson || "").trim();
@@ -133,11 +180,13 @@ export default function AggregateApiPage() {
   const isQueryEnabled = useDeferredDesktopActivation(
     isServiceReady && isPageActive,
   );
+  const localDayRange = useLocalDayRange();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [providerFilter, setProviderFilter] = useState("all");
+  const [modelDailyUsageExpanded, setModelDailyUsageExpanded] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<
     Record<string, AggregateApiSecretResult>
   >({});
@@ -166,6 +215,51 @@ export default function AggregateApiPage() {
     staleTime: 60_000,
     retry: 1,
   });
+
+  const dailyUsageQuery = useQuery({
+    queryKey: [
+      "requestlog",
+      "aggregate-api-daily-usage",
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      accountClient.listAggregateApiDailyUsageStats({
+        dayStartTs: localDayRange.dayStartTs,
+        dayEndTs: localDayRange.dayEndTs,
+      }),
+    enabled: isQueryEnabled,
+    retry: 1,
+    staleTime: 0,
+    refetchInterval: isQueryEnabled ? 5_000 : false,
+    refetchIntervalInBackground: true,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
+  });
+
+  const modelDailyUsageQuery = useQuery({
+    queryKey: [
+      "requestlog",
+      "model-daily-usage",
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      accountClient.listModelDailyUsageStats({
+        dayStartTs: localDayRange.dayStartTs,
+        dayEndTs: localDayRange.dayEndTs,
+      }),
+    enabled: isQueryEnabled,
+    retry: 1,
+    staleTime: 0,
+    refetchInterval: isQueryEnabled ? 5_000 : false,
+    refetchIntervalInBackground: true,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
+  });
+
   usePageTransitionReady("/aggregate-api/", !isServiceReady || !isLoading);
 
   useEffect(() => {
@@ -184,14 +278,22 @@ export default function AggregateApiPage() {
     () => aggregateApis.find((api) => api.id === editingId) || null,
     [aggregateApis, editingId],
   );
+  const sortedAggregateApis = useMemo(
+    () =>
+      [...aggregateApis].sort((left, right) => {
+        const sortDifference = left.sort - right.sort;
+        return sortDifference !== 0 ? sortDifference : left.id.localeCompare(right.id);
+      }),
+    [aggregateApis],
+  );
   const filteredApis = useMemo(
     () =>
       providerFilter === "all"
-        ? aggregateApis
-        : aggregateApis.filter((api) =>
+        ? sortedAggregateApis
+        : sortedAggregateApis.filter((api) =>
             aggregateApiProviderMatchesFilter(api.providerType, providerFilter),
           ),
-    [aggregateApis, providerFilter],
+    [sortedAggregateApis, providerFilter],
   );
   const balanceEnabledApiIds = useMemo(
     () => filteredApis.filter((api) => api.balanceQueryEnabled).map((api) => api.id),
@@ -209,13 +311,46 @@ export default function AggregateApiPage() {
       ) + 5,
     [aggregateApis],
   );
+  const dailyUsageById = useMemo(
+    () => buildAggregateApiDailyUsageMap(dailyUsageQuery.data || []),
+    [dailyUsageQuery.data],
+  );
+  const filteredDailyUsageSummary = useMemo(() => {
+    let requestCount = 0;
+    let inputTokens = 0;
+    let cachedInputTokens = 0;
+    let billableTotalTokens = 0;
+    let billableEstimatedCostUsd = 0;
+
+    for (const api of filteredApis) {
+      const usage = dailyUsageById.get(api.id);
+      if (!usage || usage.requestCount <= 0) continue;
+      requestCount += usage.requestCount;
+      inputTokens += usage.inputTokens;
+      cachedInputTokens += usage.cachedInputTokens;
+      billableTotalTokens += usage.billableTotalTokens;
+      billableEstimatedCostUsd += usage.billableEstimatedCostUsd;
+    }
+
+    return {
+      requestCount,
+      inputTokens,
+      cachedInputTokens,
+      billableTotalTokens,
+      billableEstimatedCostUsd,
+      cacheHitRate:
+        inputTokens > 0
+          ? Math.min(1, Math.max(0, cachedInputTokens / inputTokens))
+          : null,
+    };
+  }, [dailyUsageById, filteredApis]);
   const activeCount = aggregateApis.filter((api) => api.status === "active").length;
   const routedCount = aggregateApis.filter((api) => api.modelSlugs.length > 0).length;
   const failedCount = aggregateApis.filter((api) => api.lastTestStatus === "failed").length;
   const coolingCount = aggregateApis.filter((api) => {
-    const runtime = aggregateApiRuntimeStatusById.get(api.id);
-    return Boolean(
-      runtime?.isCoolingDown && Number(runtime.cooldownUntil || 0) > runtimeStatusNowSeconds,
+    return (aggregateApiRuntimeStatusById.get(api.id) || []).some(
+      (runtime) =>
+        runtime.isCoolingDown && Number(runtime.cooldownUntil || 0) > runtimeStatusNowSeconds,
     );
   }).length;
 
@@ -227,6 +362,9 @@ export default function AggregateApiPage() {
         queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
         queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["requestlog", "aggregate-api-daily-usage"],
+        }),
       ]);
       toast.success(t("聚合 API 已删除"));
     },
@@ -366,7 +504,7 @@ export default function AggregateApiPage() {
 
   return (
     <>
-      <PageWorkspace>
+      <PageWorkspace className="gap-3">
         <PageHeader
           eyebrow={t("显式路由")}
           title={t("聚合 API")}
@@ -406,7 +544,7 @@ export default function AggregateApiPage() {
           }
         />
 
-        <section className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+        <section className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-5">
           <MetricCard title={t("总数")} value={aggregateApis.length} icon={Database} tone="blue" />
           <MetricCard title={t("已启用")} value={activeCount} icon={ShieldCheck} tone="emerald" />
           <MetricCard title={t("已有模型路由")} value={routedCount} icon={Gauge} tone="violet" />
@@ -414,17 +552,161 @@ export default function AggregateApiPage() {
           <MetricCard title={t("冷却中")} value={coolingCount} icon={RotateCcw} tone="amber" />
         </section>
 
+        <section className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+          <MetricCard
+            title={t("今日 Token")}
+            value={
+              dailyUsageQuery.isLoading
+                ? "..."
+                : formatMillionTokenAmount(filteredDailyUsageSummary.billableTotalTokens)
+            }
+            detail={
+              filteredDailyUsageSummary.requestCount > 0
+                ? `${t("请求")} ${filteredDailyUsageSummary.requestCount} · ${t("含 Guard 重试")}`
+                : t("今日无请求")
+            }
+            icon={Coins}
+            tone="blue"
+          />
+          <MetricCard
+            title={t("今日费用")}
+            value={
+              dailyUsageQuery.isLoading
+                ? "..."
+                : formatUsdAmount(filteredDailyUsageSummary.billableEstimatedCostUsd)
+            }
+            detail={t("含 Guard 重试")}
+            icon={CircleDollarSign}
+            tone="emerald"
+          />
+          <MetricCard
+            title={t("平均缓存率")}
+            value={
+              dailyUsageQuery.isLoading
+                ? "..."
+                : formatCacheRateValue(filteredDailyUsageSummary.cacheHitRate)
+            }
+            detail={
+              filteredDailyUsageSummary.inputTokens > 0
+                ? `${t("缓存")} ${formatMillionTokenAmount(filteredDailyUsageSummary.cachedInputTokens)} / ${t("输入")} ${formatMillionTokenAmount(filteredDailyUsageSummary.inputTokens)}`
+                : t("跟随当前筛选")
+            }
+            icon={Percent}
+            tone="violet"
+          />
+        </section>
+
         <Card className="glass-card overflow-hidden py-0">
-          <CardHeader className="border-b border-border/50 px-4 py-3">
+          <CardHeader className="border-b border-border/50 px-3 py-2">
             <div className="flex items-center justify-between gap-3">
-              <div>
-                <CardTitle>{t("上游连接")}</CardTitle>
-                <p className="mt-1 text-xs text-muted-foreground">
+              <div className="min-w-0">
+                <CardTitle className="text-base">{t("今日模型用量")}</CardTitle>
+                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                  {t("按模型汇总当天 Token、费用与缓存率。")}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-[11px] text-muted-foreground">
+                  {modelDailyUsageQuery.isLoading
+                    ? "..."
+                    : `${(modelDailyUsageQuery.data || []).length} ${t("个模型")}`}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs"
+                  aria-expanded={modelDailyUsageExpanded}
+                  aria-controls="model-daily-usage-table"
+                  onClick={() => setModelDailyUsageExpanded((expanded) => !expanded)}
+                >
+                  {modelDailyUsageExpanded ? t("收起") : t("展开")}
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 transition-transform ${
+                      modelDailyUsageExpanded ? "rotate-180" : ""
+                    }`}
+                  />
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          {modelDailyUsageExpanded ? (
+            <CardContent id="model-daily-usage-table" className="p-0">
+              <div className="max-h-[180px] overflow-auto">
+                <Table className="text-xs">
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="sticky top-0 h-8 bg-card">{t("模型")}</TableHead>
+                      <TableHead className="sticky top-0 h-8 bg-card">{t("请求")}</TableHead>
+                      <TableHead className="sticky top-0 h-8 bg-card">{t("Token")}</TableHead>
+                      <TableHead className="sticky top-0 h-8 bg-card">{t("费用")}</TableHead>
+                      <TableHead className="sticky top-0 h-8 bg-card">{t("缓存率")}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {modelDailyUsageQuery.isLoading ? (
+                      Array.from({ length: 3 }).map((_, index) => (
+                        <TableRow key={index}>
+                          {Array.from({ length: 5 }).map((__, cell) => (
+                            <TableCell key={cell} className="py-1.5">
+                              <Skeleton className="h-4 w-full" />
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))
+                    ) : (modelDailyUsageQuery.data || []).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-16 text-center text-muted-foreground">
+                          {t("今日无请求")}
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      (modelDailyUsageQuery.data || []).map((usage) => (
+                        <TableRow key={usage.model}>
+                          <TableCell className="max-w-[220px] py-1.5">
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="cursor-help truncate font-medium"
+                              >
+                                {usage.model}
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-sm whitespace-pre-wrap break-words">
+                                {buildModelDailyUsageTooltip(usage, t)}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell className="py-1.5 tabular-nums">{usage.requestCount}</TableCell>
+                          <TableCell className="py-1.5 font-mono tabular-nums">
+                            {formatMillionTokenAmount(usage.totalTokens)}
+                          </TableCell>
+                          <TableCell className="py-1.5 font-mono tabular-nums">
+                            {formatUsdAmount(usage.estimatedCostUsd)}
+                          </TableCell>
+                          <TableCell className="py-1.5 tabular-nums">
+                            {formatCacheRateValue(usage.cacheHitRate)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          ) : null}
+        </Card>
+
+        <Card className="glass-card overflow-hidden py-0">
+          <CardHeader className="border-b border-border/50 px-3 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <CardTitle className="text-base">{t("上游连接")}</CardTitle>
+                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
                   {t("连通性测试只使用已配置路由对应的模型。")}
                 </p>
               </div>
               <Select value={providerFilter} onValueChange={(value) => setProviderFilter(value || "all")}>
-                <SelectTrigger className="h-9 w-[150px]"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="h-8 w-[140px]"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectGroup>
                   <SelectItem value="all">{t("全部类型")}</SelectItem>
                   <SelectItem value="codex">Codex</SelectItem>
@@ -439,32 +721,34 @@ export default function AggregateApiPage() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <Table>
+              <Table className="text-xs">
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("供应商")}</TableHead>
-                    <TableHead>{t("类型")}</TableHead>
-                    <TableHead>{t("密钥")}</TableHead>
-                    <TableHead>{t("模型路由")}</TableHead>
-                    <TableHead>{t("余额")}</TableHead>
-                    <TableHead>{t("运行状态")}</TableHead>
-                    <TableHead>{t("连通性")}</TableHead>
-                    <TableHead>{t("启用")}</TableHead>
-                    <TableHead className="text-right">{t("操作")}</TableHead>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="h-9">{t("排序")}</TableHead>
+                    <TableHead className="h-9">{t("供应商")}</TableHead>
+                    <TableHead className="h-9">{t("类型")}</TableHead>
+                    <TableHead className="h-9">{t("密钥")}</TableHead>
+                    <TableHead className="h-9">{t("模型路由")}</TableHead>
+                    <TableHead className="h-9">{t("余额")}</TableHead>
+                    <TableHead className="h-9">{t("今日用量")}</TableHead>
+                    <TableHead className="h-9">{t("运行状态")}</TableHead>
+                    <TableHead className="h-9">{t("连通性")}</TableHead>
+                    <TableHead className="h-9">{t("启用")}</TableHead>
+                    <TableHead className="h-9 text-right">{t("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoading ? (
                     Array.from({ length: 4 }).map((_, index) => (
                       <TableRow key={index}>
-                        {Array.from({ length: 8 }).map((__, cell) => (
-                          <TableCell key={cell}><Skeleton className="h-7 w-full" /></TableCell>
+                        {Array.from({ length: AGGREGATE_API_TABLE_COLUMNS }).map((__, cell) => (
+                          <TableCell key={cell}><Skeleton className="h-5 w-full" /></TableCell>
                         ))}
                       </TableRow>
                     ))
                   ) : filteredApis.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="h-48 text-center text-muted-foreground">
+                      <TableCell colSpan={AGGREGATE_API_TABLE_COLUMNS} className="h-28 text-center text-muted-foreground">
                         {t("暂无聚合 API，点击右上角新建")}
                       </TableCell>
                     </TableRow>
@@ -473,30 +757,52 @@ export default function AggregateApiPage() {
                       const revealed = revealedSecrets[api.id];
                       const balance = parseBalanceSnapshot(api);
                       const testError = String(api.lastTestError || "").trim();
-                      const runtimeStatus = aggregateApiRuntimeStatusById.get(api.id);
-                      const isCoolingDown = Boolean(
-                        runtimeStatus?.isCoolingDown &&
-                          Number(runtimeStatus.cooldownUntil || 0) > runtimeStatusNowSeconds,
+                      const runtimeStatuses = aggregateApiRuntimeStatusById.get(api.id) || [];
+                      const coolingStatuses = runtimeStatuses.filter(
+                        (runtime) =>
+                          runtime.isCoolingDown &&
+                          Number(runtime.cooldownUntil || 0) > runtimeStatusNowSeconds,
                       );
+                      const runtimeStatus = coolingStatuses[0] || runtimeStatuses[0];
+                      const isCoolingDown = coolingStatuses.length > 0;
+                      const usage = dailyUsageById.get(api.id);
                       return (
                         <TableRow key={api.id}>
-                          <TableCell className="min-w-[240px]">
-                            <div className="font-medium">{api.supplierName || api.id}</div>
-                            <div className="max-w-[360px] truncate font-mono text-[11px] text-muted-foreground">{api.url}</div>
-                            <div className="mt-1 text-[10px] text-muted-foreground">
-                              {t("创建时间")}: {formatTsFromSeconds(api.createdAt, "-")}
-                            </div>
+                          <TableCell className="py-2 font-mono tabular-nums">
+                            {api.sort}
                           </TableCell>
-                          <TableCell>
-                            <Badge variant="secondary">
+                          <TableCell className="min-w-[180px] py-2">
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="grid max-w-[220px] cursor-help gap-0.5 text-left"
+                              >
+                                <div className="truncate text-sm font-medium leading-5">
+                                  {api.supplierName || api.id}
+                                </div>
+                                <div className="truncate font-mono text-[10px] leading-4 text-muted-foreground">
+                                  {api.url}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-sm space-y-1 text-xs">
+                                <div className="break-all font-medium">{api.supplierName || api.id}</div>
+                                <div className="break-all font-mono text-[11px]">{api.url}</div>
+                                <div className="text-muted-foreground">
+                                  {t("创建时间")}: {formatTsFromSeconds(api.createdAt, "-")}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell className="py-2">
+                            <Badge variant="secondary" className="h-5 text-[10px]">
                               {api.providerType === "compatible"
                                 ? t("通用兼容（Codex + Claude）")
                                 : PROVIDER_LABELS[api.providerType] || api.providerType}
                             </Badge>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="py-2">
                             <div className="flex items-center gap-1">
-                              <code className="max-w-[160px] truncate rounded border bg-muted/40 px-2 py-1 text-[10px]">
+                              <code className="max-w-[140px] truncate rounded border bg-muted/40 px-1.5 py-0.5 text-[10px]">
                                 {revealed ? secretPreview(revealed) : loadingSecretId === api.id ? t("读取中...") : api.id}
                               </code>
                               <Button type="button" variant="ghost" size="icon" aria-label={revealed ? t("隐藏密钥") : t("显示密钥")} onClick={() => void toggleSecret(api.id)}>
@@ -509,17 +815,48 @@ export default function AggregateApiPage() {
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell className="max-w-[240px]">
+                          <TableCell className="min-w-[140px] max-w-[180px] py-2">
                             {api.modelSlugs.length > 0 ? (
-                              <div className="flex flex-wrap gap-1">
-                                {api.modelSlugs.slice(0, 3).map((slug) => <Badge key={slug} variant="outline">{slug}</Badge>)}
-                                {api.modelSlugs.length > 3 ? <Badge variant="secondary">+{api.modelSlugs.length - 3}</Badge> : null}
-                              </div>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={<div />}
+                                  className="flex max-w-[170px] cursor-help items-center gap-1"
+                                >
+                                  <Badge
+                                    variant="outline"
+                                    className="h-5 max-w-[110px] truncate px-1.5 text-[10px]"
+                                  >
+                                    {api.modelSlugs[0]}
+                                  </Badge>
+                                  {api.modelSlugs.length > 1 ? (
+                                    <Badge
+                                      variant="secondary"
+                                      className="h-5 shrink-0 px-1.5 text-[10px]"
+                                    >
+                                      +{api.modelSlugs.length - 1}
+                                    </Badge>
+                                  ) : null}
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-sm">
+                                  <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                                    {t("模型路由")} · {api.modelSlugs.length}
+                                  </div>
+                                  <div className="flex max-h-48 flex-wrap gap-1 overflow-y-auto">
+                                    {api.modelSlugs.map((slug) => (
+                                      <Badge key={slug} variant="outline" className="text-[10px]">
+                                        {slug}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
                             ) : (
-                              <Badge variant="destructive">missing route</Badge>
+                              <Badge variant="destructive" className="h-5 text-[10px]">
+                                {t("未配置模型路由")}
+                              </Badge>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="py-2">
                             <div className="flex items-center gap-1">
                               <span className="font-mono text-xs">{formatBalance(balance)}</span>
                               {api.balanceQueryEnabled ? (
@@ -529,38 +866,72 @@ export default function AggregateApiPage() {
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell className="align-middle min-w-[160px]">
+                          <TableCell className="min-w-[130px] py-2">
+                            {dailyUsageQuery.isLoading ? (
+                              <Skeleton className="h-6 w-24" />
+                            ) : !usage || usage.requestCount <= 0 ? (
+                              <span className="text-xs text-muted-foreground">
+                                {t("今日无请求")}
+                              </span>
+                            ) : (
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={<div />}
+                                  className="grid max-w-[170px] cursor-help gap-0.5 text-left"
+                                >
+                                  <span className="truncate text-xs font-semibold text-foreground">
+                                    {formatMillionTokenAmount(usage.billableTotalTokens)} tok
+                                  </span>
+                                  <span className="truncate text-[10px] text-muted-foreground">
+                                    {formatUsdAmount(usage.billableEstimatedCostUsd)} · cache{" "}
+                                    {formatCacheRateValue(usage.cacheHitRate)}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                                  {buildDailyUsageTooltip(usage, t)}
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                          </TableCell>
+                          <TableCell className="min-w-[120px] py-2 align-middle">
                             {isCoolingDown && runtimeStatus ? (
                               <Tooltip>
                                 <TooltipTrigger
                                   render={<div />}
                                   className="flex flex-col items-start gap-1"
                                 >
-                                  <Badge className="w-fit border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-300">
-                                    {t("冷却中")}{" "}
+                                  <Badge className="h-5 w-fit border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-300">
+                                    {coolingStatuses.length > 1
+                                      ? `${coolingStatuses.length} ${t("个模型冷却中")}`
+                                      : t("冷却中")}{" "}
                                     {formatCooldownRemaining(
                                       runtimeStatus.cooldownUntil,
                                       runtimeStatusNowSeconds,
                                     )}
                                   </Badge>
-                                  <span className="text-[10px] text-muted-foreground">
-                                    {t("连续失败")} {runtimeStatus.consecutiveFailures}/
-                                    {runtimeStatus.failureThreshold}
-                                  </span>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-6 w-fit gap-1 px-1 text-[10px] text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
-                                    disabled={!isServiceReady || resetCooldownMutation.isPending}
-                                    onClick={() => setResetCooldownApi(api)}
-                                  >
-                                    <RotateCcw className="h-3 w-3" />
-                                    {t("解除冷却")}
-                                  </Button>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {t("连续失败")} {runtimeStatus.consecutiveFailures}/
+                                      {runtimeStatus.failureThreshold}
+                                    </span>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-5 w-fit gap-1 px-1 text-[10px] text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+                                      disabled={!isServiceReady || resetCooldownMutation.isPending}
+                                      onClick={() => setResetCooldownApi(api)}
+                                    >
+                                      <RotateCcw className="h-3 w-3" />
+                                      {t("解除冷却")}
+                                    </Button>
+                                  </div>
                                 </TooltipTrigger>
                                 <TooltipContent className="max-w-sm space-y-1 text-xs">
                                   <div className="grid gap-1">
+                                    <span>
+                                      {t("模型")}: {runtimeStatus.upstreamModel || t("未指定")}
+                                    </span>
                                     <span>{runtimeStatus.reason || t("连续上游请求失败")}</span>
                                     <span>
                                       {t("最后失败")}:{" "}
@@ -580,8 +951,8 @@ export default function AggregateApiPage() {
                                 </TooltipContent>
                               </Tooltip>
                             ) : (
-                              <div className="flex flex-col items-start gap-1">
-                                <Badge className="w-fit border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300">
+                              <div className="flex flex-col items-start gap-0.5">
+                                <Badge className="h-5 w-fit border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-300">
                                   {t("正常")}
                                 </Badge>
                                 {runtimeStatus && runtimeStatus.consecutiveFailures > 0 ? (
@@ -593,38 +964,60 @@ export default function AggregateApiPage() {
                               </div>
                             )}
                           </TableCell>
-                          <TableCell>
-                            <div className="space-y-1">
+                          <TableCell className="py-2">
+                            <div className="flex items-center gap-1.5">
                               {api.lastTestStatus === "failed" && testError ? (
                                 <Tooltip>
                                   <TooltipTrigger
                                     render={<span />}
                                     className="inline-flex cursor-help"
                                   >
-                                    <Badge variant="destructive">{t("失败")}</Badge>
+                                    <Badge variant="destructive" className="h-5 text-[10px]">
+                                      {t("失败")}
+                                    </Badge>
                                   </TooltipTrigger>
                                   <TooltipContent className="max-w-sm whitespace-pre-wrap break-words">
                                     {testError}
                                   </TooltipContent>
                                 </Tooltip>
                               ) : (
-                                <Badge variant={api.lastTestStatus === "success" ? "default" : api.lastTestStatus === "failed" ? "destructive" : "secondary"}>
-                                  {api.lastTestStatus === "success" ? t("已连通") : api.lastTestStatus === "failed" ? t("失败") : t("未测试")}
+                                <Badge
+                                  variant={
+                                    api.lastTestStatus === "success"
+                                      ? "default"
+                                      : api.lastTestStatus === "failed"
+                                        ? "destructive"
+                                        : "secondary"
+                                  }
+                                  className="h-5 text-[10px]"
+                                >
+                                  {api.lastTestStatus === "success"
+                                    ? t("已连通")
+                                    : api.lastTestStatus === "failed"
+                                      ? t("失败")
+                                      : t("未测试")}
                                 </Badge>
                               )}
-                              <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={testingApiId === api.id || api.modelSlugs.length === 0} onClick={() => testMutation.mutate(api.id)}>
-                                {testingApiId === api.id ? t("测试中...") : t("测试 route")}
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-1.5 text-[11px]"
+                                disabled={testingApiId === api.id || api.modelSlugs.length === 0}
+                                onClick={() => testMutation.mutate(api.id)}
+                              >
+                                {testingApiId === api.id ? t("测试中...") : t("测试")}
                               </Button>
                             </div>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="py-2">
                             <Switch
                               checked={api.status === "active"}
                               disabled={togglingApiId === api.id}
                               onCheckedChange={(enabled) => toggleMutation.mutate({ api, enabled })}
                             />
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="py-2">
                             <div className="flex justify-end gap-1">
                               <Button
                                 type="button"
@@ -655,7 +1048,7 @@ export default function AggregateApiPage() {
         </Card>
         {selectedCapabilityApi ? (
           <Card className="glass-card">
-            <CardHeader className="flex-row items-center justify-between gap-3 py-4">
+            <CardHeader className="flex-row items-center justify-between gap-3 py-3">
               <div>
                 <CardTitle>{t("能力感知路由")}</CardTitle>
                 <p className="mt-1 text-xs text-muted-foreground">

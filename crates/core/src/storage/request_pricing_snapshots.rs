@@ -12,8 +12,9 @@ impl Storage {
                 cost_source, provider_cost_usd_ticks, provider_cost_usd, local_estimated_cost_usd,
                 pricing_variance_usd,
                 plain_input_cost_usd, cached_input_cost_usd, cache_write_cost_usd, output_cost_usd,
+                base_cost_usd, charged_cost_usd, rate_multiplier_millis,
                 total_cost_usd, short_baseline_cost_usd, long_context_uplift_usd, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
              ON CONFLICT(request_log_id) DO UPDATE SET
                 billing_mode = excluded.billing_mode,
                 context_band = excluded.context_band,
@@ -33,6 +34,9 @@ impl Storage {
                 cached_input_cost_usd = excluded.cached_input_cost_usd,
                 cache_write_cost_usd = excluded.cache_write_cost_usd,
                 output_cost_usd = excluded.output_cost_usd,
+                base_cost_usd = excluded.base_cost_usd,
+                charged_cost_usd = excluded.charged_cost_usd,
+                rate_multiplier_millis = excluded.rate_multiplier_millis,
                 total_cost_usd = excluded.total_cost_usd,
                 short_baseline_cost_usd = excluded.short_baseline_cost_usd,
                 long_context_uplift_usd = excluded.long_context_uplift_usd,
@@ -57,6 +61,9 @@ impl Storage {
                 snapshot.cached_input_cost_usd,
                 snapshot.cache_write_cost_usd,
                 snapshot.output_cost_usd,
+                snapshot.base_cost_usd,
+                snapshot.charged_cost_usd,
+                snapshot.rate_multiplier_millis,
                 snapshot.total_cost_usd,
                 snapshot.short_baseline_cost_usd,
                 snapshot.long_context_uplift_usd,
@@ -85,6 +92,7 @@ impl Storage {
                 p.cost_source, p.provider_cost_usd_ticks, p.provider_cost_usd, p.local_estimated_cost_usd,
                 p.pricing_variance_usd,
                 p.plain_input_cost_usd, p.cached_input_cost_usd, p.cache_write_cost_usd, p.output_cost_usd,
+                p.base_cost_usd, p.charged_cost_usd, p.rate_multiplier_millis,
                 p.total_cost_usd, p.short_baseline_cost_usd, p.long_context_uplift_usd, p.created_at
              FROM request_pricing_snapshots p
              JOIN request_logs r ON r.id = p.request_log_id
@@ -119,10 +127,13 @@ impl Storage {
                     cached_input_cost_usd: row.get(17)?,
                     cache_write_cost_usd: row.get(18)?,
                     output_cost_usd: row.get(19)?,
-                    total_cost_usd: row.get(20)?,
-                    short_baseline_cost_usd: row.get(21)?,
-                    long_context_uplift_usd: row.get(22)?,
-                    created_at: row.get(23)?,
+                    base_cost_usd: row.get(20)?,
+                    charged_cost_usd: row.get(21)?,
+                    rate_multiplier_millis: row.get(22)?,
+                    total_cost_usd: row.get(23)?,
+                    short_baseline_cost_usd: row.get(24)?,
+                    long_context_uplift_usd: row.get(25)?,
+                    created_at: row.get(26)?,
                 },
             ))
         })?;
@@ -151,6 +162,9 @@ impl Storage {
                 cached_input_cost_usd REAL,
                 cache_write_cost_usd REAL,
                 output_cost_usd REAL,
+                base_cost_usd REAL,
+                charged_cost_usd REAL,
+                rate_multiplier_millis INTEGER,
                 total_cost_usd REAL,
                 short_baseline_cost_usd REAL,
                 long_context_uplift_usd REAL,
@@ -179,6 +193,13 @@ impl Storage {
             "REAL",
         )?;
         self.ensure_column("request_pricing_snapshots", "pricing_variance_usd", "REAL")?;
+        self.ensure_column("request_pricing_snapshots", "base_cost_usd", "REAL")?;
+        self.ensure_column("request_pricing_snapshots", "charged_cost_usd", "REAL")?;
+        self.ensure_column(
+            "request_pricing_snapshots",
+            "rate_multiplier_millis",
+            "INTEGER",
+        )?;
         Ok(())
     }
 }

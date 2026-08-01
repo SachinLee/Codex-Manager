@@ -117,14 +117,16 @@ fn persist_request_pricing_snapshot(
     charge: &ChargeSnapshotV2,
     created_at: i64,
 ) -> Result<(), String> {
-    let local_estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
-        storage,
-        Some(model),
-        usage.input_tokens,
-        usage.cached_input_tokens,
-        usage.cache_write_input_tokens,
-        usage.output_tokens,
-    );
+    let local_estimated_cost_usd =
+        crate::quota::model_pricing::estimate_cost_usd_for_log_with_long_context_billing(
+            storage,
+            Some(model),
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.cache_write_input_tokens,
+            usage.output_tokens,
+            charge.long_context_billing_enabled,
+        );
     let local_estimated_cost_usd =
         (local_estimated_cost_usd > 0.0).then_some(local_estimated_cost_usd);
     let provider_cost_usd = provider_cost_usd(usage);
@@ -138,12 +140,30 @@ fn persist_request_pricing_snapshot(
     let pricing_variance_usd = provider_cost_usd
         .zip(local_estimated_cost_usd)
         .map(|(provider, local)| provider - local);
+    let long_context_billing_enabled = charge.long_context_billing_enabled;
+    let is_long_context = charge.tier_min_input_tokens > 0;
+    let context_band = if is_long_context {
+        "long"
+    } else if long_context_billing_enabled {
+        "short"
+    } else {
+        "single_tier"
+    };
     storage
         .insert_request_pricing_snapshot(&RequestPricingSnapshot {
             request_log_id,
             billing_mode: "model_catalog_v2".to_string(),
-            context_band: "catalog_v2".to_string(),
-            price_source: Some("model_catalog_v2".to_string()),
+            context_band: context_band.to_string(),
+            long_context_threshold_tokens: is_long_context.then_some(charge.tier_min_input_tokens),
+            long_context_threshold_inclusive: is_long_context.then_some(false),
+            price_source: Some(
+                if long_context_billing_enabled {
+                    "model_catalog_v2"
+                } else {
+                    "model_catalog_v2_base_tier_only"
+                }
+                .to_string(),
+            ),
             match_quality: Some("exact".to_string()),
             price_status: "ok".to_string(),
             cost_source,
@@ -151,6 +171,9 @@ fn persist_request_pricing_snapshot(
             provider_cost_usd,
             local_estimated_cost_usd,
             pricing_variance_usd,
+            base_cost_usd: Some(charge.base_cost_microusd as f64 / 1_000_000.0),
+            charged_cost_usd: Some(charge.charged_cost_microusd as f64 / 1_000_000.0),
+            rate_multiplier_millis: Some(charge.rate_multiplier_millis),
             total_cost_usd: Some(charge.charged_cost_microusd as f64 / 1_000_000.0),
             created_at,
             ..RequestPricingSnapshot::default()
@@ -657,45 +680,53 @@ pub(crate) fn write_request_log_with_attempts(
             let aggregate_multiplier_millis =
                 aggregate_multiplier_millis(trace_context.aggregate_api_cost_multiplier);
             let base_cost_override_microusd = provider_cost_base_microusd(usage);
-            match crate::auth::app_manager::record_request_charge_v2(
-                storage,
-                key_id,
-                request_log_id,
-                model,
-                effective_service_tier.or(service_tier),
-                charge_usage.usage_source,
-                charge_usage.input_tokens,
-                charge_usage.cached_input_tokens,
-                charge_usage.output_tokens,
-                raw_usage_json,
-                charge_wallet,
-                aggregate_multiplier_millis,
-                base_cost_override_microusd,
-            ) {
-                Ok(charge) => {
-                    if let Err(err) = persist_request_pricing_snapshot(
-                        storage,
-                        request_log_id,
-                        model,
-                        usage,
-                        &charge,
-                        created_at,
-                    ) {
-                        log::warn!(
-                            "event=request_pricing_snapshot_failed request_log_id={} err={}",
-                            request_log_id,
-                            err
-                        );
-                    }
-                }
-                Err(err) => log::warn!(
-                    "event=model_catalog_v2_charge_failed key_id={} request_log_id={} usage_source={} charge_wallet={} err={}",
-                    key_id.unwrap_or("-"),
+            if charge_wallet {
+                match crate::auth::app_manager::record_request_charge_v2(
+                    storage,
+                    key_id,
                     request_log_id,
+                    model,
+                    effective_service_tier.or(service_tier),
                     charge_usage.usage_source,
-                    charge_wallet,
-                    err
-                ),
+                    charge_usage.input_tokens,
+                    charge_usage.cached_input_tokens,
+                    charge_usage.output_tokens,
+                    raw_usage_json,
+                    true,
+                    aggregate_multiplier_millis,
+                    base_cost_override_microusd,
+                ) {
+                    Ok(charge) => {
+                        if let Err(err) = persist_request_pricing_snapshot(
+                            storage,
+                            request_log_id,
+                            model,
+                            usage,
+                            &charge,
+                            created_at,
+                        ) {
+                            log::warn!(
+                                "event=request_pricing_snapshot_failed request_log_id={} err={}",
+                                request_log_id,
+                                err
+                            );
+                        }
+                    }
+                    Err(err) => log::warn!(
+                        "event=model_catalog_v2_charge_failed key_id={} request_log_id={} usage_source={} charge_wallet={} err={}",
+                        key_id.unwrap_or("-"),
+                        request_log_id,
+                        charge_usage.usage_source,
+                        charge_wallet,
+                        err
+                    ),
+                }
+            } else {
+                log::debug!(
+                    "event=model_catalog_v2_charge_skipped request_log_id={} status={} reason=unsuccessful_response",
+                    request_log_id,
+                    status_code.unwrap_or(0)
+                );
             }
         } else {
             log::warn!(

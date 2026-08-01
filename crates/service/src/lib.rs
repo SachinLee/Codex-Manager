@@ -12,8 +12,8 @@ pub(crate) mod app_settings;
 mod auth;
 mod codex_model_catalog;
 mod codex_profile;
-pub mod codex_session;
 mod codex_runtime;
+pub mod codex_session;
 mod codex_skill_repositories;
 mod codex_skills;
 mod codex_skills_marketplace;
@@ -93,9 +93,11 @@ pub(crate) use proxy_registry::{
 pub(crate) use requestlog::account_daily_usage as requestlog_account_daily_usage;
 pub(crate) use requestlog::aggregate_api_daily_usage as requestlog_aggregate_api_daily_usage;
 pub(crate) use requestlog::aggregate_api_reasoning_guard as requestlog_aggregate_api_reasoning_guard;
+pub(crate) use requestlog::model_daily_usage as requestlog_model_daily_usage;
 
 pub(crate) use requestlog::clear as requestlog_clear;
 pub(crate) use requestlog::list as requestlog_list;
+pub(crate) use requestlog::session_titles as requestlog_session_titles;
 pub(crate) use requestlog::summary as requestlog_summary;
 pub(crate) use requestlog::today_summary as requestlog_today_summary;
 pub(crate) use runtime::lock_utils;
@@ -149,6 +151,7 @@ pub use app_settings::{
     APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+    APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
     APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
     APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,

@@ -93,6 +93,20 @@ pub(crate) fn resolve_model_price_from_catalog(
     model: &str,
     input_tokens: i64,
 ) -> Option<ModelPriceMatch> {
+    resolve_model_price_from_catalog_with_long_context_billing(
+        prices,
+        model,
+        input_tokens,
+        crate::app_settings::current_gateway_long_context_billing_enabled(),
+    )
+}
+
+pub(crate) fn resolve_model_price_from_catalog_with_long_context_billing(
+    prices: &[CatalogModelPrice],
+    model: &str,
+    input_tokens: i64,
+    long_context_billing_enabled: bool,
+) -> Option<ModelPriceMatch> {
     let normalized = model.trim();
     if normalized.is_empty() || normalized.eq_ignore_ascii_case("unknown") {
         return None;
@@ -106,7 +120,10 @@ pub(crate) fn resolve_model_price_from_catalog(
     let tier = price
         .tiers
         .iter()
-        .filter(|tier| tier.min_input_tokens <= input_tokens.max(0))
+        .filter(|tier| {
+            tier.min_input_tokens == 0
+                || (long_context_billing_enabled && tier.min_input_tokens < input_tokens.max(0))
+        })
         .max_by_key(|tier| tier.min_input_tokens)?;
     Some(ModelPriceMatch {
         provider: price.provider.clone(),
@@ -196,6 +213,26 @@ pub(crate) fn estimate_cost_usd_for_log(
     cache_write_input_tokens: Option<i64>,
     output_tokens: Option<i64>,
 ) -> f64 {
+    estimate_cost_usd_for_log_with_long_context_billing(
+        storage,
+        model,
+        input_tokens,
+        cached_input_tokens,
+        cache_write_input_tokens,
+        output_tokens,
+        crate::app_settings::current_gateway_long_context_billing_enabled(),
+    )
+}
+
+pub(crate) fn estimate_cost_usd_for_log_with_long_context_billing(
+    storage: &Storage,
+    model: Option<&str>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    cache_write_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    long_context_billing_enabled: bool,
+) -> f64 {
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return 0.0;
     };
@@ -208,7 +245,12 @@ pub(crate) fn estimate_cost_usd_for_log(
     let Ok(prices) = load_catalog_prices(storage) else {
         return 0.0;
     };
-    let Some(price) = resolve_model_price_from_catalog(&prices, model, input) else {
+    let Some(price) = resolve_model_price_from_catalog_with_long_context_billing(
+        &prices,
+        model,
+        input,
+        long_context_billing_enabled,
+    ) else {
         return 0.0;
     };
     // Cache reads and writes are disjoint classifications of total input. The

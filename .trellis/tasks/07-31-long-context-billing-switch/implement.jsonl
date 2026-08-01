@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/codexmanager-core/backend/index.md", "reason": "Core storage, migration, and snapshot ownership"}
+{"file": ".trellis/spec/codexmanager-service/backend/grok-billing.md", "reason": "Provider-reported cost precedence and local fallback conventions"}
+{"file": ".trellis/tasks/07-30-analyze-latency-pricing/research/findings.md", "reason": "Verified long-context tier behavior and current runtime evidence"}

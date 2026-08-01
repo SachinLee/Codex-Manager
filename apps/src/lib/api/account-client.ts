@@ -10,6 +10,7 @@ import {
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiCapabilityDiagnosticsResult,
   normalizeAggregateApiDailyUsageStats,
+  normalizeModelDailyUsageStats,
   normalizeAggregateApiReasoningGuardStats,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
@@ -80,6 +81,7 @@ import {
   AggregateApiCapabilitiesResult,
   AggregateApiCapabilityAttempt,
   AggregateApiDailyUsageStat,
+  ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
   ApiKey,
@@ -1043,6 +1045,16 @@ export const accountClient = {
       withAddr(params)
     );
     return normalizeAggregateApiDailyUsageStats(result);
+  },
+  async listModelDailyUsageStats(params?: {
+    dayStartTs?: number;
+    dayEndTs?: number;
+  }): Promise<ModelDailyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_requestlog_model_daily_usage",
+      withAddr(params)
+    );
+    return normalizeModelDailyUsageStats(result);
   },
   async listAggregateApiReasoningGuardStats(params?: {
     dayStartTs?: number;

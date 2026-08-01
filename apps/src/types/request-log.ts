@@ -88,6 +88,9 @@ export interface RequestLog {
   cachedInputCostUsd: number | null;
   cacheWriteCostUsd: number | null;
   outputCostUsd: number | null;
+  baseCostUsd: number | null;
+  chargedCostUsd: number | null;
+  rateMultiplierMillis: number | null;
   shortBaselineCostUsd: number | null;
   longContextUpliftUsd: number | null;
   guardEventCount: number;
@@ -104,6 +107,15 @@ export interface RequestLog {
   firstResponseMs: number | null;
   error: string;
   createdAt: number | null;
+}
+
+export type RequestLogSessionSource = "codex" | "omp";
+
+export interface RequestLogSessionTitle {
+  sessionId: string;
+  title: string | null;
+  cwd: string | null;
+  source: RequestLogSessionSource;
 }
 
 export interface RequestLogListResult {
@@ -155,4 +167,18 @@ export interface RequestLogTodaySummary {
   reasoningOutputTokens: number;
   todayTokens: number;
   estimatedCost: number;
+}
+
+export interface ModelDailyUsageStat {
+  model: string;
+  requestCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  billableInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningOutputTokens: number;
+  estimatedCostUsd: number;
+  cacheHitRate: number;
 }

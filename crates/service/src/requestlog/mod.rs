@@ -10,6 +10,10 @@ pub(crate) mod clear;
 pub(crate) mod day_range;
 #[path = "requestlog_list.rs"]
 pub(crate) mod list;
+#[path = "requestlog_model_daily_usage.rs"]
+pub(crate) mod model_daily_usage;
+#[path = "requestlog_session_titles.rs"]
+pub(crate) mod session_titles;
 #[path = "requestlog_summary.rs"]
 pub(crate) mod summary;
 #[path = "requestlog_today_summary.rs"]

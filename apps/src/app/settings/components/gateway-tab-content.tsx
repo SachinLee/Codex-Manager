@@ -171,6 +171,23 @@ export function GatewayTabContent({
           />
         </div>
 
+        <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Label>{t("长上下文阶梯计费")}</Label>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {t("开启后，输入超过模型阈值时按该模型的长上下文价格阶梯计算；关闭后始终使用基础价格。上游实际费用不受影响。")}
+            </p>
+          </div>
+          <Switch
+            checked={snapshot.longContextBillingEnabled}
+            onCheckedChange={(checked) =>
+              updateSettings.mutate({ longContextBillingEnabled: checked })
+            }
+          />
+        </div>
+
         <div className="grid gap-2 border-t pt-6">
           <Label>{t("Free 账号模型上限")}</Label>
           <Select

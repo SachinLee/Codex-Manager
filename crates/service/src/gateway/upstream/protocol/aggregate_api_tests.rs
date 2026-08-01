@@ -2,9 +2,12 @@ use codexmanager_core::storage::{now_ts, AggregateApi, Storage};
 
 use super::{
     build_anthropic_bridge_aggregate_api_request, build_upstream_url, effective_action_path,
-    resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
-    responses_to_anthropic_messages_action_path, rewrite_body_model_override,
-    should_bridge_responses_to_anthropic,
+    next_aggregate_api_capacity_retry, resolve_aggregate_api_rotation_candidates,
+    resolve_passthrough_sse_protocol, responses_to_anthropic_messages_action_path,
+    rewrite_body_model_override, should_bridge_responses_to_anthropic,
+    wait_for_aggregate_api_capacity_retry, AggregateApiCapacityRetryAction,
+    AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS, AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE,
+    AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP,
 };
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -13,6 +16,54 @@ use crate::aggregate_api::{
 use crate::gateway::upstream::support::payload_rewrite::build_continuation_recovery_body;
 use crate::gateway::{PassthroughSseProtocol, ResponseAdapter};
 use bytes::Bytes;
+use std::time::{Duration, Instant};
+
+#[test]
+fn aggregate_api_capacity_retry_budget_allows_exactly_two_replays() {
+    let mut remaining = AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS;
+
+    let AggregateApiCapacityRetryAction::Retry {
+        retry_attempt: first_attempt,
+        delay: first_delay,
+    } = next_aggregate_api_capacity_retry(&mut remaining)
+    else {
+        panic!("first capacity retry should be available");
+    };
+    assert_eq!(first_attempt, 1);
+    assert!(first_delay <= AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE);
+    assert_eq!(remaining, 1);
+
+    let AggregateApiCapacityRetryAction::Retry {
+        retry_attempt: second_attempt,
+        delay: second_delay,
+    } = next_aggregate_api_capacity_retry(&mut remaining)
+    else {
+        panic!("second capacity retry should be available");
+    };
+    assert_eq!(second_attempt, 2);
+    assert!(second_delay <= AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP);
+    assert_eq!(remaining, 0);
+
+    assert_eq!(
+        next_aggregate_api_capacity_retry(&mut remaining),
+        AggregateApiCapacityRetryAction::Exhausted
+    );
+}
+
+#[test]
+fn aggregate_api_capacity_retry_does_not_wait_past_request_deadline() {
+    assert!(!wait_for_aggregate_api_capacity_retry(
+        Duration::from_millis(1),
+        Some(Instant::now() - Duration::from_millis(1)),
+    ));
+}
+
+#[test]
+fn capacity_recovery_metrics_are_exported() {
+    let metrics = crate::gateway::gateway_metrics_prometheus();
+    assert!(metrics.contains("codexmanager_gateway_upstream_capacity_errors_total"));
+    assert!(metrics.contains("codexmanager_gateway_upstream_capacity_exhausted_total"));
+}
 
 fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
     AggregateApi {

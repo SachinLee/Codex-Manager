@@ -875,6 +875,70 @@ fn sql_migration_can_fallback_to_compat_when_schema_already_exists() {
 }
 
 #[test]
+fn unsuccessful_request_log_billing_migration_only_clears_explicit_failures() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TABLE request_logs (id INTEGER PRIMARY KEY, status_code INTEGER);
+             CREATE TABLE request_pricing_snapshots (request_log_id INTEGER PRIMARY KEY);
+             CREATE TABLE request_charge_snapshots (request_log_id INTEGER PRIMARY KEY);
+             CREATE TABLE request_token_stats (
+                request_log_id INTEGER PRIMARY KEY,
+                estimated_cost_usd REAL
+             );
+             INSERT INTO request_logs (id, status_code) VALUES
+                (1, 200), (2, 499), (3, 502), (4, NULL);
+             INSERT INTO request_pricing_snapshots (request_log_id) VALUES (1), (2), (3), (4);
+             INSERT INTO request_charge_snapshots (request_log_id) VALUES (1), (2), (3), (4);
+             INSERT INTO request_token_stats (request_log_id, estimated_cost_usd) VALUES
+                (1, 0.1), (2, 0.2), (3, 0.3), (4, 0.4);",
+        )
+        .expect("seed request billing rows");
+    storage
+        .ensure_migrations_table()
+        .expect("ensure migration tracker");
+
+    storage
+        .apply_sql_migration(
+            "125_unbill_unsuccessful_request_logs",
+            include_str!("../../migrations/125_unbill_unsuccessful_request_logs.sql"),
+        )
+        .expect("apply unsuccessful request billing migration");
+
+    for table in ["request_pricing_snapshots", "request_charge_snapshots"] {
+        let remaining: Vec<i64> = storage
+            .conn
+            .prepare(&format!(
+                "SELECT request_log_id FROM {table} ORDER BY request_log_id"
+            ))
+            .expect("prepare remaining snapshot query")
+            .query_map([], |row| row.get(0))
+            .expect("query remaining snapshots")
+            .collect::<rusqlite::Result<_>>()
+            .expect("collect remaining snapshots");
+        assert_eq!(
+            remaining,
+            vec![1, 2, 4],
+            "{table} should retain non-failure rows"
+        );
+    }
+
+    let costs: Vec<(i64, Option<f64>)> = storage
+        .conn
+        .prepare("SELECT request_log_id, estimated_cost_usd FROM request_token_stats ORDER BY request_log_id")
+        .expect("prepare remaining token cost query")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("query remaining token costs")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collect remaining token costs");
+    assert_eq!(
+        costs,
+        vec![(1, Some(0.1)), (2, Some(0.2)), (3, None), (4, Some(0.4))]
+    );
+}
+
+#[test]
 fn init_repairs_legacy_aggregate_api_balance_columns_before_indexes() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage

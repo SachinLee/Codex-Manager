@@ -92,7 +92,7 @@ test("aggregate API page preserves cooldown countdown and reset controls", async
   );
   assert.match(
     source,
-    /runtimeStatus\?\.isCoolingDown[\s\S]*runtimeStatus\.cooldownUntil/,
+    /const isCoolingDown = coolingStatuses\.length > 0[\s\S]*isCoolingDown && runtimeStatus/,
   );
   assert.match(
     source,

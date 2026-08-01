@@ -15,6 +15,7 @@ import {
   AggregateApiCapabilityProbeResult,
   AggregateApiCapabilityStatus,
   AggregateApiDailyUsageStat,
+  ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
   AggregateApiSecretResult,
@@ -44,6 +45,7 @@ import {
   RequestLogListResult,
   RequestLogListWithSummaryResult,
   RequestLogTodaySummary,
+  RequestLogSessionTitle,
   RouteEvidenceSummary,
   GatewayPolicyActionSummary,
   StartupSnapshot,
@@ -471,6 +473,18 @@ export function normalizeAccountDailyUsageStats(payload: unknown): AccountDailyU
     const record = asObject(item);
     const accountId = asString(record.accountId ?? record.account_id);
     if (accountId) result.push({ accountId, ...normalizeDailyUsageBase(record) });
+    return result;
+  }, []);
+}
+
+
+export function normalizeModelDailyUsageStats(payload: unknown): ModelDailyUsageStat[] {
+  const source = asObject(payload);
+  return asArray(source.items ?? payload).reduce<ModelDailyUsageStat[]>((result, item) => {
+    const record = asObject(item);
+    const model = asString(record.model).trim();
+    if (!model) return result;
+    result.push({ model, ...normalizeDailyUsageBase(record) });
     return result;
   }, []);
 }
@@ -1019,6 +1033,7 @@ export function normalizeAggregateApiRuntimeStatus(
   if (!aggregateApiId) return null;
   return {
     aggregateApiId,
+    upstreamModel: asString(source.upstreamModel ?? source.upstream_model) || null,
     isCoolingDown: asBoolean(source.isCoolingDown ?? source.is_cooling_down, false),
     consecutiveFailures: asInteger(
       source.consecutiveFailures ?? source.consecutive_failures,
@@ -1608,6 +1623,25 @@ function normalizeGatewayPolicyActionSummary(
   };
 }
 
+export function normalizeRequestLogSessionTitles(payload: unknown): RequestLogSessionTitle[] {
+  return asArray(payload)
+    .map((item) => {
+      const source = asObject(item);
+      const sessionId = asString(source.sessionId ?? source.session_id);
+      const sessionSource = asString(source.source);
+      if (!sessionId || (sessionSource !== "codex" && sessionSource !== "omp")) {
+        return null;
+      }
+      return {
+        sessionId,
+        title: asString(source.title) || null,
+        cwd: asString(source.cwd) || null,
+        source: sessionSource,
+      };
+    })
+    .filter((item): item is RequestLogSessionTitle => item != null);
+}
+
 export function normalizeRequestLog(item: unknown): RequestLog | null {
   const source = asObject(item);
   const createdAt = toNullableNumber(source.createdAt ?? source.created_at);
@@ -1756,6 +1790,13 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
       source.cacheWriteCostUsd ?? source.cache_write_cost_usd
     ),
     outputCostUsd: toNullableNumber(source.outputCostUsd ?? source.output_cost_usd),
+    baseCostUsd: toNullableNumber(source.baseCostUsd ?? source.base_cost_usd),
+    chargedCostUsd: toNullableNumber(
+      source.chargedCostUsd ?? source.charged_cost_usd
+    ),
+    rateMultiplierMillis: toNullableNumber(
+      source.rateMultiplierMillis ?? source.rate_multiplier_millis
+    ),
     shortBaselineCostUsd: toNullableNumber(
       source.shortBaselineCostUsd ?? source.short_baseline_cost_usd
     ),
@@ -2210,6 +2251,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     freeAccountMaxModelOptions: asArray(source.freeAccountMaxModelOptions).map((item) =>
       asString(item)
     ),
+    longContextBillingEnabled: asBoolean(source.longContextBillingEnabled, true),
     modelForwardRules: asString(source.modelForwardRules ?? source.model_forward_rules),
     compactModelForwardRules: asString(
       source.compactModelForwardRules ?? source.compact_model_forward_rules

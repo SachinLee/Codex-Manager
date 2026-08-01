@@ -434,6 +434,66 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
     assert_eq!(row.estimated_cost_usd, Some(0.123));
 }
 
+/// 函数 `insert_request_log_with_token_stat_persists_aggregate_api_context`
+///
+/// 事务写入必须保留聚合 API 归属，否则按供应商的今日用量会被静默过滤掉。
+#[test]
+fn insert_request_log_with_token_stat_persists_aggregate_api_context() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let log = RequestLog {
+        initial_aggregate_api_id: Some("agg-initial".to_string()),
+        attempted_aggregate_api_ids_json: Some(r#"[\"agg-initial\",\"agg-final\"]"#.to_string()),
+        request_path: "/v1/responses".to_string(),
+        method: "POST".to_string(),
+        actual_source_kind: Some("aggregate_api".to_string()),
+        actual_source_id: Some("agg-final".to_string()),
+        aggregate_api_supplier_name: Some("Provider".to_string()),
+        aggregate_api_url: Some("https://provider.example/v1".to_string()),
+        status_code: Some(200),
+        created_at: 1_000,
+        ..RequestLog::default()
+    };
+    let stat = RequestTokenStat {
+        aggregate_api_id: Some("agg-final".to_string()),
+        aggregate_api_supplier_name: Some("Provider".to_string()),
+        aggregate_api_url: Some("https://provider.example/v1".to_string()),
+        model: Some("gpt-5".to_string()),
+        actual_source_kind: Some("aggregate_api".to_string()),
+        actual_source_id: Some("agg-final".to_string()),
+        total_tokens: Some(120),
+        estimated_cost_usd: Some(0.12),
+        created_at: 1_000,
+        ..RequestTokenStat::default()
+    };
+
+    let (request_log_id, token_err) = storage
+        .insert_request_log_with_token_stat(&log, &stat)
+        .expect("insert request log with token stat");
+    assert!(token_err.is_none(), "token stat should insert");
+
+    let persisted = storage
+        .conn
+        .query_row(
+            "SELECT aggregate_api_id, aggregate_api_supplier_name, aggregate_api_url
+             FROM request_token_stats WHERE request_log_id = ?1",
+            [request_log_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .expect("read persisted aggregate api context");
+
+    assert_eq!(persisted.0.as_deref(), Some("agg-final"));
+    assert_eq!(persisted.1.as_deref(), Some("Provider"));
+    assert_eq!(persisted.2.as_deref(), Some("https://provider.example/v1"));
+}
+
 /// 函数 `token_stat_failure_still_commits_request_log`
 ///
 /// 作者: gaohongshun

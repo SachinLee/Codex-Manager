@@ -1,0 +1,8 @@
+2026-07-30 runtime DB verification
+
+- GPT-5.6 logs with input_tokens >= 272000 in the last 24h: 113
+- Snapshots charged at tier_min_input_tokens = 272000: 110
+- Snapshots charged at any other tier: 0
+- The remaining 3 records lack charge snapshots (no successful billable charge); they are not standard-tier charges.
+
+Sample screenshot-corresponding records 51812, 51813, 51815, 51817, 51819, and 51828 all have a 272000 snapshot tier and their persisted estimated cost equals the long-tier formula exactly.

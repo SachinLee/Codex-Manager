@@ -46,6 +46,7 @@ import {
 import {
   formatCompactTokenAmount,
   formatDuration,
+  getFirstResponseLatencyClass,
   formatOutputRate,
   formatReasoningGuardTarget,
   formatTableTokenAmount,
@@ -61,8 +62,7 @@ import {
   RequestResultSummaryCard,
   SummaryCard,
 } from "./page-helpers";
-import type { CodexSession } from "@/lib/api/codex-launcher";
-import type { AggregateApi, ApiKey, RequestLog, RequestLogFilterSummary } from "@/types";
+import type { AggregateApi, ApiKey, RequestLog, RequestLogFilterSummary, RequestLogSessionTitle } from "@/types";
 
 export function RequestLogsTabContent({
   t,
@@ -87,7 +87,7 @@ export function RequestLogsTabContent({
   accountNameMap,
   apiKeyMap,
   aggregateApiMap,
-  codexSessionMap,
+  sessionTitleMap,
   clearMutationPending,
   onSearchChange,
   onSearchFieldChange,
@@ -124,7 +124,7 @@ export function RequestLogsTabContent({
   accountNameMap: Map<string, string>;
   apiKeyMap: Map<string, ApiKey>;
   aggregateApiMap: Map<string, AggregateApi>;
-  codexSessionMap: Map<string, CodexSession>;
+  sessionTitleMap: Map<string, RequestLogSessionTitle>;
   clearMutationPending: boolean;
   onSearchChange: (value: string) => void;
   onSearchFieldChange: (value: SearchField) => void;
@@ -522,7 +522,7 @@ export function RequestLogsTabContent({
                         <SessionInfoCell
                           sessionId={log.sessionId}
                           conversationAnchor={log.conversationAnchor}
-                          session={codexSessionMap.get(String(log.sessionId || "").trim())}
+                          session={sessionTitleMap.get(String(log.sessionId || "").trim())}
                         />
                       </TableCell>
                       <TableCell className="px-4 py-3 font-mono text-[11px] text-muted-foreground">
@@ -565,9 +565,11 @@ export function RequestLogsTabContent({
                           className="inline-flex whitespace-nowrap text-xs text-primary"
                           title={t("首响表示从请求开始到首个上游响应片段的耗时；输出速率按输出 Token / 总用时计算")}
                         >
-                          {formatDuration(log.durationMs)}/
-                          {formatDuration(log.firstResponseMs)}/
-                          {formatOutputRate(log.outputTokens, log.durationMs)}
+                          <span>{formatDuration(log.durationMs)}/</span>
+                          <span className={getFirstResponseLatencyClass(log.firstResponseMs)}>
+                            {formatDuration(log.firstResponseMs)}
+                          </span>
+                          <span>/{formatOutputRate(log.outputTokens, log.durationMs)}</span>
                         </span>
                       </TableCell>
                       <TableCell className="px-4 py-3 align-top">
@@ -599,13 +601,17 @@ export function RequestLogsTabContent({
                       <TableCell className="w-[176px] max-w-[176px] overflow-hidden px-4 py-3 align-top font-mono text-xs whitespace-normal text-foreground">
                         <div className="flex min-w-0 flex-col gap-1">
                           <span>{formatUsdAmount(log.estimatedCostUsd)}</span>
+                          {log.rateMultiplierMillis != null &&
+                          log.rateMultiplierMillis !== 1000 &&
+                          log.baseCostUsd != null &&
+                          log.chargedCostUsd != null ? (
+                            <span className="text-[10px] text-muted-foreground">
+                              {t("原始费用")} {formatUsdAmount(log.baseCostUsd)} · {t("实际费用")} {formatUsdAmount(log.chargedCostUsd)} · ×{(log.rateMultiplierMillis / 1000).toFixed(3).replace(/\.000$/, "")}
+                            </span>
+                          ) : null}
                           {log.pricingCostSource === "provider_reported" ? (
                             <span className="w-fit rounded border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-300">
                               {t("官方实际费用")}
-                            </span>
-                          ) : log.pricingCostSource === "local_estimate" ? (
-                            <span className="w-fit rounded border border-sky-500/25 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-600 dark:text-sky-300">
-                              {t("本地估算")}
                             </span>
                           ) : null}
                           {log.pricingContextBand === "long" ? (

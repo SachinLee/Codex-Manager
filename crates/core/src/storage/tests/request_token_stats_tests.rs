@@ -51,7 +51,6 @@ fn assert_uses_any_index(details: &[String], index_names: &[&str], label: &str) 
 ///
 /// # 返回
 /// 无
-#[allow(clippy::too_many_arguments)]
 fn insert_rollup_row(
     storage: &Storage,
     key_id: &str,
@@ -1319,6 +1318,7 @@ fn dashboard_rollups_survive_cleared_request_logs() {
             reasoning_output_tokens: Some(3),
             estimated_cost_usd: Some(0.35),
             created_at: 3_700,
+            ..RequestTokenStat::default()
         })
         .expect("insert aggregate stat");
 
@@ -1837,4 +1837,127 @@ fn summaries_for_large_key_lists_use_temp_filter() {
         by_key_and_model.last().map(|item| item.key_id.as_str()),
         Some("key-0900")
     );
+}
+
+#[test]
+fn aggregate_api_daily_usage_falls_back_to_actual_source_context() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 1,
+            aggregate_api_id: None,
+            model: Some("gpt-5".to_string()),
+            actual_source_kind: Some("aggregate_api".to_string()),
+            actual_source_id: Some("agg-legacy".to_string()),
+            input_tokens: Some(100),
+            cached_input_tokens: Some(20),
+            output_tokens: Some(50),
+            total_tokens: Some(150),
+            estimated_cost_usd: Some(0.15),
+            created_at: 1_000,
+            ..RequestTokenStat::default()
+        })
+        .expect("insert legacy aggregate api token stat");
+
+    let items = storage
+        .summarize_request_token_stats_by_aggregate_api_between(0, 2_000)
+        .expect("summarize aggregate api usage");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].aggregate_api_id, "agg-legacy");
+    assert_eq!(items[0].request_count, 1);
+    assert_eq!(items[0].total_tokens, 150);
+    assert_float_close(items[0].estimated_cost_usd, 0.15);
+}
+
+#[test]
+fn model_daily_usage_summary_groups_tokens_cost_and_cache() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 1,
+            key_id: Some("key-a".to_string()),
+            account_id: Some("acc-a".to_string()),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(100),
+            cached_input_tokens: Some(40),
+            cache_write_input_tokens: Some(10),
+            output_tokens: Some(20),
+            total_tokens: Some(120),
+            reasoning_output_tokens: Some(5),
+            estimated_cost_usd: Some(0.12),
+            created_at: 1_000,
+            ..RequestTokenStat::default()
+        })
+        .expect("insert gpt-5");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 2,
+            key_id: Some("key-b".to_string()),
+            account_id: Some("acc-b".to_string()),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(50),
+            cached_input_tokens: Some(10),
+            cache_write_input_tokens: Some(0),
+            output_tokens: Some(5),
+            total_tokens: Some(55),
+            reasoning_output_tokens: Some(0),
+            estimated_cost_usd: Some(0.05),
+            created_at: 1_100,
+            ..RequestTokenStat::default()
+        })
+        .expect("insert gpt-5 again");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 3,
+            key_id: Some("key-c".to_string()),
+            account_id: Some("acc-c".to_string()),
+            model: Some("claude-sonnet".to_string()),
+            input_tokens: Some(80),
+            cached_input_tokens: Some(0),
+            output_tokens: Some(10),
+            total_tokens: Some(90),
+            reasoning_output_tokens: Some(0),
+            estimated_cost_usd: Some(0.20),
+            created_at: 1_200,
+            ..RequestTokenStat::default()
+        })
+        .expect("insert claude");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 4,
+            key_id: Some("key-d".to_string()),
+            account_id: Some("acc-d".to_string()),
+            model: Some("gpt-old".to_string()),
+            input_tokens: Some(999),
+            cached_input_tokens: Some(0),
+            output_tokens: Some(1),
+            total_tokens: Some(1_000),
+            reasoning_output_tokens: Some(0),
+            estimated_cost_usd: Some(9.99),
+            created_at: 50,
+            ..RequestTokenStat::default()
+        })
+        .expect("insert out of range");
+
+    let items = storage
+        .summarize_request_token_stats_by_model_between(1_000, 2_000)
+        .expect("summarize model daily");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].model, "claude-sonnet");
+    assert_eq!(items[0].request_count, 1);
+    assert_eq!(items[0].total_tokens, 90);
+    assert!((items[0].estimated_cost_usd - 0.20).abs() < f64::EPSILON);
+    assert_eq!(items[1].model, "gpt-5");
+    assert_eq!(items[1].request_count, 2);
+    assert_eq!(items[1].input_tokens, 150);
+    assert_eq!(items[1].cached_input_tokens, 50);
+    assert_eq!(items[1].cache_write_input_tokens, 10);
+    assert_eq!(items[1].billable_input_tokens, 90);
+    assert_eq!(items[1].total_tokens, 175);
+    assert!((items[1].estimated_cost_usd - 0.17).abs() < f64::EPSILON);
+    assert!((items[1].cache_hit_rate - (50.0 / 150.0)).abs() < 1e-9);
 }

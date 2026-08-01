@@ -15,7 +15,6 @@ import {
   FolderKanban,
   Route,
   Settings,
-  UserRound,
   Rocket,
   Globe,
   ChevronLeft,
@@ -58,7 +57,6 @@ const NAV_ITEM_BY_PATH = new Map<TopLevelRoutePath, { icon: LucideIcon }>([
   ["/logs", { icon: FileText }],
   ["/settings", { icon: Settings }],
   ["/proxy-settings", { icon: Globe }],
-  ["/author", { icon: UserRound }],
 ]);
 
 type SidebarNavItem = {
