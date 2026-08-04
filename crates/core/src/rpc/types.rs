@@ -990,6 +990,80 @@ pub struct AggregateApiRuntimeStatusListResult {
     pub items: Vec<AggregateApiRuntimeStatus>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiHealthConfigResult {
+    pub aggregate_api_id: String,
+    pub enabled: bool,
+    pub probe_interval_secs: i64,
+    pub probe_timeout_ms: i64,
+    pub probe_model: Option<String>,
+    pub last_scheduled_at: Option<i64>,
+    pub next_probe_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiHealthStateResult {
+    pub aggregate_api_id: String,
+    pub upstream_model: Option<String>,
+    pub protocol: Option<String>,
+    pub state: String,
+    pub consecutive_failures: i64,
+    pub failure_threshold: i64,
+    pub cooldown_until: Option<i64>,
+    pub last_observed_at: Option<i64>,
+    pub last_probe_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub last_failure_at: Option<i64>,
+    pub latency_ms: Option<i64>,
+    pub http_status: Option<i64>,
+    pub error_category: Option<String>,
+    pub error_reason: Option<String>,
+    pub observation_source: Option<String>,
+    #[serde(default)]
+    pub active_probe_enabled: bool,
+    pub probe_model: Option<String>,
+    #[serde(default)]
+    pub available_probe_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiHealthEventResult {
+    pub aggregate_api_id: String,
+    pub upstream_model: Option<String>,
+    pub protocol: Option<String>,
+    pub trigger: String,
+    pub outcome: String,
+    pub state_before: String,
+    pub state_after: String,
+    pub error_category: Option<String>,
+    pub http_status: Option<i64>,
+    pub latency_ms: Option<i64>,
+    pub reason: Option<String>,
+    pub observed_at: i64,
+    pub cooldown_until: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiHealthDetailResult {
+    pub summary: AggregateApiHealthStateResult,
+    pub config: AggregateApiHealthConfigResult,
+    #[serde(default)]
+    pub states: Vec<AggregateApiHealthStateResult>,
+    #[serde(default)]
+    pub events: Vec<AggregateApiHealthEventResult>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiHealthListResult {
+    #[serde(default)]
+    pub items: Vec<AggregateApiHealthStateResult>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateApiCreateResult {

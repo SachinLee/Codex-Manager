@@ -17,6 +17,8 @@ import {
   normalizeAggregateApiTestResult,
   normalizeAggregateApiRuntimeStatus,
   normalizeAggregateApiRuntimeStatusList,
+  normalizeAggregateApiHealthDetail,
+  normalizeAggregateApiHealthList,
   normalizeApiKeyCreateResult,
   normalizeApiKeyList,
   normalizeApiKeyUsageStats,
@@ -84,6 +86,9 @@ import {
   ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
+  AggregateApiHealthConfig,
+  AggregateApiHealthDetail,
+  AggregateApiHealthSummary,
   ApiKey,
   ApiKeyCreateResult,
   ApiKeyUsageStat,
@@ -827,6 +832,26 @@ export const accountClient = {
     const status = normalizeAggregateApiRuntimeStatus(result);
     if (!status) throw new Error("Aggregate API runtime status reset returned no result");
     return status;
+  },
+  async listAggregateApiHealth(): Promise<AggregateApiHealthSummary[]> {
+    const result = await invoke<unknown>("service_aggregate_api_health_list", withAddr());
+    return normalizeAggregateApiHealthList(result);
+  },
+  async getAggregateApiHealth(apiId: string): Promise<AggregateApiHealthDetail> {
+    const result = await invoke<unknown>("service_aggregate_api_health_get", withAddr({ id: apiId, limit: 50 }));
+    return normalizeAggregateApiHealthDetail(result);
+  },
+  async updateAggregateApiHealthConfig(apiId: string, config: Pick<AggregateApiHealthConfig, "enabled" | "probeIntervalSecs" | "probeTimeoutMs" | "probeModel">): Promise<AggregateApiHealthConfig> {
+    const result = await invoke<unknown>("service_aggregate_api_health_config_update", withAddr({ id: apiId, enabled: config.enabled, intervalSecs: config.probeIntervalSecs, timeoutMs: config.probeTimeoutMs, probeModel: config.probeModel }));
+    return normalizeAggregateApiHealthDetail({ config: result }).config;
+  },
+  async probeAggregateApiHealth(apiId: string, model?: string | null): Promise<AggregateApiTestResult> {
+    const result = await invoke<unknown>("service_aggregate_api_health_probe", withAddr({ id: apiId, model: model || null }));
+    return normalizeAggregateApiTestResult(result);
+  },
+  async resetAggregateApiHealth(apiId: string): Promise<AggregateApiHealthSummary> {
+    const result = await invoke<unknown>("service_aggregate_api_health_reset", withAddr({ id: apiId }));
+    return normalizeAggregateApiHealthList({ items: [result] })[0];
   },
   async createAggregateApi(params: AggregateApiPayload): Promise<AggregateApiCreateResult> {
     const result = await invoke<unknown>(

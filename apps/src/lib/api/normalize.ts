@@ -18,6 +18,11 @@ import {
   ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
+  AggregateApiHealthConfig,
+  AggregateApiHealthDetail,
+  AggregateApiHealthEvent,
+  AggregateApiHealthState,
+  AggregateApiHealthSummary,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -1058,6 +1063,86 @@ export function normalizeAggregateApiRuntimeStatusList(
   return asArray(source.items ?? payload)
     .map(normalizeAggregateApiRuntimeStatus)
     .filter((item): item is AggregateApiRuntimeStatus => Boolean(item));
+}
+
+function normalizeAggregateApiHealthState(value: unknown): AggregateApiHealthState {
+  const state = asString(value);
+  return state === "healthy" || state === "degraded" || state === "unhealthy" || state === "cooldown" || state === "recovering"
+    ? state
+    : "unknown";
+}
+
+function normalizeAggregateApiHealthSummary(payload: unknown): AggregateApiHealthSummary | null {
+  const source = asObject(payload);
+  const aggregateApiId = asString(source.aggregateApiId ?? source.aggregate_api_id);
+  if (!aggregateApiId) return null;
+  return {
+    aggregateApiId,
+    upstreamModel: asString(source.upstreamModel ?? source.upstream_model) || null,
+    protocol: asString(source.protocol) || null,
+    state: normalizeAggregateApiHealthState(source.state),
+    consecutiveFailures: asInteger(source.consecutiveFailures ?? source.consecutive_failures, 0, 0),
+    failureThreshold: asInteger(source.failureThreshold ?? source.failure_threshold, 5, 1),
+    cooldownUntil: toNullableNumber(source.cooldownUntil ?? source.cooldown_until),
+    lastObservedAt: toNullableNumber(source.lastObservedAt ?? source.last_observed_at),
+    lastProbeAt: toNullableNumber(source.lastProbeAt ?? source.last_probe_at),
+    lastSuccessAt: toNullableNumber(source.lastSuccessAt ?? source.last_success_at),
+    lastFailureAt: toNullableNumber(source.lastFailureAt ?? source.last_failure_at),
+    latencyMs: toNullableNumber(source.latencyMs ?? source.latency_ms),
+    httpStatus: toNullableNumber(source.httpStatus ?? source.http_status),
+    errorCategory: asString(source.errorCategory ?? source.error_category) || null,
+    errorReason: asString(source.errorReason ?? source.error_reason) || null,
+    observationSource: asString(source.observationSource ?? source.observation_source) || null,
+    activeProbeEnabled: asBoolean(source.activeProbeEnabled ?? source.active_probe_enabled, false),
+    probeModel: asString(source.probeModel ?? source.probe_model) || null,
+    availableProbeModels: asStringArray(source.availableProbeModels ?? source.available_probe_models),
+  };
+}
+
+function normalizeAggregateApiHealthConfig(payload: unknown): AggregateApiHealthConfig {
+  const source = asObject(payload);
+  return {
+    aggregateApiId: asString(source.aggregateApiId ?? source.aggregate_api_id),
+    enabled: asBoolean(source.enabled, false),
+    probeIntervalSecs: asInteger(source.probeIntervalSecs ?? source.probe_interval_secs, 900, 60),
+    probeTimeoutMs: asInteger(source.probeTimeoutMs ?? source.probe_timeout_ms, 30_000, 1_000),
+    probeModel: asString(source.probeModel ?? source.probe_model) || null,
+    lastScheduledAt: toNullableNumber(source.lastScheduledAt ?? source.last_scheduled_at),
+    nextProbeAt: toNullableNumber(source.nextProbeAt ?? source.next_probe_at),
+  };
+}
+
+export function normalizeAggregateApiHealthList(payload: unknown): AggregateApiHealthSummary[] {
+  const source = asObject(payload);
+  return asArray(source.items ?? payload)
+    .map(normalizeAggregateApiHealthSummary)
+    .filter((item): item is AggregateApiHealthSummary => Boolean(item));
+}
+
+export function normalizeAggregateApiHealthDetail(payload: unknown): AggregateApiHealthDetail {
+  const source = asObject(payload);
+  const summary = normalizeAggregateApiHealthSummary(source.summary) ?? {
+    aggregateApiId: "", upstreamModel: null, protocol: null, state: "unknown" as const,
+    consecutiveFailures: 0, failureThreshold: 5, cooldownUntil: null, lastObservedAt: null,
+    lastProbeAt: null, lastSuccessAt: null, lastFailureAt: null, latencyMs: null,
+    httpStatus: null, errorCategory: null, errorReason: null, observationSource: null,
+    activeProbeEnabled: false, probeModel: null, availableProbeModels: [],
+  };
+  const events = asArray(source.events).map((item): AggregateApiHealthEvent | null => {
+    const event = asObject(item);
+    const aggregateApiId = asString(event.aggregateApiId ?? event.aggregate_api_id);
+    if (!aggregateApiId) return null;
+    return {
+      aggregateApiId, upstreamModel: asString(event.upstreamModel ?? event.upstream_model) || null,
+      protocol: asString(event.protocol) || null, trigger: asString(event.trigger), outcome: asString(event.outcome),
+      stateBefore: asString(event.stateBefore ?? event.state_before), stateAfter: asString(event.stateAfter ?? event.state_after),
+      errorCategory: asString(event.errorCategory ?? event.error_category) || null,
+      httpStatus: toNullableNumber(event.httpStatus ?? event.http_status), latencyMs: toNullableNumber(event.latencyMs ?? event.latency_ms),
+      reason: asString(event.reason) || null, observedAt: asInteger(event.observedAt ?? event.observed_at, 0, 0),
+      cooldownUntil: toNullableNumber(event.cooldownUntil ?? event.cooldown_until),
+    };
+  }).filter((item): item is AggregateApiHealthEvent => Boolean(item));
+  return { summary, config: normalizeAggregateApiHealthConfig(source.config), states: asArray(source.states).map(normalizeAggregateApiHealthSummary).filter((item): item is AggregateApiHealthSummary => Boolean(item)), events };
 }
 
 function normalizeAggregateApiCapabilityStatus(

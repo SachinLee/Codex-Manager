@@ -68,6 +68,69 @@ export interface AggregateApiRuntimeStatus {
   reason: string | null;
 }
 
+export type AggregateApiHealthState =
+  | "unknown"
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "cooldown"
+  | "recovering";
+
+export interface AggregateApiHealthConfig {
+  aggregateApiId: string;
+  enabled: boolean;
+  probeIntervalSecs: number;
+  probeTimeoutMs: number;
+  probeModel: string | null;
+  lastScheduledAt: number | null;
+  nextProbeAt: number | null;
+}
+
+export interface AggregateApiHealthSummary {
+  aggregateApiId: string;
+  upstreamModel: string | null;
+  protocol: string | null;
+  state: AggregateApiHealthState;
+  consecutiveFailures: number;
+  failureThreshold: number;
+  cooldownUntil: number | null;
+  lastObservedAt: number | null;
+  lastProbeAt: number | null;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+  latencyMs: number | null;
+  httpStatus: number | null;
+  errorCategory: string | null;
+  errorReason: string | null;
+  observationSource: string | null;
+  activeProbeEnabled: boolean;
+  probeModel: string | null;
+  availableProbeModels: string[];
+}
+
+export interface AggregateApiHealthEvent {
+  aggregateApiId: string;
+  upstreamModel: string | null;
+  protocol: string | null;
+  trigger: string;
+  outcome: string;
+  stateBefore: string;
+  stateAfter: string;
+  errorCategory: string | null;
+  httpStatus: number | null;
+  latencyMs: number | null;
+  reason: string | null;
+  observedAt: number;
+  cooldownUntil: number | null;
+}
+
+export interface AggregateApiHealthDetail {
+  summary: AggregateApiHealthSummary;
+  config: AggregateApiHealthConfig;
+  states: AggregateApiHealthSummary[];
+  events: AggregateApiHealthEvent[];
+}
+
 export type AggregateApiCapabilityStatus =
   | "supported"
   | "unsupported"

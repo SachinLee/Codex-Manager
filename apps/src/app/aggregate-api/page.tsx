@@ -78,6 +78,7 @@ import type {
   AggregateApiBalanceSnapshot,
   AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
+  AggregateApiHealthState,
 } from "@/types/api-key";
 import type { ModelDailyUsageStat } from "@/types/request-log";
 
@@ -88,7 +89,16 @@ const PROVIDER_LABELS: Record<string, string> = {
   compatible: "Codex + Claude",
 };
 
-const AGGREGATE_API_TABLE_COLUMNS = 11;
+const AGGREGATE_API_TABLE_COLUMNS = 12;
+
+const HEALTH_STATE_META: Record<AggregateApiHealthState, { label: string; className: string }> = {
+  healthy: { label: "推荐使用", className: "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" },
+  unknown: { label: "可用", className: "border-slate-500/20 bg-slate-500/10 text-slate-700 dark:text-slate-300" },
+  degraded: { label: "需注意", className: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300" },
+  unhealthy: { label: "不可用", className: "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300" },
+  cooldown: { label: "冷却中", className: "border-orange-500/20 bg-orange-500/10 text-orange-700 dark:text-orange-300" },
+  recovering: { label: "冷却中", className: "border-orange-500/20 bg-orange-500/10 text-orange-700 dark:text-orange-300" },
+};
 
 function buildAggregateApiDailyUsageMap(
   items: AggregateApiDailyUsageStat[],
@@ -215,6 +225,17 @@ export default function AggregateApiPage() {
     staleTime: 60_000,
     retry: 1,
   });
+  const healthQuery = useQuery({
+    queryKey: ["aggregate-api-health"],
+    queryFn: () => accountClient.listAggregateApiHealth(),
+    enabled: isQueryEnabled,
+    staleTime: 10_000,
+    refetchInterval: isQueryEnabled ? 15_000 : false,
+  });
+  const healthByApiId = useMemo(
+    () => new Map((healthQuery.data || []).map((item) => [item.aggregateApiId, item])),
+    [healthQuery.data],
+  );
 
   const dailyUsageQuery = useQuery({
     queryKey: [
@@ -374,7 +395,7 @@ export default function AggregateApiPage() {
   });
 
   const testMutation = useMutation({
-    mutationFn: (apiId: string) => accountClient.testAggregateApiConnection(apiId),
+    mutationFn: (apiId: string) => accountClient.probeAggregateApiHealth(apiId),
     onMutate: (apiId) => setTestingApiId(apiId),
     onSuccess: (result) => {
       if (result.ok) {
@@ -385,8 +406,28 @@ export default function AggregateApiPage() {
     },
     onSettled: async (_result, _error, apiId) => {
       setTestingApiId((current) => (current === apiId ? null : current));
-      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["aggregate-api-health"] }),
+      ]);
     },
+  });
+
+  const activeProbeMutation = useMutation({
+    mutationFn: async ({ apiId, enabled, probeModel }: { apiId: string; enabled: boolean; probeModel?: string | null }) => {
+      const detail = await accountClient.getAggregateApiHealth(apiId);
+      return accountClient.updateAggregateApiHealthConfig(apiId, {
+        enabled,
+        probeIntervalSecs: detail.config.probeIntervalSecs || 900,
+        probeTimeoutMs: detail.config.probeTimeoutMs || 30_000,
+        probeModel: probeModel === undefined ? detail.config.probeModel : probeModel,
+      });
+    },
+    onSuccess: async (_result, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["aggregate-api-health"] });
+      toast.success(variables.enabled ? t("主动监测已开启") : t("主动监测已关闭"));
+    },
+    onError: (error: unknown) => toast.error(`${t("更新监测设置失败")}: ${getAppErrorMessage(error)}`),
   });
 
   const resetCooldownMutation = useMutation({
@@ -732,6 +773,7 @@ export default function AggregateApiPage() {
                     <TableHead className="h-9">{t("余额")}</TableHead>
                     <TableHead className="h-9">{t("今日用量")}</TableHead>
                     <TableHead className="h-9">{t("运行状态")}</TableHead>
+                    <TableHead className="h-9">{t("健康监测")}</TableHead>
                     <TableHead className="h-9">{t("连通性")}</TableHead>
                     <TableHead className="h-9">{t("启用")}</TableHead>
                     <TableHead className="h-9 text-right">{t("操作")}</TableHead>
@@ -766,6 +808,8 @@ export default function AggregateApiPage() {
                       const runtimeStatus = coolingStatuses[0] || runtimeStatuses[0];
                       const isCoolingDown = coolingStatuses.length > 0;
                       const usage = dailyUsageById.get(api.id);
+                      const health = healthByApiId.get(api.id);
+                      const healthMeta = HEALTH_STATE_META[health?.state || "unknown"];
                       return (
                         <TableRow key={api.id}>
                           <TableCell className="py-2 font-mono tabular-nums">
@@ -963,6 +1007,54 @@ export default function AggregateApiPage() {
                                 ) : null}
                               </div>
                             )}
+                          </TableCell>
+                          <TableCell className="min-w-[128px] py-2">
+                            <Tooltip>
+                              <TooltipTrigger render={<div />} className="flex cursor-help flex-col items-start gap-1">
+                                <Badge className={`h-5 text-[10px] ${healthMeta.className}`}>
+                                  {t(healthMeta.label)}
+                                </Badge>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {health?.latencyMs != null ? `${health.latencyMs} ms` : t("暂无观测")}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs space-y-1 text-xs">
+                                <div>{health?.errorCategory || t("暂无上游错误")}</div>
+                                {health?.errorReason ? <div>{health.errorReason}</div> : null}
+                                {health?.lastObservedAt ? <div>{t("最近观测")}: {formatTsFromSeconds(health.lastObservedAt, "-")}</div> : null}
+                              </TooltipContent>
+                            </Tooltip>
+                            <div className="mt-1 flex items-center gap-1">
+                              <Switch
+                                checked={health?.activeProbeEnabled || false}
+                                disabled={!isServiceReady || activeProbeMutation.isPending}
+                                onCheckedChange={(enabled) => activeProbeMutation.mutate({ apiId: api.id, enabled })}
+                                aria-label={t("主动监测")}
+                              />
+                              <span className="text-[10px] text-muted-foreground">{t("主动")}</span>
+                            </div>
+                            <Select
+                              value={health?.probeModel || "__auto"}
+                              onValueChange={(value) => activeProbeMutation.mutate({
+                                apiId: api.id,
+                                enabled: health?.activeProbeEnabled || false,
+                                probeModel: value === "__auto" ? null : value,
+                              })}
+                              disabled={!isServiceReady || activeProbeMutation.isPending}
+                            >
+                              <SelectTrigger
+                                className="mt-1 h-6 w-[126px] px-1.5 text-[10px]"
+                                aria-label={t("检测模型")}
+                              >
+                                <SelectValue placeholder={t("自动选择模型")} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__auto">{t("自动选择模型")}</SelectItem>
+                                {(health?.availableProbeModels || []).map((model) => (
+                                  <SelectItem key={model} value={model}>{model}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </TableCell>
                           <TableCell className="py-2">
                             <div className="flex items-center gap-1.5">

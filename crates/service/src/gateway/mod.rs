@@ -1250,16 +1250,37 @@ pub(crate) fn gateway_is_aggregate_api_in_cooldown(
     upstream_model: Option<&str>,
 ) -> bool {
     aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id, upstream_model)
+        || crate::aggregate_api_health::is_routing_blocked(api_id, upstream_model)
 }
 
 pub(crate) fn gateway_record_aggregate_api_failure(
     api_id: &str,
     upstream_model: Option<&str>,
 ) -> bool {
+    crate::aggregate_api_health::record_observation(
+        api_id,
+        upstream_model,
+        None,
+        "passive",
+        false,
+        None,
+        None,
+        Some("aggregate API upstream request failed"),
+    );
     aggregate_api_cooldown::record_aggregate_api_failure(api_id, upstream_model)
 }
 
 pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str, upstream_model: Option<&str>) {
+    crate::aggregate_api_health::record_observation(
+        api_id,
+        upstream_model,
+        None,
+        "passive",
+        true,
+        None,
+        None,
+        None,
+    );
     aggregate_api_cooldown::clear_aggregate_api_cooldown(api_id, upstream_model);
 }
 

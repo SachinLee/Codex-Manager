@@ -36,6 +36,63 @@ pub async fn service_aggregate_api_runtime_status_reset(
     .await
 }
 
+#[tauri::command]
+pub async fn service_aggregate_api_health_list(
+    addr: Option<String>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("aggregateApi/health/list", addr, None).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_health_get(
+    addr: Option<String>,
+    id: String,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/health/get",
+        addr,
+        Some(serde_json::json!({ "id": id, "limit": limit })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_health_config_update(
+    addr: Option<String>,
+    id: String,
+    enabled: bool,
+    interval_secs: Option<i64>,
+    timeout_ms: Option<i64>,
+    probe_model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("aggregateApi/health/config/update", addr, Some(serde_json::json!({ "id": id, "enabled": enabled, "intervalSecs": interval_secs, "timeoutMs": timeout_ms, "probeModel": probe_model }))).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_health_probe(
+    addr: Option<String>,
+    id: String,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/health/probe",
+        addr,
+        Some(serde_json::json!({ "id": id, "model": model })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_health_reset(
+    addr: Option<String>,
+    id: String,
+    scope_model: Option<String>,
+    scope_protocol: Option<String>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("aggregateApi/health/reset", addr, Some(serde_json::json!({ "id": id, "scopeModel": scope_model, "scopeProtocol": scope_protocol }))).await
+}
+
 /// 函数 `service_aggregate_api_create`
 ///
 /// 作者: gaohongshun

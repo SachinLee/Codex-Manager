@@ -12,6 +12,7 @@ mod account_subscriptions;
 mod accounts;
 mod accounts_sql;
 mod agent_identities;
+mod aggregate_api_health;
 mod aggregate_apis;
 mod aggregate_apis_sql;
 mod api_key_quota_limits;
@@ -1638,6 +1639,58 @@ pub struct AggregateApiSupplierModel {
 }
 
 #[derive(Debug, Clone)]
+pub struct AggregateApiHealthConfig {
+    pub aggregate_api_id: String,
+    pub enabled: bool,
+    pub probe_interval_secs: i64,
+    pub probe_timeout_ms: i64,
+    pub probe_model: Option<String>,
+    pub last_scheduled_at: Option<i64>,
+    pub next_probe_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiHealthState {
+    pub aggregate_api_id: String,
+    pub upstream_model: Option<String>,
+    pub protocol: Option<String>,
+    pub state: String,
+    pub consecutive_failures: i64,
+    pub consecutive_successes: i64,
+    pub failure_threshold: i64,
+    pub cooldown_until: Option<i64>,
+    pub half_open_at: Option<i64>,
+    pub last_observed_at: Option<i64>,
+    pub last_probe_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub last_failure_at: Option<i64>,
+    pub last_latency_ms: Option<i64>,
+    pub last_http_status: Option<i64>,
+    pub last_error_category: Option<String>,
+    pub last_error_reason: Option<String>,
+    pub last_observation_source: Option<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiHealthEvent {
+    pub aggregate_api_id: String,
+    pub upstream_model: Option<String>,
+    pub protocol: Option<String>,
+    pub trigger: String,
+    pub outcome: String,
+    pub state_before: String,
+    pub state_after: String,
+    pub error_category: Option<String>,
+    pub http_status: Option<i64>,
+    pub latency_ms: Option<i64>,
+    pub reason: Option<String>,
+    pub observed_at: i64,
+    pub cooldown_until: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PluginInstall {
     pub plugin_id: String,
     pub source_url: Option<String>,
@@ -2530,6 +2583,10 @@ impl Storage {
             "128_request_token_stat_rollup_hourly_coverage",
             include_str!("../../migrations/128_request_token_stat_rollup_hourly_coverage.sql"),
             |s| s.ensure_request_token_stat_rollup_hourly_coverage_column(),
+        )?;
+        self.apply_sql_migration(
+            "130_aggregate_api_health",
+            include_str!("../../migrations/130_aggregate_api_health.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

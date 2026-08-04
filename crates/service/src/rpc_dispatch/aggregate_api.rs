@@ -4,12 +4,14 @@ use codexmanager_core::rpc::types::{
 
 use crate::{
     clear_aggregate_api_capability_observation, create_aggregate_api, delete_aggregate_api,
-    diagnose_aggregate_api_capabilities, get_aggregate_api_capabilities,
-    list_aggregate_api_runtime_statuses, list_aggregate_apis,
-    list_recent_aggregate_api_capability_attempts, read_aggregate_api_secret,
-    refresh_aggregate_api_balance, reset_aggregate_api_capability_override,
+    diagnose_aggregate_api_capabilities, get_aggregate_api_capabilities, get_aggregate_api_health,
+    list_aggregate_api_health, list_aggregate_api_runtime_statuses, list_aggregate_apis,
+    list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
+    read_aggregate_api_secret, refresh_aggregate_api_balance,
+    reset_aggregate_api_capability_override, reset_aggregate_api_health,
     reset_aggregate_api_runtime_status, set_aggregate_api_capability_override,
     set_aggregate_api_capability_routing_mode, test_aggregate_api_connection, update_aggregate_api,
+    update_aggregate_api_health_config,
 };
 
 /// 函数 `api_id_param`
@@ -57,6 +59,29 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "aggregateApi/runtimeStatus/reset" => super::value_or_error(
             reset_aggregate_api_runtime_status(api_id_param(req).unwrap_or("")),
         ),
+        "aggregateApi/health/list" => super::value_or_error(list_aggregate_api_health()),
+        "aggregateApi/health/get" => super::value_or_error(get_aggregate_api_health(
+            api_id_param(req).unwrap_or(""),
+            super::i64_param(req, "limit").unwrap_or(50),
+        )),
+        "aggregateApi/health/config/update" => {
+            super::value_or_error(update_aggregate_api_health_config(
+                api_id_param(req).unwrap_or(""),
+                super::bool_param(req, "enabled").unwrap_or(false),
+                super::i64_param(req, "intervalSecs"),
+                super::i64_param(req, "timeoutMs"),
+                super::str_param(req, "probeModel"),
+            ))
+        }
+        "aggregateApi/health/probe" => super::value_or_error(probe_aggregate_api_health(
+            api_id_param(req).unwrap_or(""),
+            super::str_param(req, "model"),
+        )),
+        "aggregateApi/health/reset" => super::value_or_error(reset_aggregate_api_health(
+            api_id_param(req).unwrap_or(""),
+            super::str_param(req, "scopeModel"),
+            super::str_param(req, "scopeProtocol"),
+        )),
         "aggregateApi/create" => {
             let provider_type = super::string_param(req, "providerType");
             let supplier_name = super::string_param(req, "supplierName");

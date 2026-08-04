@@ -1320,6 +1320,7 @@ fn build_codex_probe_body(model: &str) -> serde_json::Value {
                 "text": "Who are you?"
             }]
         }],
+        "max_output_tokens": 1,
         "stream": true
     })
 }
@@ -2476,6 +2477,13 @@ fn configured_aggregate_probe_model(
 pub(crate) fn test_aggregate_api_connection(
     api_id: &str,
 ) -> Result<AggregateApiTestResult, String> {
+    test_aggregate_api_connection_with_model(api_id, None)
+}
+
+pub(crate) fn test_aggregate_api_connection_with_model(
+    api_id: &str,
+    requested_model: Option<&str>,
+) -> Result<AggregateApiTestResult, String> {
     if api_id.is_empty() {
         return Err("aggregate api id required".to_string());
     }
@@ -2488,7 +2496,11 @@ pub(crate) fn test_aggregate_api_connection(
     let secret = api_with_secrets
         .secret_value
         .ok_or_else(|| "aggregate api secret not found".to_string())?;
-    let probe_model = configured_aggregate_probe_model(&storage, api_id)?;
+    let probe_model = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .unwrap_or(configured_aggregate_probe_model(&storage, api_id)?);
     let client = gateway::upstream_client_for_aggregate_url(api.url.as_str());
     let started_at = Instant::now();
     let provider_type = normalize_provider_type_value(api.provider_type.as_str());
@@ -2503,7 +2515,7 @@ pub(crate) fn test_aggregate_api_connection(
     };
     let (ok, status_code, last_error) = match result {
         Ok(code) => (true, Some(code), None),
-        Err(err) => (false, None, Some(err)),
+        Err(err) => (false, probe_status_code_from_error(err.as_str()), Some(err)),
     };
     let message =
         last_error.map(|err| format!("provider={provider_type}; model={probe_model}; {err}"));
@@ -2517,6 +2529,17 @@ pub(crate) fn test_aggregate_api_connection(
         tested_at: now_ts(),
         latency_ms: started_at.elapsed().as_millis() as i64,
     })
+}
+
+fn probe_status_code_from_error(message: &str) -> Option<i64> {
+    let marker = "http_status=";
+    let start = message.find(marker)? + marker.len();
+    message[start..]
+        .chars()
+        .take_while(|value| value.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 pub(crate) fn refresh_aggregate_api_balance(
