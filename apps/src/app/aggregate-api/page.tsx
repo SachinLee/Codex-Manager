@@ -395,8 +395,9 @@ export default function AggregateApiPage() {
   });
 
   const testMutation = useMutation({
-    mutationFn: (apiId: string) => accountClient.probeAggregateApiHealth(apiId),
-    onMutate: (apiId) => setTestingApiId(apiId),
+    mutationFn: ({ apiId, model }: { apiId: string; model?: string | null }) =>
+      accountClient.probeAggregateApiHealth(apiId, model),
+    onMutate: ({ apiId }) => setTestingApiId(apiId),
     onSuccess: (result) => {
       if (result.ok) {
         toast.success(t("连通性测试成功"));
@@ -404,7 +405,8 @@ export default function AggregateApiPage() {
         toast.error(result.message || t("连通性测试失败"));
       }
     },
-    onSettled: async (_result, _error, apiId) => {
+    onSettled: async (_result, _error, variables) => {
+      const apiId = variables?.apiId;
       setTestingApiId((current) => (current === apiId ? null : current));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
@@ -1096,7 +1098,10 @@ export default function AggregateApiPage() {
                                 variant="ghost"
                                 className="h-6 px-1.5 text-[11px]"
                                 disabled={testingApiId === api.id || api.modelSlugs.length === 0}
-                                onClick={() => testMutation.mutate(api.id)}
+                                onClick={() => testMutation.mutate({
+                                  apiId: api.id,
+                                  model: health?.probeModel,
+                                })}
                               >
                                 {testingApiId === api.id ? t("测试中...") : t("测试")}
                               </Button>

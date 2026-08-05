@@ -2496,10 +2496,17 @@ pub(crate) fn test_aggregate_api_connection_with_model(
     let secret = api_with_secrets
         .secret_value
         .ok_or_else(|| "aggregate api secret not found".to_string())?;
+    // Manual probes may omit a model. In that case, honor the persisted health
+    // configuration before falling back to the highest-priority route model.
+    let configured_probe_model = storage
+        .aggregate_api_health_config(api_id)
+        .ok()
+        .and_then(|config| config.probe_model);
     let probe_model = requested_model
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string)
+        .or(configured_probe_model)
         .unwrap_or(configured_aggregate_probe_model(&storage, api_id)?);
     let client = gateway::upstream_client_for_aggregate_url(api.url.as_str());
     let started_at = Instant::now();
