@@ -1409,6 +1409,7 @@ pub(in super::super) fn proxy_aggregate_request(
         .filter(|candidate| {
             let upstream_model = aggregate_upstream_model_for_log(candidate, model_for_log);
             let is_cooling_down = super::super::super::gateway_is_aggregate_api_in_cooldown(
+                storage,
                 candidate.id.as_str(),
                 upstream_model,
             );
@@ -2250,6 +2251,7 @@ pub(in super::super) fn proxy_aggregate_request(
 
             if bridge_ok && final_error.is_none() && bridge.reasoning_guard_action.is_none() {
                 super::super::super::gateway_clear_aggregate_api_cooldown(
+                    storage,
                     candidate_id.as_str(),
                     candidate_upstream_model.as_deref(),
                 );
@@ -2378,6 +2380,7 @@ pub(in super::super) fn proxy_aggregate_request(
 
         if cooldown_eligible_failure {
             super::super::super::gateway_record_aggregate_api_failure(
+                storage,
                 candidate_id.as_str(),
                 candidate_upstream_model.as_deref(),
             );

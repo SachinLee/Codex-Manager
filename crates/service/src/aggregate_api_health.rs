@@ -147,7 +147,8 @@ fn trigger_label(trigger: &str) -> &str {
     }
 }
 
-pub(crate) fn record_observation(
+pub(crate) fn record_observation_with_storage(
+    storage: &codexmanager_core::storage::Storage,
     api_id: &str,
     model: Option<&str>,
     protocol: Option<&str>,
@@ -157,9 +158,6 @@ pub(crate) fn record_observation(
     latency_ms: Option<i64>,
     reason: Option<&str>,
 ) {
-    let Some(storage) = open_storage() else {
-        return;
-    };
     let now = now_ts();
     let category = (!ok).then(|| failure_category(status, reason).to_string());
     let source_scoped = category.as_deref() == Some("auth");
@@ -177,6 +175,14 @@ pub(crate) fn record_observation(
         .aggregate_api_health_state(api_id, state_model.as_deref(), state_protocol.as_deref())
         .ok()
         .flatten();
+    if ok
+        && trigger == "passive"
+        && existing
+            .as_ref()
+            .is_some_and(|state| state.state == "healthy" && state.last_error_category.is_none())
+    {
+        return;
+    }
     let before = existing
         .as_ref()
         .map(|state| state.state.as_str())
@@ -270,10 +276,40 @@ pub(crate) fn record_observation(
     }
 }
 
-pub(crate) fn is_routing_blocked(api_id: &str, model: Option<&str>) -> bool {
+pub(crate) fn record_observation(
+    api_id: &str,
+    model: Option<&str>,
+    protocol: Option<&str>,
+    trigger: &str,
+    ok: bool,
+    status: Option<i64>,
+    latency_ms: Option<i64>,
+    reason: Option<&str>,
+) {
     let Some(storage) = open_storage() else {
-        return false;
+        return;
     };
+    record_observation_with_storage(
+        &storage, api_id, model, protocol, trigger, ok, status, latency_ms, reason,
+    );
+}
+
+pub(crate) fn is_routing_blocked_with_storage(
+    storage: &codexmanager_core::storage::Storage,
+    api_id: &str,
+    model: Option<&str>,
+) -> bool {
+    // Passive observations remain visible for every source, but a persisted
+    // health cooldown may only remove routes when proactive monitoring was
+    // explicitly enabled for that source. The legacy in-memory cooldown still
+    // protects the current process from repeated failures.
+    if !storage
+        .aggregate_api_health_config(api_id)
+        .map(|config| config.enabled)
+        .unwrap_or(false)
+    {
+        return false;
+    }
     let now = now_ts();
     let source_blocked = storage
         .aggregate_api_health_state(api_id, None, None)
@@ -592,4 +628,116 @@ pub(crate) fn ensure_aggregate_api_health_polling() {
             thread::sleep(Duration::from_secs(15));
         })
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codexmanager_core::storage::{AggregateApi, Storage};
+
+    fn aggregate_api(id: &str) -> AggregateApi {
+        AggregateApi {
+            id: id.to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: None,
+            sort: 0,
+            url: "https://example.test/v1".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
+            status: "active".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        }
+    }
+
+    #[test]
+    fn persisted_cooldown_only_blocks_when_proactive_monitoring_is_enabled() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("initialize storage");
+        let api_id = "aggregate-health-gate";
+        let model = "gpt-5.6-terra";
+        storage
+            .insert_aggregate_api(&aggregate_api(api_id))
+            .expect("insert aggregate api");
+
+        let now = now_ts();
+        let mut config = storage
+            .aggregate_api_health_config(api_id)
+            .expect("read health config");
+        config.enabled = false;
+        storage
+            .upsert_aggregate_api_health_config(&config)
+            .expect("save disabled health config");
+        let state = AggregateApiHealthState {
+            aggregate_api_id: api_id.to_string(),
+            upstream_model: Some(model.to_string()),
+            protocol: None,
+            state: "cooldown".to_string(),
+            consecutive_failures: FAILURE_THRESHOLD,
+            consecutive_successes: 0,
+            failure_threshold: FAILURE_THRESHOLD,
+            cooldown_until: Some(now + 60),
+            half_open_at: Some(now + 60),
+            last_observed_at: Some(now),
+            last_probe_at: Some(now),
+            last_success_at: None,
+            last_failure_at: Some(now),
+            last_latency_ms: None,
+            last_http_status: Some(503),
+            last_error_category: Some("transient".to_string()),
+            last_error_reason: Some("upstream unavailable".to_string()),
+            last_observation_source: Some("passive".to_string()),
+            updated_at: now,
+        };
+        let event = AggregateApiHealthEvent {
+            aggregate_api_id: api_id.to_string(),
+            upstream_model: Some(model.to_string()),
+            protocol: None,
+            trigger: "passive".to_string(),
+            outcome: "failure".to_string(),
+            state_before: "degraded".to_string(),
+            state_after: "cooldown".to_string(),
+            error_category: Some("transient".to_string()),
+            http_status: Some(503),
+            latency_ms: None,
+            reason: Some("upstream unavailable".to_string()),
+            observed_at: now,
+            cooldown_until: Some(now + 60),
+        };
+        storage
+            .save_aggregate_api_health_observation(&state, &event)
+            .expect("save health state");
+
+        assert!(!is_routing_blocked_with_storage(
+            &storage,
+            api_id,
+            Some(model)
+        ));
+
+        config.enabled = true;
+        storage
+            .upsert_aggregate_api_health_config(&config)
+            .expect("save enabled health config");
+        assert!(is_routing_blocked_with_storage(
+            &storage,
+            api_id,
+            Some(model)
+        ));
+    }
 }

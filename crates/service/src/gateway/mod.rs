@@ -1,4 +1,5 @@
 use crate::storage_helpers::open_storage;
+use codexmanager_core::storage::Storage;
 
 pub(crate) const MISSING_AUTH_JSON_OPENAI_API_KEY_ERROR: &str =
     "配置错误：未配置auth.json的OPENAI_API_KEY(invalid api key)";
@@ -1246,18 +1247,25 @@ pub(crate) fn gateway_record_failover_attempt() {
 }
 
 pub(crate) fn gateway_is_aggregate_api_in_cooldown(
+    storage: &Storage,
     api_id: &str,
     upstream_model: Option<&str>,
 ) -> bool {
     aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id, upstream_model)
-        || crate::aggregate_api_health::is_routing_blocked(api_id, upstream_model)
+        || crate::aggregate_api_health::is_routing_blocked_with_storage(
+            storage,
+            api_id,
+            upstream_model,
+        )
 }
 
 pub(crate) fn gateway_record_aggregate_api_failure(
+    storage: &Storage,
     api_id: &str,
     upstream_model: Option<&str>,
 ) -> bool {
-    crate::aggregate_api_health::record_observation(
+    crate::aggregate_api_health::record_observation_with_storage(
+        storage,
         api_id,
         upstream_model,
         None,
@@ -1270,8 +1278,13 @@ pub(crate) fn gateway_record_aggregate_api_failure(
     aggregate_api_cooldown::record_aggregate_api_failure(api_id, upstream_model)
 }
 
-pub(crate) fn gateway_clear_aggregate_api_cooldown(api_id: &str, upstream_model: Option<&str>) {
-    crate::aggregate_api_health::record_observation(
+pub(crate) fn gateway_clear_aggregate_api_cooldown(
+    storage: &Storage,
+    api_id: &str,
+    upstream_model: Option<&str>,
+) {
+    crate::aggregate_api_health::record_observation_with_storage(
+        storage,
         api_id,
         upstream_model,
         None,
