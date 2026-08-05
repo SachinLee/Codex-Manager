@@ -23,6 +23,7 @@ import {
   AggregateApiHealthEvent,
   AggregateApiHealthState,
   AggregateApiHealthSummary,
+  AggregateApiProbeCostSummary,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -1117,6 +1118,23 @@ export function normalizeAggregateApiHealthList(payload: unknown): AggregateApiH
   return asArray(source.items ?? payload)
     .map(normalizeAggregateApiHealthSummary)
     .filter((item): item is AggregateApiHealthSummary => Boolean(item));
+}
+
+export function normalizeAggregateApiProbeCostList(payload: unknown): AggregateApiProbeCostSummary[] {
+  const source = asObject(payload);
+  return asArray(source.items ?? payload).map((item) => {
+    const value = asObject(item);
+    return {
+      aggregateApiId: asString(value.aggregateApiId ?? value.aggregate_api_id),
+      probeCount: asInteger(value.probeCount ?? value.probe_count, 0, 0),
+      pricedProbeCount: asInteger(value.pricedProbeCount ?? value.priced_probe_count, 0, 0),
+      unknownCostProbeCount: asInteger(value.unknownCostProbeCount ?? value.unknown_cost_probe_count, 0, 0),
+      scheduledProbeCount: asInteger(value.scheduledProbeCount ?? value.scheduled_probe_count, 0, 0),
+      halfOpenProbeCount: asInteger(value.halfOpenProbeCount ?? value.half_open_probe_count, 0, 0),
+      manualProbeCount: asInteger(value.manualProbeCount ?? value.manual_probe_count, 0, 0),
+      estimatedCostUsd: toNullableNumber(value.estimatedCostUsd ?? value.estimated_cost_usd) ?? 0,
+    };
+  }).filter((item) => Boolean(item.aggregateApiId));
 }
 
 export function normalizeAggregateApiHealthDetail(payload: unknown): AggregateApiHealthDetail {

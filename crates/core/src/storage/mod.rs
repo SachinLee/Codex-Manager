@@ -13,6 +13,7 @@ mod accounts;
 mod accounts_sql;
 mod agent_identities;
 mod aggregate_api_health;
+mod aggregate_api_probe_costs;
 mod aggregate_apis;
 mod aggregate_apis_sql;
 mod api_key_quota_limits;
@@ -43,7 +44,8 @@ mod tokens;
 mod usage;
 
 pub use model_billing_v2::{
-    ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2, ModelPriceTierV2,
+    compute_charge_v2, ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2,
+    ModelPriceTierV2,
 };
 pub use model_catalog_v2::{
     ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
@@ -1691,6 +1693,35 @@ pub struct AggregateApiHealthEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct AggregateApiProbeCost {
+    pub aggregate_api_id: String,
+    pub upstream_model: String,
+    pub trigger: String,
+    pub outcome: String,
+    pub estimated_input_tokens: i64,
+    pub estimated_output_tokens: i64,
+    pub pricing_model: Option<String>,
+    pub price_source: Option<String>,
+    pub input_microusd_per_1m: Option<i64>,
+    pub output_microusd_per_1m: Option<i64>,
+    pub rate_multiplier_millis: Option<i64>,
+    pub estimated_cost_microusd: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AggregateApiProbeCostSummary {
+    pub aggregate_api_id: String,
+    pub probe_count: i64,
+    pub priced_probe_count: i64,
+    pub unknown_cost_probe_count: i64,
+    pub scheduled_probe_count: i64,
+    pub half_open_probe_count: i64,
+    pub manual_probe_count: i64,
+    pub estimated_cost_microusd: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PluginInstall {
     pub plugin_id: String,
     pub source_url: Option<String>,
@@ -2587,6 +2618,10 @@ impl Storage {
         self.apply_sql_migration(
             "130_aggregate_api_health",
             include_str!("../../migrations/130_aggregate_api_health.sql"),
+        )?;
+        self.apply_sql_migration(
+            "131_aggregate_api_probe_costs",
+            include_str!("../../migrations/131_aggregate_api_probe_costs.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

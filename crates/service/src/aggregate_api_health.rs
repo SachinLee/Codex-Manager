@@ -5,10 +5,12 @@ use std::time::Duration;
 
 use codexmanager_core::rpc::types::{
     AggregateApiHealthConfigResult, AggregateApiHealthDetailResult, AggregateApiHealthEventResult,
-    AggregateApiHealthListResult, AggregateApiHealthStateResult, AggregateApiTestResult,
+    AggregateApiHealthListResult, AggregateApiHealthStateResult, AggregateApiProbeCostListResult,
+    AggregateApiProbeCostSummaryResult, AggregateApiTestResult,
 };
 use codexmanager_core::storage::{
     now_ts, AggregateApiHealthConfig, AggregateApiHealthEvent, AggregateApiHealthState,
+    AggregateApiProbeCost,
 };
 
 use crate::storage_helpers::open_storage;
@@ -498,17 +500,142 @@ fn probe_health_with_trigger(
     trigger: &str,
 ) -> Result<AggregateApiTestResult, String> {
     let result = crate::aggregate_api::test_aggregate_api_connection_with_model(api_id, model)?;
-    record_observation(
-        api_id,
-        model,
-        None,
-        trigger,
-        result.ok,
-        result.status_code,
-        Some(result.latency_ms),
-        result.message.as_deref(),
-    );
+    if let Some(storage) = open_storage() {
+        record_probe_cost(&storage, api_id, model, trigger, result.ok);
+        record_observation_with_storage(
+            &storage,
+            api_id,
+            model,
+            None,
+            trigger,
+            result.ok,
+            result.status_code,
+            Some(result.latency_ms),
+            result.message.as_deref(),
+        );
+    } else {
+        record_observation(
+            api_id,
+            model,
+            None,
+            trigger,
+            result.ok,
+            result.status_code,
+            Some(result.latency_ms),
+            result.message.as_deref(),
+        );
+    }
     Ok(result)
+}
+
+const ESTIMATED_PROBE_INPUT_TOKENS: i64 = 100;
+const ESTIMATED_PROBE_OUTPUT_TOKENS: i64 = 16;
+
+fn record_probe_cost(
+    storage: &codexmanager_core::storage::Storage,
+    api_id: &str,
+    model: Option<&str>,
+    trigger: &str,
+    ok: bool,
+) {
+    let Ok(model) = crate::aggregate_api::resolve_aggregate_probe_model(storage, api_id, model)
+    else {
+        return;
+    };
+    let Ok(api) = storage.find_aggregate_api_by_id(api_id) else {
+        return;
+    };
+    let Some(api) = api else {
+        return;
+    };
+    let pricing = storage
+        .list_managed_models_v2(true)
+        .ok()
+        .and_then(|models| {
+            models.into_iter().find_map(|managed| {
+                let route_matches = managed.routes.iter().any(|route| {
+                    route.enabled
+                        && route.source_kind == "aggregate_api"
+                        && route.source_id == api_id
+                        && route.upstream_model.eq_ignore_ascii_case(model.as_str())
+                });
+                route_matches.then_some(managed)
+            })
+        });
+    let (pricing_model, price_source, input_price, output_price, estimated_cost) = pricing
+        .and_then(|managed| {
+            if managed.price.price_status == "missing" {
+                return None;
+            }
+            let tier = managed
+                .price_tiers
+                .iter()
+                .filter(|tier| tier.min_input_tokens == 0)
+                .max_by_key(|tier| tier.min_input_tokens)?;
+            let multiplier = (api.cost_multiplier.max(0.0) * 1_000.0).round() as i64;
+            let charge = codexmanager_core::storage::compute_charge_v2(
+                ESTIMATED_PROBE_INPUT_TOKENS,
+                0,
+                0,
+                ESTIMATED_PROBE_OUTPUT_TOKENS,
+                tier,
+                multiplier,
+            )
+            .ok()?;
+            Some((
+                Some(managed.slug),
+                managed.price.price_source,
+                Some(tier.input_microusd_per_1m),
+                Some(tier.output_microusd_per_1m),
+                Some(charge.charged_cost_microusd),
+            ))
+        })
+        .unwrap_or((None, None, None, None, None));
+    let _ = storage.insert_aggregate_api_probe_cost(&AggregateApiProbeCost {
+        aggregate_api_id: api_id.to_string(),
+        upstream_model: model,
+        trigger: trigger.to_string(),
+        outcome: if ok { "success" } else { "failure" }.to_string(),
+        estimated_input_tokens: ESTIMATED_PROBE_INPUT_TOKENS,
+        estimated_output_tokens: ESTIMATED_PROBE_OUTPUT_TOKENS,
+        pricing_model,
+        price_source,
+        input_microusd_per_1m: input_price,
+        output_microusd_per_1m: output_price,
+        rate_multiplier_millis: Some((api.cost_multiplier.max(0.0) * 1_000.0).round() as i64),
+        estimated_cost_microusd: estimated_cost,
+        created_at: now_ts(),
+    });
+}
+
+pub(crate) fn list_probe_costs(
+    start_ts: i64,
+    end_ts: i64,
+) -> Result<AggregateApiProbeCostListResult, String> {
+    if start_ts <= 0 || end_ts <= start_ts {
+        return Err("endTs must be greater than a positive startTs".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let items = storage
+        .summarize_aggregate_api_probe_costs_between(start_ts, end_ts)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|item| AggregateApiProbeCostSummaryResult {
+            aggregate_api_id: item.aggregate_api_id,
+            probe_count: item.probe_count,
+            priced_probe_count: item.priced_probe_count,
+            unknown_cost_probe_count: item.unknown_cost_probe_count,
+            scheduled_probe_count: item.scheduled_probe_count,
+            half_open_probe_count: item.half_open_probe_count,
+            manual_probe_count: item.manual_probe_count,
+            estimated_cost_usd: item.estimated_cost_microusd as f64 / 1_000_000.0,
+        })
+        .collect();
+    Ok(AggregateApiProbeCostListResult {
+        items,
+        start_ts,
+        end_ts,
+    })
 }
 
 pub(crate) fn probe_health(

@@ -6,6 +6,7 @@ export function createAggregateApiWebCommands(): Record<string, WebCommandDescri
     service_aggregate_api_runtime_status_list: { rpcMethod: "aggregateApi/runtimeStatus/list" },
     service_aggregate_api_runtime_status_reset: { rpcMethod: "aggregateApi/runtimeStatus/reset" },
     service_aggregate_api_health_list: { rpcMethod: "aggregateApi/health/list" },
+    service_aggregate_api_health_costs: { rpcMethod: "aggregateApi/health/costs" },
     service_aggregate_api_health_get: { rpcMethod: "aggregateApi/health/get" },
     service_aggregate_api_health_config_update: { rpcMethod: "aggregateApi/health/config/update" },
     service_aggregate_api_health_probe: { rpcMethod: "aggregateApi/health/probe" },

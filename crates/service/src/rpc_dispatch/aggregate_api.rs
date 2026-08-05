@@ -5,8 +5,8 @@ use codexmanager_core::rpc::types::{
 use crate::{
     clear_aggregate_api_capability_observation, create_aggregate_api, delete_aggregate_api,
     diagnose_aggregate_api_capabilities, get_aggregate_api_capabilities, get_aggregate_api_health,
-    list_aggregate_api_health, list_aggregate_api_runtime_statuses, list_aggregate_apis,
-    list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
+    list_aggregate_api_health, list_aggregate_api_probe_costs, list_aggregate_api_runtime_statuses,
+    list_aggregate_apis, list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
     read_aggregate_api_secret, refresh_aggregate_api_balance,
     reset_aggregate_api_capability_override, reset_aggregate_api_health,
     reset_aggregate_api_runtime_status, set_aggregate_api_capability_override,
@@ -60,6 +60,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             reset_aggregate_api_runtime_status(api_id_param(req).unwrap_or("")),
         ),
         "aggregateApi/health/list" => super::value_or_error(list_aggregate_api_health()),
+        "aggregateApi/health/costs" => super::value_or_error(list_aggregate_api_probe_costs(
+            super::i64_param(req, "startTs").unwrap_or(0),
+            super::i64_param(req, "endTs").unwrap_or(0),
+        )),
         "aggregateApi/health/get" => super::value_or_error(get_aggregate_api_health(
             api_id_param(req).unwrap_or(""),
             super::i64_param(req, "limit").unwrap_or(50),

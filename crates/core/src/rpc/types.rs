@@ -1064,6 +1064,28 @@ pub struct AggregateApiHealthListResult {
     pub items: Vec<AggregateApiHealthStateResult>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiProbeCostSummaryResult {
+    pub aggregate_api_id: String,
+    pub probe_count: i64,
+    pub priced_probe_count: i64,
+    pub unknown_cost_probe_count: i64,
+    pub scheduled_probe_count: i64,
+    pub half_open_probe_count: i64,
+    pub manual_probe_count: i64,
+    pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiProbeCostListResult {
+    #[serde(default)]
+    pub items: Vec<AggregateApiProbeCostSummaryResult>,
+    pub start_ts: i64,
+    pub end_ts: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateApiCreateResult {

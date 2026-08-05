@@ -65,7 +65,8 @@ pub(crate) use aggregate_api_capabilities::{
 };
 pub(crate) use aggregate_api_health::{
     get_health as get_aggregate_api_health, list_health as list_aggregate_api_health,
-    probe_health as probe_aggregate_api_health, reset_health as reset_aggregate_api_health,
+    list_probe_costs as list_aggregate_api_probe_costs, probe_health as probe_aggregate_api_health,
+    reset_health as reset_aggregate_api_health,
     update_health_config as update_aggregate_api_health_config,
 };
 pub(crate) use apikey::create as apikey_create;

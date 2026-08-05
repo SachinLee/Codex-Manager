@@ -131,6 +131,17 @@ export interface AggregateApiHealthDetail {
   events: AggregateApiHealthEvent[];
 }
 
+export interface AggregateApiProbeCostSummary {
+  aggregateApiId: string;
+  probeCount: number;
+  pricedProbeCount: number;
+  unknownCostProbeCount: number;
+  scheduledProbeCount: number;
+  halfOpenProbeCount: number;
+  manualProbeCount: number;
+  estimatedCostUsd: number;
+}
+
 export type AggregateApiCapabilityStatus =
   | "supported"
   | "unsupported"

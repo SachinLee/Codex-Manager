@@ -236,6 +236,26 @@ export default function AggregateApiPage() {
     () => new Map((healthQuery.data || []).map((item) => [item.aggregateApiId, item])),
     [healthQuery.data],
   );
+  const probeCostRange = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    return {
+      startTs: Math.floor(start.getTime() / 1_000),
+      endTs: Math.floor(end.getTime() / 1_000),
+    };
+  }, []);
+  const probeCostQuery = useQuery({
+    queryKey: ["aggregate-api-health-costs", probeCostRange.startTs, probeCostRange.endTs],
+    queryFn: () => accountClient.listAggregateApiProbeCosts(probeCostRange.startTs, probeCostRange.endTs),
+    enabled: isQueryEnabled,
+    staleTime: 15_000,
+    refetchInterval: isQueryEnabled ? 60_000 : false,
+  });
+  const probeCostByApiId = useMemo(
+    () => new Map((probeCostQuery.data || []).map((item) => [item.aggregateApiId, item])),
+    [probeCostQuery.data],
+  );
 
   const dailyUsageQuery = useQuery({
     queryKey: [
@@ -411,6 +431,7 @@ export default function AggregateApiPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
         queryClient.invalidateQueries({ queryKey: ["aggregate-api-health"] }),
+        queryClient.invalidateQueries({ queryKey: ["aggregate-api-health-costs"] }),
       ]);
     },
   });
@@ -811,6 +832,7 @@ export default function AggregateApiPage() {
                       const isCoolingDown = coolingStatuses.length > 0;
                       const usage = dailyUsageById.get(api.id);
                       const health = healthByApiId.get(api.id);
+                      const probeCost = probeCostByApiId.get(api.id);
                       const healthMeta = HEALTH_STATE_META[health?.state || "unknown"];
                       return (
                         <TableRow key={api.id}>
@@ -1057,6 +1079,19 @@ export default function AggregateApiPage() {
                                 ))}
                               </SelectContent>
                             </Select>
+                            <Tooltip>
+                              <TooltipTrigger render={<span />} className="mt-1 block cursor-help text-[10px] text-muted-foreground">
+                                {probeCost?.probeCount
+                                  ? `${t("本月探测")} ${probeCost.unknownCostProbeCount > 0
+                                    ? `${probeCost.pricedProbeCount > 0 ? `${formatUsdAmount(probeCost.estimatedCostUsd)} + ` : ""}${t("金额未知")} ${probeCost.unknownCostProbeCount} ${t("次")}`
+                                    : formatUsdAmount(probeCost.estimatedCostUsd)} · ${probeCost.probeCount} ${t("次")}`
+                                  : t("本月暂无探测")}
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs space-y-1 text-xs">
+                                <div>{t("主动")} {probeCost?.scheduledProbeCount || 0} · {t("半开恢复")} {probeCost?.halfOpenProbeCount || 0} · {t("手动")} {probeCost?.manualProbeCount || 0}</div>
+                                <div>{t("已定价")} {probeCost?.pricedProbeCount || 0} · {t("金额未知")} {probeCost?.unknownCostProbeCount || 0}</div>
+                              </TooltipContent>
+                            </Tooltip>
                           </TableCell>
                           <TableCell className="py-2">
                             <div className="flex items-center gap-1.5">

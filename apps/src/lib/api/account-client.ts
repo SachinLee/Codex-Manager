@@ -19,6 +19,7 @@ import {
   normalizeAggregateApiRuntimeStatusList,
   normalizeAggregateApiHealthDetail,
   normalizeAggregateApiHealthList,
+  normalizeAggregateApiProbeCostList,
   normalizeApiKeyCreateResult,
   normalizeApiKeyList,
   normalizeApiKeyUsageStats,
@@ -89,6 +90,7 @@ import {
   AggregateApiHealthConfig,
   AggregateApiHealthDetail,
   AggregateApiHealthSummary,
+  AggregateApiProbeCostSummary,
   ApiKey,
   ApiKeyCreateResult,
   ApiKeyUsageStat,
@@ -836,6 +838,10 @@ export const accountClient = {
   async listAggregateApiHealth(): Promise<AggregateApiHealthSummary[]> {
     const result = await invoke<unknown>("service_aggregate_api_health_list", withAddr());
     return normalizeAggregateApiHealthList(result);
+  },
+  async listAggregateApiProbeCosts(startTs: number, endTs: number): Promise<AggregateApiProbeCostSummary[]> {
+    const result = await invoke<unknown>("service_aggregate_api_health_costs", withAddr({ startTs, endTs }));
+    return normalizeAggregateApiProbeCostList(result);
   },
   async getAggregateApiHealth(apiId: string): Promise<AggregateApiHealthDetail> {
     const result = await invoke<unknown>("service_aggregate_api_health_get", withAddr({ id: apiId, limit: 50 }));

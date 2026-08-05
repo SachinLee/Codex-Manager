@@ -44,6 +44,20 @@ pub async fn service_aggregate_api_health_list(
 }
 
 #[tauri::command]
+pub async fn service_aggregate_api_health_costs(
+    addr: Option<String>,
+    start_ts: i64,
+    end_ts: i64,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/health/costs",
+        addr,
+        Some(serde_json::json!({ "startTs": start_ts, "endTs": end_ts })),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn service_aggregate_api_health_get(
     addr: Option<String>,
     id: String,
@@ -319,7 +333,12 @@ pub async fn service_aggregate_api_capabilities_get(
     addr: Option<String>,
     id: String,
 ) -> Result<serde_json::Value, String> {
-    rpc_call_in_background("aggregateApi/capabilities/get", addr, Some(serde_json::json!({ "id": id }))).await
+    rpc_call_in_background(
+        "aggregateApi/capabilities/get",
+        addr,
+        Some(serde_json::json!({ "id": id })),
+    )
+    .await
 }
 
 #[tauri::command]
