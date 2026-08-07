@@ -1113,6 +1113,55 @@ pub(crate) fn log_candidate_skip(
     buffer_trace_line(trace_id, line);
 }
 
+pub(crate) fn log_model_fallback(
+    trace_id: &str,
+    from_model: Option<&str>,
+    to_model: &str,
+    hop_index: usize,
+    status_code: u16,
+) {
+    let line = format!(
+        "ts={} event=MODEL_FALLBACK trace_id={} hop={} from_model={} to_model={} status={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        hop_index,
+        from_model
+            .map(sanitize_text)
+            .unwrap_or_else(|| "-".to_string()),
+        sanitize_text(to_model),
+        status_code,
+    );
+    buffer_trace_line(trace_id, line);
+}
+
+pub(crate) fn log_model_fallback_signal(
+    trace_id: &str,
+    model: Option<&str>,
+    status_code: u16,
+    message: &str,
+) {
+    let line = format!(
+        "ts={} event=MODEL_FALLBACK_SIGNAL trace_id={} model={} status={} message={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        model.map(sanitize_text).unwrap_or_else(|| "-".to_string()),
+        status_code,
+        sanitize_text(message),
+    );
+    buffer_trace_line(trace_id, line);
+}
+
+pub(crate) fn log_model_fallback_skip(trace_id: &str, model: Option<&str>, status_code: u16) {
+    let line = format!(
+        "ts={} event=MODEL_FALLBACK_SKIP trace_id={} model={} status={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        model.map(sanitize_text).unwrap_or_else(|| "-".to_string()),
+        status_code,
+    );
+    buffer_trace_line(trace_id, line);
+}
+
 /// 函数 `log_attempt_result`
 ///
 /// 作者: gaohongshun

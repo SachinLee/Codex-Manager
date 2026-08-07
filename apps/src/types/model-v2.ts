@@ -77,6 +77,7 @@ export interface ManagedModelV2 {
   priceTiers: ModelPriceTierV2[];
   routes: ModelRouteV2[];
   permissionGroupIds: string[];
+  fallbackModelSlugs: string[];
   createdAt: number;
   updatedAt: number;
 }

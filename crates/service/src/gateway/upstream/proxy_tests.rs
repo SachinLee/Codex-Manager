@@ -1,8 +1,9 @@
 use super::{
     exhausted_gateway_error_for_log, has_enabled_aggregate_api_route,
-    has_enabled_default_account_pool_route, hybrid_route_error_message, provider_upstream_hint,
-    request_deadline_for_path, resolve_aggregate_candidates_for_route, resolve_upstream_is_stream,
-    respond_when_account_candidates_empty, should_fallback_to_aggregate_after_account_exhaustion,
+    has_enabled_default_account_pool_route, hybrid_route_error_message, next_fallback_model,
+    provider_upstream_hint, request_deadline_for_path, resolve_aggregate_candidates_for_route,
+    resolve_upstream_is_stream, respond_when_account_candidates_empty, rewrite_model_in_path,
+    should_fallback_to_aggregate_after_account_exhaustion,
     should_try_provider_executor_aggregate_route, validate_model_route,
 };
 use crate::gateway::upstream::executor::{
@@ -775,4 +776,37 @@ fn account_route_model_validation_accepts_direct_upstream_source_model() {
 
     assert!(has_enabled_default_account_pool_route(&model));
     assert!(!has_enabled_aggregate_api_route(&model));
+}
+
+#[test]
+fn fallback_helpers_skip_attempted_models_and_rewrite_gemini_paths() {
+    assert_eq!(
+        next_fallback_model(
+            &["gpt-5.6-codex".into(), "gpt-5.4".into()],
+            &["GPT-5.6-CODEX".into()],
+        ),
+        Some("gpt-5.4".into())
+    );
+    assert_eq!(
+        next_fallback_model(&["gpt-5.6-codex".into()], &["gpt-5.6-codex".into()]),
+        None
+    );
+    assert_eq!(
+        rewrite_model_in_path(
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            "gpt-5.4",
+        ),
+        "/v1beta/models/gpt-5.4:streamGenerateContent"
+    );
+    assert_eq!(
+        rewrite_model_in_path(
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+            "gpt-5.4",
+        ),
+        "/v1beta/models/gpt-5.4:streamGenerateContent?alt=sse"
+    );
+    assert_eq!(
+        rewrite_model_in_path("/v1/responses", "gpt-5.4"),
+        "/v1/responses"
+    );
 }

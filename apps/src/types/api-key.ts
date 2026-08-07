@@ -68,6 +68,18 @@ export interface AggregateApiRuntimeStatus {
   reason: string | null;
 }
 
+export type AggregateApiZeroBalanceState =
+  | "zero_balance_blocked"
+  | "manually_released";
+
+export interface AggregateApiZeroBalanceStatus {
+  aggregateApiId: string;
+  state: AggregateApiZeroBalanceState | null;
+  observedAt: number | null;
+  releasedAt: number | null;
+  updatedAt: number | null;
+}
+
 export type AggregateApiHealthState =
   | "unknown"
   | "healthy"

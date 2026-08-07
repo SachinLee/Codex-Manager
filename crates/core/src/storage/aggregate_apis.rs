@@ -561,7 +561,8 @@ impl Storage {
         user_id: Option<&str>,
         config_json: Option<&str>,
     ) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             update_aggregate_api_balance_query_sql(),
             (
                 enabled,
@@ -573,7 +574,13 @@ impl Storage {
                 api_id,
             ),
         )?;
-        Ok(())
+        if !enabled {
+            tx.execute(
+                "DELETE FROM aggregate_api_zero_balance_route_states WHERE aggregate_api_id = ?1",
+                [api_id],
+            )?;
+        }
+        tx.commit()
     }
 
     pub fn update_aggregate_api_balance_result(

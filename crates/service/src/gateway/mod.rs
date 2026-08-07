@@ -158,10 +158,11 @@ pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
-    record_gateway_reasoning_guard_block, record_gateway_reasoning_guard_internal_retry,
-    record_gateway_reasoning_guard_match, record_gateway_request_outcome,
-    record_gateway_upstream_capacity_error, record_gateway_upstream_capacity_exhausted,
-    record_gateway_upstream_capacity_internal_retry, AccountInFlightGuard,
+    record_gateway_model_fallback_hop, record_gateway_reasoning_guard_block,
+    record_gateway_reasoning_guard_internal_retry, record_gateway_reasoning_guard_match,
+    record_gateway_request_outcome, record_gateway_upstream_capacity_error,
+    record_gateway_upstream_capacity_exhausted, record_gateway_upstream_capacity_internal_retry,
+    AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus,

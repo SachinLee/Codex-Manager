@@ -9,10 +9,12 @@ use tiny_http::{Response, Server};
 
 use super::{
     action_path_or_default, extract_custom_balance, extract_generic_balance,
-    extract_new_api_balance, list_aggregate_apis, normalize_action_override,
-    normalize_custom_balance_query_config, normalize_provider_type, normalize_provider_type_value,
-    probe_claude_endpoint, probe_codex_endpoint, provider_default_url, read_aggregate_api_secret,
-    run_diagnostic_request, CustomBalanceQueryConfig, AGGREGATE_API_PROVIDER_CLAUDE,
+    extract_new_api_balance, list_aggregate_api_zero_balance_statuses, list_aggregate_apis,
+    normalize_action_override, normalize_custom_balance_query_config, normalize_provider_type,
+    normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
+    read_aggregate_api_secret, refresh_aggregate_api_balance,
+    reset_aggregate_api_zero_balance_status, run_diagnostic_request, CustomBalanceQueryConfig,
+    AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
     AGGREGATE_API_PROVIDER_COMPATIBLE, AGGREGATE_API_PROVIDER_GEMINI,
 };
 
@@ -602,4 +604,322 @@ fn hosted_image_diagnostic_accepts_a_semantic_image_result() {
     join.join().expect("join mock server");
     assert_eq!(result.status, "supported");
     assert_eq!(result.http_status, Some(200));
+}
+
+#[test]
+fn refreshing_an_exact_zero_balance_blocks_the_aggregate_api() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-zero-balance");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let server = Server::http("127.0.0.1:0").expect("start mock server");
+    let base_url = format!("http://{}", server.server_addr());
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive balance request")
+            .expect("balance request present");
+        request
+            .respond(Response::from_string(r#"{"remaining":0}"#))
+            .expect("respond balance");
+    });
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-zero-balance".to_string();
+    api.url = base_url;
+    api.balance_query_enabled = true;
+    api.balance_query_template = Some("generic".to_string());
+    storage.insert_aggregate_api(&api).expect("insert API");
+    storage
+        .upsert_aggregate_api_secret(api.id.as_str(), "test-secret")
+        .expect("insert secret");
+
+    let result = refresh_aggregate_api_balance(api.id.as_str()).expect("refresh balance");
+
+    join.join().expect("join mock server");
+    assert!(result.ok);
+    assert!(storage
+        .list_zero_balance_blocked_aggregate_api_ids()
+        .expect("list blocked IDs")
+        .iter()
+        .any(|id| id == &api.id));
+}
+
+#[test]
+fn refreshing_balance_never_exposes_upstream_error_body() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-balance-error-redaction");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let server = Server::http("127.0.0.1:0").expect("start mock server");
+    let base_url = format!("http://{}", server.server_addr());
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive balance request")
+            .expect("balance request present");
+        request
+            .respond(
+                Response::from_string(r#"{"error":"Bearer leaked-test-token"}"#)
+                    .with_status_code(401),
+            )
+            .expect("respond balance error");
+    });
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-balance-redaction".to_string();
+    api.url = base_url;
+    api.balance_query_enabled = true;
+    api.balance_query_template = Some("generic".to_string());
+    storage.insert_aggregate_api(&api).expect("insert API");
+    storage
+        .upsert_aggregate_api_secret(api.id.as_str(), "test-secret")
+        .expect("insert secret");
+
+    let result = refresh_aggregate_api_balance(api.id.as_str()).expect("refresh balance");
+
+    join.join().expect("join mock server");
+    assert!(!result.ok);
+    assert!(!result
+        .message
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+    assert_eq!(
+        result.message.as_deref(),
+        Some("balance query http_status=401")
+    );
+    let saved = storage
+        .find_aggregate_api_by_id(api.id.as_str())
+        .expect("read API")
+        .expect("saved API");
+    assert!(!saved
+        .last_balance_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+    assert_eq!(
+        saved.last_balance_error.as_deref(),
+        Some("balance query http_status=401")
+    );
+}
+
+#[test]
+fn refreshing_invalid_balance_snapshot_drops_upstream_text() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-invalid-balance-redaction");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let server = Server::http("127.0.0.1:0").expect("start mock server");
+    let base_url = format!("http://{}", server.server_addr());
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive balance request")
+            .expect("balance request present");
+        request
+            .respond(Response::from_string(
+                r#"{"success":false,"error":"Bearer leaked-test-token","unit":"Bearer leaked-test-token","planName":"Bearer leaked-test-token"}"#,
+            ))
+            .expect("respond invalid balance");
+    });
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-invalid-balance-redaction".to_string();
+    api.url = base_url;
+    api.balance_query_enabled = true;
+    api.balance_query_template = Some("generic".to_string());
+    storage.insert_aggregate_api(&api).expect("insert API");
+    storage
+        .upsert_aggregate_api_secret(api.id.as_str(), "test-secret")
+        .expect("insert secret");
+
+    let result = refresh_aggregate_api_balance(api.id.as_str()).expect("refresh balance");
+
+    join.join().expect("join mock server");
+    let snapshot = result.balance.expect("invalid snapshot");
+    assert!(!result.ok);
+    assert_eq!(
+        result.message.as_deref(),
+        Some("balance query returned invalid account")
+    );
+    assert!(snapshot.invalid_message.is_none());
+    assert!(snapshot.unit.is_none());
+    assert!(snapshot.plan_name.is_none());
+    let saved = storage
+        .find_aggregate_api_by_id(api.id.as_str())
+        .expect("read API")
+        .expect("saved API");
+    assert!(!saved
+        .last_balance_json
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+}
+
+#[test]
+fn refreshing_valid_balance_never_exposes_upstream_text() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-valid-balance-redaction");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let server = Server::http("127.0.0.1:0").expect("start mock server");
+    let base_url = format!("http://{}", server.server_addr());
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive balance request")
+            .expect("balance request present");
+        request
+            .respond(Response::from_string(
+                r#"{"remaining":1,"unit":"Bearer leaked-test-token","planName":"Bearer leaked-test-token"}"#,
+            ))
+            .expect("respond balance");
+    });
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-valid-balance-redaction".to_string();
+    api.url = base_url;
+    api.balance_query_enabled = true;
+    api.balance_query_template = Some("generic".to_string());
+    storage.insert_aggregate_api(&api).expect("insert API");
+    storage
+        .upsert_aggregate_api_secret(api.id.as_str(), "test-secret")
+        .expect("insert secret");
+
+    let result = refresh_aggregate_api_balance(api.id.as_str()).expect("refresh balance");
+
+    join.join().expect("join mock server");
+    assert!(result.ok);
+    let snapshot = result.balance.expect("valid snapshot");
+    assert!(!snapshot
+        .unit
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+    assert!(!snapshot
+        .plan_name
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+    let saved = storage
+        .find_aggregate_api_by_id(api.id.as_str())
+        .expect("read API")
+        .expect("saved API");
+    assert!(!saved
+        .last_balance_json
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+    let listed = list_aggregate_apis().expect("list aggregate APIs");
+    let listed_api = listed
+        .iter()
+        .find(|item| item.id == api.id)
+        .expect("listed API");
+    assert!(!listed_api
+        .last_balance_json
+        .as_deref()
+        .unwrap_or_default()
+        .contains("leaked-test-token"));
+}
+
+#[test]
+fn refreshing_positive_balance_clears_zero_balance_block() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-positive-balance-recovery");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let server = Server::http("127.0.0.1:0").expect("start mock server");
+    let base_url = format!("http://{}", server.server_addr());
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive balance request")
+            .expect("balance request present");
+        request
+            .respond(Response::from_string(r#"{"remaining":1}"#))
+            .expect("respond balance");
+    });
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-positive-balance".to_string();
+    api.url = base_url;
+    api.balance_query_enabled = true;
+    api.balance_query_template = Some("generic".to_string());
+    storage.insert_aggregate_api(&api).expect("insert API");
+    storage
+        .upsert_aggregate_api_secret(api.id.as_str(), "test-secret")
+        .expect("insert secret");
+    storage
+        .update_aggregate_api_balance_result_with_zero_balance_state(
+            api.id.as_str(),
+            true,
+            Some(r#"{"isValid":true,"remaining":0}"#),
+            None,
+            codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block {
+                observed_at: 1,
+            },
+        )
+        .expect("seed zero-balance block");
+
+    let result = refresh_aggregate_api_balance(api.id.as_str()).expect("refresh balance");
+
+    join.join().expect("join mock server");
+    assert!(result.ok);
+    assert!(storage
+        .aggregate_api_zero_balance_state(api.id.as_str())
+        .expect("read zero-balance state")
+        .is_none());
+}
+
+#[test]
+fn zero_balance_reset_only_releases_existing_blocked_state() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-zero-balance-reset");
+    let db_path = dir.join("codexmanager.db");
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-zero-balance-reset".to_string();
+    api.balance_query_enabled = true;
+    storage.insert_aggregate_api(&api).expect("insert API");
+
+    let not_blocked = reset_aggregate_api_zero_balance_status(api.id.as_str())
+        .expect("reset normal API");
+    assert_eq!(not_blocked.state, "not_blocked");
+    assert!(storage
+        .aggregate_api_zero_balance_state(api.id.as_str())
+        .expect("read zero-balance state")
+        .is_none());
+
+    storage
+        .update_aggregate_api_balance_result_with_zero_balance_state(
+            api.id.as_str(),
+            true,
+            Some(r#"{"isValid":true,"remaining":0}"#),
+            None,
+            codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block {
+                observed_at: 1,
+            },
+        )
+        .expect("seed zero-balance block");
+    let released = reset_aggregate_api_zero_balance_status(api.id.as_str())
+        .expect("release blocked API");
+    assert_eq!(released.state, "manually_released");
+    assert_eq!(released.aggregate_api_id, api.id);
+    assert!(released.released_at.is_some());
+    let statuses = list_aggregate_api_zero_balance_statuses().expect("list zero-balance states");
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, "manually_released");
+
+    let repeated = reset_aggregate_api_zero_balance_status(api.id.as_str())
+        .expect("repeat release");
+    assert_eq!(repeated.state, "manually_released");
+    assert_eq!(repeated.released_at, released.released_at);
 }

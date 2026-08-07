@@ -18,7 +18,7 @@ const GPT56_OFFICIAL_PRICE_SOURCE: &str = "https://developers.openai.com/api/doc
 const GPT_IMAGE_2_PRICE_SOURCE: &str =
     "https://developers.openai.com/api/docs/pricing#image-generation";
 const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
-const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2"];
+const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", "grok-4.5"];
 
 #[derive(Debug, Clone, Deserialize)]
 struct BuiltinCatalogFixture {
@@ -118,6 +118,8 @@ pub struct ManagedModelV2 {
     pub routes: Vec<ModelRouteV2>,
     #[serde(default)]
     pub permission_group_ids: Vec<String>,
+    #[serde(default)]
+    pub fallback_model_slugs: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -335,6 +337,19 @@ fn validate_model(model: &ManagedModelV2) -> Result<()> {
             ));
         }
     }
+    let mut fallback_model_slugs = HashSet::new();
+    for fallback_slug in &model.fallback_model_slugs {
+        if fallback_slug.eq_ignore_ascii_case(&model.slug) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "fallback model cannot reference itself".to_string(),
+            ));
+        }
+        if !fallback_model_slugs.insert(fallback_slug.to_ascii_lowercase()) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "duplicate fallback model".to_string(),
+            ));
+        }
+    }
     validate_price(model)
 }
 
@@ -342,6 +357,7 @@ fn map_model(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<ManagedModelV
     let id: String = row.get(0)?;
     let tags_json: String = row.get(7)?;
     let capabilities_json: String = row.get(16)?;
+    let fallback_json: String = row.get(29)?;
     let mut model = ManagedModelV2 {
         id: id.clone(),
         slug: row.get(1)?,
@@ -378,6 +394,7 @@ fn map_model(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<ManagedModelV
         price_tiers: Vec::new(),
         routes: Vec::new(),
         permission_group_ids: Vec::new(),
+        fallback_model_slugs: serde_json::from_str(&fallback_json).unwrap_or_default(),
     };
     model.price_tiers = list_tiers(conn, &id)?;
     model.routes = list_routes(conn, &id)?;
@@ -391,7 +408,7 @@ const MODEL_SELECT: &str = "SELECT
     m.max_context_window,m.default_reasoning_effort,m.capabilities_json,
     m.instructions_mode,m.instructions_text,m.builtin_revision,m.user_edited,m.created_at,m.updated_at,
     p.price_status,p.price_source,p.input_microusd_per_1m,p.cached_input_microusd_per_1m,
-    p.cache_write_microusd_per_1m,p.output_microusd_per_1m
+    p.cache_write_microusd_per_1m,p.output_microusd_per_1m,m.fallback_model_slugs_json
   FROM models m JOIN model_prices p ON p.model_id=m.id";
 
 fn list_tiers(conn: &Connection, model_id: &str) -> Result<Vec<ModelPriceTierV2>> {
@@ -1208,6 +1225,12 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
     model.family = clean_optional(model.family);
     model.category = clean_optional(model.category);
     model.instructions_text = clean_optional(model.instructions_text);
+    model.fallback_model_slugs = model
+        .fallback_model_slugs
+        .into_iter()
+        .map(|slug| slug.trim().to_string())
+        .filter(|slug| !slug.is_empty())
+        .collect();
     validate_model(&model)?;
 
     let previous = input.previous_slug.as_deref().unwrap_or(&model.slug).trim();
@@ -1260,8 +1283,8 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
         "INSERT INTO models(id,slug,display_name,description,provider,family,category,tags_json,
            origin,enabled,supported_in_api,visibility,sort_order,context_window,max_context_window,
            default_reasoning_effort,capabilities_json,instructions_mode,instructions_text,
-           builtin_revision,user_edited,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,1,?21,?22)
+           builtin_revision,user_edited,created_at,updated_at,fallback_model_slugs_json)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,1,?21,?22,?23)
          ON CONFLICT(id) DO UPDATE SET slug=excluded.slug,display_name=excluded.display_name,
            description=excluded.description,provider=excluded.provider,family=excluded.family,
            category=excluded.category,tags_json=excluded.tags_json,enabled=excluded.enabled,
@@ -1270,13 +1293,16 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
            max_context_window=excluded.max_context_window,
            default_reasoning_effort=excluded.default_reasoning_effort,
            capabilities_json=excluded.capabilities_json,instructions_mode=excluded.instructions_mode,
-           instructions_text=excluded.instructions_text,user_edited=1,updated_at=excluded.updated_at",
+           instructions_text=excluded.instructions_text,user_edited=1,updated_at=excluded.updated_at,
+           fallback_model_slugs_json=excluded.fallback_model_slugs_json",
         params![id,model.slug,model.display_name,model.description,model.provider,model.family,model.category,
             serde_json::to_string(&model.tags)
                 .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,origin,model.enabled,
             model.supported_in_api,model.visibility,model.sort_order,model.context_window,model.max_context_window,
             model.default_reasoning_effort,model.capabilities.to_string(),model.instructions_mode,model.instructions_text,
-            model.builtin_revision,created_at,now],
+            model.builtin_revision,created_at,now,
+            serde_json::to_string(&model.fallback_model_slugs)
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?],
     )?;
     tx.execute(
         "INSERT INTO model_prices(model_id,currency,input_microusd_per_1m,
@@ -1355,6 +1381,13 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
 }
 
 impl Storage {
+    pub(super) fn ensure_model_fallback_chain_column(&self) -> Result<()> {
+        self.ensure_column(
+            "models",
+            "fallback_model_slugs_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )
+    }
     pub(super) fn apply_model_catalog_v2_migration(&self) -> Result<()> {
         if self.has_migration(MIGRATION_VERSION)? {
             return Ok(());
@@ -2081,8 +2114,8 @@ mod tests {
     fn fixture_contains_no_prompt_fields() {
         let raw = include_str!("../../seeds/model_catalog_v2_2026_07_10.json");
         let value: Value = serde_json::from_str(raw).expect("parse fixture");
-        assert_eq!(value["models"].as_array().map(Vec::len), Some(9));
-        assert_eq!(value["revision"].as_i64(), Some(7));
+        assert_eq!(value["models"].as_array().map(Vec::len), Some(10));
+        assert_eq!(value["revision"].as_i64(), Some(8));
         assert!(!raw.contains("base_instructions"));
         assert!(!raw.contains("instructions_template"));
         assert!(!raw.contains("instructions_text"));
@@ -2145,8 +2178,8 @@ mod tests {
         let storage = storage();
         let all = storage.list_managed_models_v2(true).expect("list all");
         let visible = storage.list_api_models_v2().expect("list visible");
-        assert_eq!(all.len(), 9);
-        assert_eq!(visible.len(), 8);
+        assert_eq!(all.len(), 10);
+        assert_eq!(visible.len(), 9);
         assert_eq!(
             all.iter()
                 .filter(|model| model.price.price_status == "missing")
@@ -2223,12 +2256,12 @@ mod tests {
         }
         let gpt54 = all.iter().find(|model| model.slug == "gpt-5.4").unwrap();
         assert_eq!(gpt54.price_tiers.len(), 2);
-        assert_eq!(gpt54.price_tiers[1].min_input_tokens, 272_000);
+        assert_eq!(gpt54.price_tiers[1].min_input_tokens, 272_001);
         let sol = all
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(7));
+        assert_eq!(sol.builtin_revision, Some(8));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["tool_mode"], "code_mode_only");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
@@ -2238,7 +2271,7 @@ mod tests {
             .find(|model| model.slug == "gpt-image-2")
             .unwrap();
         assert_eq!(image.display_name, "GPT Image 2");
-        assert_eq!(image.builtin_revision, Some(7));
+        assert_eq!(image.builtin_revision, Some(8));
         assert_eq!(image.context_window, None);
         assert_eq!(image.max_context_window, None);
         assert_eq!(image.default_reasoning_effort, None);
@@ -2258,6 +2291,32 @@ mod tests {
         );
         assert_eq!(image.routes.len(), 1);
         assert_eq!(image.routes[0].upstream_model, "gpt-image-2");
+
+        let grok = all.iter().find(|model| model.slug == "grok-4.5").unwrap();
+        assert_eq!(grok.display_name, "Grok 4.5");
+        assert_eq!(grok.builtin_revision, Some(8));
+        assert_eq!(grok.default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            grok.capabilities["reasoning_efforts"],
+            serde_json::json!(["low", "high"])
+        );
+        assert_eq!(grok.price.price_status, "official");
+        assert_eq!(
+            grok.price.price_source.as_deref(),
+            Some("xai_official_grok_4_5")
+        );
+        assert_eq!(grok.price.input_microusd_per_1m, Some(2_000_000));
+        assert_eq!(grok.price.cached_input_microusd_per_1m, Some(500_000));
+        assert_eq!(grok.price.output_microusd_per_1m, Some(6_000_000));
+        assert_eq!(grok.price_tiers.len(), 2);
+        assert_eq!(grok.price_tiers[1].min_input_tokens, 200_000);
+        assert_eq!(grok.price_tiers[1].input_microusd_per_1m, 4_000_000);
+        assert_eq!(grok.price_tiers[1].cached_input_microusd_per_1m, 1_000_000);
+        assert_eq!(grok.price_tiers[1].output_microusd_per_1m, 12_000_000);
+        assert_eq!(grok.routes.len(), 1);
+        assert_eq!(grok.routes[0].source_kind, "account_pool");
+        assert_eq!(grok.routes[0].source_id, "default");
+        assert_eq!(grok.routes[0].upstream_model, "grok-4.5");
         assert!(all
             .iter()
             .all(|model| model.instructions_mode == "passthrough"
@@ -2328,7 +2387,7 @@ mod tests {
     }
 
     #[test]
-    fn revision_seven_seeds_image_model_into_an_existing_revision_four_catalog() {
+    fn latest_revision_seeds_missing_models_into_an_existing_revision_four_catalog() {
         let storage = storage();
         storage
             .conn
@@ -2357,7 +2416,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(image.origin, "builtin");
-        assert_eq!(image.builtin_revision, Some(7));
+        assert_eq!(image.builtin_revision, Some(8));
         assert_eq!(image.routes.len(), 1);
         assert_eq!(image.routes[0].upstream_model, "gpt-image-2");
         let sol = storage
@@ -2373,7 +2432,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(revision, "7");
+        assert_eq!(revision, "8");
     }
 
     #[test]
@@ -2432,7 +2491,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored.origin, "builtin");
-        assert_eq!(restored.builtin_revision, Some(7));
+        assert_eq!(restored.builtin_revision, Some(8));
         assert_eq!(restored.routes[0].upstream_model, "gpt-image-2");
     }
 
@@ -2488,7 +2547,7 @@ mod tests {
         assert_eq!(sol.price.cached_input_microusd_per_1m, Some(5_000_000));
         assert_eq!(sol.price.output_microusd_per_1m, Some(30_000_000));
         assert_eq!(sol.price_tiers.len(), 1);
-        assert_eq!(sol.builtin_revision, Some(7));
+        assert_eq!(sol.builtin_revision, Some(8));
 
         let terra = storage
             .get_managed_model_v2("gpt-5.6-terra")
@@ -2857,7 +2916,7 @@ mod tests {
             .get_managed_model_v2("gpt-5.6-sol")
             .unwrap()
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(7));
+        assert_eq!(sol.builtin_revision, Some(8));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
 
@@ -3140,13 +3199,16 @@ mod tests {
                 "../../migrations/127_model_catalog_cache_write_prices.sql"
             ))
             .expect("add cache-write pricing schema");
+        storage
+            .ensure_model_fallback_chain_column()
+            .expect("add fallback chain compatibility column");
 
         assert_eq!(
             storage
                 .list_managed_models_v2(true)
                 .expect("list migrated models")
                 .len(),
-            9
+            10
         );
     }
 
@@ -3185,6 +3247,11 @@ mod tests {
         storage
             .insert_aggregate_api(&api)
             .expect("insert aggregate api");
+
+        storage
+            .conn
+            .execute("DELETE FROM models WHERE slug='grok-4.5'", [])
+            .expect("remove builtin grok to simulate an existing custom model");
 
         let mut grok = storage
             .get_managed_model_v2("gpt-5.4")
@@ -3302,5 +3369,56 @@ mod tests {
             grok_after.capabilities["reasoning_efforts"],
             serde_json::json!(["low"])
         );
+    }
+    #[test]
+    fn fallback_model_slugs_round_trip_and_validate() {
+        let storage = storage();
+        let mut model = storage
+            .get_managed_model_v2("gpt-5.4")
+            .expect("read model")
+            .expect("model exists");
+        model.fallback_model_slugs = vec!["gpt-5.6-codex".into(), "gpt-5.4-mini".into()];
+
+        let saved = storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                model,
+                ..Default::default()
+            })
+            .expect("save fallback chain");
+        assert_eq!(
+            saved.fallback_model_slugs,
+            vec!["gpt-5.6-codex", "gpt-5.4-mini"]
+        );
+
+        let mut self_referencing = saved.clone();
+        self_referencing.fallback_model_slugs = vec![self_referencing.slug.clone()];
+        assert!(storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                model: self_referencing,
+                ..Default::default()
+            })
+            .is_err());
+
+        let mut duplicated = saved;
+        duplicated.fallback_model_slugs = vec!["gpt-5.6-codex".into(), "GPT-5.6-CODEX".into()];
+        assert!(storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                model: duplicated,
+                ..Default::default()
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn fallback_model_column_compatibility_is_idempotent() {
+        let storage = storage();
+        storage
+            .ensure_model_fallback_chain_column()
+            .expect("repeat fallback column compatibility migration");
+        let model = storage
+            .get_managed_model_v2("gpt-5.4")
+            .expect("read model")
+            .expect("model exists");
+        assert!(model.fallback_model_slugs.is_empty());
     }
 }

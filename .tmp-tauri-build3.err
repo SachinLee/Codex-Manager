@@ -1,0 +1,953 @@
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `node ./src-tauri/scripts/before-build.mjs build:desktop`
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating `rsproxy-sparse` index
+warning: spurious network error (3 tries remaining): [6] Could not resolve hostname (Could not resolve host: rsproxy.cn)
+ Downloading crates ...
+  Downloaded dtoa-short v0.3.5 (registry `rsproxy-sparse`)
+  Downloaded cargo_metadata v0.19.2 (registry `rsproxy-sparse`)
+  Downloaded getrandom v0.4.2 (registry `rsproxy-sparse`)
+  Downloaded camino v1.2.2 (registry `rsproxy-sparse`)
+  Downloaded bytes v1.11.1 (registry `rsproxy-sparse`)
+  Downloaded serialize-to-javascript-impl v0.1.2 (registry `rsproxy-sparse`)
+  Downloaded phf_codegen v0.11.3 (registry `rsproxy-sparse`)
+  Downloaded siphasher v1.0.2 (registry `rsproxy-sparse`)
+  Downloaded itoa v1.0.18 (registry `rsproxy-sparse`)
+  Downloaded hashbrown v0.12.3 (registry `rsproxy-sparse`)
+  Downloaded thiserror v1.0.69 (registry `rsproxy-sparse`)
+  Downloaded unic-char-range v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded serialize-to-javascript v0.1.2 (registry `rsproxy-sparse`)
+  Downloaded windows-link v0.1.3 (registry `rsproxy-sparse`)
+  Downloaded tauri-winres v0.3.5 (registry `rsproxy-sparse`)
+  Downloaded webview2-com v0.38.2 (registry `rsproxy-sparse`)
+  Downloaded cc v1.2.57 (registry `rsproxy-sparse`)
+  Downloaded windows-threading v0.1.0 (registry `rsproxy-sparse`)
+  Downloaded serde_with v3.18.0 (registry `rsproxy-sparse`)
+  Downloaded windows-implement v0.60.2 (registry `rsproxy-sparse`)
+  Downloaded tao v0.34.8 (registry `rsproxy-sparse`)
+  Downloaded winreg v0.55.0 (registry `rsproxy-sparse`)
+  Downloaded toml_writer v1.1.0+spec-1.1.0 (registry `rsproxy-sparse`)
+  Downloaded zmij v1.0.21 (registry `rsproxy-sparse`)
+  Downloaded windows-interface v0.59.3 (registry `rsproxy-sparse`)
+  Downloaded zopfli v0.8.3 (registry `rsproxy-sparse`)
+  Downloaded tungstenite v0.24.0 (registry `rsproxy-sparse`)
+  Downloaded walkdir v2.5.0 (registry `rsproxy-sparse`)
+  Downloaded windows-strings v0.4.2 (registry `rsproxy-sparse`)
+  Downloaded zip v2.4.2 (registry `rsproxy-sparse`)
+  Downloaded schemars v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded windows-version v0.1.7 (registry `rsproxy-sparse`)
+  Downloaded tray-icon v0.21.3 (registry `rsproxy-sparse`)
+  Downloaded toml_edit v0.25.8+spec-1.1.0 (registry `rsproxy-sparse`)
+  Downloaded ryu v1.0.23 (registry `rsproxy-sparse`)
+  Downloaded schemars v1.2.1 (registry `rsproxy-sparse`)
+  Downloaded winnow v1.0.0 (registry `rsproxy-sparse`)
+  Downloaded wry v0.54.4 (registry `rsproxy-sparse`)
+  Downloaded time v0.3.47 (registry `rsproxy-sparse`)
+  Downloaded tauri-runtime-wry v2.10.1 (registry `rsproxy-sparse`)
+  Downloaded webpki-roots v1.0.6 (registry `rsproxy-sparse`)
+  Downloaded tauri-plugin-single-instance v2.4.0 (registry `rsproxy-sparse`)
+  Downloaded moxcms v0.8.1 (registry `rsproxy-sparse`)
+  Downloaded rustls v0.23.37 (registry `rsproxy-sparse`)
+  Downloaded image v0.25.10 (registry `rsproxy-sparse`)
+  Downloaded brotli v8.0.2 (registry `rsproxy-sparse`)
+  Downloaded syn v2.0.117 (registry `rsproxy-sparse`)
+  Downloaded zerocopy v0.8.47 (registry `rsproxy-sparse`)
+  Downloaded darling_core v0.23.0 (registry `rsproxy-sparse`)
+  Downloaded png v0.18.1 (registry `rsproxy-sparse`)
+  Downloaded memchr v2.8.0 (registry `rsproxy-sparse`)
+  Downloaded tokio v1.50.0 (registry `rsproxy-sparse`)
+  Downloaded png v0.17.16 (registry `rsproxy-sparse`)
+  Downloaded ico v0.5.0 (registry `rsproxy-sparse`)
+  Downloaded toml_datetime v1.1.0+spec-1.1.0 (registry `rsproxy-sparse`)
+  Downloaded socket2 v0.6.3 (registry `rsproxy-sparse`)
+  Downloaded borsh v1.6.1 (registry `rsproxy-sparse`)
+  Downloaded kuchikiki v0.8.8-speedreader (registry `rsproxy-sparse`)
+  Downloaded windows-result v0.3.4 (registry `rsproxy-sparse`)
+  Downloaded windows-future v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded softbuffer v0.4.8 (registry `rsproxy-sparse`)
+  Downloaded cargo_toml v0.22.3 (registry `rsproxy-sparse`)
+  Downloaded bytemuck v1.25.0 (registry `rsproxy-sparse`)
+  Downloaded value-bag v1.12.0 (registry `rsproxy-sparse`)
+  Downloaded unic-ucd-version v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded unic-ucd-ident v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded tap v1.0.1 (registry `rsproxy-sparse`)
+  Downloaded string_cache v0.8.9 (registry `rsproxy-sparse`)
+  Downloaded rustls-webpki v0.103.10 (registry `rsproxy-sparse`)
+  Downloaded rust_decimal v1.40.0 (registry `rsproxy-sparse`)
+  Downloaded keyboard-types v0.7.0 (registry `rsproxy-sparse`)
+  Downloaded futures-util v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded toml_parser v1.1.0+spec-1.1.0 (registry `rsproxy-sparse`)
+  Downloaded tendril v0.4.3 (registry `rsproxy-sparse`)
+  Downloaded tauri-plugin-autostart v2.5.1 (registry `rsproxy-sparse`)
+  Downloaded siphasher v0.3.11 (registry `rsproxy-sparse`)
+  Downloaded serde_repr v0.1.20 (registry `rsproxy-sparse`)
+  Downloaded selectors v0.24.0 (registry `rsproxy-sparse`)
+  Downloaded raw-window-handle v0.6.2 (registry `rsproxy-sparse`)
+  Downloaded quote v1.0.45 (registry `rsproxy-sparse`)
+  Downloaded ptr_meta v0.1.4 (registry `rsproxy-sparse`)
+  Downloaded unicode-ident v1.0.24 (registry `rsproxy-sparse`)
+  Downloaded proc-macro-hack v0.5.20+deprecated (registry `rsproxy-sparse`)
+  Downloaded bytecheck_derive v0.6.12 (registry `rsproxy-sparse`)
+  Downloaded utf8-width v0.1.8 (registry `rsproxy-sparse`)
+  Downloaded urlpattern v0.3.0 (registry `rsproxy-sparse`)
+  Downloaded typeid v1.0.3 (registry `rsproxy-sparse`)
+  Downloaded tauri-plugin-log v2.8.0 (registry `rsproxy-sparse`)
+  Downloaded string_cache_codegen v0.5.4 (registry `rsproxy-sparse`)
+  Downloaded radium v0.7.0 (registry `rsproxy-sparse`)
+  Downloaded proc-macro-crate v3.5.0 (registry `rsproxy-sparse`)
+  Downloaded pin-project-lite v0.2.17 (registry `rsproxy-sparse`)
+  Downloaded phf_shared v0.11.3 (registry `rsproxy-sparse`)
+  Downloaded phf_generator v0.10.0 (registry `rsproxy-sparse`)
+  Downloaded native-tls v0.2.18 (registry `rsproxy-sparse`)
+  Downloaded matches v0.1.10 (registry `rsproxy-sparse`)
+  Downloaded futures-task v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded deranged v0.5.8 (registry `rsproxy-sparse`)
+  Downloaded byteorder-lite v0.1.0 (registry `rsproxy-sparse`)
+  Downloaded wyz v0.5.1 (registry `rsproxy-sparse`)
+  Downloaded jsonptr v0.6.3 (registry `rsproxy-sparse`)
+  Downloaded indexmap v1.9.3 (registry `rsproxy-sparse`)
+  Downloaded futures-channel v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded find-msvc-tools v0.1.9 (registry `rsproxy-sparse`)
+  Downloaded dirs-sys v0.5.0 (registry `rsproxy-sparse`)
+  Downloaded derive_more v0.99.20 (registry `rsproxy-sparse`)
+  Downloaded cssparser-macros v0.6.1 (registry `rsproxy-sparse`)
+  Downloaded tauri-macros v2.5.5 (registry `rsproxy-sparse`)
+  Downloaded serde_derive_internals v0.29.1 (registry `rsproxy-sparse`)
+  Downloaded serde-untagged v0.1.9 (registry `rsproxy-sparse`)
+  Downloaded seahash v4.1.0 (registry `rsproxy-sparse`)
+  Downloaded rand_pcg v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded phf v0.10.1 (registry `rsproxy-sparse`)
+  Downloaded phf v0.8.0 (registry `rsproxy-sparse`)
+  Downloaded mac v0.1.1 (registry `rsproxy-sparse`)
+  Downloaded json-patch v3.0.1 (registry `rsproxy-sparse`)
+  Downloaded ipnet v2.12.0 (registry `rsproxy-sparse`)
+  Downloaded futures-macro v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded futures-core v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded darling_macro v0.23.0 (registry `rsproxy-sparse`)
+  Downloaded bitvec v1.0.1 (registry `rsproxy-sparse`)
+  Downloaded winreg v0.10.1 (registry `rsproxy-sparse`)
+  Downloaded vswhom-sys v0.1.3 (registry `rsproxy-sparse`)
+  Downloaded vswhom v0.1.0 (registry `rsproxy-sparse`)
+  Downloaded uuid v1.22.0 (registry `rsproxy-sparse`)
+  Downloaded unic-char-property v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded toml v0.9.12+spec-1.1.0 (registry `rsproxy-sparse`)
+  Downloaded tauri-runtime v2.10.1 (registry `rsproxy-sparse`)
+  Downloaded bumpalo v3.20.2 (registry `rsproxy-sparse`)
+  Downloaded tauri-plugin-window-state v2.4.1 (registry `rsproxy-sparse`)
+  Downloaded tauri-plugin v2.5.4 (registry `rsproxy-sparse`)
+  Downloaded tauri-codegen v2.5.5 (registry `rsproxy-sparse`)
+  Downloaded simd-adler32 v0.3.8 (registry `rsproxy-sparse`)
+  Downloaded pxfm v0.1.29 (registry `rsproxy-sparse`)
+  Downloaded servo_arc v0.2.0 (registry `rsproxy-sparse`)
+  Downloaded schemars_derive v0.8.22 (registry `rsproxy-sparse`)
+  Downloaded schannel v0.1.29 (registry `rsproxy-sparse`)
+  Downloaded rkyv v0.7.46 (registry `rsproxy-sparse`)
+  Downloaded rend v0.4.2 (registry `rsproxy-sparse`)
+  Downloaded ref-cast v1.0.25 (registry `rsproxy-sparse`)
+  Downloaded rand_core v0.5.1 (registry `rsproxy-sparse`)
+  Downloaded rand_chacha v0.2.2 (registry `rsproxy-sparse`)
+  Downloaded ptr_meta_derive v0.1.4 (registry `rsproxy-sparse`)
+  Downloaded powerfmt v0.2.0 (registry `rsproxy-sparse`)
+  Downloaded phf_shared v0.10.0 (registry `rsproxy-sparse`)
+  Downloaded phf_shared v0.8.0 (registry `rsproxy-sparse`)
+  Downloaded phf_macros v0.11.3 (registry `rsproxy-sparse`)
+  Downloaded num-conv v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded dpi v0.1.2 (registry `rsproxy-sparse`)
+  Downloaded dirs v6.0.0 (registry `rsproxy-sparse`)
+  Downloaded phf_macros v0.10.0 (registry `rsproxy-sparse`)
+  Downloaded option-ext v0.2.0 (registry `rsproxy-sparse`)
+  Downloaded nodrop v0.1.14 (registry `rsproxy-sparse`)
+  Downloaded markup5ever v0.14.1 (registry `rsproxy-sparse`)
+  Downloaded libc v0.2.183 (registry `rsproxy-sparse`)
+  Downloaded futures-sink v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded futf v0.1.5 (registry `rsproxy-sparse`)
+  Downloaded cssparser v0.29.6 (registry `rsproxy-sparse`)
+  Downloaded byte-unit v5.2.0 (registry `rsproxy-sparse`)
+  Downloaded arrayvec v0.7.6 (registry `rsproxy-sparse`)
+  Downloaded unicode-segmentation v1.13.1 (registry `rsproxy-sparse`)
+  Downloaded toml_datetime v0.7.5+spec-1.1.0 (registry `rsproxy-sparse`)
+  Downloaded time-macros v0.2.27 (registry `rsproxy-sparse`)
+  Downloaded tauri-utils v2.8.3 (registry `rsproxy-sparse`)
+  Downloaded quinn-proto v0.11.14 (registry `rsproxy-sparse`)
+  Downloaded html5ever v0.29.1 (registry `rsproxy-sparse`)
+  Downloaded futures-executor v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded infer v0.19.0 (registry `rsproxy-sparse`)
+  Downloaded glob v0.3.3 (registry `rsproxy-sparse`)
+  Downloaded erased-serde v0.4.10 (registry `rsproxy-sparse`)
+  Downloaded dtoa v1.0.11 (registry `rsproxy-sparse`)
+  Downloaded darling v0.23.0 (registry `rsproxy-sparse`)
+  Downloaded windows-numerics v0.2.0 (registry `rsproxy-sparse`)
+  Downloaded windows-core v0.61.2 (registry `rsproxy-sparse`)
+  Downloaded windows-collections v0.2.0 (registry `rsproxy-sparse`)
+  Downloaded winapi-util v0.1.11 (registry `rsproxy-sparse`)
+  Downloaded webview2-com-macros v0.8.1 (registry `rsproxy-sparse`)
+  Downloaded unic-common v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded tokio-macros v2.6.1 (registry `rsproxy-sparse`)
+  Downloaded time-core v0.1.8 (registry `rsproxy-sparse`)
+  Downloaded thiserror-impl v1.0.69 (registry `rsproxy-sparse`)
+  Downloaded tauri-build v2.5.6 (registry `rsproxy-sparse`)
+  Downloaded tauri v2.10.3 (registry `rsproxy-sparse`)
+  Downloaded serde_spanned v1.1.0 (registry `rsproxy-sparse`)
+  Downloaded semver v1.0.27 (registry `rsproxy-sparse`)
+  Downloaded phf_generator v0.8.0 (registry `rsproxy-sparse`)
+  Downloaded once_cell v1.21.4 (registry `rsproxy-sparse`)
+  Downloaded muda v0.17.1 (registry `rsproxy-sparse`)
+  Downloaded ctor v0.2.9 (registry `rsproxy-sparse`)
+  Downloaded convert_case v0.4.0 (registry `rsproxy-sparse`)
+  Downloaded simdutf8 v0.1.5 (registry `rsproxy-sparse`)
+  Downloaded same-file v1.0.6 (registry `rsproxy-sparse`)
+  Downloaded rand v0.7.3 (registry `rsproxy-sparse`)
+  Downloaded bytecheck v0.6.12 (registry `rsproxy-sparse`)
+  Downloaded bitflags v2.11.0 (registry `rsproxy-sparse`)
+  Downloaded iri-string v0.7.11 (registry `rsproxy-sparse`)
+  Downloaded fdeflate v0.3.7 (registry `rsproxy-sparse`)
+  Downloaded cookie v0.18.1 (registry `rsproxy-sparse`)
+  Downloaded cargo-platform v0.1.9 (registry `rsproxy-sparse`)
+  Downloaded schemars v0.8.22 (registry `rsproxy-sparse`)
+  Downloaded phf_generator v0.11.3 (registry `rsproxy-sparse`)
+  Downloaded borsh-derive v1.6.1 (registry `rsproxy-sparse`)
+  Downloaded alloc-no-stdlib v2.0.4 (registry `rsproxy-sparse`)
+  Downloaded tinyvec v1.11.0 (registry `rsproxy-sparse`)
+  Downloaded syn v1.0.109 (registry `rsproxy-sparse`)
+  Downloaded slab v0.4.12 (registry `rsproxy-sparse`)
+  Downloaded ref-cast-impl v1.0.25 (registry `rsproxy-sparse`)
+  Downloaded precomputed-hash v0.1.1 (registry `rsproxy-sparse`)
+  Downloaded webview2-com-sys v0.38.2 (registry `rsproxy-sparse`)
+  Downloaded funty v2.0.0 (registry `rsproxy-sparse`)
+  Downloaded dyn-clone v1.0.20 (registry `rsproxy-sparse`)
+  Downloaded crc32fast v1.5.0 (registry `rsproxy-sparse`)
+  Downloaded byteorder v1.5.0 (registry `rsproxy-sparse`)
+  Downloaded serde_with_macros v3.18.0 (registry `rsproxy-sparse`)
+  Downloaded rkyv_derive v0.7.46 (registry `rsproxy-sparse`)
+  Downloaded rfd v0.15.4 (registry `rsproxy-sparse`)
+  Downloaded phf v0.11.3 (registry `rsproxy-sparse`)
+  Downloaded miniz_oxide v0.8.9 (registry `rsproxy-sparse`)
+  Downloaded match_token v0.1.0 (registry `rsproxy-sparse`)
+  Downloaded getrandom v0.1.16 (registry `rsproxy-sparse`)
+  Downloaded fern v0.7.1 (registry `rsproxy-sparse`)
+  Downloaded embed-resource v3.0.8 (registry `rsproxy-sparse`)
+  Downloaded auto-launch v0.5.0 (registry `rsproxy-sparse`)
+  Downloaded hyper-util v0.1.20 (registry `rsproxy-sparse`)
+  Downloaded flate2 v1.1.9 (registry `rsproxy-sparse`)
+  Downloaded phf_codegen v0.8.0 (registry `rsproxy-sparse`)
+  Downloaded fxhash v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded adler2 v2.0.1 (registry `rsproxy-sparse`)
+  Downloaded brotli-decompressor v5.0.0 (registry `rsproxy-sparse`)
+  Downloaded ahash v0.7.8 (registry `rsproxy-sparse`)
+  Downloaded window-vibrancy v0.6.0 (registry `rsproxy-sparse`)
+  Downloaded new_debug_unreachable v1.0.6 (registry `rsproxy-sparse`)
+  Downloaded futures-io v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded alloc-stdlib v0.2.2 (registry `rsproxy-sparse`)
+  Downloaded bitflags v1.3.2 (registry `rsproxy-sparse`)
+  Downloaded anyhow v1.0.102 (registry `rsproxy-sparse`)
+  Downloaded cfb v0.7.3 (registry `rsproxy-sparse`)
+  Downloaded windows v0.61.3 (registry `rsproxy-sparse`)
+  Downloaded windows-sys v0.59.0 (registry `rsproxy-sparse`)
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.47
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.228
+   Compiling windows-link v0.2.1
+   Compiling version_check v0.9.5
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling getrandom v0.2.17
+   Compiling icu_normalizer_data v2.1.1
+   Compiling icu_properties_data v2.1.2
+   Compiling windows-sys v0.61.2
+   Compiling thiserror v2.0.18
+   Compiling jobserver v0.1.34
+   Compiling typenum v1.19.0
+   Compiling cc v1.2.57
+   Compiling syn v2.0.117
+   Compiling autocfg v1.5.0
+   Compiling value-bag v1.12.0
+   Compiling log v0.4.29
+   Compiling rand_core v0.6.4
+   Compiling dunce v1.0.5
+   Compiling serde v1.0.228
+   Compiling zeroize v1.8.2
+   Compiling zmij v1.0.21
+   Compiling ppv-lite86 v0.2.21
+   Compiling parking_lot_core v0.9.12
+   Compiling portable-atomic v1.13.1
+   Compiling stable_deref_trait v1.2.1
+   Compiling itoa v1.0.18
+   Compiling ident_case v1.0.1
+   Compiling rand_chacha v0.3.1
+   Compiling strsim v0.11.1
+   Compiling memchr v2.8.0
+   Compiling bytes v1.11.1
+   Compiling rand v0.8.5
+   Compiling siphasher v1.0.2
+   Compiling synstructure v0.13.2
+   Compiling phf_shared v0.11.3
+   Compiling pin-project-lite v0.2.17
+   Compiling once_cell v1.21.4
+   Compiling smallvec v1.15.1
+   Compiling phf_generator v0.11.3
+   Compiling siphasher v0.3.11
+   Compiling getrandom v0.1.16
+   Compiling thiserror v1.0.69
+   Compiling typeid v1.0.3
+   Compiling semver v1.0.27
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling fnv v1.0.7
+   Compiling serde_derive v1.0.228
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling zerovec-derive v0.11.2
+   Compiling displaydoc v0.2.5
+   Compiling thiserror-impl v2.0.18
+   Compiling libc v0.2.183
+   Compiling rand_core v0.5.1
+   Compiling thiserror-impl v1.0.69
+   Compiling zerofrom v0.1.6
+   Compiling syn v1.0.109
+   Compiling litemap v0.8.1
+   Compiling yoke v0.8.1
+   Compiling erased-serde v0.4.10
+   Compiling writeable v0.6.2
+   Compiling zerovec v0.11.5
+   Compiling zerotrie v0.2.3
+   Compiling phf_macros v0.11.3
+   Compiling darling_core v0.23.0
+   Compiling tinystr v0.8.2
+   Compiling potential_utf v0.1.4
+   Compiling generic-array v0.14.7
+   Compiling rand_chacha v0.2.2
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling rand_pcg v0.2.1
+   Compiling phf_shared v0.8.0
+   Compiling icu_provider v2.1.1
+   Compiling futures-core v0.3.32
+   Compiling anyhow v1.0.102
+   Compiling proc-macro-hack v0.5.20+deprecated
+   Compiling darling_macro v0.23.0
+   Compiling rand v0.7.3
+   Compiling socket2 v0.6.3
+   Compiling mio v1.1.1
+   Compiling tokio-macros v2.6.1
+   Compiling darling v0.23.0
+   Compiling phf_shared v0.10.0
+   Compiling serde_json v1.0.149
+   Compiling getrandom v0.4.2
+   Compiling scopeguard v1.2.0
+   Compiling crossbeam-utils v0.8.21
+   Compiling new_debug_unreachable v1.0.6
+   Compiling byteorder v1.5.0
+   Compiling lock_api v0.4.14
+   Compiling tokio v1.50.0
+   Compiling phf_generator v0.10.0
+   Compiling serde_with_macros v3.18.0
+   Compiling phf_generator v0.8.0
+   Compiling icu_properties v2.1.2
+   Compiling icu_normalizer v2.1.1
+   Compiling string_cache_codegen v0.5.4
+   Compiling phf_codegen v0.11.3
+   Compiling percent-encoding v2.3.2
+   Compiling precomputed-hash v0.1.1
+   Compiling winnow v1.0.0
+   Compiling mac v0.1.1
+   Compiling futf v0.1.5
+   Compiling phf_macros v0.10.0
+   Compiling toml_parser v1.1.0+spec-1.1.0
+   Compiling idna_adapter v1.2.1
+   Compiling markup5ever v0.14.1
+   Compiling phf_codegen v0.8.0
+   Compiling parking_lot v0.12.5
+   Compiling cssparser v0.29.6
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing-core v0.1.36
+   Compiling http v1.4.0
+   Compiling serde_spanned v1.1.0
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling utf-8 v0.7.6
+   Compiling utf8_iter v1.0.4
+   Compiling bitflags v1.3.2
+   Compiling subtle v2.6.1
+   Compiling winnow v0.7.15
+   Compiling toml_writer v1.1.0+spec-1.1.0
+   Compiling dtoa v1.0.11
+   Compiling form_urlencoded v1.2.2
+   Compiling tracing v0.1.44
+   Compiling dtoa-short v0.3.5
+   Compiling idna v1.1.0
+   Compiling tendril v0.4.3
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling uuid v1.22.0
+   Compiling phf v0.10.1
+   Compiling string_cache v0.8.9
+   Compiling selectors v0.24.0
+   Compiling crypto-common v0.1.7
+   Compiling phf v0.11.3
+   Compiling aho-corasick v1.1.4
+   Compiling ctor v0.2.9
+   Compiling cssparser-macros v0.6.1
+   Compiling indexmap v1.9.3
+   Compiling regex-syntax v0.8.10
+   Compiling unic-common v0.9.0
+   Compiling matches v0.1.10
+   Compiling nodrop v0.1.14
+   Compiling camino v1.2.2
+   Compiling unic-char-range v0.9.0
+   Compiling convert_case v0.4.0
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling unic-char-property v0.9.0
+   Compiling alloc-stdlib v0.2.2
+   Compiling servo_arc v0.2.0
+   Compiling unic-ucd-version v0.9.0
+   Compiling derive_more v0.99.20
+   Compiling url v2.5.8
+   Compiling regex-automata v0.4.14
+   Compiling winapi-util v0.1.11
+   Compiling fxhash v0.2.1
+   Compiling phf v0.8.0
+   Compiling match_token v0.1.0
+   Compiling serde_derive_internals v0.29.1
+   Compiling schemars v0.8.22
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.16.1
+   Compiling hashbrown v0.12.3
+   Compiling html5ever v0.29.1
+   Compiling regex v1.12.3
+   Compiling indexmap v2.13.0
+   Compiling schemars_derive v0.8.22
+   Compiling same-file v1.0.6
+   Compiling unic-ucd-ident v0.9.0
+   Compiling brotli-decompressor v5.0.0
+   Compiling cfb v0.7.3
+   Compiling jsonptr v0.6.3
+   Compiling cargo-platform v0.1.9
+   Compiling rustc_version v0.4.1
+   Compiling dyn-clone v1.0.20
+   Compiling futures-sink v0.3.32
+   Compiling cargo_metadata v0.19.2
+   Compiling brotli v8.0.2
+   Compiling json-patch v3.0.1
+   Compiling infer v0.19.0
+   Compiling kuchikiki v0.8.8-speedreader
+   Compiling urlpattern v0.3.0
+   Compiling serde-untagged v0.1.9
+   Compiling walkdir v2.5.0
+   Compiling serde_with v3.18.0
+   Compiling num-traits v0.2.19
+   Compiling cmake v0.1.57
+   Compiling fs_extra v1.3.0
+   Compiling glob v0.3.3
+   Compiling aws-lc-sys v0.39.0
+   Compiling windows-link v0.1.3
+   Compiling crc32fast v1.5.0
+   Compiling vswhom-sys v0.1.3
+   Compiling slab v0.4.12
+   Compiling heck v0.5.0
+   Compiling tauri-utils v2.8.3
+   Compiling windows-targets v0.52.6
+   Compiling block-buffer v0.10.4
+   Compiling ring v0.17.14
+   Compiling cpufeatures v0.2.17
+   Compiling aws-lc-rs v1.16.2
+   Compiling digest v0.10.7
+   Compiling windows-sys v0.59.0
+   Compiling windows-result v0.3.4
+   Compiling windows-strings v0.4.2
+   Compiling windows-interface v0.59.3
+   Compiling futures-macro v0.3.32
+   Compiling windows-implement v0.60.2
+   Compiling rustls-pki-types v1.14.0
+   Compiling bitflags v2.11.0
+   Compiling futures-task v0.3.32
+   Compiling futures-io v0.3.32
+   Compiling winreg v0.55.0
+   Compiling windows-core v0.61.2
+   Compiling futures-util v0.3.32
+   Compiling vswhom v0.1.0
+   Compiling option-ext v0.2.0
+   Compiling untrusted v0.9.0
+   Compiling dirs-sys v0.5.0
+   Compiling embed-resource v3.0.8
+   Compiling rustls v0.23.37
+   Compiling pkg-config v0.3.32
+   Compiling tauri-winres v0.3.5
+   Compiling dirs v6.0.0
+   Compiling windows-threading v0.1.0
+   Compiling cargo_toml v0.22.3
+   Compiling tauri-build v2.5.6
+   Compiling windows-future v0.2.1
+   Compiling windows-numerics v0.2.0
+   Compiling windows-collections v0.2.0
+   Compiling raw-window-handle v0.6.2
+   Compiling simd-adler32 v0.3.8
+   Compiling httparse v1.10.1
+   Compiling windows v0.61.3
+   Compiling webpki-roots v1.0.6
+   Compiling futures-channel v0.3.32
+   Compiling webview2-com-sys v0.38.2
+   Compiling dpi v0.1.2
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling base64 v0.22.1
+   Compiling powerfmt v0.2.0
+   Compiling num-conv v0.2.1
+   Compiling adler2 v2.0.1
+   Compiling time-core v0.1.8
+   Compiling miniz_oxide v0.8.9
+   Compiling time-macros v0.2.27
+   Compiling deranged v0.5.8
+   Compiling tauri v2.10.3
+   Compiling tauri-plugin v2.5.4
+   Compiling http-body v1.0.1
+   Compiling crossbeam-channel v0.5.15
+   Compiling cookie v0.18.1
+   Compiling unicode-segmentation v1.13.1
+   Compiling time v0.3.47
+   Compiling flate2 v1.1.9
+   Compiling fdeflate v0.3.7
+   Compiling webview2-com-macros v0.8.1
+   Compiling windows-version v0.1.7
+   Compiling mime v0.3.17
+   Compiling tower-service v0.3.3
+   Compiling png v0.17.16
+   Compiling windows-targets v0.53.5
+   Compiling webpki-roots v0.26.11
+   Compiling tokio-util v0.7.18
+   Compiling either v1.15.0
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling httpdate v1.0.3
+   Compiling ryu v1.0.23
+   Compiling foldhash v0.1.5
+   Compiling crunchy v0.2.4
+   Compiling wry v0.54.4
+   Compiling vcpkg v0.2.15
+   Compiling allocator-api2 v0.2.21
+   Compiling winapi v0.3.9
+   Compiling tauri-runtime v2.10.1
+   Compiling sha2 v0.10.9
+   Compiling libsqlite3-sys v0.30.1
+   Compiling hashbrown v0.15.5
+   Compiling want v0.3.1
+   Compiling serde_urlencoded v0.7.1
+   Compiling h2 v0.4.13
+   Compiling windows-sys v0.60.2
+   Compiling ico v0.5.0
+   Compiling keyboard-types v0.7.0
+   Compiling concurrent-queue v2.5.0
+   Compiling darling_core v0.20.11
+   Compiling windows-result v0.4.1
+   Compiling windows-strings v0.5.1
+   Compiling webview2-com v0.38.2
+   Compiling tauri-runtime-wry v2.10.1
+   Compiling crc-catalog v2.5.0
+   Compiling native-tls v0.2.18
+   Compiling parking v2.2.1
+   Compiling tiny-keccak v2.0.2
+   Compiling pxfm v0.1.29
+   Compiling pin-utils v0.1.0
+   Compiling hyper v1.8.1
+   Compiling moxcms v0.8.1
+   Compiling event-listener v5.4.1
+   Compiling tauri-codegen v2.5.5
+   Compiling darling_macro v0.20.11
+   Compiling crc v3.4.0
+   Compiling windows-registry v0.6.1
+   Compiling muda v0.17.1
+   Compiling tao v0.34.8
+   Compiling png v0.18.1
+   Compiling hashlink v0.10.0
+   Compiling softbuffer v0.4.8
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling futures-intrusive v0.5.0
+   Compiling rand_core v0.9.5
+   Compiling spin v0.9.8
+   Compiling tokio-stream v0.1.18
+   Compiling crossbeam-queue v0.3.12
+   Compiling sync_wrapper v1.0.2
+   Compiling schannel v0.1.29
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling const-oid v0.9.6
+   Compiling bytemuck v1.25.0
+   Compiling ipnet v2.12.0
+   Compiling tower-layer v0.3.3
+   Compiling byteorder-lite v0.1.0
+   Compiling hyper-util v0.1.20
+   Compiling serialize-to-javascript v0.1.2
+   Compiling image v0.25.10
+   Compiling der v0.7.10
+   Compiling flume v0.11.1
+   Compiling rand_chacha v0.9.0
+   Compiling tauri-macros v2.5.5
+   Compiling tray-icon v0.21.3
+   Compiling darling v0.20.11
+   Compiling window-vibrancy v0.6.0
+   Compiling http-body-util v0.1.3
+   Compiling futures-executor v0.3.32
+   Compiling sha1 v0.10.6
+   Compiling atoi v2.0.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling crossbeam-epoch v0.9.18
+   Compiling inout v0.1.4
+   Compiling serde_repr v0.1.20
+   Compiling data-encoding v2.10.0
+   Compiling rayon-core v1.13.0
+   Compiling const-random-macro v0.1.16
+   Compiling crossbeam-deque v0.8.6
+   Compiling cipher v0.4.4
+   Compiling derive_builder_core v0.20.2
+   Compiling rand v0.9.2
+   Compiling spki v0.7.3
+   Compiling tower v0.5.3
+   Compiling universal-hash v0.5.1
+   Compiling toml v0.5.11
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling smartstring v1.0.1
+   Compiling ahash v0.8.12
+   Compiling ntapi v0.4.3
+   Compiling anstyle v1.0.14
+   Compiling opaque-debug v0.3.1
+   Compiling winreg v0.10.1
+   Compiling zstd-safe v7.2.4
+   Compiling once_cell_polyfill v1.70.2
+   Compiling utf8parse v0.2.2
+   Compiling rust_decimal v1.40.0
+   Compiling anstyle-parse v1.0.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling poly1305 v0.8.0
+   Compiling winres v0.1.12
+   Compiling derive_builder_macro v0.20.2
+   Compiling pkcs8 v0.10.2
+   Compiling salsa20 v0.10.2
+   Compiling const-random v0.1.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling tauri-plugin-window-state v2.4.1
+   Compiling tauri-plugin-log v2.8.0
+   Compiling tauri-plugin-autostart v2.5.1
+   Compiling windows-core v0.52.0
+   Compiling strum_macros v0.27.2
+   Compiling chrono v0.4.44
+   Compiling aead v0.5.2
+   Compiling anstyle-query v1.1.5
+   Compiling iri-string v0.7.11
+   Compiling minimal-lexical v0.2.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling signature v2.2.0
+   Compiling colorchoice v1.0.5
+   Compiling static_assertions v1.1.0
+   Compiling arrayvec v0.7.6
+   Compiling tower-http v0.6.8
+   Compiling strum v0.27.2
+   Compiling anstream v1.0.0
+   Compiling ed25519 v2.2.3
+   Compiling nom v7.1.3
+   Compiling crypto_secretbox v0.1.1
+   Compiling windows v0.52.0
+   Compiling rayon v1.11.0
+   Compiling hyper-tls v0.6.0
+   Compiling derive_builder v0.20.2
+   Compiling codexmanager-service v0.4.4 (D:\my-works\codex-extends\Codex-Manager\crates\service)
+   Compiling axum-core v0.5.6
+   Compiling env_filter v1.0.1
+   Compiling blake2 v0.10.6
+   Compiling rhai_codegen v3.1.0
+   Compiling serde_path_to_error v0.1.20
+   Compiling encoding_rs v0.8.35
+   Compiling rfd v0.15.4
+   Compiling utf8-width v0.1.8
+   Compiling bumpalo v3.20.2
+   Compiling urlencoding v2.1.3
+   Compiling ascii v1.1.0
+   Compiling matchit v0.8.4
+   Compiling chunked_transfer v1.5.0
+   Compiling zip v2.4.2
+   Compiling toml_write v0.1.2
+   Compiling jiff v0.2.24
+   Compiling thin-vec v0.2.14
+   Compiling toml_datetime v0.6.11
+   Compiling tiny_http v0.12.0
+   Compiling rhai v1.24.0
+   Compiling zopfli v0.8.3
+   Compiling toml_edit v0.22.27
+   Compiling rustls-webpki v0.103.10
+   Compiling env_logger v0.11.10
+   Compiling byte-unit v5.2.0
+   Compiling crypto_box v0.9.1
+   Compiling auto-launch v0.5.0
+   Compiling croner v3.0.1
+   Compiling zstd v0.13.3
+   Compiling eventsource-stream v0.2.3
+   Compiling ed25519-dalek v2.2.0
+   Compiling CodexManager v0.4.4 (D:\my-works\codex-extends\Codex-Manager\apps\src-tauri)
+   Compiling webbrowser v0.8.15
+   Compiling os_info v3.14.0
+   Compiling fern v0.7.1
+   Compiling sqlx-core v0.8.6
+   Compiling tokio-rustls v0.26.4
+   Compiling tungstenite v0.28.0
+   Compiling tokio-tungstenite v0.28.0
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling sysinfo v0.30.13
+   Compiling axum v0.8.8
+   Compiling sqlx-sqlite v0.8.6
+   Compiling sqlx v0.8.6
+   Compiling rusqlite v0.31.0 (D:\my-works\codex-extends\Codex-Manager\crates\rusqlite)
+   Compiling codexmanager-core v0.4.4 (D:\my-works\codex-extends\Codex-Manager\crates\core)
+   Compiling tungstenite v0.24.0
+   Compiling tauri-plugin-single-instance v2.4.0
+warning: function `is_free_or_single_window_account` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\account\account_plan.rs:251:15
+    |
+251 | pub(crate) fn is_free_or_single_window_account(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `account_matches_plan_filter` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\account\account_plan.rs:283:15
+    |
+283 | pub(crate) fn account_matches_plan_filter(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `read_api_keys_for_ids` is never used
+  --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\apikey\apikey_list.rs:39:15
+   |
+39 | pub(crate) fn read_api_keys_for_ids(key_ids: &[String]) -> Result<Vec<ApiKeySummary>, String> {
+   |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_enabled` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:597:15
+    |
+597 | pub(crate) fn set_reasoning_guard_enabled(enabled: bool) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `current_reasoning_guard_targets` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:601:15
+    |
+601 | pub(crate) fn current_reasoning_guard_targets() -> Vec<i64> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `current_reasoning_guard_match_mode` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:605:15
+    |
+605 | pub(crate) fn current_reasoning_guard_match_mode() -> &'static str {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_match_mode` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:609:15
+    |
+609 | pub(crate) fn set_reasoning_guard_match_mode(raw: &str) -> &'static str {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `current_reasoning_guard_stream_action` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:613:15
+    |
+613 | pub(crate) fn current_reasoning_guard_stream_action() -> &'static str {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_stream_action` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:617:15
+    |
+617 | pub(crate) fn set_reasoning_guard_stream_action(raw: &str) -> &'static str {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_continuation_marker_text` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:630:15
+    |
+630 | pub(crate) fn set_reasoning_guard_continuation_marker_text(raw: &str) -> String {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_targets` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:638:15
+    |
+638 | pub(crate) fn set_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_targets_from_raw` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:642:15
+    |
+642 | pub(crate) fn set_reasoning_guard_targets_from_raw(raw: &str) -> Vec<i64> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_intercept_streaming` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:650:15
+    |
+650 | pub(crate) fn set_reasoning_guard_intercept_streaming(enabled: bool) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_intercept_non_streaming` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:658:15
+    |
+658 | pub(crate) fn set_reasoning_guard_intercept_non_streaming(enabled: bool) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_retry_attempts` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:666:15
+    |
+666 | pub(crate) fn set_reasoning_guard_retry_attempts(attempts: usize) -> usize {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_bypass_after_consecutive` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:674:15
+    |
+674 | pub(crate) fn set_reasoning_guard_bypass_after_consecutive(threshold: usize) -> usize {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_auto_compact_enabled` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\mod.rs:862:15
+    |
+862 | pub(crate) fn set_auto_compact_enabled(enabled: bool) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP` is never used
+  --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\routing\cooldown.rs:25:18
+   |
+25 | pub(super) const BOUND_ACCOUNT_NETWORK_CONSECUTIVE_GIVE_UP: u32 = 3;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `account_last_cooldown_reason` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\routing\cooldown.rs:214:15
+    |
+214 | pub(super) fn account_last_cooldown_reason(account_id: &str) -> Option<CooldownReason> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `network_consecutive_failure_count` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\routing\cooldown.rs:241:15
+    |
+241 | pub(super) fn network_consecutive_failure_count(account_id: &str) -> u32 {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `reset_network_consecutive_failure` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\routing\cooldown.rs:252:15
+    |
+252 | pub(super) fn reset_network_consecutive_failure(account_id: &str) {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `as_str` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:252:19
+    |
+251 | impl ReasoningGuardMatchMode {
+    | ---------------------------- method in this implementation
+252 |     pub(crate) fn as_str(self) -> &'static str {
+    |                   ^^^^^^
+
+warning: method `as_str` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:267:19
+    |
+266 | impl ReasoningGuardStreamAction {
+    | ------------------------------- method in this implementation
+267 |     pub(crate) fn as_str(self) -> &'static str {
+    |                   ^^^^^^
+
+warning: function `set_auto_compact_enabled` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:938:15
+    |
+938 | pub(crate) fn set_auto_compact_enabled(enabled: bool) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_enabled` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:950:15
+    |
+950 | pub(crate) fn set_reasoning_guard_enabled(enabled: bool) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_targets` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:963:15
+    |
+963 | pub(crate) fn set_reasoning_guard_targets(values: &[i64]) -> Vec<i64> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_targets_from_raw` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:975:15
+    |
+975 | pub(crate) fn set_reasoning_guard_targets_from_raw(raw: &str) -> Vec<i64> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_match_mode` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:987:15
+    |
+987 | pub(crate) fn set_reasoning_guard_match_mode(raw: &str) -> ReasoningGuardMatchMode {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_stream_action` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:1006:15
+     |
+1006 | pub(crate) fn set_reasoning_guard_stream_action(raw: &str) -> ReasoningGuardStreamAction {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_continuation_marker_text` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:1026:15
+     |
+1026 | pub(crate) fn set_reasoning_guard_continuation_marker_text(raw: &str) -> String {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_intercept_streaming` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:1052:15
+     |
+1052 | pub(crate) fn set_reasoning_guard_intercept_streaming(enabled: bool) -> bool {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_intercept_non_streaming` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:1067:15
+     |
+1067 | pub(crate) fn set_reasoning_guard_intercept_non_streaming(enabled: bool) -> bool {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_retry_attempts` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:1082:15
+     |
+1082 | pub(crate) fn set_reasoning_guard_retry_attempts(attempts: usize) -> usize {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_reasoning_guard_bypass_after_consecutive` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:1094:15
+     |
+1094 | pub(crate) fn set_reasoning_guard_bypass_after_consecutive(threshold: usize) -> usize {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `serialize_reasoning_guard_targets` is never used
+    --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\gateway\core\runtime_config.rs:2650:4
+     |
+2650 | fn serialize_reasoning_guard_targets(values: &[i64]) -> String {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `read_request_log_page_with_total` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\requestlog\requestlog_list.rs:218:15
+    |
+218 | pub(crate) fn read_request_log_page_with_total(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `request_log_page_total_matches_filter_summary` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\requestlog\requestlog_list.rs:281:15
+    |
+281 | pub(crate) fn request_log_page_total_matches_filter_summary(params: &RequestLogListParams) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `read_request_log_page_for_key_ids_with_total` is never used
+   --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\requestlog\requestlog_list.rs:320:15
+    |
+320 | pub(crate) fn read_request_log_page_for_key_ids_with_total(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_bounded_local_day_bounds_ts` is never used
+  --> D:\my-works\codex-extends\Codex-Manager\crates\service\src\time_bounds.rs:44:15
+   |
+44 | pub(crate) fn resolve_bounded_local_day_bounds_ts(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `codexmanager-service` (lib) generated 39 warnings
+warning: function `pick_free_port` is never used
+  --> src\codex_injector\process.rs:36:8
+   |
+36 | pub fn pick_free_port(preferred: u16) -> u16 {
+   |        ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `CodexManager` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 26m 10s
+       Built application at: D:\my-works\codex-extends\Codex-Manager\apps\src-tauri\target\release\CodexManager.exe

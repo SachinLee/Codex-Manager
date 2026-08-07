@@ -14,6 +14,7 @@ mod accounts_sql;
 mod agent_identities;
 mod aggregate_api_health;
 mod aggregate_api_probe_costs;
+mod aggregate_api_zero_balance;
 mod aggregate_apis;
 mod aggregate_apis_sql;
 mod api_key_quota_limits;
@@ -1640,6 +1641,28 @@ pub struct AggregateApiSupplierModel {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateApiZeroBalanceStateKind {
+    ZeroBalanceBlocked,
+    ManuallyReleased,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiZeroBalanceState {
+    pub aggregate_api_id: String,
+    pub state: AggregateApiZeroBalanceStateKind,
+    pub observed_at: i64,
+    pub released_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateApiZeroBalanceTransition {
+    Block { observed_at: i64 },
+    Clear,
+    Preserve,
+}
+
 #[derive(Debug, Clone)]
 pub struct AggregateApiHealthConfig {
     pub aggregate_api_id: String,
@@ -2623,7 +2646,17 @@ impl Storage {
             "131_aggregate_api_probe_costs",
             include_str!("../../migrations/131_aggregate_api_probe_costs.sql"),
         )?;
+        self.apply_sql_migration(
+            "132_aggregate_api_zero_balance_route_state",
+            include_str!("../../migrations/132_aggregate_api_zero_balance_route_state.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "133_model_catalog_fallback_chain",
+            include_str!("../../migrations/133_model_catalog_fallback_chain.sql"),
+            |s| s.ensure_model_fallback_chain_column(),
+        )?;
         self.ensure_api_key_rotation_columns()?;
+        self.ensure_model_fallback_chain_column()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_secrets_table()?;

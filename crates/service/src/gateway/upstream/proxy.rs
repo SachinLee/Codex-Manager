@@ -17,6 +17,39 @@ use super::proxy_pipeline::request_setup::prepare_request_setup;
 use super::proxy_pipeline::response_finalize::respond_terminal;
 use super::support::precheck::{prepare_candidates_for_proxy, CandidatePrecheckResult};
 
+/// 首跳之外最多再试 3 个降级模型。
+const MAX_MODEL_FALLBACK_HOPS: usize = 3;
+
+/// 从扁平降级链里取第一个还没试过的 slug（大小写无关去重）。
+fn next_fallback_model(chain: &[String], attempted: &[String]) -> Option<String> {
+    chain
+        .iter()
+        .find(|candidate| {
+            !attempted
+                .iter()
+                .any(|used| used.eq_ignore_ascii_case(candidate.as_str()))
+        })
+        .cloned()
+}
+
+/// 把 `/v1beta/models/<model>:action` 形态路径里的模型段替换为 `model`。
+/// 路径不含 `/models/` 时原样返回（非 Gemini 协议即走这一支）。
+fn rewrite_model_in_path(path: &str, model: &str) -> String {
+    const MARKER: &str = "/models/";
+    let Some(marker_at) = path.find(MARKER) else {
+        return path.to_string();
+    };
+    let start = marker_at + MARKER.len();
+    let tail = &path[start..];
+    let end = tail
+        .find(|ch| ch == ':' || ch == '?' || ch == '/')
+        .unwrap_or(tail.len());
+    if tail[..end].trim().is_empty() {
+        return path.to_string();
+    }
+    format!("{}{}{}", &path[..start], model, &tail[end..])
+}
+
 /// 函数 `exhausted_gateway_error_for_log`
 ///
 /// 作者: gaohongshun
@@ -417,6 +450,7 @@ fn respond_hybrid_route_error(
     reasoning_for_log: Option<&str>,
     reasoning_source_for_log: Option<&str>,
     started_at: Instant,
+    status_code: u16,
     account_error: Option<&str>,
     aggregate_error: String,
 ) -> Result<(), String> {
@@ -441,6 +475,7 @@ fn respond_hybrid_route_error(
         reasoning_for_log,
         reasoning_source_for_log,
         started_at,
+        status_code,
         message,
     )
 }
@@ -477,12 +512,13 @@ fn respond_aggregate_route_error(
     reasoning_for_log: Option<&str>,
     reasoning_source_for_log: Option<&str>,
     started_at: Instant,
+    status_code: u16,
     message: String,
 ) -> Result<(), String> {
-    super::super::record_gateway_request_outcome(path, 404, Some("aggregate_api"));
+    super::super::record_gateway_request_outcome(path, status_code, Some("aggregate_api"));
     super::super::trace_log::log_request_final(
         trace_id,
-        404,
+        status_code,
         Some(key_id),
         None,
         Some(message.as_str()),
@@ -514,13 +550,13 @@ fn respond_aggregate_route_error(
         model_for_log,
         reasoning_for_log,
         None,
-        Some(404),
+        Some(status_code),
         super::super::request_log::RequestLogUsage::default(),
         Some(message.as_str()),
         Some(started_at.elapsed().as_millis()),
     );
     let response = super::super::error_response::terminal_text_response(
-        404,
+        status_code,
         super::super::error_message_for_client(
             super::super::prefers_raw_errors_for_tiny_http_request(&request),
             message,
@@ -558,8 +594,9 @@ fn proxy_with_aggregate_candidates(
     aggregate_api_id: Option<&str>,
     request_deadline: Option<Instant>,
     started_at: Instant,
+    allow_model_fallback: bool,
     aggregate_api_candidates: Vec<codexmanager_core::storage::AggregateApi>,
-) -> Result<(), String> {
+) -> Result<super::protocol::aggregate_api::AggregateProxyOutcome, String> {
     let mut aggregate_api_candidates = aggregate_api_candidates;
     super::protocol::aggregate_api::apply_gateway_route_strategy_to_aggregate_candidates(
         &mut aggregate_api_candidates,
@@ -604,6 +641,7 @@ fn proxy_with_aggregate_candidates(
             session_id_for_log,
             conversation_anchor_for_log,
             aggregate_api_candidates,
+            allow_model_fallback,
             request_deadline,
             started_at,
         },
@@ -696,8 +734,8 @@ pub(in super::super) fn proxy_validated_request(
         conversation_binding,
         request_log_session_id,
         client_model_for_log,
-        model_for_log,
-        model_source_for_log,
+        mut model_for_log,
+        mut model_source_for_log,
         client_reasoning_for_log,
         reasoning_for_log,
         reasoning_source_for_log,
@@ -712,7 +750,6 @@ pub(in super::super) fn proxy_validated_request(
     // 中文注释：对齐 Codex 上游协议：/v1/responses 固定走 SSE。
     // 下游是否流式仍由客户端 `stream` 参数决定（在 response bridge 层聚合/透传）。
     let upstream_is_stream = resolve_upstream_is_stream(client_is_stream, path.as_str());
-    let request_deadline = request_deadline_for_path(started_at, client_is_stream, path.as_str());
 
     super::super::trace_log::log_request_start(
         trace_id.as_str(),
@@ -750,27 +787,220 @@ pub(in super::super) fn proxy_validated_request(
         executor_kind_label(execution_plan.executor_kind),
         route_kind_label(execution_plan.route_kind),
     );
+    let mut request = request;
+    let mut body = body;
+    let mut passthrough_body = passthrough_body;
+    let mut passthrough_path = passthrough_path;
+    let mut hop_index = 0usize;
+    let mut hop_started_at = started_at;
+    let mut fallback_chain = Vec::new();
+    let mut attempted_models = Vec::new();
+    let mut last_unavailable: Option<(u16, String)> = None;
 
-    let configured_model = match validate_model_route(
-        &storage,
-        key_id.as_str(),
-        model_for_log.as_deref(),
-        execution_plan,
-    ) {
-        Ok(configured_model) => configured_model,
-        Err((status_code, message)) => {
-            return respond_model_route_error(
+    'model_hops: loop {
+        let request_deadline =
+            request_deadline_for_path(hop_started_at, client_is_stream, path.as_str());
+
+        macro_rules! record_unavailable_and_advance {
+            ($status_code:expr, $message:expr) => {{
+                let status_code = $status_code;
+                let message = $message;
+                last_unavailable = Some((status_code, message.clone()));
+                let next_model = (hop_index < MAX_MODEL_FALLBACK_HOPS)
+                    .then(|| next_fallback_model(&fallback_chain, &attempted_models))
+                    .flatten();
+                if let Some(next_model) = next_model {
+                    super::super::trace_log::log_model_fallback(
+                        trace_id.as_str(),
+                        model_for_log.as_deref(),
+                        next_model.as_str(),
+                        hop_index + 1,
+                        status_code,
+                    );
+                    super::super::record_gateway_model_fallback_hop();
+                    body = super::protocol::aggregate_api::rewrite_body_model_override(
+                        &body,
+                        Some(next_model.as_str()),
+                    );
+                    passthrough_body = super::protocol::aggregate_api::rewrite_body_model_override(
+                        &passthrough_body,
+                        Some(next_model.as_str()),
+                    );
+                    passthrough_path =
+                        rewrite_model_in_path(passthrough_path.as_str(), next_model.as_str());
+                    attempted_models.push(next_model.clone());
+                    model_for_log = Some(next_model);
+                    model_source_for_log = Some("model_fallback".to_string());
+                    hop_index += 1;
+                    hop_started_at = Instant::now();
+                    continue 'model_hops;
+                }
+                (status_code, message)
+            }};
+        }
+
+        let configured_model = match validate_model_route(
+            &storage,
+            key_id.as_str(),
+            model_for_log.as_deref(),
+            execution_plan,
+        ) {
+            Ok(configured_model) => configured_model,
+            Err((status_code, message)) if hop_index > 0 => {
+                super::super::trace_log::log_model_fallback_skip(
+                    trace_id.as_str(),
+                    model_for_log.as_deref(),
+                    status_code,
+                );
+                let previous_unavailable = last_unavailable.clone();
+                let (status_code, message) = record_unavailable_and_advance!(status_code, message);
+                let (status_code, message) = previous_unavailable.unwrap_or((status_code, message));
+                return respond_model_route_error(
+                    request,
+                    &storage,
+                    trace_id.as_str(),
+                    key_id.as_str(),
+                    original_path.as_str(),
+                    path.as_str(),
+                    request_method.as_str(),
+                    response_adapter,
+                    service_tier_for_log.as_deref(),
+                    effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
+                    gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
+                    model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
+                    reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
+                    started_at,
+                    status_code,
+                    message,
+                );
+            }
+            Err((status_code, message)) => {
+                return respond_model_route_error(
+                    request,
+                    &storage,
+                    trace_id.as_str(),
+                    key_id.as_str(),
+                    original_path.as_str(),
+                    path.as_str(),
+                    request_method.as_str(),
+                    response_adapter,
+                    service_tier_for_log.as_deref(),
+                    effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
+                    gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
+                    model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
+                    reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
+                    started_at,
+                    status_code,
+                    message,
+                );
+            }
+        };
+
+        if hop_index == 0 {
+            attempted_models.push(model_for_log.clone().unwrap_or_default());
+            fallback_chain = configured_model
+                .as_ref()
+                .map(|model| model.fallback_model_slugs.clone())
+                .unwrap_or_default();
+        }
+        let fallback_available = hop_index < MAX_MODEL_FALLBACK_HOPS
+            && next_fallback_model(&fallback_chain, &attempted_models).is_some();
+
+        if should_try_provider_executor_aggregate_route(execution_plan, configured_model.as_ref()) {
+            let (aggregate_path, aggregate_body) = if is_hybrid_account_first_route(execution_plan)
+            {
+                (passthrough_path.as_str(), &passthrough_body)
+            } else {
+                (path.as_str(), &body)
+            };
+            let aggregate_api_candidates = match resolve_aggregate_candidates_for_route(
+                &storage,
+                protocol_type.as_str(),
+                aggregate_api_id.as_deref(),
+                model_for_log.as_deref(),
+            ) {
+                Ok(candidates) => candidates,
+                Err(message) if hop_index > 0 => {
+                    super::super::trace_log::log_model_fallback_skip(
+                        trace_id.as_str(),
+                        model_for_log.as_deref(),
+                        503,
+                    );
+                    let previous_unavailable = last_unavailable.clone();
+                    let (status_code, message) = record_unavailable_and_advance!(503, message);
+                    let (status_code, message) =
+                        previous_unavailable.unwrap_or((status_code, message));
+                    return respond_aggregate_route_error(
+                        request,
+                        &storage,
+                        trace_id.as_str(),
+                        key_id.as_str(),
+                        original_path.as_str(),
+                        aggregate_path,
+                        request_method.as_str(),
+                        super::super::ResponseAdapter::Passthrough,
+                        service_tier_for_log.as_deref(),
+                        effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
+                        gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
+                        model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
+                        reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
+                        started_at,
+                        status_code,
+                        message,
+                    );
+                }
+                Err(message) => {
+                    return respond_aggregate_route_error(
+                        request,
+                        &storage,
+                        trace_id.as_str(),
+                        key_id.as_str(),
+                        original_path.as_str(),
+                        aggregate_path,
+                        request_method.as_str(),
+                        super::super::ResponseAdapter::Passthrough,
+                        service_tier_for_log.as_deref(),
+                        effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
+                        gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
+                        model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
+                        reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
+                        started_at,
+                        404,
+                        message,
+                    );
+                }
+            };
+            match proxy_with_aggregate_candidates(
                 request,
                 &storage,
                 trace_id.as_str(),
                 key_id.as_str(),
                 original_path.as_str(),
-                path.as_str(),
+                aggregate_path,
                 request_method.as_str(),
-                response_adapter,
-                service_tier_for_log.as_deref(),
-                effective_service_tier_for_log.as_deref(),
-                service_tier_source_for_log.as_deref(),
+                &method,
+                aggregate_body,
+                client_is_stream,
                 gateway_mode_for_log.as_deref(),
                 client_model_for_log.as_deref(),
                 model_for_log.as_deref(),
@@ -778,115 +1008,128 @@ pub(in super::super) fn proxy_validated_request(
                 client_reasoning_for_log.as_deref(),
                 reasoning_for_log.as_deref(),
                 reasoning_source_for_log.as_deref(),
-                started_at,
-                status_code,
-                message,
-            );
-        }
-    };
-
-    if should_try_provider_executor_aggregate_route(execution_plan, configured_model.as_ref()) {
-        let (aggregate_path, aggregate_body) = if is_hybrid_account_first_route(execution_plan) {
-            (passthrough_path.as_str(), &passthrough_body)
-        } else {
-            (path.as_str(), &body)
-        };
-        match resolve_aggregate_candidates_for_route(
-            &storage,
-            protocol_type.as_str(),
-            aggregate_api_id.as_deref(),
-            model_for_log.as_deref(),
-        ) {
-            Ok(aggregate_api_candidates) => {
-                return proxy_with_aggregate_candidates(
-                    request,
-                    &storage,
-                    trace_id.as_str(),
-                    key_id.as_str(),
-                    original_path.as_str(),
-                    aggregate_path,
-                    request_method.as_str(),
-                    &method,
-                    aggregate_body,
-                    client_is_stream,
-                    gateway_mode_for_log.as_deref(),
-                    client_model_for_log.as_deref(),
-                    model_for_log.as_deref(),
-                    model_source_for_log.as_deref(),
-                    client_reasoning_for_log.as_deref(),
-                    reasoning_for_log.as_deref(),
-                    reasoning_source_for_log.as_deref(),
-                    service_tier_for_log.as_deref(),
-                    effective_service_tier_for_log.as_deref(),
-                    service_tier_source_for_log.as_deref(),
-                    request_log_session_id.as_deref(),
-                    local_conversation_id.as_deref(),
-                    aggregate_api_id.as_deref(),
-                    request_deadline,
-                    started_at,
-                    aggregate_api_candidates,
-                );
-            }
-            Err(err) => {
-                return respond_aggregate_route_error(
-                    request,
-                    &storage,
-                    trace_id.as_str(),
-                    key_id.as_str(),
-                    original_path.as_str(),
-                    aggregate_path,
-                    request_method.as_str(),
-                    super::super::ResponseAdapter::Passthrough,
-                    service_tier_for_log.as_deref(),
-                    effective_service_tier_for_log.as_deref(),
-                    service_tier_source_for_log.as_deref(),
-                    gateway_mode_for_log.as_deref(),
-                    client_model_for_log.as_deref(),
-                    model_for_log.as_deref(),
-                    model_source_for_log.as_deref(),
-                    client_reasoning_for_log.as_deref(),
-                    reasoning_for_log.as_deref(),
-                    reasoning_source_for_log.as_deref(),
-                    started_at,
-                    err,
-                );
-            }
-        }
-    }
-
-    let mut prepared_hybrid_aggregate_candidates = None;
-    let (request, mut candidates) = match prepare_candidates_for_proxy(
-        request,
-        &storage,
-        trace_id.as_str(),
-        &key_id,
-        &original_path,
-        &path,
-        response_adapter,
-        &request_method,
-        model_for_log.as_deref(),
-        reasoning_for_log.as_deref(),
-        request_log_session_id.as_deref(),
-        account_group_filter.as_deref(),
-        account_plan_filter.as_deref(),
-        low_quota_candidate_mode_for_protocol(protocol_type.as_str()),
-        respond_when_account_candidates_empty(execution_plan, configured_model.as_ref()),
-    ) {
-        CandidatePrecheckResult::Ready {
-            request,
-            candidates,
-        } => (request, candidates),
-        CandidatePrecheckResult::Empty { request } => {
-            match take_or_resolve_aggregate_candidates(
-                &mut prepared_hybrid_aggregate_candidates,
-                &storage,
-                protocol_type.as_str(),
+                service_tier_for_log.as_deref(),
+                effective_service_tier_for_log.as_deref(),
+                service_tier_source_for_log.as_deref(),
+                request_log_session_id.as_deref(),
+                local_conversation_id.as_deref(),
                 aggregate_api_id.as_deref(),
-                model_for_log.as_deref(),
-            ) {
-                Ok(aggregate_api_candidates) => {
-                    return proxy_with_aggregate_candidates(
+                request_deadline,
+                started_at,
+                fallback_available,
+                aggregate_api_candidates,
+            )? {
+                super::protocol::aggregate_api::AggregateProxyOutcome::Handled => return Ok(()),
+                super::protocol::aggregate_api::AggregateProxyOutcome::Unavailable {
+                    request: returned,
+                    status_code,
+                    message,
+                } => {
+                    request = returned;
+                    let (status_code, message) =
+                        record_unavailable_and_advance!(status_code, message);
+                    return respond_aggregate_route_error(
                         request,
+                        &storage,
+                        trace_id.as_str(),
+                        key_id.as_str(),
+                        original_path.as_str(),
+                        aggregate_path,
+                        request_method.as_str(),
+                        super::super::ResponseAdapter::Passthrough,
+                        service_tier_for_log.as_deref(),
+                        effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
+                        gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
+                        model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
+                        reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
+                        started_at,
+                        status_code,
+                        message,
+                    );
+                }
+            }
+        }
+
+        let mut prepared_hybrid_aggregate_candidates = None;
+        let (next_request, mut candidates) = match prepare_candidates_for_proxy(
+            request,
+            &storage,
+            trace_id.as_str(),
+            &key_id,
+            &original_path,
+            &path,
+            response_adapter,
+            &request_method,
+            model_for_log.as_deref(),
+            reasoning_for_log.as_deref(),
+            request_log_session_id.as_deref(),
+            account_group_filter.as_deref(),
+            account_plan_filter.as_deref(),
+            low_quota_candidate_mode_for_protocol(protocol_type.as_str()),
+            respond_when_account_candidates_empty(execution_plan, configured_model.as_ref())
+                && !fallback_available,
+        ) {
+            CandidatePrecheckResult::Ready {
+                request,
+                candidates,
+            } => (request, candidates),
+            CandidatePrecheckResult::Empty {
+                request: empty_request,
+            } => {
+                if should_fallback_to_aggregate_after_account_exhaustion(
+                    execution_plan,
+                    configured_model.as_ref(),
+                ) {
+                    let aggregate_api_candidates = match take_or_resolve_aggregate_candidates(
+                        &mut prepared_hybrid_aggregate_candidates,
+                        &storage,
+                        protocol_type.as_str(),
+                        aggregate_api_id.as_deref(),
+                        model_for_log.as_deref(),
+                    ) {
+                        Ok(candidates) => candidates,
+                        Err(error) => {
+                            request = empty_request;
+                            let (_status_code, message) = record_unavailable_and_advance!(
+                                503,
+                                hybrid_route_error_message(
+                                    Some("无可用账号(no available account)"),
+                                    error.as_str()
+                                )
+                            );
+                            return respond_hybrid_route_error(
+                                request,
+                                &storage,
+                                trace_id.as_str(),
+                                key_id.as_str(),
+                                original_path.as_str(),
+                                passthrough_path.as_str(),
+                                request_method.as_str(),
+                                super::super::ResponseAdapter::Passthrough,
+                                service_tier_for_log.as_deref(),
+                                effective_service_tier_for_log.as_deref(),
+                                service_tier_source_for_log.as_deref(),
+                                gateway_mode_for_log.as_deref(),
+                                client_model_for_log.as_deref(),
+                                model_for_log.as_deref(),
+                                model_source_for_log.as_deref(),
+                                client_reasoning_for_log.as_deref(),
+                                reasoning_for_log.as_deref(),
+                                reasoning_source_for_log.as_deref(),
+                                started_at,
+                                503,
+                                Some("无可用账号(no available account)"),
+                                message,
+                            );
+                        }
+                    };
+                    match proxy_with_aggregate_candidates(
+                        empty_request,
                         &storage,
                         trace_id.as_str(),
                         key_id.as_str(),
@@ -911,10 +1154,201 @@ pub(in super::super) fn proxy_validated_request(
                         aggregate_api_id.as_deref(),
                         request_deadline,
                         started_at,
+                        fallback_available,
                         aggregate_api_candidates,
-                    );
+                    )? {
+                        super::protocol::aggregate_api::AggregateProxyOutcome::Handled => {
+                            return Ok(())
+                        }
+                        super::protocol::aggregate_api::AggregateProxyOutcome::Unavailable {
+                            request: returned,
+                            status_code,
+                            message,
+                        } => {
+                            request = returned;
+                            let (_status_code, message) =
+                                record_unavailable_and_advance!(status_code, message);
+                            return respond_hybrid_route_error(
+                                request,
+                                &storage,
+                                trace_id.as_str(),
+                                key_id.as_str(),
+                                original_path.as_str(),
+                                passthrough_path.as_str(),
+                                request_method.as_str(),
+                                super::super::ResponseAdapter::Passthrough,
+                                service_tier_for_log.as_deref(),
+                                effective_service_tier_for_log.as_deref(),
+                                service_tier_source_for_log.as_deref(),
+                                gateway_mode_for_log.as_deref(),
+                                client_model_for_log.as_deref(),
+                                model_for_log.as_deref(),
+                                model_source_for_log.as_deref(),
+                                client_reasoning_for_log.as_deref(),
+                                reasoning_for_log.as_deref(),
+                                reasoning_source_for_log.as_deref(),
+                                started_at,
+                                status_code,
+                                Some("无可用账号(no available account)"),
+                                message,
+                            );
+                        }
+                    }
                 }
-                Err(err) => {
+                request = empty_request;
+                let message = exhausted_gateway_error_for_log(&[], 0, 0, None);
+                let (status_code, message) = record_unavailable_and_advance!(503, message);
+                return respond_terminal(request, status_code, message, Some(trace_id.as_str()));
+            }
+            CandidatePrecheckResult::Responded => return Ok(()),
+        };
+        request = next_request;
+        let setup = prepare_request_setup(
+            &storage,
+            path.as_str(),
+            protocol_type.as_str(),
+            has_prompt_cache_key,
+            &incoming_headers,
+            &body,
+            &mut candidates,
+            key_id.as_str(),
+            platform_key_hash.as_str(),
+            route_conversation_id.as_deref(),
+            route_conversation_source.unwrap_or(
+                super::super::conversation_binding::RouteConversationSource::StickyFallback,
+            ),
+            conversation_binding.as_ref(),
+            model_for_log.as_deref(),
+            trace_id.as_str(),
+        );
+        let base = setup.upstream_base.as_str();
+        if should_fallback_to_aggregate_after_account_exhaustion(
+            execution_plan,
+            configured_model.as_ref(),
+        ) {
+            prepared_hybrid_aggregate_candidates =
+                Some(resolve_hybrid_aggregate_candidates_for_prepare(
+                    &storage,
+                    protocol_type.as_str(),
+                    aggregate_api_id.as_deref(),
+                    key_id.as_str(),
+                    model_for_log.as_deref(),
+                    trace_id.as_str(),
+                ));
+        }
+        let context = GatewayUpstreamExecutionContext::new(
+            &trace_id,
+            &storage,
+            &key_id,
+            &original_path,
+            &path,
+            &request_method,
+            response_adapter,
+            protocol_type.as_str(),
+            client_model_for_log.as_deref(),
+            model_for_log.as_deref(),
+            model_source_for_log.as_deref(),
+            client_reasoning_for_log.as_deref(),
+            reasoning_for_log.as_deref(),
+            reasoning_source_for_log.as_deref(),
+            service_tier_for_log.as_deref(),
+            effective_service_tier_for_log.as_deref(),
+            service_tier_source_for_log.as_deref(),
+            gateway_mode_for_log.as_deref(),
+            request_log_session_id.as_deref(),
+            local_conversation_id.as_deref(),
+            Some(setup.route_strategy_for_log),
+            Some(setup.route_source_for_log),
+            super::super::request_log::estimate_input_tokens_from_body(body.as_ref()),
+            setup.candidate_count,
+            setup.account_max_inflight,
+        );
+        let allow_openai_fallback = setup.upstream_fallback_base.is_some();
+        let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
+            && body.len() <= 2 * 1024)
+            && !path.starts_with("/v1/responses");
+        let _request_gate_guard = acquire_request_gate(
+            trace_id.as_str(),
+            key_id.as_str(),
+            path.as_str(),
+            model_for_log.as_deref(),
+            request_deadline,
+        );
+        let exhausted = match execute_candidate_sequence(
+            request,
+            candidates,
+            CandidateExecutorParams {
+                storage: &storage,
+                method: &method,
+                incoming_headers: &incoming_headers,
+                body: &body,
+                path: path.as_str(),
+                request_shape: request_shape.as_deref(),
+                trace_id: trace_id.as_str(),
+                model_for_log: model_for_log.as_deref(),
+                response_adapter,
+                gemini_stream_output_mode,
+                tool_name_restore_map: &tool_name_restore_map,
+                context: &context,
+                setup: &setup,
+                request_deadline,
+                started_at,
+                client_is_stream,
+                upstream_is_stream,
+                debug,
+                allow_openai_fallback,
+                disable_challenge_stateless_retry,
+            },
+        )? {
+            CandidateExecutionResult::Handled => return Ok(()),
+            CandidateExecutionResult::Exhausted {
+                request: returned,
+                attempted_account_ids,
+                skipped_cooldown,
+                skipped_inflight,
+                last_attempt_url,
+                last_attempt_error,
+            } => (
+                *returned,
+                attempted_account_ids,
+                skipped_cooldown,
+                skipped_inflight,
+                last_attempt_url,
+                last_attempt_error,
+            ),
+        };
+        let (
+            exhausted_request,
+            attempted_account_ids,
+            skipped_cooldown,
+            skipped_inflight,
+            last_attempt_url,
+            last_attempt_error,
+        ) = exhausted;
+        let final_error = exhausted_gateway_error_for_log(
+            attempted_account_ids.as_slice(),
+            skipped_cooldown,
+            skipped_inflight,
+            last_attempt_error.as_deref(),
+        );
+        if should_fallback_to_aggregate_after_account_exhaustion(
+            execution_plan,
+            configured_model.as_ref(),
+        ) {
+            let aggregate_api_candidates = match take_or_resolve_aggregate_candidates(
+                &mut prepared_hybrid_aggregate_candidates,
+                &storage,
+                protocol_type.as_str(),
+                aggregate_api_id.as_deref(),
+                model_for_log.as_deref(),
+            ) {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    request = exhausted_request;
+                    let (_status_code, message) = record_unavailable_and_advance!(
+                        503,
+                        hybrid_route_error_message(Some(final_error.as_str()), error.as_str())
+                    );
                     return respond_hybrid_route_error(
                         request,
                         &storage,
@@ -935,233 +1369,98 @@ pub(in super::super) fn proxy_validated_request(
                         reasoning_for_log.as_deref(),
                         reasoning_source_for_log.as_deref(),
                         started_at,
-                        Some("无可用账号(no available account)"),
-                        err,
+                        503,
+                        Some(final_error.as_str()),
+                        message,
+                    );
+                }
+            };
+            match proxy_with_aggregate_candidates(
+                exhausted_request,
+                &storage,
+                trace_id.as_str(),
+                key_id.as_str(),
+                original_path.as_str(),
+                passthrough_path.as_str(),
+                request_method.as_str(),
+                &method,
+                &passthrough_body,
+                client_is_stream,
+                gateway_mode_for_log.as_deref(),
+                client_model_for_log.as_deref(),
+                model_for_log.as_deref(),
+                model_source_for_log.as_deref(),
+                client_reasoning_for_log.as_deref(),
+                reasoning_for_log.as_deref(),
+                reasoning_source_for_log.as_deref(),
+                service_tier_for_log.as_deref(),
+                effective_service_tier_for_log.as_deref(),
+                service_tier_source_for_log.as_deref(),
+                request_log_session_id.as_deref(),
+                local_conversation_id.as_deref(),
+                aggregate_api_id.as_deref(),
+                request_deadline,
+                started_at,
+                fallback_available,
+                aggregate_api_candidates,
+            )? {
+                super::protocol::aggregate_api::AggregateProxyOutcome::Handled => return Ok(()),
+                super::protocol::aggregate_api::AggregateProxyOutcome::Unavailable {
+                    request: returned,
+                    status_code,
+                    message,
+                } => {
+                    request = returned;
+                    let (_status_code, message) =
+                        record_unavailable_and_advance!(status_code, message);
+                    return respond_hybrid_route_error(
+                        request,
+                        &storage,
+                        trace_id.as_str(),
+                        key_id.as_str(),
+                        original_path.as_str(),
+                        passthrough_path.as_str(),
+                        request_method.as_str(),
+                        super::super::ResponseAdapter::Passthrough,
+                        service_tier_for_log.as_deref(),
+                        effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
+                        gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
+                        model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
+                        reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
+                        started_at,
+                        status_code,
+                        Some(final_error.as_str()),
+                        message,
                     );
                 }
             }
         }
-        CandidatePrecheckResult::Responded => return Ok(()),
-    };
-    let setup = prepare_request_setup(
-        &storage,
-        path.as_str(),
-        protocol_type.as_str(),
-        has_prompt_cache_key,
-        &incoming_headers,
-        &body,
-        &mut candidates,
-        key_id.as_str(),
-        platform_key_hash.as_str(),
-        route_conversation_id.as_deref(),
-        route_conversation_source
-            .unwrap_or(super::super::conversation_binding::RouteConversationSource::StickyFallback),
-        conversation_binding.as_ref(),
-        model_for_log.as_deref(),
-        trace_id.as_str(),
-    );
-    let base = setup.upstream_base.as_str();
-    if should_fallback_to_aggregate_after_account_exhaustion(
-        execution_plan,
-        configured_model.as_ref(),
-    ) {
-        prepared_hybrid_aggregate_candidates =
-            Some(resolve_hybrid_aggregate_candidates_for_prepare(
-                &storage,
-                protocol_type.as_str(),
-                aggregate_api_id.as_deref(),
-                key_id.as_str(),
-                model_for_log.as_deref(),
-                trace_id.as_str(),
-            ));
-        if let Some(Err(err)) = prepared_hybrid_aggregate_candidates.as_ref() {
-            log::debug!(
-                "event=gateway_hybrid_aggregate_candidate_prepare_deferred trace_id={} err={}",
-                trace_id,
-                err
-            );
-        }
+        request = exhausted_request;
+        let (status_code, message) = record_unavailable_and_advance!(503, final_error);
+        let message = if attempted_models.len() > 1 {
+            format!(
+                "{message}; model_fallback_attempted={}",
+                attempted_models.join(",")
+            )
+        } else {
+            message
+        };
+        context.log_final_result(
+            None,
+            last_attempt_url.as_deref().or(Some(base)),
+            status_code,
+            RequestLogUsage::default(),
+            Some(message.as_str()),
+            started_at.elapsed().as_millis(),
+            (!attempted_account_ids.is_empty()).then_some(attempted_account_ids.as_slice()),
+        );
+        return respond_terminal(request, status_code, message, Some(trace_id.as_str()));
     }
-
-    let context = GatewayUpstreamExecutionContext::new(
-        &trace_id,
-        &storage,
-        &key_id,
-        &original_path,
-        &path,
-        &request_method,
-        response_adapter,
-        protocol_type.as_str(),
-        client_model_for_log.as_deref(),
-        model_for_log.as_deref(),
-        model_source_for_log.as_deref(),
-        client_reasoning_for_log.as_deref(),
-        reasoning_for_log.as_deref(),
-        reasoning_source_for_log.as_deref(),
-        service_tier_for_log.as_deref(),
-        effective_service_tier_for_log.as_deref(),
-        service_tier_source_for_log.as_deref(),
-        gateway_mode_for_log.as_deref(),
-        request_log_session_id.as_deref(),
-        local_conversation_id.as_deref(),
-        Some(setup.route_strategy_for_log),
-        Some(setup.route_source_for_log),
-        super::super::request_log::estimate_input_tokens_from_body(body.as_ref()),
-        setup.candidate_count,
-        setup.account_max_inflight,
-    );
-    let allow_openai_fallback = setup.upstream_fallback_base.is_some();
-    let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
-        && body.len() <= 2 * 1024)
-        && !path.starts_with("/v1/responses");
-    let _request_gate_guard = acquire_request_gate(
-        trace_id.as_str(),
-        key_id.as_str(),
-        path.as_str(),
-        model_for_log.as_deref(),
-        request_deadline,
-    );
-    let exhausted = match execute_candidate_sequence(
-        request,
-        candidates,
-        CandidateExecutorParams {
-            storage: &storage,
-            method: &method,
-            incoming_headers: &incoming_headers,
-            body: &body,
-            path: path.as_str(),
-            request_shape: request_shape.as_deref(),
-            trace_id: trace_id.as_str(),
-            model_for_log: model_for_log.as_deref(),
-            response_adapter,
-            gemini_stream_output_mode,
-            tool_name_restore_map: &tool_name_restore_map,
-            context: &context,
-            setup: &setup,
-            request_deadline,
-            started_at,
-            client_is_stream,
-            upstream_is_stream,
-            debug,
-            allow_openai_fallback,
-            disable_challenge_stateless_retry,
-        },
-    )? {
-        CandidateExecutionResult::Handled => return Ok(()),
-        CandidateExecutionResult::Exhausted {
-            request,
-            attempted_account_ids,
-            skipped_cooldown,
-            skipped_inflight,
-            last_attempt_url,
-            last_attempt_error,
-        } => (
-            *request,
-            attempted_account_ids,
-            skipped_cooldown,
-            skipped_inflight,
-            last_attempt_url,
-            last_attempt_error,
-        ),
-    };
-    let (
-        request,
-        attempted_account_ids,
-        skipped_cooldown,
-        skipped_inflight,
-        last_attempt_url,
-        last_attempt_error,
-    ) = exhausted;
-    let final_error = exhausted_gateway_error_for_log(
-        attempted_account_ids.as_slice(),
-        skipped_cooldown,
-        skipped_inflight,
-        last_attempt_error.as_deref(),
-    );
-    if should_fallback_to_aggregate_after_account_exhaustion(
-        execution_plan,
-        configured_model.as_ref(),
-    ) {
-        match take_or_resolve_aggregate_candidates(
-            &mut prepared_hybrid_aggregate_candidates,
-            &storage,
-            protocol_type.as_str(),
-            aggregate_api_id.as_deref(),
-            model_for_log.as_deref(),
-        ) {
-            Ok(aggregate_api_candidates) => {
-                return proxy_with_aggregate_candidates(
-                    request,
-                    &storage,
-                    trace_id.as_str(),
-                    key_id.as_str(),
-                    original_path.as_str(),
-                    passthrough_path.as_str(),
-                    request_method.as_str(),
-                    &method,
-                    &passthrough_body,
-                    client_is_stream,
-                    gateway_mode_for_log.as_deref(),
-                    client_model_for_log.as_deref(),
-                    model_for_log.as_deref(),
-                    model_source_for_log.as_deref(),
-                    client_reasoning_for_log.as_deref(),
-                    reasoning_for_log.as_deref(),
-                    reasoning_source_for_log.as_deref(),
-                    service_tier_for_log.as_deref(),
-                    effective_service_tier_for_log.as_deref(),
-                    service_tier_source_for_log.as_deref(),
-                    request_log_session_id.as_deref(),
-                    local_conversation_id.as_deref(),
-                    aggregate_api_id.as_deref(),
-                    request_deadline,
-                    started_at,
-                    aggregate_api_candidates,
-                );
-            }
-            Err(err) => {
-                return respond_hybrid_route_error(
-                    request,
-                    &storage,
-                    trace_id.as_str(),
-                    key_id.as_str(),
-                    original_path.as_str(),
-                    passthrough_path.as_str(),
-                    request_method.as_str(),
-                    super::super::ResponseAdapter::Passthrough,
-                    service_tier_for_log.as_deref(),
-                    effective_service_tier_for_log.as_deref(),
-                    service_tier_source_for_log.as_deref(),
-                    gateway_mode_for_log.as_deref(),
-                    client_model_for_log.as_deref(),
-                    model_for_log.as_deref(),
-                    model_source_for_log.as_deref(),
-                    client_reasoning_for_log.as_deref(),
-                    reasoning_for_log.as_deref(),
-                    reasoning_source_for_log.as_deref(),
-                    started_at,
-                    Some(final_error.as_str()),
-                    err,
-                );
-            }
-        }
-    }
-
-    context.log_final_result(
-        None,
-        last_attempt_url.as_deref().or(Some(base)),
-        503,
-        RequestLogUsage::default(),
-        Some(final_error.as_str()),
-        started_at.elapsed().as_millis(),
-        (!attempted_account_ids.is_empty()).then_some(attempted_account_ids.as_slice()),
-    );
-    respond_terminal(
-        request,
-        503,
-        crate::gateway::bilingual_error("无可用账号", "no available account"),
-        Some(trace_id.as_str()),
-    )
 }
 
 #[cfg(test)]

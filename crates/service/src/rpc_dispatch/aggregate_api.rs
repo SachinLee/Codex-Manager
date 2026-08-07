@@ -1,16 +1,19 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiListResult, AggregateApiRuntimeStatusListResult, JsonRpcRequest, JsonRpcResponse,
+    AggregateApiListResult, AggregateApiRuntimeStatusListResult,
+    AggregateApiZeroBalanceStatusListResult, JsonRpcRequest, JsonRpcResponse,
 };
 
 use crate::{
     clear_aggregate_api_capability_observation, create_aggregate_api, delete_aggregate_api,
     diagnose_aggregate_api_capabilities, get_aggregate_api_capabilities, get_aggregate_api_health,
     list_aggregate_api_health, list_aggregate_api_probe_costs, list_aggregate_api_runtime_statuses,
-    list_aggregate_apis, list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
+    list_aggregate_api_zero_balance_statuses, list_aggregate_apis,
+    list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
     read_aggregate_api_secret, refresh_aggregate_api_balance,
     reset_aggregate_api_capability_override, reset_aggregate_api_health,
-    reset_aggregate_api_runtime_status, set_aggregate_api_capability_override,
-    set_aggregate_api_capability_routing_mode, test_aggregate_api_connection, update_aggregate_api,
+    reset_aggregate_api_runtime_status, reset_aggregate_api_zero_balance_status,
+    set_aggregate_api_capability_override, set_aggregate_api_capability_routing_mode,
+    test_aggregate_api_connection, update_aggregate_api,
     update_aggregate_api_health_config,
 };
 
@@ -58,6 +61,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         ),
         "aggregateApi/runtimeStatus/reset" => super::value_or_error(
             reset_aggregate_api_runtime_status(api_id_param(req).unwrap_or("")),
+        ),
+        "aggregateApi/zeroBalanceStatus/list" => super::value_or_error(
+            list_aggregate_api_zero_balance_statuses()
+                .map(|items| AggregateApiZeroBalanceStatusListResult { items }),
+        ),
+        "aggregateApi/zeroBalanceStatus/reset" => super::value_or_error(
+            reset_aggregate_api_zero_balance_status(api_id_param(req).unwrap_or("")),
         ),
         "aggregateApi/health/list" => super::value_or_error(list_aggregate_api_health()),
         "aggregateApi/health/costs" => super::value_or_error(list_aggregate_api_probe_costs(

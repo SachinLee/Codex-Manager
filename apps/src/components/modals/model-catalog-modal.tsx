@@ -80,6 +80,7 @@ type ModelDraft = {
   longCacheWritePrice: string;
   longOutputPrice: string;
   routes: RouteDraft[];
+  fallbackModelSlugs: string[];
   instructionsMode: ModelInstructionsModeV2;
   instructionsText: string;
 };
@@ -90,6 +91,7 @@ interface ModelCatalogModalProps {
   model?: ManagedModelV2 | null;
   nextSortOrder: number;
   aggregateApis?: AggregateApi[];
+  allModels?: ManagedModelV2[];
   isSaving?: boolean;
   onSave: (input: ManagedModelV2Upsert) => Promise<ManagedModelV2 | null>;
 }
@@ -194,6 +196,7 @@ function buildDraft(model: ManagedModelV2 | null | undefined, nextSortOrder: num
       ],
     instructionsMode: model?.instructionsMode || "passthrough",
     instructionsText: model?.instructionsText || "",
+    fallbackModelSlugs: model?.fallbackModelSlugs ?? [],
   };
 }
 
@@ -320,6 +323,7 @@ export function ModelCatalogModal({
   model,
   nextSortOrder,
   aggregateApis = [],
+  allModels = [],
   isSaving = false,
   onSave,
 }: ModelCatalogModalProps) {
@@ -400,6 +404,15 @@ export function ModelCatalogModal({
           weight: integer(route.weight, "路由权重", 1),
         };
       });
+      const fallbackModelSlugs = draft.fallbackModelSlugs
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (fallbackModelSlugs.some((value) => value.toLowerCase() === slug.toLowerCase())) {
+        throw new Error("降级模型不能是当前模型自身");
+      }
+      if (new Set(fallbackModelSlugs.map((value) => value.toLowerCase())).size !== fallbackModelSlugs.length) {
+        throw new Error("降级模型链存在重复项");
+      }
       if (
         draft.instructionsMode === "override" &&
         !draft.instructionsText.trim()
@@ -443,6 +456,7 @@ export function ModelCatalogModal({
             : model?.permissionGroupIds || [],
         createdAt: model?.createdAt || 0,
         updatedAt: model?.updatedAt || 0,
+        fallbackModelSlugs,
       };
       const saved = await onSave({
         previousSlug: model?.slug || null,
@@ -817,6 +831,104 @@ export function ModelCatalogModal({
                   </Card>
                 ))
               )}
+              <Card size="sm">
+                <CardHeader>
+                  <CardTitle className="text-base">{t("上游全部不可用时的降级模型")}</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    {t("按顺序尝试；当前模型的所有账号池与聚合 API 都不可用时才会切换。最多再试 3 个模型。")}
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {draft.fallbackModelSlugs.length === 0 ? (
+                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                      {t("未配置降级模型；上游全部不可用时直接返回错误。")}
+                    </div>
+                  ) : (
+                    draft.fallbackModelSlugs.map((fallbackSlug, index) => (
+                      <div key={`${fallbackSlug}-${index}`} className="flex flex-wrap items-center gap-2">
+                        <Select
+                          value={fallbackSlug}
+                          onValueChange={(value) =>
+                            setDraft((current) => ({
+                              ...current,
+                              fallbackModelSlugs: current.fallbackModelSlugs.map((item, itemIndex) =>
+                                itemIndex === index ? value || "" : item,
+                              ),
+                            }))
+                          }
+                        >
+                          <SelectTrigger className="min-w-0 flex-1" aria-label={t("降级模型")}> 
+                            <SelectValue placeholder={t("选择模型")}>
+                              {(value) => {
+                                const selected = allModels.find((item) => item.slug === value);
+                                return selected?.displayName || String(value || "");
+                              }}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent><SelectGroup>
+                            {allModels
+                              .filter((item) => item.slug !== draft.slug)
+                              .map((item) => (
+                                <SelectItem key={item.id} value={item.slug}>
+                                  {item.displayName || item.slug}
+                                </SelectItem>
+                              ))}
+                          </SelectGroup></SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={index === 0}
+                          onClick={() =>
+                            setDraft((current) => {
+                              const next = [...current.fallbackModelSlugs];
+                              [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                              return { ...current, fallbackModelSlugs: next };
+                            })
+                          }
+                        >{t("上移")}</Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={index === draft.fallbackModelSlugs.length - 1}
+                          onClick={() =>
+                            setDraft((current) => {
+                              const next = [...current.fallbackModelSlugs];
+                              [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                              return { ...current, fallbackModelSlugs: next };
+                            })
+                          }
+                        >{t("下移")}</Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setDraft((current) => ({
+                              ...current,
+                              fallbackModelSlugs: current.fallbackModelSlugs.filter((_, itemIndex) => itemIndex !== index),
+                            }))
+                          }
+                        >{t("删除")}</Button>
+                      </div>
+                    ))
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={draft.fallbackModelSlugs.length >= 3}
+                    onClick={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        fallbackModelSlugs: [...current.fallbackModelSlugs, ""],
+                      }))
+                    }
+                  >{t("添加降级模型")}</Button>
+                </CardContent>
+              </Card>
             </TabsContent>
 
             <TabsContent value="instructions" className="mt-4 space-y-4">

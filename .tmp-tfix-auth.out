@@ -1,0 +1,6 @@
+
+running 1 test
+test auth::account::tests::resolve_refresh_target_prefers_explicit_account_id_over_current_account ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1275 filtered out; finished in 3.16s
+

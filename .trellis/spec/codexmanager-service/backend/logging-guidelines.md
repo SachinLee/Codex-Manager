@@ -323,3 +323,67 @@ let _guard_env = reasoning_guard_test_env(
     0,     // bypass after consecutive
 );
 ```
+
+
+## Scenario: OMP Request-Log Title Discovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing `requestlog/sessionTitles`, OMP JSONL title discovery, its cache, or its Windows/Unix filesystem boundary.
+- Applies to `crates/service/src/requestlog/requestlog_session_titles.rs` and its tests. It is a read-only projection for request logs, not an OMP session-management API.
+
+### 2. Signatures
+
+- Source root: `USERPROFILE` / `HOME` + `PI_CONFIG_DIR` (default `.omp`) + optional profile + `agent/sessions`.
+- Layouts: legacy `sessions/*.jsonl` and current `sessions/<project-directory>/*.jsonl`.
+- Projection: `{ sessionId, title, cwd, source: "omp" }`; persistent join key remains `request_logs.session_id`.
+
+### 3. Contracts
+
+- Scan depth is exactly root plus one direct normal project-directory component. Never use an unbounded recursive walker.
+- Reject symbolic links and Windows reparse points before and after opening. Windows files must be opened relative to a verified directory handle; names must be exactly one `Component::Normal`.
+- Read only title-slot line one and session-header line two. Do not parse a transcript line, first prompt, or tool payload as title fallback.
+- Cache keys use logical root/project/file paths, never transient `/proc/self/fd/<n>` access paths. Bound project-directory handles, directory entries, files, metadata lines, title and ID sizes.
+- Preserve direct-root compatibility and existing Codex-over-OMP collision precedence; do not change RPC authorization, request forwarding, request-log schema, or Codex mutation APIs.
+
+### 4. Validation & Error Matrix
+
+- Missing/unreadable root, project directory, malformed JSONL, invalid UUID, oversized metadata, link/reparse point, or a directory/file limit -> skip only that candidate and keep the RPC available.
+- A session file under a grandchild directory -> do not scan it.
+- Cache refresh after project file add/change/delete -> discover, update, or prune the projection on the next refresh.
+- A service running on another host or in a container without the OMP home mounted -> return no OMP title; do not add remote-file access as a fallback.
+
+### 5. Good / Base / Bad Cases
+
+- Good: an OMP request log with `session_id=019f…` resolves a title from `sessions/abs-project/<timestamp>_019f….jsonl`.
+- Base: a legacy root-level JSONL continues to resolve.
+- Bad: scanning only `sessions/*.jsonl` reports every current OMP log as an unmatched session.
+- Bad: passing `..` or `project/file.jsonl` to a relative Windows open can escape the intended directory boundary.
+
+### 6. Tests Required
+
+- Cover root-level compatibility, one project-directory discovery, and rejection of grandchild files.
+- Cover cached project-file update, deletion/prune, and project-directory addition after the cache has been populated.
+- Keep title parser tests proving it stops after the session header and never uses transcript content.
+- On Windows, keep FFI parsing bounds-safe: aligned storage, checked record/name offsets, and no unaligned references.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+for entry in fs::read_dir(session_root)? {
+    if entry.path().extension() == Some("jsonl".as_ref()) {
+        index(entry.path());
+    }
+}
+```
+
+#### Correct
+
+```rust
+scan_root_jsonl();
+for project in verified_direct_project_directories().take(MAX_OMP_PROJECT_DIRECTORIES) {
+    scan_direct_jsonl(project);
+}
+```

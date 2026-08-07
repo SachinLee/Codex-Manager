@@ -1,5 +1,5 @@
 {
-  "revision": 7,
+  "revision": 8,
   "source_sha256": "bd20b8f4dca9c2408ad3b1f41723689d03e98d450beef29549d08a550512e64a",
   "models": [
     {
@@ -117,6 +117,23 @@
       "price_source": "verified_seed_2026-05-11",
       "price_tiers": [
         {"min_input_tokens":0,"input_microusd_per_1m":1750000,"cached_input_microusd_per_1m":175000,"output_microusd_per_1m":14000000}
+      ]
+    },
+    {
+      "slug": "grok-4.5",
+      "display_name": "Grok 4.5",
+      "description": "xAI reasoning model with configurable low and high reasoning effort.",
+      "visibility": "list",
+      "priority": 36,
+      "default_reasoning_effort": "high",
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "capabilities": {"reasoning_efforts":["low","high"],"service_tiers":[],"additional_speed_tiers":[],"input_modalities":["text","image"],"prefer_websockets":false,"supports_parallel_tool_calls":true,"supports_reasoning_summaries":false,"default_reasoning_summary":"none","reasoning_summary_format":"none","supports_verbosity":false,"default_verbosity":"medium","supports_image_detail_original":false,"supports_search_tool":false,"apply_patch_tool_type":"freeform","web_search_tool_type":"text","shell_type":"shell_command","truncation_mode":"tokens","truncation_limit":10000,"experimental_supported_tools":[],"effective_context_window_percent":95,"minimal_client_version":"0.0.1","default_service_tier":null,"auto_compact_token_limit":null,"auto_review_model_override":null,"comp_hash":null,"tool_mode":null,"multi_agent_version":null,"use_responses_lite":false,"include_skills_usage_instructions":false},
+      "price_status": "official",
+      "price_source": "xai_official_grok_4_5",
+      "price_tiers": [
+        {"min_input_tokens":0,"input_microusd_per_1m":2000000,"cached_input_microusd_per_1m":500000,"output_microusd_per_1m":6000000},
+        {"min_input_tokens":200000,"input_microusd_per_1m":4000000,"cached_input_microusd_per_1m":1000000,"output_microusd_per_1m":12000000}
       ]
     },
     {

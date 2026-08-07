@@ -1,0 +1,8 @@
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+error: unexpected argument 'stripped_candidate_removes_encrypted_reasoning_items' found
+
+Usage: cargo.exe test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.

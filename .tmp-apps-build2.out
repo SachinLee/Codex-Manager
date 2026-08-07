@@ -1,0 +1,40 @@
+
+> codexmanager-frontend@0.4.4 build D:\my-works\codex-extends\Codex-Manager\apps
+> next build
+
+▲ Next.js 16.1.6 (Turbopack)
+- Experiments (use with caution):
+  · staleTimes
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 33.7s
+  Running TypeScript ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/18) ...
+  Generating static pages using 7 workers (4/18) 
+  Generating static pages using 7 workers (8/18) 
+  Generating static pages using 7 workers (13/18) 
+✓ Generating static pages using 7 workers (18/18) in 7.7s
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /account-manager
+├ ○ /accounts
+├ ○ /aggregate-api
+├ ○ /apikeys
+├ ○ /author
+├ ○ /codex-launcher
+├ ○ /logs
+├ ○ /model-groups
+├ ○ /models
+├ ○ /platform-mode
+├ ○ /plugins
+├ ○ /proxy-settings
+├ ○ /settings
+└ ○ /tray-preview
+
+
+○  (Static)  prerendered as static content
+

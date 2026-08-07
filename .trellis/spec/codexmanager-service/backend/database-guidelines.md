@@ -138,3 +138,57 @@ FROM gateway_reasoning_guard_events
 WHERE source_kind = 'aggregate_api'
   AND action = 'internal_retry';
 ```
+
+## Scenario: Aggregate API Zero-Balance Route State
+
+### 1. Scope / Trigger
+- Trigger: a successful aggregate API balance refresh can affect routing, persistence, the administrator RPC surface, and the desktop/Web management UI.
+- Keep the zero-balance decision in a dedicated persisted state table. Do not overload explicit API enablement, failure cooldown, health state, or cached balance JSON.
+
+### 2. Signatures
+- Migration table: `aggregate_api_zero_balance_route_states(aggregate_api_id TEXT PRIMARY KEY REFERENCES aggregate_apis(id) ON DELETE CASCADE, state TEXT CHECK (state IN ('zero_balance_blocked', 'manually_released')), observed_at INTEGER NOT NULL, released_at INTEGER, updated_at INTEGER NOT NULL)`.
+- Storage transition: `update_aggregate_api_balance_result_with_zero_balance_state(api_id, ok, balance_json, error, transition)` updates balance cache and route state in one SQLite transaction.
+- Admin RPC: `aggregateApi/zeroBalanceStatus/list` returns `{ items }`; `aggregateApi/zeroBalanceStatus/reset` accepts `{ id }` and returns one status.
+
+### 3. Contracts
+- Only a successful, valid, finite `remaining == 0` refresh writes `zero_balance_blocked`; a successful, valid positive balance clears state. Error, missing, invalid, negative, NaN, and infinite values preserve it.
+- A manually released API is eligible for this gate but remains subject to normal configured-status, cooldown, health, model-route, and daily-budget gates.
+- Candidate filtering happens after cooldown/health short-circuiting and before daily-budget filtering. If this filter alone empties the candidate set, return the dedicated non-sensitive `503` condition.
+- Persist and return only typed numeric balance data, a fixed/template-local unit, and stable error categories. Never persist or expose upstream `unit`, plan/group, message/error, headers, body, token, or account identifier strings.
+- Web and Tauri commands must map to the same camelCase RPC method. The RPC remains admin-only in accounts mode and must not enter the member-method allowlist.
+
+### 4. Validation & Error Matrix
+- Empty reset ID -> `aggregate api id required`.
+- Unknown reset ID -> `aggregate api not found`.
+- Balance cache update affecting any count other than one -> rollback and return the storage error; do not report a successful refresh.
+- Balance query disabled at transaction commit -> do not create a new zero-balance block; disabling it clears existing state in the same configuration transaction.
+- All candidates blocked only by zero balance -> return `503` without attempting an upstream request.
+- Upstream non-2xx or invalid response -> store and return a stable safe category only; preserve existing zero-balance state.
+
+### 5. Good/Base/Bad Cases
+- Good: a prior zero balance blocks the first candidate, leaves the next candidate in its original order, and a later positive refresh removes the state.
+- Good: an administrator reset changes only `zero_balance_blocked` to `manually_released`; it never clears cooldown, health, explicit disablement, or cached balance.
+- Base: an API without balance querying or with an unknown balance stays routable under the existing gates.
+- Bad: derive routing from old `last_balance_json`; this re-blocks a manually released API after restart.
+- Bad: serialize arbitrary successful upstream `unit`, plan, group, or custom plan-path text into cache or RPC payloads.
+
+### 6. Tests Required
+- Storage: file-backed reopen, manual release persistence, positive clear, disabled-query late Block prevention, and foreign-key cascade deletion.
+- Service: exact-zero Block, positive Clear, error/invalid/unknown Preserve, and both error and valid upstream payloads containing a fake token absent from refresh results, SQLite, and aggregate API list output.
+- Gateway: blocked-candidate filtering preserves remaining order; add proxy-level coverage for mixed candidates, all-zero `503`, and cooldown/health/daily-budget precedence when the proxy fixture is extended.
+- RPC/UI: list/reset use the same Web and Tauri RPC method, reset sends `{ id }`, administrators can release only the zero-balance state, and the management dialog reports success/failure accessibly.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```rust
+snapshot.unit = first_string(response, &[&["unit"]]);
+snapshot.plan_name = first_string(response, &[&["planName"]]);
+```
+
+#### Correct
+```rust
+// Only fixed or administrator-configured display metadata can cross the boundary.
+snapshot.unit = Some("USD".to_string());
+snapshot.plan_name = None;
+```

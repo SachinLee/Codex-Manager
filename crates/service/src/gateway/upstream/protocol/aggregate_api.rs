@@ -298,7 +298,10 @@ fn build_upstream_url(base_url: &str, effective_path: &str) -> Result<reqwest::U
     Ok(url)
 }
 
-fn rewrite_body_model_override(body: &Bytes, model_override: Option<&str>) -> Bytes {
+pub(in super::super) fn rewrite_body_model_override(
+    body: &Bytes,
+    model_override: Option<&str>,
+) -> Bytes {
     let Some(model_override) = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1348,13 +1351,44 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub session_id_for_log: Option<&'a str>,
     pub conversation_anchor_for_log: Option<&'a str>,
     pub aggregate_api_candidates: Vec<AggregateApi>,
+    pub allow_model_fallback: bool,
     pub request_deadline: Option<Instant>,
     pub started_at: Instant,
 }
 
+pub(in super::super) enum AggregateProxyOutcome {
+    Handled,
+    Unavailable {
+        request: Request,
+        status_code: u16,
+        message: String,
+    },
+}
+fn filter_zero_balance_blocked_candidates(
+    candidates: Vec<AggregateApi>,
+    blocked_ids: &HashSet<String>,
+    trace_id: &str,
+) -> Vec<AggregateApi> {
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            if blocked_ids.contains(candidate.id.as_str()) {
+                log::info!(
+                    "event=aggregate_api_candidate_skipped_zero_balance trace_id={} aggregate_api_id={}",
+                    trace_id,
+                    candidate.id
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 pub(in super::super) fn proxy_aggregate_request(
     params: AggregateProxyRequest<'_>,
-) -> Result<(), String> {
+) -> Result<AggregateProxyOutcome, String> {
     let AggregateProxyRequest {
         request,
         storage,
@@ -1382,6 +1416,7 @@ pub(in super::super) fn proxy_aggregate_request(
         session_id_for_log,
         conversation_anchor_for_log,
         aggregate_api_candidates,
+        allow_model_fallback,
         request_deadline,
         started_at,
     } = params;
@@ -1389,6 +1424,19 @@ pub(in super::super) fn proxy_aggregate_request(
         super::super::super::request_log::estimate_input_tokens_from_body(body.as_ref());
     if aggregate_api_candidates.is_empty() {
         let message = "aggregate api not found".to_string();
+        if allow_model_fallback {
+            super::super::super::trace_log::log_model_fallback_signal(
+                trace_id,
+                model_for_log,
+                404,
+                message.as_str(),
+            );
+            return Ok(AggregateProxyOutcome::Unavailable {
+                request,
+                status_code: 404,
+                message,
+            });
+        }
         super::super::super::record_gateway_request_outcome(path, 404, Some("aggregate_api"));
         super::super::super::trace_log::log_request_final(
             trace_id,
@@ -1400,7 +1448,7 @@ pub(in super::super) fn proxy_aggregate_request(
         );
         let request = request;
         respond_error(request, 404, message.as_str(), Some(trace_id));
-        return Ok(());
+        return Ok(AggregateProxyOutcome::Handled);
     }
 
     let mut cooling_down_candidate_ids = Vec::new();
@@ -1427,6 +1475,19 @@ pub(in super::super) fn proxy_aggregate_request(
         .collect::<Vec<_>>();
     if aggregate_api_candidates.is_empty() {
         let message = "all aggregate apis are cooling down".to_string();
+        if allow_model_fallback {
+            super::super::super::trace_log::log_model_fallback_signal(
+                trace_id,
+                model_for_log,
+                503,
+                message.as_str(),
+            );
+            return Ok(AggregateProxyOutcome::Unavailable {
+                request,
+                status_code: 503,
+                message,
+            });
+        }
         super::super::super::record_gateway_request_outcome(path, 503, Some("aggregate_api"));
         super::super::super::write_request_log(
             storage,
@@ -1455,7 +1516,69 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(started_at.elapsed().as_millis()),
         );
         respond_error(request, 503, message.as_str(), Some(trace_id));
-        return Ok(());
+        return Ok(AggregateProxyOutcome::Handled);
+    }
+    let zero_balance_blocked_ids = storage
+        .list_zero_balance_blocked_aggregate_api_ids()
+        .map_err(|err| format!("load zero balance route state failed: {err}"))?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let aggregate_api_candidates = filter_zero_balance_blocked_candidates(
+        aggregate_api_candidates,
+        &zero_balance_blocked_ids,
+        trace_id,
+    );
+    if aggregate_api_candidates.is_empty() {
+        let message = "all aggregate apis are blocked by zero balance".to_string();
+        if allow_model_fallback {
+            super::super::super::trace_log::log_model_fallback_signal(
+                trace_id,
+                model_for_log,
+                503,
+                message.as_str(),
+            );
+            return Ok(AggregateProxyOutcome::Unavailable {
+                request,
+                status_code: 503,
+                message,
+            });
+        }
+        super::super::super::record_gateway_request_outcome(path, 503, Some("aggregate_api"));
+        super::super::super::trace_log::log_request_final(
+            trace_id,
+            503,
+            Some(key_id),
+            None,
+            Some(message.as_str()),
+            started_at.elapsed().as_millis(),
+        );
+        super::super::super::write_request_log(
+            storage,
+            super::super::super::request_log::RequestLogTraceContext {
+                trace_id: Some(trace_id),
+                original_path: Some(original_path),
+                adapted_path: Some(path),
+                session_id: session_id_for_log,
+                conversation_anchor: conversation_anchor_for_log,
+                ..Default::default()
+            },
+            Some(key_id),
+            None,
+            path,
+            request_method,
+            model_for_log,
+            reasoning_for_log,
+            None,
+            Some(503),
+            RequestLogUsage {
+                estimated_input_tokens: Some(estimated_input_tokens),
+                ..Default::default()
+            },
+            Some(message.as_str()),
+            Some(started_at.elapsed().as_millis()),
+        );
+        respond_error(request, 503, message.as_str(), Some(trace_id));
+        return Ok(AggregateProxyOutcome::Handled);
     }
 
     let (day_start, day_end) = crate::time_bounds::local_day_bounds_ts()?;
@@ -1475,6 +1598,19 @@ pub(in super::super) fn proxy_aggregate_request(
     }
     if budget_eligible_candidates.is_empty() {
         let message = "aggregate api daily spend limit exceeded".to_string();
+        if allow_model_fallback {
+            super::super::super::trace_log::log_model_fallback_signal(
+                trace_id,
+                model_for_log,
+                429,
+                message.as_str(),
+            );
+            return Ok(AggregateProxyOutcome::Unavailable {
+                request,
+                status_code: 429,
+                message,
+            });
+        }
         super::super::super::record_gateway_request_outcome(path, 429, Some("aggregate_api"));
         super::super::super::trace_log::log_request_final(
             trace_id,
@@ -1521,7 +1657,7 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(started_at.elapsed().as_millis()),
         );
         respond_error(request, 429, message.as_str(), Some(trace_id));
-        return Ok(());
+        return Ok(AggregateProxyOutcome::Handled);
     }
 
     let image_generation_declared_required = match request_requires_image_generation(&request) {
@@ -1529,7 +1665,7 @@ pub(in super::super) fn proxy_aggregate_request(
         Err(message) => {
             super::super::super::record_gateway_request_outcome(path, 400, Some("aggregate_api"));
             respond_error(request, 400, message.as_str(), Some(trace_id));
-            return Ok(());
+            return Ok(AggregateProxyOutcome::Handled);
         }
     };
     let capability_mode = current_capability_routing_mode();
@@ -1774,7 +1910,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     Some(started_at.elapsed().as_millis()),
                 );
                 respond_error(request, 504, message.as_str(), Some(trace_id));
-                return Ok(());
+                return Ok(AggregateProxyOutcome::Handled);
             }
 
             let mut url = base_upstream_url.clone();
@@ -2387,7 +2523,7 @@ pub(in super::super) fn proxy_aggregate_request(
         }
 
         if succeeded {
-            return Ok(());
+            return Ok(AggregateProxyOutcome::Handled);
         }
 
         if terminal_failure {
@@ -2405,6 +2541,19 @@ pub(in super::super) fn proxy_aggregate_request(
     let request = request.take().ok_or_else(|| {
         "aggregate api request already consumed before failure response".to_string()
     })?;
+    if allow_model_fallback && (status_code == 429 || status_code >= 500) {
+        super::super::super::trace_log::log_model_fallback_signal(
+            trace_id,
+            model_for_log,
+            status_code,
+            message.as_str(),
+        );
+        return Ok(AggregateProxyOutcome::Unavailable {
+            request,
+            status_code,
+            message,
+        });
+    }
     super::super::super::record_gateway_request_outcome(path, status_code, Some("aggregate_api"));
     super::super::super::trace_log::log_request_final(
         trace_id,
@@ -2457,7 +2606,7 @@ pub(in super::super) fn proxy_aggregate_request(
         Some(started_at.elapsed().as_millis()),
     );
     respond_error(request, status_code, message.as_str(), Some(trace_id));
-    Ok(())
+    Ok(AggregateProxyOutcome::Handled)
 }
 
 fn aggregate_api_secrets_by_candidate_id(

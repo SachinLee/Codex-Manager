@@ -221,6 +221,10 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
       await ok({ items: AGGREGATE_APIS });
       return;
     }
+    if (method === "aggregateApi/zeroBalanceStatus/list") {
+      await ok({ items: [] });
+      return;
+    }
     if (method === "aggregateApi/runtimeStatus/list") {
       await ok({ items: [] });
       return;

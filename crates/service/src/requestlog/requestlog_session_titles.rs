@@ -4,14 +4,15 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_SESSION_TITLE_LIMIT: usize = 2_000;
 const MAX_SESSION_TITLE_LIMIT: usize = 2_000;
 const MAX_OMP_SESSION_FILES: usize = 4_000;
 const MAX_OMP_DIRECTORY_ENTRIES: usize = 16_000;
+const MAX_OMP_PROJECT_DIRECTORIES: usize = 512;
 const MAX_OMP_TITLE_SLOT_BYTES: usize = 1_024;
 const MAX_OMP_SESSION_HEADER_BYTES: usize = 3 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
@@ -58,13 +59,17 @@ struct OmpSessionTitleCache {
 static OMP_SESSION_TITLE_CACHE: LazyLock<Mutex<OmpSessionTitleCache>> =
     LazyLock::new(|| Mutex::new(OmpSessionTitleCache::default()));
 
+#[derive(Clone)]
 struct OmpSessionDirectory {
     path: PathBuf,
-    handle: File,
+    cache_path: PathBuf,
+    handle: Arc<File>,
 }
 
 struct OmpSessionFile {
+    directory: OmpSessionDirectory,
     path: PathBuf,
+    cache_path: PathBuf,
     #[cfg(windows)]
     name: std::ffi::OsString,
 }
@@ -137,12 +142,10 @@ pub(crate) fn list_omp_session_titles_from_root(
     let Some(directory) = open_omp_session_directory(root) else {
         return Vec::new();
     };
-    let mut paths = Vec::new();
-    let mut entries_seen = 0;
-    collect_omp_session_paths(&directory, &mut entries_seen, &mut paths);
+    let paths = collect_omp_session_paths(&directory);
     let mut titles = paths
         .into_iter()
-        .filter_map(|path| read_omp_session_title(&directory, &path, None))
+        .filter_map(|path| read_omp_session_title(&path, None))
         .collect::<Vec<_>>();
     titles.sort_by(|left, right| {
         right
@@ -185,26 +188,24 @@ fn list_omp_session_titles_cached(root: &Path, limit: usize) -> Vec<OmpSessionTi
         cache.entries.clear();
         return Vec::new();
     };
-    let mut paths = Vec::new();
-    let mut entries_seen = 0;
-    collect_omp_session_paths(&directory, &mut entries_seen, &mut paths);
+    let paths = collect_omp_session_paths(&directory);
     let mut next_entries = HashMap::with_capacity(paths.len());
     for path in paths {
-        let metadata = match read_omp_session_metadata(&directory, &path) {
+        let metadata = match read_omp_session_metadata(&path) {
             Some(metadata) => metadata,
             None => continue,
         };
         let modified_at = metadata.modified().ok();
         let candidate = if let Some(entry) = prior_entries
-            .get(&path.path)
+            .get(&path.cache_path)
             .filter(|entry| entry.modified_at == modified_at && entry.size == metadata.len())
         {
             entry.candidate.clone()
         } else {
-            read_omp_session_title(&directory, &path, Some(&metadata))
+            read_omp_session_title(&path, Some(&metadata))
         };
         next_entries.insert(
-            path.path,
+            path.cache_path,
             CachedOmpSessionTitle {
                 modified_at,
                 size: metadata.len(),
@@ -250,10 +251,43 @@ fn open_omp_session_directory(root: &Path) -> Option<OmpSessionDirectory> {
     if !opened_metadata.is_dir() || metadata_is_unsafe_link_or_reparse(&opened_metadata) {
         return None;
     }
+    let path = stable_directory_path(root, &handle)?;
     Some(OmpSessionDirectory {
-        path: stable_directory_path(root, &handle)?,
-        handle,
+        path,
+        cache_path: root.to_path_buf(),
+        handle: Arc::new(handle),
     })
+}
+
+fn open_omp_session_child_directory(
+    directory: &OmpSessionDirectory,
+    name: &std::ffi::OsStr,
+) -> Option<OmpSessionDirectory> {
+    if !is_single_normal_path_component(name) {
+        return None;
+    }
+    #[cfg(not(windows))]
+    {
+        let path = directory.path.join(name);
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if !metadata.is_dir() || metadata_is_unsafe_link_or_reparse(&metadata) {
+            return None;
+        }
+        let handle = open_directory_no_follow(&path).ok()?;
+        let opened_metadata = handle.metadata().ok()?;
+        if !opened_metadata.is_dir() || metadata_is_unsafe_link_or_reparse(&opened_metadata) {
+            return None;
+        }
+        return Some(OmpSessionDirectory {
+            path,
+            cache_path: directory.cache_path.join(name),
+            handle: Arc::new(handle),
+        });
+    }
+    #[cfg(windows)]
+    {
+        open_windows_relative_directory_no_follow(directory, name)
+    }
 }
 
 #[cfg(not(windows))]
@@ -269,14 +303,48 @@ fn stable_directory_path(path: &Path, _handle: &File) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-fn collect_omp_session_paths(
+fn collect_omp_session_paths(directory: &OmpSessionDirectory) -> Vec<OmpSessionFile> {
+    let mut entries_seen = 0;
+    let mut paths = Vec::new();
+    let mut project_directories = Vec::new();
+    collect_omp_session_paths_in_directory(
+        directory,
+        true,
+        &mut entries_seen,
+        &mut paths,
+        &mut project_directories,
+    );
+    for project_directory in project_directories {
+        if entries_seen >= MAX_OMP_DIRECTORY_ENTRIES || paths.len() >= MAX_OMP_SESSION_FILES {
+            break;
+        }
+        collect_omp_session_paths_in_directory(
+            &project_directory,
+            false,
+            &mut entries_seen,
+            &mut paths,
+            &mut Vec::new(),
+        );
+    }
+    paths
+}
+
+fn collect_omp_session_paths_in_directory(
     directory: &OmpSessionDirectory,
+    collect_project_directories: bool,
     entries_seen: &mut usize,
     paths: &mut Vec<OmpSessionFile>,
+    project_directories: &mut Vec<OmpSessionDirectory>,
 ) {
     #[cfg(windows)]
     {
-        collect_windows_omp_session_paths(directory, entries_seen, paths);
+        collect_windows_omp_session_paths(
+            directory,
+            collect_project_directories,
+            entries_seen,
+            paths,
+            project_directories,
+        );
     }
     #[cfg(not(windows))]
     {
@@ -291,6 +359,7 @@ fn collect_omp_session_paths(
                 return;
             }
             *entries_seen += 1;
+            let name = entry.file_name();
             let path = entry.path();
             let Ok(metadata) = fs::symlink_metadata(&path) else {
                 continue;
@@ -302,27 +371,36 @@ fn collect_omp_session_paths(
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
             {
-                paths.push(OmpSessionFile { path });
+                paths.push(OmpSessionFile {
+                    directory: directory.clone(),
+                    path,
+                    cache_path: directory.cache_path.join(&name),
+                });
+            } else if collect_project_directories
+                && project_directories.len() < MAX_OMP_PROJECT_DIRECTORIES
+                && metadata.is_dir()
+                && !metadata_is_unsafe_link_or_reparse(&metadata)
+            {
+                if let Some(project_directory) = open_omp_session_child_directory(directory, &name)
+                {
+                    project_directories.push(project_directory);
+                }
             }
         }
     }
 }
 
-fn read_omp_session_metadata(
-    directory: &OmpSessionDirectory,
-    path: &OmpSessionFile,
-) -> Option<Metadata> {
-    let file = open_omp_session_file(directory, path).ok()?;
+fn read_omp_session_metadata(path: &OmpSessionFile) -> Option<Metadata> {
+    let file = open_omp_session_file(path).ok()?;
     let metadata = file.metadata().ok()?;
     (metadata.is_file() && !metadata_is_unsafe_link_or_reparse(&metadata)).then_some(metadata)
 }
 
 fn read_omp_session_title(
-    directory: &OmpSessionDirectory,
     path: &OmpSessionFile,
     expected_metadata: Option<&Metadata>,
 ) -> Option<OmpSessionTitleCandidate> {
-    let mut file = open_omp_session_file(directory, path).ok()?;
+    let mut file = open_omp_session_file(path).ok()?;
     let opened_metadata = file.metadata().ok()?;
     if !opened_metadata.is_file()
         || metadata_is_unsafe_link_or_reparse(&opened_metadata)
@@ -354,19 +432,13 @@ fn read_omp_session_title(
 }
 
 #[cfg(not(windows))]
-fn open_omp_session_file(
-    _directory: &OmpSessionDirectory,
-    path: &OmpSessionFile,
-) -> std::io::Result<File> {
+fn open_omp_session_file(path: &OmpSessionFile) -> std::io::Result<File> {
     open_read_only_no_follow(&path.path)
 }
 
 #[cfg(windows)]
-fn open_omp_session_file(
-    directory: &OmpSessionDirectory,
-    path: &OmpSessionFile,
-) -> std::io::Result<File> {
-    open_windows_relative_file_no_follow(&directory.handle, &path.name)
+fn open_omp_session_file(path: &OmpSessionFile) -> std::io::Result<File> {
+    open_windows_relative_file_no_follow(&path.directory.handle, &path.name)
 }
 
 fn read_jsonl_line(file: &mut File, max_bytes: usize) -> Option<String> {
@@ -436,8 +508,10 @@ fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
 #[cfg(windows)]
 fn collect_windows_omp_session_paths(
     directory: &OmpSessionDirectory,
+    collect_project_directories: bool,
     entries_seen: &mut usize,
     paths: &mut Vec<OmpSessionFile>,
+    project_directories: &mut Vec<OmpSessionDirectory>,
 ) {
     use std::mem::size_of;
     use std::os::windows::ffi::OsStringExt;
@@ -448,13 +522,16 @@ fn collect_windows_omp_session_paths(
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     const STATUS_NO_MORE_FILES: i32 = 0x8000_0006_u32 as i32;
     let mut restart_scan = 1_u8;
-    let mut buffer = vec![0_u8; 64 * 1024];
-
+    let mut buffer = vec![0_u64; 8 * 1024];
+    let buffer_len = buffer.len() * size_of::<u64>();
     while *entries_seen < MAX_OMP_DIRECTORY_ENTRIES && paths.len() < MAX_OMP_SESSION_FILES {
         let mut io_status = IoStatusBlock {
             status: 0,
             information: 0,
         };
+        // SAFETY: `directory.handle` is a live directory handle owned by `Arc<File>`.
+        // `buffer` is aligned storage with `buffer_len` writable bytes, and `io_status`
+        // points to initialized writable storage for the duration of this call.
         let status = unsafe {
             nt_query_directory_file(
                 directory.handle.as_raw_handle(),
@@ -463,7 +540,7 @@ fn collect_windows_omp_session_paths(
                 std::ptr::null_mut(),
                 &mut io_status,
                 buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
+                buffer_len as u32,
                 FILE_DIRECTORY_INFORMATION,
                 0,
                 std::ptr::null_mut(),
@@ -474,62 +551,115 @@ fn collect_windows_omp_session_paths(
         if status == STATUS_NO_MORE_FILES {
             return;
         }
-        if status < 0 || io_status.information == 0 {
+        if status < 0 || io_status.information == 0 || io_status.information > buffer_len {
             return;
         }
+        // SAFETY: `buffer` is initialized aligned storage. Viewing its complete allocation
+        // as bytes preserves its validity and the following parser only reads `information`.
+        let buffer_bytes =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer_len) };
 
         let mut offset = 0_usize;
-        while offset < io_status.information && *entries_seen < MAX_OMP_DIRECTORY_ENTRIES {
+        while offset < io_status.information
+            && *entries_seen < MAX_OMP_DIRECTORY_ENTRIES
+            && paths.len() < MAX_OMP_SESSION_FILES
+        {
             if io_status.information - offset < size_of::<FileDirectoryInformationHeader>() {
                 return;
             }
+            // SAFETY: the range check above proves a full header remains in `buffer_bytes`.
+            // `read_unaligned` avoids creating a potentially misaligned Rust reference.
             let header = unsafe {
-                &*(buffer
-                    .as_ptr()
-                    .add(offset)
-                    .cast::<FileDirectoryInformationHeader>())
+                std::ptr::read_unaligned(
+                    buffer_bytes
+                        .as_ptr()
+                        .add(offset)
+                        .cast::<FileDirectoryInformationHeader>(),
+                )
             };
             let name_offset = offset + size_of::<FileDirectoryInformationHeader>();
             let name_len = header.file_name_length as usize;
-            if name_len % 2 != 0 || name_offset + name_len > io_status.information {
+            let Some(name_end) = name_offset.checked_add(name_len) else {
+                return;
+            };
+            if name_len % 2 != 0 || name_end > io_status.information {
                 return;
             }
             *entries_seen += 1;
-            if header.file_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
-                == 0
-            {
-                let name = unsafe {
-                    let chars = std::slice::from_raw_parts(
-                        buffer.as_ptr().add(name_offset).cast::<u16>(),
-                        name_len / 2,
-                    );
-                    std::ffi::OsString::from_wide(chars)
-                };
-                let name_path = Path::new(&name);
-                if name_path.components().count() == 1
-                    && name_path
+            if header.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+                let chars = buffer_bytes[name_offset..name_end]
+                    .chunks_exact(2)
+                    .map(|bytes| u16::from_ne_bytes([bytes[0], bytes[1]]))
+                    .collect::<Vec<_>>();
+                let name = std::ffi::OsString::from_wide(&chars);
+                if is_single_normal_path_component(&name) {
+                    if header.file_attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                        if collect_project_directories
+                            && project_directories.len() < MAX_OMP_PROJECT_DIRECTORIES
+                        {
+                            if let Some(project_directory) =
+                                open_omp_session_child_directory(directory, &name)
+                            {
+                                project_directories.push(project_directory);
+                            }
+                        }
+                    } else if Path::new(&name)
                         .extension()
                         .and_then(|extension| extension.to_str())
                         .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
-                {
-                    paths.push(OmpSessionFile {
-                        path: directory.path.join(&name),
-                        name,
-                    });
+                    {
+                        paths.push(OmpSessionFile {
+                            directory: directory.clone(),
+                            path: directory.path.join(&name),
+                            cache_path: directory.cache_path.join(&name),
+                            name,
+                        });
+                    }
                 }
             }
             if header.next_entry_offset == 0 {
                 break;
             }
             let next = header.next_entry_offset as usize;
+            let Some(next_offset) = offset.checked_add(next) else {
+                return;
+            };
             if next < size_of::<FileDirectoryInformationHeader>()
-                || offset + next > io_status.information
+                || next_offset > io_status.information
             {
                 return;
             }
-            offset += next;
+            offset = next_offset;
         }
     }
+}
+
+#[cfg(windows)]
+fn open_windows_relative_directory_no_follow(
+    parent: &OmpSessionDirectory,
+    name: &std::ffi::OsStr,
+) -> Option<OmpSessionDirectory> {
+    const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let handle = open_windows_relative_no_follow(
+        &parent.handle,
+        name,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+    )
+    .ok()?;
+    let metadata = handle.metadata().ok()?;
+    (metadata.is_dir() && !metadata_is_unsafe_link_or_reparse(&metadata)).then(|| {
+        OmpSessionDirectory {
+            path: parent.path.join(name),
+            cache_path: parent.cache_path.join(name),
+            handle: Arc::new(handle),
+        }
+    })
 }
 
 #[cfg(windows)]
@@ -537,25 +667,39 @@ fn open_windows_relative_file_no_follow(
     directory: &File,
     name: &std::ffi::OsStr,
 ) -> std::io::Result<File> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
-
     const FILE_READ_DATA: u32 = 0x0000_0001;
     const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
     const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    open_windows_relative_no_follow(
+        directory,
+        name,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+    )
+}
+
+#[cfg(windows)]
+fn open_windows_relative_no_follow(
+    directory: &File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    create_options: u32,
+) -> std::io::Result<File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
     const FILE_SHARE_DELETE: u32 = 0x0000_0004;
     const FILE_OPEN: u32 = 0x0000_0001;
-    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
-    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
-    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
-    let name_path = Path::new(name);
-    if name_path.components().count() != 1 {
+    if !is_single_normal_path_component(name) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "session file name must be a single path component",
+            "session path must be a single normal path component",
         ));
     }
     let mut wide = name.encode_wide().collect::<Vec<_>>();
@@ -564,10 +708,7 @@ fn open_windows_relative_file_no_follow(
         .checked_mul(2)
         .and_then(|length| u16::try_from(length).ok())
         .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "session file name is too long",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "session path is too long")
         })?;
     let mut unicode_name = UnicodeString {
         length: byte_len,
@@ -587,17 +728,20 @@ fn open_windows_relative_file_no_follow(
         information: 0,
     };
     let mut handle = std::ptr::null_mut();
+    // SAFETY: `directory` is a live handle owned by the caller, `wide` and all
+    // NT argument structures remain valid for this synchronous call, and their
+    // pointers reference initialized writable storage with the declared layouts.
     let status = unsafe {
         nt_create_file(
             &mut handle,
-            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            desired_access,
             &mut attributes,
             &mut io_status,
             std::ptr::null_mut(),
             0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_OPEN,
-            FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            create_options,
             std::ptr::null_mut(),
             0,
         )
@@ -605,10 +749,17 @@ fn open_windows_relative_file_no_follow(
     if status < 0 || handle.is_null() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "unable to open session metadata file safely",
+            "unable to open session metadata safely",
         ));
     }
+    // SAFETY: a successful `NtCreateFile` returned a non-null, uniquely owned
+    // handle. `File` takes ownership exactly once and closes it on drop.
     Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+fn is_single_normal_path_component(name: &std::ffi::OsStr) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 #[cfg(windows)]

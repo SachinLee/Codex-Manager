@@ -1,11 +1,13 @@
 use codexmanager_core::rpc::types::{
     AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
     AggregateApiRuntimeStatus, AggregateApiSecretResult, AggregateApiSummary,
-    AggregateApiTestResult,
+    AggregateApiTestResult, AggregateApiZeroBalanceStatus,
 };
 use codexmanager_core::storage::{
-    now_ts, AggregateApi, GatewayCapabilityObservationRecord, GatewayCapabilityScope,
+    now_ts, AggregateApi, AggregateApiZeroBalanceState, AggregateApiZeroBalanceStateKind,
+    GatewayCapabilityObservationRecord, GatewayCapabilityScope,
 };
+
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -840,6 +842,16 @@ fn apply_balance_auth(
     Ok(rebuilt)
 }
 
+fn read_json_response(response: reqwest::blocking::Response) -> Result<serde_json::Value, String> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("balance query http_status={}", status.as_u16()));
+    }
+    response
+        .json()
+        .map_err(|_| "balance response is not valid JSON".to_string())
+}
+
 fn short_error_body(body: &str) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= 240 {
@@ -848,22 +860,23 @@ fn short_error_body(body: &str) -> String {
     compact.chars().take(240).collect::<String>()
 }
 
-fn read_json_response(response: reqwest::blocking::Response) -> Result<serde_json::Value, String> {
-    let status = response.status();
-    let bytes = response.bytes().map_err(|err| err.to_string())?;
-    let body = String::from_utf8_lossy(bytes.as_ref()).to_string();
-    if !status.is_success() {
-        let detail = short_error_body(body.as_str());
-        if detail.is_empty() {
-            return Err(format!("balance query http_status={}", status.as_u16()));
+fn safe_balance_query_error(error: &str) -> String {
+    if let Some(marker_start) = error.rfind("http_status=") {
+        let status = error[marker_start + "http_status=".len()..]
+            .chars()
+            .take_while(|value| value.is_ascii_digit())
+            .collect::<String>();
+        if let Ok(status) = status.parse::<u16>() {
+            return format!("balance query http_status={status}");
         }
-        return Err(format!(
-            "balance query http_status={}; {detail}",
-            status.as_u16()
-        ));
     }
-    serde_json::from_str(body.as_str())
-        .map_err(|_| "balance response is not valid JSON".to_string())
+    if error.contains("missing") || error.contains("not valid JSON") {
+        return "balance query invalid response".to_string();
+    }
+    if error.contains("configuration") || error.contains("config") {
+        return "balance query configuration invalid".to_string();
+    }
+    "balance query request failed".to_string()
 }
 
 fn json_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -995,16 +1008,6 @@ fn extract_generic_balance(
             )
         })
         .unwrap_or(true);
-    let invalid_message = first_string(
-        value,
-        &[
-            &["message"],
-            &["error"],
-            &["status"],
-            &["data", "message"],
-            &["data", "error"],
-        ],
-    );
     let is_valid = success && is_active && status_valid;
     let remaining = first_number(
         value,
@@ -1025,30 +1028,10 @@ fn extract_generic_balance(
     }
     Ok(AggregateApiBalanceSnapshot {
         is_valid,
-        invalid_message: if is_valid { None } else { invalid_message },
+        invalid_message: (!is_valid).then(|| "balance query returned invalid account".to_string()),
         remaining,
-        unit: first_string(
-            value,
-            &[
-                &["unit"],
-                &["currency"],
-                &["data", "unit"],
-                &["data", "currency"],
-            ],
-        )
-        .or_else(|| Some("USD".to_string())),
-        plan_name: first_string(
-            value,
-            &[
-                &["planName"],
-                &["plan_name"],
-                &["mode"],
-                &["data", "planName"],
-                &["data", "plan_name"],
-                &["data", "group"],
-                &["data", "mode"],
-            ],
-        ),
+        unit: Some("USD".to_string()),
+        plan_name: None,
         total: first_number(
             value,
             &[
@@ -1088,14 +1071,10 @@ fn extract_new_api_balance(
     let total = remaining.map(|value| value + used);
     Ok(AggregateApiBalanceSnapshot {
         is_valid: success,
-        invalid_message: if success {
-            None
-        } else {
-            first_string(value, &[&["message"], &["error"]])
-        },
+        invalid_message: (!success).then(|| "balance query returned invalid account".to_string()),
         remaining,
         unit: Some("USD".to_string()),
-        plan_name: json_string(data.get("group")).or_else(|| json_string(data.get("plan"))),
+        plan_name: None,
         total,
         used: Some(used),
         extra: None,
@@ -1116,24 +1095,10 @@ fn extract_custom_balance(
     }
     Ok(AggregateApiBalanceSnapshot {
         is_valid,
-        invalid_message: if is_valid {
-            None
-        } else {
-            custom_string(value, config.invalid_message_path.as_deref()).or_else(|| {
-                first_string(
-                    value,
-                    &[
-                        &["message"],
-                        &["error"],
-                        &["data", "message"],
-                        &["data", "error"],
-                    ],
-                )
-            })
-        },
+        invalid_message: (!is_valid).then(|| "balance query returned invalid account".to_string()),
         remaining,
         unit: config.unit.clone().or_else(|| Some("USD".to_string())),
-        plan_name: custom_string(value, config.plan_path.as_deref()),
+        plan_name: None,
         total: custom_number(value, config.total_path.as_deref(), multiplier),
         used: custom_number(value, config.used_path.as_deref(), multiplier),
         extra: None,
@@ -1955,6 +1920,60 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
         })
         .collect())
 }
+fn zero_balance_status_from_storage(
+    state: AggregateApiZeroBalanceState,
+) -> AggregateApiZeroBalanceStatus {
+    let state_name = match state.state {
+        AggregateApiZeroBalanceStateKind::ZeroBalanceBlocked => "zero_balance_blocked",
+        AggregateApiZeroBalanceStateKind::ManuallyReleased => "manually_released",
+    };
+    AggregateApiZeroBalanceStatus {
+        aggregate_api_id: state.aggregate_api_id,
+        state: state_name.to_string(),
+        observed_at: Some(state.observed_at),
+        released_at: state.released_at,
+        updated_at: Some(state.updated_at),
+    }
+}
+
+pub(crate) fn list_aggregate_api_zero_balance_statuses(
+) -> Result<Vec<AggregateApiZeroBalanceStatus>, String> {
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    storage
+        .list_aggregate_api_zero_balance_states()
+        .map_err(|err| err.to_string())
+        .map(|states| {
+            states
+                .into_iter()
+                .map(zero_balance_status_from_storage)
+                .collect()
+        })
+}
+
+pub(crate) fn reset_aggregate_api_zero_balance_status(
+    api_id: &str,
+) -> Result<AggregateApiZeroBalanceStatus, String> {
+    if api_id.trim().is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    storage
+        .find_aggregate_api_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let state = storage
+        .release_aggregate_api_zero_balance_state(api_id, now_ts())
+        .map_err(|err| err.to_string())?;
+    Ok(state
+        .map(zero_balance_status_from_storage)
+        .unwrap_or_else(|| AggregateApiZeroBalanceStatus {
+            aggregate_api_id: api_id.to_string(),
+            state: "not_blocked".to_string(),
+            observed_at: None,
+            released_at: None,
+            updated_at: None,
+        }))
+}
 
 pub(crate) fn list_aggregate_api_runtime_statuses() -> Result<Vec<AggregateApiRuntimeStatus>, String>
 {
@@ -2592,24 +2611,43 @@ pub(crate) fn refresh_aggregate_api_balance(
     let latency_ms = started_at.elapsed().as_millis() as i64;
 
     match result {
-        Ok(snapshot) => {
+        Ok(mut snapshot) => {
             let ok = snapshot.is_valid;
             let message = if ok {
                 None
             } else {
-                snapshot
-                    .invalid_message
-                    .clone()
-                    .or_else(|| Some("balance query returned invalid account".to_string()))
+                snapshot.invalid_message = None;
+                snapshot.unit = None;
+                snapshot.plan_name = None;
+                snapshot.extra = None;
+                Some("balance query returned invalid account".to_string())
+            };
+            let transition = if ok {
+                match snapshot.remaining {
+                    Some(remaining) if remaining.is_finite() && remaining == 0.0 => {
+                        codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block {
+                            observed_at: queried_at,
+                        }
+                    }
+                    Some(remaining) if remaining.is_finite() && remaining > 0.0 => {
+                        codexmanager_core::storage::AggregateApiZeroBalanceTransition::Clear
+                    }
+                    _ => codexmanager_core::storage::AggregateApiZeroBalanceTransition::Preserve,
+                }
+            } else {
+                codexmanager_core::storage::AggregateApiZeroBalanceTransition::Preserve
             };
             let balance_json = serde_json::to_string(&snapshot)
                 .map_err(|_| "serialize balance result failed".to_string())?;
-            let _ = storage.update_aggregate_api_balance_result(
-                api_id,
-                ok,
-                Some(balance_json.as_str()),
-                message.as_deref(),
-            );
+            storage
+                .update_aggregate_api_balance_result_with_zero_balance_state(
+                    api_id,
+                    ok,
+                    Some(balance_json.as_str()),
+                    message.as_deref(),
+                    transition,
+                )
+                .map_err(|_| "persist aggregate api balance result failed".to_string())?;
             Ok(AggregateApiBalanceRefreshResult {
                 id: api_id.to_string(),
                 ok,
@@ -2620,9 +2658,16 @@ pub(crate) fn refresh_aggregate_api_balance(
             })
         }
         Err(err) => {
-            let message = format!("template={template}; {err}");
-            let _ =
-                storage.update_aggregate_api_balance_result(api_id, false, None, Some(&message));
+            let message = safe_balance_query_error(err.as_str());
+            storage
+                .update_aggregate_api_balance_result_with_zero_balance_state(
+                    api_id,
+                    false,
+                    None,
+                    Some(message.as_str()),
+                    codexmanager_core::storage::AggregateApiZeroBalanceTransition::Preserve,
+                )
+                .map_err(|_| "persist aggregate api balance result failed".to_string())?;
             Ok(AggregateApiBalanceRefreshResult {
                 id: api_id.to_string(),
                 ok: false,

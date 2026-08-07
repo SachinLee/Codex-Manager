@@ -6,3 +6,18 @@ target-dir = "target"
 # and cdylib links. Rust 1.97 surfaces that localized linker chatter as a
 # linker_messages warning even though the link succeeds.
 rustflags = ["-A", "linker-messages"]
+
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy]
+registry = "https://rsproxy.cn/crates.io-index"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[registries.rsproxy]
+index = "https://rsproxy.cn/crates.io-index"
+
+[net]
+git-fetch-with-cli = true

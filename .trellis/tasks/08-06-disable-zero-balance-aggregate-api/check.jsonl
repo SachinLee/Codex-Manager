@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "检查 SQLite、RPC 和 UI 合同是否完整同步"}
+{"file": ".trellis/tasks/08-06-disable-zero-balance-aggregate-api/research/backend-balance-routing.md", "reason": "验证零余额与现有路由门保持隔离"}
+{"file": ".trellis/tasks/08-06-disable-zero-balance-aggregate-api/research/frontend-runtime-status.md", "reason": "验证 Web/Tauri transport、权限和 UI 操作保持一致"}

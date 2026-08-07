@@ -1,0 +1,570 @@
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating `rsproxy-sparse` index
+ Downloading crates ...
+  Downloaded autocfg v1.5.0 (registry `rsproxy-sparse`)
+  Downloaded ed25519 v2.2.3 (registry `rsproxy-sparse`)
+  Downloaded env_logger v0.11.10 (registry `rsproxy-sparse`)
+  Downloaded hyper-tls v0.6.0 (registry `rsproxy-sparse`)
+  Downloaded heck v0.5.0 (registry `rsproxy-sparse`)
+  Downloaded quinn-udp v0.5.14 (registry `rsproxy-sparse`)
+  Downloaded derive_builder_core v0.20.2 (registry `rsproxy-sparse`)
+  Downloaded icu_provider v2.1.1 (registry `rsproxy-sparse`)
+  Downloaded rand_chacha v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded httparse v1.10.1 (registry `rsproxy-sparse`)
+  Downloaded static_assertions v1.1.0 (registry `rsproxy-sparse`)
+  Downloaded pkg-config v0.3.32 (registry `rsproxy-sparse`)
+  Downloaded sha1 v0.10.6 (registry `rsproxy-sparse`)
+  Downloaded tokio-tungstenite v0.28.0 (registry `rsproxy-sparse`)
+  Downloaded want v0.3.1 (registry `rsproxy-sparse`)
+  Downloaded version_check v0.9.5 (registry `rsproxy-sparse`)
+  Downloaded zmij v1.0.17 (registry `rsproxy-sparse`)
+  Downloaded toml v0.5.11 (registry `rsproxy-sparse`)
+  Downloaded zstd-safe v7.2.4 (registry `rsproxy-sparse`)
+  Downloaded webbrowser v0.8.15 (registry `rsproxy-sparse`)
+  Downloaded windows-strings v0.5.1 (registry `rsproxy-sparse`)
+  Downloaded zstd v0.13.3 (registry `rsproxy-sparse`)
+  Downloaded zeroize v1.8.2 (registry `rsproxy-sparse`)
+  Downloaded rustls-webpki v0.103.9 (registry `rsproxy-sparse`)
+  Downloaded windows-targets v0.53.5 (registry `rsproxy-sparse`)
+  Downloaded nom v7.1.3 (registry `rsproxy-sparse`)
+  Downloaded zerovec-derive v0.11.2 (registry `rsproxy-sparse`)
+  Downloaded rand_core v0.9.5 (registry `rsproxy-sparse`)
+  Downloaded rand v0.9.2 (registry `rsproxy-sparse`)
+  Downloaded futures-intrusive v0.5.0 (registry `rsproxy-sparse`)
+  Downloaded zerotrie v0.2.3 (registry `rsproxy-sparse`)
+  Downloaded tungstenite v0.28.0 (registry `rsproxy-sparse`)
+  Downloaded salsa20 v0.10.2 (registry `rsproxy-sparse`)
+  Downloaded libc v0.2.180 (registry `rsproxy-sparse`)
+  Downloaded tokio-native-tls v0.3.1 (registry `rsproxy-sparse`)
+  Downloaded serde_path_to_error v0.1.20 (registry `rsproxy-sparse`)
+  Downloaded tower-layer v0.3.3 (registry `rsproxy-sparse`)
+  Downloaded futures-util v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded utf8parse v0.2.2 (registry `rsproxy-sparse`)
+  Downloaded regex v1.12.3 (registry `rsproxy-sparse`)
+  Downloaded tokio-macros v2.6.0 (registry `rsproxy-sparse`)
+  Downloaded sqlx-core v0.8.6 (registry `rsproxy-sparse`)
+  Downloaded yoke v0.8.1 (registry `rsproxy-sparse`)
+  Downloaded windows-registry v0.6.1 (registry `rsproxy-sparse`)
+  Downloaded allocator-api2 v0.2.21 (registry `rsproxy-sparse`)
+  Downloaded winres v0.1.12 (registry `rsproxy-sparse`)
+  Downloaded webpki-roots v1.0.5 (registry `rsproxy-sparse`)
+  Downloaded bitflags v2.10.0 (registry `rsproxy-sparse`)
+  Downloaded tower-http v0.6.8 (registry `rsproxy-sparse`)
+  Downloaded zerovec v0.11.5 (registry `rsproxy-sparse`)
+  Downloaded tower v0.5.3 (registry `rsproxy-sparse`)
+  Downloaded hyper-util v0.1.19 (registry `rsproxy-sparse`)
+  Downloaded ntapi v0.4.3 (registry `rsproxy-sparse`)
+  Downloaded cc v1.2.54 (registry `rsproxy-sparse`)
+  Downloaded rustls v0.23.36 (registry `rsproxy-sparse`)
+  Downloaded sysinfo v0.30.13 (registry `rsproxy-sparse`)
+  Downloaded aws-lc-rs v1.16.2 (registry `rsproxy-sparse`)
+  Downloaded syn v2.0.114 (registry `rsproxy-sparse`)
+  Downloaded zerocopy v0.8.35 (registry `rsproxy-sparse`)
+  Downloaded rhai v1.24.0 (registry `rsproxy-sparse`)
+  Downloaded h2 v0.4.13 (registry `rsproxy-sparse`)
+  Downloaded bytes v1.11.0 (registry `rsproxy-sparse`)
+  Downloaded url v2.5.8 (registry `rsproxy-sparse`)
+  Downloaded curve25519-dalek v4.1.3 (registry `rsproxy-sparse`)
+  Downloaded rand v0.8.5 (registry `rsproxy-sparse`)
+  Downloaded der v0.7.10 (registry `rsproxy-sparse`)
+  Downloaded const-oid v0.9.6 (registry `rsproxy-sparse`)
+  Downloaded http v1.4.0 (registry `rsproxy-sparse`)
+  Downloaded derive_builder v0.20.2 (registry `rsproxy-sparse`)
+  Downloaded winnow v0.7.15 (registry `rsproxy-sparse`)
+  Downloaded windows-core v0.52.0 (registry `rsproxy-sparse`)
+  Downloaded tracing v0.1.44 (registry `rsproxy-sparse`)
+  Downloaded tokio-rustls v0.26.4 (registry `rsproxy-sparse`)
+  Downloaded ryu v1.0.22 (registry `rsproxy-sparse`)
+  Downloaded quinn-proto v0.11.13 (registry `rsproxy-sparse`)
+  Downloaded os_info v3.14.0 (registry `rsproxy-sparse`)
+  Downloaded once_cell v1.21.3 (registry `rsproxy-sparse`)
+  Downloaded crossbeam-utils v0.8.21 (registry `rsproxy-sparse`)
+  Downloaded windows-link v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded vcpkg v0.2.15 (registry `rsproxy-sparse`)
+  Downloaded getrandom v0.3.4 (registry `rsproxy-sparse`)
+  Downloaded event-listener v5.4.1 (registry `rsproxy-sparse`)
+  Downloaded base64ct v1.8.3 (registry `rsproxy-sparse`)
+  Downloaded ascii v1.1.0 (registry `rsproxy-sparse`)
+  Downloaded tokio-stream v0.1.18 (registry `rsproxy-sparse`)
+  Downloaded windows_x86_64_msvc v0.52.6 (registry `rsproxy-sparse`)
+  Downloaded smallvec v1.15.1 (registry `rsproxy-sparse`)
+  Downloaded pin-project-lite v0.2.16 (registry `rsproxy-sparse`)
+  Downloaded icu_normalizer_data v2.1.1 (registry `rsproxy-sparse`)
+  Downloaded sqlx v0.8.6 (registry `rsproxy-sparse`)
+  Downloaded regex-automata v0.4.14 (registry `rsproxy-sparse`)
+  Downloaded windows_x86_64_msvc v0.53.1 (registry `rsproxy-sparse`)
+  Downloaded rayon v1.11.0 (registry `rsproxy-sparse`)
+  Downloaded zstd-sys v2.0.16+zstd.1.5.7 (registry `rsproxy-sparse`)
+  Downloaded anstyle-wincon v3.0.11 (registry `rsproxy-sparse`)
+  Downloaded tokio v1.49.0 (registry `rsproxy-sparse`)
+  Downloaded tinystr v0.8.2 (registry `rsproxy-sparse`)
+  Downloaded jiff v0.2.24 (registry `rsproxy-sparse`)
+  Downloaded sqlx-sqlite v0.8.6 (registry `rsproxy-sparse`)
+  Downloaded rustc-hash v2.1.1 (registry `rsproxy-sparse`)
+  Downloaded ipnet v2.11.0 (registry `rsproxy-sparse`)
+  Downloaded inout v0.1.4 (registry `rsproxy-sparse`)
+  Downloaded futures-macro v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded digest v0.10.7 (registry `rsproxy-sparse`)
+  Downloaded data-encoding v2.10.0 (registry `rsproxy-sparse`)
+  Downloaded curve25519-dalek-derive v0.1.1 (registry `rsproxy-sparse`)
+  Downloaded crypto_box v0.9.1 (registry `rsproxy-sparse`)
+  Downloaded chrono v0.4.44 (registry `rsproxy-sparse`)
+  Downloaded concurrent-queue v2.5.0 (registry `rsproxy-sparse`)
+  Downloaded anstyle-parse v1.0.0 (registry `rsproxy-sparse`)
+  Downloaded sync_wrapper v1.0.2 (registry `rsproxy-sparse`)
+  Downloaded generic-array v0.14.7 (registry `rsproxy-sparse`)
+  Downloaded futures-task v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded fnv v1.0.7 (registry `rsproxy-sparse`)
+  Downloaded equivalent v1.0.2 (registry `rsproxy-sparse`)
+  Downloaded env_filter v1.0.1 (registry `rsproxy-sparse`)
+  Downloaded dunce v1.0.5 (registry `rsproxy-sparse`)
+  Downloaded cipher v0.4.4 (registry `rsproxy-sparse`)
+  Downloaded axum-core v0.5.6 (registry `rsproxy-sparse`)
+  Downloaded thiserror-impl v2.0.18 (registry `rsproxy-sparse`)
+  Downloaded strsim v0.11.1 (registry `rsproxy-sparse`)
+  Downloaded sqlx-macros-core v0.8.6 (registry `rsproxy-sparse`)
+  Downloaded serde_json v1.0.149 (registry `rsproxy-sparse`)
+  Downloaded scopeguard v1.2.0 (registry `rsproxy-sparse`)
+  Downloaded reqwest v0.12.28 (registry `rsproxy-sparse`)
+  Downloaded regex-syntax v0.8.10 (registry `rsproxy-sparse`)
+  Downloaded rand_chacha v0.3.1 (registry `rsproxy-sparse`)
+  Downloaded itoa v1.0.17 (registry `rsproxy-sparse`)
+  Downloaded icu_properties_data v2.1.2 (registry `rsproxy-sparse`)
+  Downloaded hyper v1.8.1 (registry `rsproxy-sparse`)
+  Downloaded cpufeatures v0.2.17 (registry `rsproxy-sparse`)
+  Downloaded const-random-macro v0.1.16 (registry `rsproxy-sparse`)
+  Downloaded colorchoice v1.0.5 (registry `rsproxy-sparse`)
+  Downloaded proc-macro2 v1.0.106 (registry `rsproxy-sparse`)
+  Downloaded lock_api v0.4.14 (registry `rsproxy-sparse`)
+  Downloaded rayon-core v1.13.0 (registry `rsproxy-sparse`)
+  Downloaded hashbrown v0.16.1 (registry `rsproxy-sparse`)
+  Downloaded toml_edit v0.22.27 (registry `rsproxy-sparse`)
+  Downloaded ring v0.17.14 (registry `rsproxy-sparse`)
+  Downloaded tokio-util v0.7.18 (registry `rsproxy-sparse`)
+  Downloaded darling_core v0.20.11 (registry `rsproxy-sparse`)
+  Downloaded typenum v1.19.0 (registry `rsproxy-sparse`)
+  Downloaded serde v1.0.228 (registry `rsproxy-sparse`)
+  Downloaded quinn v0.11.9 (registry `rsproxy-sparse`)
+  Downloaded mio v1.1.1 (registry `rsproxy-sparse`)
+  Downloaded memchr v2.7.6 (registry `rsproxy-sparse`)
+  Downloaded hashbrown v0.15.5 (registry `rsproxy-sparse`)
+  Downloaded crossbeam-channel v0.5.15 (registry `rsproxy-sparse`)
+  Downloaded winapi v0.3.9 (registry `rsproxy-sparse`)
+  Downloaded base64 v0.22.1 (registry `rsproxy-sparse`)
+  Downloaded portable-atomic v1.13.1 (registry `rsproxy-sparse`)
+  Downloaded idna v1.1.0 (registry `rsproxy-sparse`)
+  Downloaded tower-service v0.3.3 (registry `rsproxy-sparse`)
+  Downloaded minimal-lexical v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded indexmap v2.13.0 (registry `rsproxy-sparse`)
+  Downloaded icu_locale_core v2.1.1 (registry `rsproxy-sparse`)
+  Downloaded iri-string v0.7.10 (registry `rsproxy-sparse`)
+  Downloaded icu_normalizer v2.1.1 (registry `rsproxy-sparse`)
+  Downloaded icu_collections v2.1.1 (registry `rsproxy-sparse`)
+  Downloaded flume v0.11.1 (registry `rsproxy-sparse`)
+  Downloaded ed25519-dalek v2.2.0 (registry `rsproxy-sparse`)
+  Downloaded axum v0.8.8 (registry `rsproxy-sparse`)
+  Downloaded atoi v2.0.0 (registry `rsproxy-sparse`)
+  Downloaded zerofrom v0.1.6 (registry `rsproxy-sparse`)
+  Downloaded webpki-roots v0.26.11 (registry `rsproxy-sparse`)
+  Downloaded untrusted v0.9.0 (registry `rsproxy-sparse`)
+  Downloaded universal-hash v0.5.1 (registry `rsproxy-sparse`)
+  Downloaded unicode-ident v1.0.22 (registry `rsproxy-sparse`)
+  Downloaded tracing-core v0.1.36 (registry `rsproxy-sparse`)
+  Downloaded schannel v0.1.28 (registry `rsproxy-sparse`)
+  Downloaded zerofrom-derive v0.1.6 (registry `rsproxy-sparse`)
+  Downloaded toml_write v0.1.2 (registry `rsproxy-sparse`)
+  Downloaded slab v0.4.11 (registry `rsproxy-sparse`)
+  Downloaded rhai_codegen v3.1.0 (registry `rsproxy-sparse`)
+  Downloaded aho-corasick v1.1.4 (registry `rsproxy-sparse`)
+  Downloaded ahash v0.8.12 (registry `rsproxy-sparse`)
+  Downloaded aead v0.5.2 (registry `rsproxy-sparse`)
+  Downloaded windows-result v0.4.1 (registry `rsproxy-sparse`)
+  Downloaded utf8_iter v1.0.4 (registry `rsproxy-sparse`)
+  Downloaded urlencoding v2.1.3 (registry `rsproxy-sparse`)
+  Downloaded try-lock v0.2.5 (registry `rsproxy-sparse`)
+  Downloaded toml_datetime v0.6.11 (registry `rsproxy-sparse`)
+  Downloaded windows-sys v0.61.2 (registry `rsproxy-sparse`)
+  Downloaded tinyvec_macros v0.1.1 (registry `rsproxy-sparse`)
+  Downloaded tiny_http v0.12.0 (registry `rsproxy-sparse`)
+  Downloaded thiserror v2.0.18 (registry `rsproxy-sparse`)
+  Downloaded synstructure v0.13.2 (registry `rsproxy-sparse`)
+  Downloaded subtle v2.6.1 (registry `rsproxy-sparse`)
+  Downloaded strum v0.27.2 (registry `rsproxy-sparse`)
+  Downloaded spin v0.9.8 (registry `rsproxy-sparse`)
+  Downloaded sha2 v0.10.9 (registry `rsproxy-sparse`)
+  Downloaded encoding_rs v0.8.35 (registry `rsproxy-sparse`)
+  Downloaded sqlx-macros v0.8.6 (registry `rsproxy-sparse`)
+  Downloaded spki v0.7.3 (registry `rsproxy-sparse`)
+  Downloaded smartstring v1.0.1 (registry `rsproxy-sparse`)
+  Downloaded yoke-derive v0.8.1 (registry `rsproxy-sparse`)
+  Downloaded stable_deref_trait v1.2.1 (registry `rsproxy-sparse`)
+  Downloaded rustls-pki-types v1.14.0 (registry `rsproxy-sparse`)
+  Downloaded tiny-keccak v2.0.2 (registry `rsproxy-sparse`)
+  Downloaded rand_core v0.6.4 (registry `rsproxy-sparse`)
+  Downloaded quote v1.0.44 (registry `rsproxy-sparse`)
+  Downloaded pkcs8 v0.10.2 (registry `rsproxy-sparse`)
+  Downloaded parking v2.2.1 (registry `rsproxy-sparse`)
+  Downloaded mime v0.3.17 (registry `rsproxy-sparse`)
+  Downloaded futures-sink v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded either v1.15.0 (registry `rsproxy-sparse`)
+  Downloaded writeable v0.6.2 (registry `rsproxy-sparse`)
+  Downloaded windows-targets v0.52.6 (registry `rsproxy-sparse`)
+  Downloaded thin-vec v0.2.14 (registry `rsproxy-sparse`)
+  Downloaded poly1305 v0.8.0 (registry `rsproxy-sparse`)
+  Downloaded percent-encoding v2.3.2 (registry `rsproxy-sparse`)
+  Downloaded opaque-debug v0.3.1 (registry `rsproxy-sparse`)
+  Downloaded matchit v0.8.4 (registry `rsproxy-sparse`)
+  Downloaded utf-8 v0.7.6 (registry `rsproxy-sparse`)
+  Downloaded tracing-attributes v0.1.31 (registry `rsproxy-sparse`)
+  Downloaded tinyvec v1.10.0 (registry `rsproxy-sparse`)
+  Downloaded signature v2.2.0 (registry `rsproxy-sparse`)
+  Downloaded lru-slab v0.1.2 (registry `rsproxy-sparse`)
+  Downloaded strum_macros v0.27.2 (registry `rsproxy-sparse`)
+  Downloaded socket2 v0.6.2 (registry `rsproxy-sparse`)
+  Downloaded windows-sys v0.60.2 (registry `rsproxy-sparse`)
+  Downloaded serde_core v1.0.228 (registry `rsproxy-sparse`)
+  Downloaded native-tls v0.2.14 (registry `rsproxy-sparse`)
+  Downloaded jobserver v0.1.34 (registry `rsproxy-sparse`)
+  Downloaded rustc_version v0.4.1 (registry `rsproxy-sparse`)
+  Downloaded idna_adapter v1.2.1 (registry `rsproxy-sparse`)
+  Downloaded parking_lot_core v0.9.12 (registry `rsproxy-sparse`)
+  Downloaded parking_lot v0.12.5 (registry `rsproxy-sparse`)
+  Downloaded libsqlite3-sys v0.30.1 (registry `rsproxy-sparse`)
+  Downloaded once_cell_polyfill v1.70.2 (registry `rsproxy-sparse`)
+  Downloaded log v0.4.29 (registry `rsproxy-sparse`)
+  Downloaded litemap v0.8.1 (registry `rsproxy-sparse`)
+  Downloaded ident_case v1.0.1 (registry `rsproxy-sparse`)
+  Downloaded displaydoc v0.2.5 (registry `rsproxy-sparse`)
+  Downloaded shlex v1.3.0 (registry `rsproxy-sparse`)
+  Downloaded serde_urlencoded v0.7.1 (registry `rsproxy-sparse`)
+  Downloaded serde_derive v1.0.228 (registry `rsproxy-sparse`)
+  Downloaded semver v1.0.28 (registry `rsproxy-sparse`)
+  Downloaded potential_utf v0.1.4 (registry `rsproxy-sparse`)
+  Downloaded icu_properties v2.1.2 (registry `rsproxy-sparse`)
+  Downloaded hyper-rustls v0.27.7 (registry `rsproxy-sparse`)
+  Downloaded http-body-util v0.1.3 (registry `rsproxy-sparse`)
+  Downloaded hex v0.4.3 (registry `rsproxy-sparse`)
+  Downloaded getrandom v0.2.17 (registry `rsproxy-sparse`)
+  Downloaded futures-io v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded futures-channel v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded form_urlencoded v1.2.2 (registry `rsproxy-sparse`)
+  Downloaded dotenvy v0.15.7 (registry `rsproxy-sparse`)
+  Downloaded crypto-common v0.1.7 (registry `rsproxy-sparse`)
+  Downloaded ppv-lite86 v0.2.21 (registry `rsproxy-sparse`)
+  Downloaded pin-utils v0.1.0 (registry `rsproxy-sparse`)
+  Downloaded num-traits v0.2.19 (registry `rsproxy-sparse`)
+  Downloaded is_terminal_polyfill v1.70.2 (registry `rsproxy-sparse`)
+  Downloaded futures-executor v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded fs_extra v1.3.0 (registry `rsproxy-sparse`)
+  Downloaded eventsource-stream v0.2.3 (registry `rsproxy-sparse`)
+  Downloaded darling v0.20.11 (registry `rsproxy-sparse`)
+  Downloaded croner v3.0.1 (registry `rsproxy-sparse`)
+  Downloaded crypto_secretbox v0.1.1 (registry `rsproxy-sparse`)
+  Downloaded crossbeam-queue v0.3.12 (registry `rsproxy-sparse`)
+  Downloaded crunchy v0.2.4 (registry `rsproxy-sparse`)
+  Downloaded httpdate v1.0.3 (registry `rsproxy-sparse`)
+  Downloaded http-body v1.0.1 (registry `rsproxy-sparse`)
+  Downloaded futures-core v0.3.31 (registry `rsproxy-sparse`)
+  Downloaded foldhash v0.1.5 (registry `rsproxy-sparse`)
+  Downloaded find-msvc-tools v0.1.8 (registry `rsproxy-sparse`)
+  Downloaded crossbeam-epoch v0.9.18 (registry `rsproxy-sparse`)
+  Downloaded crossbeam-deque v0.8.6 (registry `rsproxy-sparse`)
+  Downloaded hashlink v0.10.0 (registry `rsproxy-sparse`)
+  Downloaded crc v3.4.0 (registry `rsproxy-sparse`)
+  Downloaded const-random v0.1.18 (registry `rsproxy-sparse`)
+  Downloaded cmake v0.1.57 (registry `rsproxy-sparse`)
+  Downloaded cfg-if v1.0.4 (registry `rsproxy-sparse`)
+  Downloaded block-buffer v0.10.4 (registry `rsproxy-sparse`)
+  Downloaded blake2 v0.10.6 (registry `rsproxy-sparse`)
+  Downloaded anstyle v1.0.14 (registry `rsproxy-sparse`)
+  Downloaded derive_builder_macro v0.20.2 (registry `rsproxy-sparse`)
+  Downloaded darling_macro v0.20.11 (registry `rsproxy-sparse`)
+  Downloaded crc-catalog v2.5.0 (registry `rsproxy-sparse`)
+  Downloaded chunked_transfer v1.5.0 (registry `rsproxy-sparse`)
+  Downloaded cfg_aliases v0.2.1 (registry `rsproxy-sparse`)
+  Downloaded atomic-waker v1.1.2 (registry `rsproxy-sparse`)
+  Downloaded anstream v1.0.0 (registry `rsproxy-sparse`)
+  Downloaded anstyle-query v1.1.5 (registry `rsproxy-sparse`)
+  Downloaded windows v0.52.0 (registry `rsproxy-sparse`)
+  Downloaded aws-lc-sys v0.39.0 (registry `rsproxy-sparse`)
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.44
+   Compiling unicode-ident v1.0.22
+    Checking cfg-if v1.0.4
+   Compiling getrandom v0.3.4
+    Checking zeroize v1.8.2
+    Checking windows-link v0.2.1
+   Compiling version_check v0.9.5
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.8
+    Checking getrandom v0.2.17
+    Checking windows-sys v0.61.2
+   Compiling portable-atomic v1.13.1
+    Checking pin-project-lite v0.2.16
+   Compiling typenum v1.19.0
+   Compiling generic-array v0.14.7
+    Checking futures-core v0.3.31
+   Compiling windows_x86_64_msvc v0.53.1
+    Checking log v0.4.29
+   Compiling jobserver v0.1.34
+    Checking bytes v1.11.0
+    Checking rand_core v0.6.4
+   Compiling cc v1.2.54
+    Checking once_cell v1.21.3
+   Compiling syn v2.0.114
+    Checking memchr v2.7.6
+    Checking subtle v2.6.1
+    Checking itoa v1.0.17
+    Checking stable_deref_trait v1.2.1
+    Checking windows-targets v0.53.5
+    Checking futures-sink v0.3.31
+    Checking windows-sys v0.60.2
+    Checking smallvec v1.15.1
+    Checking crypto-common v0.1.7
+   Compiling cmake v0.1.57
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+    Checking slab v0.4.11
+   Compiling serde_core v1.0.228
+    Checking tracing-core v0.1.36
+   Compiling aws-lc-rs v1.16.2
+   Compiling ring v0.17.14
+   Compiling aws-lc-sys v0.39.0
+    Checking socket2 v0.6.2
+    Checking pin-utils v0.1.0
+    Checking equivalent v1.0.2
+   Compiling crossbeam-utils v0.8.21
+    Checking block-buffer v0.10.4
+    Checking rustls-pki-types v1.14.0
+    Checking futures-io v0.3.31
+    Checking cpufeatures v0.2.17
+    Checking futures-task v0.3.31
+    Checking digest v0.10.7
+   Compiling synstructure v0.13.2
+    Checking mio v1.1.1
+    Checking writeable v0.6.2
+    Checking hashbrown v0.16.1
+    Checking untrusted v0.9.0
+    Checking percent-encoding v2.3.2
+   Compiling autocfg v1.5.0
+   Compiling serde v1.0.228
+    Checking litemap v0.8.1
+    Checking indexmap v2.13.0
+    Checking http v1.4.0
+   Compiling rustls v0.23.36
+   Compiling icu_normalizer_data v2.1.1
+   Compiling zerocopy v0.8.35
+   Compiling icu_properties_data v2.1.2
+   Compiling pkg-config v0.3.32
+   Compiling num-traits v0.2.19
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling tokio-macros v2.6.0
+   Compiling zerovec-derive v0.11.2
+   Compiling displaydoc v0.2.5
+   Compiling tracing-attributes v0.1.31
+    Checking tokio v1.49.0
+   Compiling futures-macro v0.3.31
+   Compiling serde_derive v1.0.228
+    Checking zerofrom v0.1.6
+    Checking futures-util v0.3.31
+    Checking tracing v0.1.44
+    Checking yoke v0.8.1
+    Checking zerovec v0.11.5
+    Checking zerotrie v0.2.3
+    Checking form_urlencoded v1.2.2
+    Checking webpki-roots v1.0.5
+    Checking tinystr v0.8.2
+    Checking potential_utf v0.1.4
+    Checking futures-channel v0.3.31
+    Checking icu_collections v2.1.1
+   Compiling thiserror v2.0.18
+    Checking icu_locale_core v2.1.1
+    Checking base64 v0.22.1
+    Checking scopeguard v1.2.0
+   Compiling httparse v1.10.1
+    Checking lock_api v0.4.14
+    Checking icu_provider v2.1.1
+   Compiling thiserror-impl v2.0.18
+    Checking http-body v1.0.1
+   Compiling parking_lot_core v0.9.12
+    Checking icu_properties v2.1.2
+    Checking icu_normalizer v2.1.1
+    Checking utf8_iter v1.0.4
+    Checking ppv-lite86 v0.2.21
+    Checking tower-service v0.3.3
+   Compiling libc v0.2.180
+    Checking either v1.15.0
+    Checking idna_adapter v1.2.1
+    Checking tokio-util v0.7.18
+    Checking webpki-roots v0.26.11
+    Checking idna v1.1.0
+   Compiling fnv v1.0.7
+    Checking try-lock v0.2.5
+    Checking ryu v1.0.22
+   Compiling ident_case v1.0.1
+    Checking url v2.5.8
+    Checking allocator-api2 v0.2.21
+   Compiling strsim v0.11.1
+   Compiling crunchy v0.2.4
+    Checking httpdate v1.0.3
+    Checking foldhash v0.1.5
+    Checking atomic-waker v1.1.2
+   Compiling vcpkg v0.2.15
+   Compiling darling_core v0.20.11
+    Checking hashbrown v0.15.5
+    Checking h2 v0.4.13
+    Checking serde_urlencoded v0.7.1
+    Checking want v0.3.1
+    Checking parking_lot v0.12.5
+   Compiling libsqlite3-sys v0.30.1
+    Checking concurrent-queue v2.5.0
+    Checking sha2 v0.10.9
+    Checking windows-strings v0.5.1
+    Checking windows-result v0.4.1
+   Compiling tiny-keccak v2.0.2
+    Checking crc-catalog v2.5.0
+   Compiling semver v1.0.28
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling zmij v1.0.17
+    Checking parking v2.2.1
+    Checking event-listener v5.4.1
+   Compiling rustc_version v0.4.1
+    Checking crc v3.4.0
+   Compiling darling_macro v0.20.11
+    Checking hyper v1.8.1
+    Checking windows-registry v0.6.1
+    Checking futures-intrusive v0.5.0
+    Checking hashlink v0.10.0
+    Checking rand_core v0.9.5
+    Checking spin v0.9.8
+    Checking tokio-stream v0.1.18
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+    Checking crossbeam-queue v0.3.12
+    Checking sync_wrapper v1.0.2
+   Compiling native-tls v0.2.14
+    Checking const-oid v0.9.6
+   Compiling serde_json v1.0.149
+    Checking tower-layer v0.3.3
+    Checking ipnet v2.11.0
+    Checking der v0.7.10
+    Checking hyper-util v0.1.19
+    Checking flume v0.11.1
+    Checking rand_chacha v0.9.0
+   Compiling darling v0.20.11
+   Compiling curve25519-dalek v4.1.3
+    Checking atoi v2.0.0
+    Checking http-body-util v0.1.3
+    Checking futures-executor v0.3.31
+    Checking crossbeam-epoch v0.9.18
+    Checking schannel v0.1.28
+    Checking aho-corasick v1.1.4
+    Checking inout v0.1.4
+   Compiling rayon-core v1.13.0
+   Compiling winapi v0.3.9
+    Checking regex-syntax v0.8.10
+   Compiling const-random-macro v0.1.16
+    Checking cipher v0.4.4
+    Checking crossbeam-deque v0.8.6
+    Checking windows-targets v0.52.6
+    Checking regex-automata v0.4.14
+   Compiling toml v0.5.11
+   Compiling derive_builder_core v0.20.2
+    Checking rand v0.9.2
+    Checking spki v0.7.3
+    Checking tower v0.5.3
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling smartstring v1.0.1
+    Checking sha1 v0.10.6
+    Checking universal-hash v0.5.1
+   Compiling ahash v0.8.12
+    Checking opaque-debug v0.3.1
+    Checking utf-8 v0.7.6
+   Compiling zstd-safe v7.2.4
+    Checking anstyle v1.0.14
+    Checking data-encoding v2.10.0
+   Compiling heck v0.5.0
+    Checking mime v0.3.17
+    Checking once_cell_polyfill v1.70.2
+   Compiling ntapi v0.4.3
+    Checking bitflags v2.10.0
+    Checking utf8parse v0.2.2
+    Checking anstyle-wincon v3.0.11
+   Compiling strum_macros v0.27.2
+    Checking regex v1.12.3
+    Checking anstyle-parse v1.0.0
+    Checking poly1305 v0.8.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling winres v0.1.12
+    Checking pkcs8 v0.10.2
+    Checking const-random v0.1.18
+    Checking windows-core v0.52.0
+    Checking salsa20 v0.10.2
+    Checking tokio-native-tls v0.3.1
+    Checking chrono v0.4.44
+    Checking rand_chacha v0.3.1
+    Checking anstyle-query v1.1.5
+    Checking aead v0.5.2
+    Checking minimal-lexical v0.2.1
+    Checking static_assertions v1.1.0
+    Checking signature v2.2.0
+    Checking colorchoice v1.0.5
+    Checking iri-string v0.7.10
+    Checking is_terminal_polyfill v1.70.2
+    Checking nom v7.1.3
+    Checking ed25519 v2.2.3
+    Checking anstream v1.0.0
+    Checking strum v0.27.2
+    Checking rand v0.8.5
+    Checking crypto_secretbox v0.1.1
+    Checking rayon v1.11.0
+    Checking windows v0.52.0
+    Checking hyper-tls v0.6.0
+    Checking tower-http v0.6.8
+   Compiling codexmanager-service v0.4.4 (D:\my-works\codex-extends\Codex-Manager\crates\service)
+    Checking derive_builder v0.20.2
+    Checking env_filter v1.0.1
+    Checking axum-core v0.5.6
+   Compiling rhai_codegen v3.1.0
+    Checking serde_path_to_error v0.1.20
+    Checking blake2 v0.10.6
+    Checking encoding_rs v0.8.35
+    Checking matchit v0.8.4
+    Checking toml_write v0.1.2
+    Checking ascii v1.1.0
+    Checking jiff v0.2.24
+    Checking thin-vec v0.2.14
+    Checking toml_datetime v0.6.11
+    Checking winnow v0.7.15
+    Checking chunked_transfer v1.5.0
+    Checking urlencoding v2.1.3
+    Checking rhai v1.24.0
+    Checking tiny_http v0.12.0
+    Checking crypto_box v0.9.1
+    Checking croner v3.0.1
+    Checking eventsource-stream v0.2.3
+    Checking ed25519-dalek v2.2.0
+    Checking webbrowser v0.8.15
+    Checking os_info v3.14.0
+    Checking toml_edit v0.22.27
+    Checking crossbeam-channel v0.5.15
+    Checking env_logger v0.11.10
+    Checking zstd v0.13.3
+    Checking rustls-webpki v0.103.9
+    Checking sysinfo v0.30.13
+    Checking sqlx-core v0.8.6
+    Checking tokio-rustls v0.26.4
+    Checking tungstenite v0.28.0
+    Checking hyper-rustls v0.27.7
+    Checking reqwest v0.12.28
+    Checking tokio-tungstenite v0.28.0
+    Checking axum v0.8.8
+    Checking sqlx-sqlite v0.8.6
+    Checking sqlx v0.8.6
+    Checking rusqlite v0.31.0 (D:\my-works\codex-extends\Codex-Manager\crates\rusqlite)
+    Checking codexmanager-core v0.4.4 (D:\my-works\codex-extends\Codex-Manager\crates\core)
+crates\core\src\storage\request_token_stats.rs:2094:1: error: unexpected closing delimiter: `}`: unexpected closing delimiter
+error: could not compile `codexmanager-core` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

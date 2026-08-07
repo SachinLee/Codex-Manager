@@ -1,0 +1,6 @@
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+   Compiling codexmanager-core v0.4.4 (D:\my-works\codex-extends\Codex-Manager\crates\core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.70s
+     Running unittests src\lib.rs (target\debug\deps\codexmanager_core-2e39adb993a68fc8.exe)

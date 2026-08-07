@@ -742,6 +742,7 @@ export default function ModelsPage() {
           open
           onOpenChange={setEditorOpen}
           model={editingModel}
+          allModels={models}
           nextSortOrder={nextSortOrder}
           aggregateApis={aggregateApis}
           isSaving={isSaving}

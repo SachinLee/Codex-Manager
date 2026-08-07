@@ -313,6 +313,31 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
 }
 
 #[test]
+fn zero_balance_blocked_candidates_are_excluded_without_reordering() {
+    let mut first = aggregate_api_with_action(None);
+    first.id = "agg-blocked".to_string();
+    first.sort = 0;
+    let mut second = aggregate_api_with_action(None);
+    second.id = "agg-available".to_string();
+    second.sort = 10;
+    let blocked_ids = std::collections::HashSet::from([first.id.clone()]);
+
+    let candidates = super::filter_zero_balance_blocked_candidates(
+        vec![first, second],
+        &blocked_ids,
+        "test-trace",
+    );
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["agg-available"]
+    );
+}
+
+#[test]
 fn compatible_candidate_resolves_for_codex_and_anthropic_without_protocol_bridge() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");

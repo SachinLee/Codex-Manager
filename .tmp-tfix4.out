@@ -1,0 +1,6 @@
+
+running 1 test
+test account::proxy_testing::latency::tests::latency_test_accepts_204_empty_body_success ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1275 filtered out; finished in 2.67s
+

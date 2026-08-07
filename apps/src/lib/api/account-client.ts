@@ -18,6 +18,8 @@ import {
   normalizeAggregateApiRuntimeStatus,
   normalizeAggregateApiRuntimeStatusList,
   normalizeAggregateApiHealthDetail,
+  normalizeAggregateApiZeroBalanceStatus,
+  normalizeAggregateApiZeroBalanceStatusList,
   normalizeAggregateApiHealthList,
   normalizeAggregateApiProbeCostList,
   normalizeApiKeyCreateResult,
@@ -87,6 +89,7 @@ import {
   ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
+  AggregateApiZeroBalanceStatus,
   AggregateApiHealthConfig,
   AggregateApiHealthDetail,
   AggregateApiHealthSummary,
@@ -833,6 +836,22 @@ export const accountClient = {
     );
     const status = normalizeAggregateApiRuntimeStatus(result);
     if (!status) throw new Error("Aggregate API runtime status reset returned no result");
+    return status;
+  },
+  async listAggregateApiZeroBalanceStatuses(): Promise<AggregateApiZeroBalanceStatus[]> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_zero_balance_status_list",
+      withAddr()
+    );
+    return normalizeAggregateApiZeroBalanceStatusList(result);
+  },
+  async resetAggregateApiZeroBalanceStatus(apiId: string): Promise<AggregateApiZeroBalanceStatus> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_zero_balance_status_reset",
+      withAddr({ id: apiId })
+    );
+    const status = normalizeAggregateApiZeroBalanceStatus(result);
+    if (!status) throw new Error("Aggregate API zero-balance status reset returned no result");
     return status;
   },
   async listAggregateApiHealth(): Promise<AggregateApiHealthSummary[]> {

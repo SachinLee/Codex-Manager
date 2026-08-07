@@ -37,6 +37,26 @@ pub async fn service_aggregate_api_runtime_status_reset(
 }
 
 #[tauri::command]
+pub async fn service_aggregate_api_zero_balance_status_list(
+    addr: Option<String>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("aggregateApi/zeroBalanceStatus/list", addr, None).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_zero_balance_status_reset(
+    addr: Option<String>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "aggregateApi/zeroBalanceStatus/reset",
+        addr,
+        Some(serde_json::json!({ "id": id })),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn service_aggregate_api_health_list(
     addr: Option<String>,
 ) -> Result<serde_json::Value, String> {

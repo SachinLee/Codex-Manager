@@ -13,6 +13,7 @@ static GATEWAY_CANDIDATE_SKIPS_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_CANDIDATE_SKIP_COOLDOWN_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_CANDIDATE_SKIP_INFLIGHT_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_COOLDOWN_MARKS: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_MODEL_FALLBACK_HOPS: AtomicUsize = AtomicUsize::new(0);
 static RPC_TOTAL_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 static RPC_FAILED_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 static RPC_REQUEST_DURATION_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +64,7 @@ pub(crate) struct GatewayMetricsSnapshot {
     pub candidate_skip_cooldown_total: usize,
     pub candidate_skip_inflight_total: usize,
     pub cooldown_marks: usize,
+    pub model_fallback_hops: usize,
     pub rpc_total_requests: usize,
     pub rpc_failed_requests: usize,
     pub rpc_request_duration_ms_total: u64,
@@ -239,6 +241,10 @@ pub(crate) fn record_gateway_candidate_skip(reason: GatewayCandidateSkipReason) 
 /// 无
 pub(crate) fn record_gateway_cooldown_mark() {
     GATEWAY_COOLDOWN_MARKS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_gateway_model_fallback_hop() {
+    GATEWAY_MODEL_FALLBACK_HOPS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 函数 `record_usage_refresh_outcome`
@@ -486,6 +492,7 @@ pub(crate) fn gateway_metrics_snapshot() -> GatewayMetricsSnapshot {
         candidate_skip_inflight_total: GATEWAY_CANDIDATE_SKIP_INFLIGHT_TOTAL
             .load(Ordering::Relaxed),
         cooldown_marks: GATEWAY_COOLDOWN_MARKS.load(Ordering::Relaxed),
+        model_fallback_hops: GATEWAY_MODEL_FALLBACK_HOPS.load(Ordering::Relaxed),
         rpc_total_requests: RPC_TOTAL_REQUESTS.load(Ordering::Relaxed),
         rpc_failed_requests: RPC_FAILED_REQUESTS.load(Ordering::Relaxed),
         rpc_request_duration_ms_total: RPC_REQUEST_DURATION_MS_TOTAL.load(Ordering::Relaxed),
@@ -546,6 +553,7 @@ codexmanager_gateway_candidate_skips_total {}\n\
 codexmanager_gateway_candidate_skips_by_reason_total{{reason=\"cooldown\"}} {}\n\
 codexmanager_gateway_candidate_skips_by_reason_total{{reason=\"inflight\"}} {}\n\
 codexmanager_gateway_cooldown_marks_total {}\n\
+codexmanager_gateway_model_fallback_hops_total {}\n\
 codexmanager_rpc_requests_total {}\n\
 codexmanager_rpc_requests_failed_total {}\n\
 codexmanager_rpc_request_duration_milliseconds_total {}\n\
@@ -583,6 +591,7 @@ codexmanager_gateway_upstream_capacity_exhausted_total {}\n\
         m.candidate_skip_cooldown_total,
         m.candidate_skip_inflight_total,
         m.cooldown_marks,
+        m.model_fallback_hops,
         m.rpc_total_requests,
         m.rpc_failed_requests,
         m.rpc_request_duration_ms_total,

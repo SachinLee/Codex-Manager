@@ -989,6 +989,20 @@ pub struct AggregateApiRuntimeStatus {
 pub struct AggregateApiRuntimeStatusListResult {
     pub items: Vec<AggregateApiRuntimeStatus>,
 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiZeroBalanceStatus {
+    pub aggregate_api_id: String,
+    pub state: String,
+    pub observed_at: Option<i64>,
+    pub released_at: Option<i64>,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AggregateApiZeroBalanceStatusListResult {
+    pub items: Vec<AggregateApiZeroBalanceStatus>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

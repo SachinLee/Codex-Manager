@@ -18,6 +18,8 @@ import {
   ModelDailyUsageStat,
   AggregateApiReasoningGuardStat,
   AggregateApiRuntimeStatus,
+  AggregateApiZeroBalanceState,
+  AggregateApiZeroBalanceStatus,
   AggregateApiHealthConfig,
   AggregateApiHealthDetail,
   AggregateApiHealthEvent,
@@ -1064,6 +1066,39 @@ export function normalizeAggregateApiRuntimeStatusList(
   return asArray(source.items ?? payload)
     .map(normalizeAggregateApiRuntimeStatus)
     .filter((item): item is AggregateApiRuntimeStatus => Boolean(item));
+}
+
+function normalizeAggregateApiZeroBalanceState(
+  value: unknown
+): AggregateApiZeroBalanceState | null {
+  const state = asString(value);
+  return state === "zero_balance_blocked" || state === "manually_released"
+    ? state
+    : null;
+}
+
+export function normalizeAggregateApiZeroBalanceStatus(
+  payload: unknown
+): AggregateApiZeroBalanceStatus | null {
+  const source = asObject(payload);
+  const aggregateApiId = asString(source.aggregateApiId ?? source.aggregate_api_id);
+  if (!aggregateApiId) return null;
+  return {
+    aggregateApiId,
+    state: normalizeAggregateApiZeroBalanceState(source.state),
+    observedAt: toNullableNumber(source.observedAt ?? source.observed_at),
+    releasedAt: toNullableNumber(source.releasedAt ?? source.released_at),
+    updatedAt: toNullableNumber(source.updatedAt ?? source.updated_at),
+  };
+}
+
+export function normalizeAggregateApiZeroBalanceStatusList(
+  payload: unknown
+): AggregateApiZeroBalanceStatus[] {
+  const source = asObject(payload);
+  return asArray(source.items ?? payload)
+    .map(normalizeAggregateApiZeroBalanceStatus)
+    .filter((item): item is AggregateApiZeroBalanceStatus => Boolean(item));
 }
 
 function normalizeAggregateApiHealthState(value: unknown): AggregateApiHealthState {

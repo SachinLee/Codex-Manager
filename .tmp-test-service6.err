@@ -1,0 +1,6 @@
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating `ustc` index
+warning: spurious network error (3 tries remaining): [6] Could not resolve hostname (Could not resolve host: mirrors.ustc.edu.cn)
+warning: spurious network error (2 tries remaining): [6] Could not resolve hostname (Could not resolve host: mirrors.ustc.edu.cn)

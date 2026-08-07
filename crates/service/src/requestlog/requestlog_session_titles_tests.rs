@@ -67,6 +67,29 @@ fn omp_title_index_reads_only_session_metadata() {
 }
 
 #[test]
+fn omp_title_index_reads_session_metadata_from_project_directory() {
+    let root = unique_temp_dir("omp-project-session-title");
+    let id = "019fca51-ab55-7000-beca-006a4140fdfa";
+    write_omp_session(
+        &root.join("abs-Codex-Manager"),
+        id,
+        "分析 VSCode Java 编译错误及插件冲突",
+        "ignored transcript",
+    );
+
+    let sessions = list_omp_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, id);
+    assert_eq!(
+        sessions[0].title.as_deref(),
+        Some("分析 VSCode Java 编译错误及插件冲突")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn omp_title_index_never_uses_transcript_as_a_title_fallback() {
     let root = unique_temp_dir("omp-session-without-title");
     write_omp_session(
@@ -155,6 +178,81 @@ fn omp_title_cache_refreshes_changed_metadata_after_expiry() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn omp_title_cache_refreshes_and_prunes_project_directory_metadata() {
+    let root = unique_temp_dir("omp-project-session-title-cache");
+    let project = root.join("abs-Codex-Manager");
+    let id = "019fca51-ab55-7000-beca-006a4140fdfa";
+    let file = project.join(format!("2026-07-30T00-00-00-000Z_{id}.jsonl"));
+    write_omp_session(&project, id, "初始标题", "ignored");
+
+    let first = list_omp_session_titles_cached(&root, 20);
+    assert_eq!(first[0].title.title.as_deref(), Some("初始标题"));
+
+    write_omp_session(&project, id, "更新后的标题", "ignored");
+    expire_omp_session_title_cache_for_tests();
+    let refreshed = list_omp_session_titles_cached(&root, 20);
+    assert_eq!(refreshed[0].title.title.as_deref(), Some("更新后的标题"));
+
+    fs::remove_file(file).expect("remove fixture session");
+    expire_omp_session_title_cache_for_tests();
+    assert!(list_omp_session_titles_cached(&root, 20).is_empty());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn omp_title_index_does_not_scan_grandchild_directories() {
+    let root = unique_temp_dir("omp-project-session-depth");
+    let project = root.join("abs-Codex-Manager");
+    write_omp_session(
+        &project,
+        "019fca51-ab55-7000-beca-006a4140fdfa",
+        "项目会话",
+        "ignored",
+    );
+    write_omp_session(
+        &project.join("nested"),
+        "019fca5e-1275-7000-90ec-b9a1300e064d",
+        "不应扫描",
+        "ignored",
+    );
+
+    let sessions = list_omp_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].title.as_deref(), Some("项目会话"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn omp_title_cache_discovers_project_directory_added_after_initial_scan() {
+    let root = unique_temp_dir("omp-project-session-title-added-after-cache");
+    let root_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
+    let project_id = "019fca51-ab55-7000-beca-006a4140fdfa";
+    write_omp_session(&root, root_id, "根目录会话", "ignored");
+
+    let first = list_omp_session_titles_cached(&root, 20);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].title.session_id, root_id);
+
+    write_omp_session(
+        &root.join("abs-Codex-Manager"),
+        project_id,
+        "新增项目会话",
+        "ignored",
+    );
+    expire_omp_session_title_cache_for_tests();
+
+    let refreshed = list_omp_session_titles_cached(&root, 20);
+    assert_eq!(refreshed.len(), 2);
+    assert!(refreshed
+        .iter()
+        .any(|entry| entry.title.session_id == project_id));
+
+    let _ = fs::remove_dir_all(root);
+}
 #[test]
 fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
     let shared_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4".to_string();

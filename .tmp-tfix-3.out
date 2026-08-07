@@ -1,0 +1,28 @@
+
+running 3 tests
+test account::proxy_testing::latency::tests::latency_test_accepts_204_empty_body_success ... FAILED
+test gateway::http_bridge::tests::passthrough_sse_reader_emits_keepalive_for_responses_stream ... FAILED
+test usage::http::tests::success_body_read_failure_does_not_reclassify_redeem_as_failed ... ok
+
+failures:
+
+---- account::proxy_testing::latency::tests::latency_test_accepts_204_empty_body_success stdout ----
+
+thread 'account::proxy_testing::latency::tests::latency_test_accepts_204_empty_body_success' (40844) panicked at crates\service\src\account\proxy_testing\latency.rs:321:9:
+assertion `left == right` failed
+  left: "failed"
+ right: "ok"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- gateway::http_bridge::tests::passthrough_sse_reader_emits_keepalive_for_responses_stream stdout ----
+
+thread 'gateway::http_bridge::tests::passthrough_sse_reader_emits_keepalive_for_responses_stream' (15408) panicked at crates\service\src\gateway\observability\http_bridge\..\tests\http_bridge_tests.rs:2269:5:
+assertion failed: mapped.contains(": keep-alive\n\n")
+
+
+failures:
+    account::proxy_testing::latency::tests::latency_test_accepts_204_empty_body_success
+    gateway::http_bridge::tests::passthrough_sse_reader_emits_keepalive_for_responses_stream
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 1273 filtered out; finished in 3.42s
+

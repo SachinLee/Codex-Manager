@@ -1,0 +1,5 @@
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+error: source `crates-io-sparse` defines source registry `crates-io`, but that source is already defined by `crates-io`
+note: Sources are not allowed to be defined multiple times.

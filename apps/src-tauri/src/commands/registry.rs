@@ -178,6 +178,8 @@ macro_rules! invoke_handler {
             crate::commands::aggregate_api::service_aggregate_api_list,
             crate::commands::aggregate_api::service_aggregate_api_runtime_status_list,
             crate::commands::aggregate_api::service_aggregate_api_runtime_status_reset,
+            crate::commands::aggregate_api::service_aggregate_api_zero_balance_status_list,
+            crate::commands::aggregate_api::service_aggregate_api_zero_balance_status_reset,
             crate::commands::aggregate_api::service_aggregate_api_health_list,
             crate::commands::aggregate_api::service_aggregate_api_health_costs,
             crate::commands::aggregate_api::service_aggregate_api_health_get,

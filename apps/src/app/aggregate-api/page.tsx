@@ -60,6 +60,7 @@ import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useAggregateApiRuntimeStatuses } from "@/hooks/useAggregateApiRuntimeStatuses";
+import { useAggregateApiZeroBalanceStatuses } from "@/hooks/useAggregateApiZeroBalanceStatuses";
 import { accountClient } from "@/lib/api/account-client";
 import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
 import { getAppErrorMessage } from "@/lib/api/transport";
@@ -212,11 +213,14 @@ export default function AggregateApiPage() {
   const [diagnosticsResult, setDiagnosticsResult] =
     useState<AggregateApiCapabilityDiagnosticsResult | null>(null);
   const [resetCooldownApi, setResetCooldownApi] = useState<AggregateApi | null>(null);
+  const [resetZeroBalanceApi, setResetZeroBalanceApi] = useState<AggregateApi | null>(null);
 
   const {
     byApiId: aggregateApiRuntimeStatusById,
     nowSeconds: runtimeStatusNowSeconds,
   } = useAggregateApiRuntimeStatuses(isQueryEnabled);
+  const { byApiId: aggregateApiZeroBalanceStatusById } =
+    useAggregateApiZeroBalanceStatuses(isQueryEnabled);
 
   const { data: aggregateApis = [], isLoading } = useQuery({
     queryKey: ["aggregate-apis"],
@@ -310,6 +314,7 @@ export default function AggregateApiPage() {
       setEditingId(null);
       setDeleteId(null);
       setResetCooldownApi(null);
+      setResetZeroBalanceApi(null);
       setRevealedSecrets({});
     });
     return () => window.cancelAnimationFrame(frameId);
@@ -465,6 +470,17 @@ export default function AggregateApiPage() {
     },
   });
 
+  const resetZeroBalanceStatusMutation = useMutation({
+    mutationFn: (apiId: string) => accountClient.resetAggregateApiZeroBalanceStatus(apiId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["aggregate-api-zero-balance-status"] });
+      toast.success(t("已解除余额禁用，API 已手动放行"));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("解除余额禁用失败")}: ${getAppErrorMessage(error)}`);
+    },
+  });
+
   const balanceMutation = useMutation({
     mutationFn: (apiId: string) => accountClient.refreshAggregateApiBalance(apiId),
     onMutate: (apiId) => setRefreshingBalanceId(apiId),
@@ -474,7 +490,10 @@ export default function AggregateApiPage() {
     },
     onSettled: async (_result, _error, apiId) => {
       setRefreshingBalanceId((current) => (current === apiId ? null : current));
-      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["aggregate-api-zero-balance-status"] }),
+      ]);
     },
   });
 
@@ -505,7 +524,10 @@ export default function AggregateApiPage() {
     },
     onSettled: async () => {
       setRefreshingBalances(false);
-      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["aggregate-api-zero-balance-status"] }),
+      ]);
     },
   });
 
@@ -830,6 +852,11 @@ export default function AggregateApiPage() {
                       );
                       const runtimeStatus = coolingStatuses[0] || runtimeStatuses[0];
                       const isCoolingDown = coolingStatuses.length > 0;
+                      const zeroBalanceStatus = aggregateApiZeroBalanceStatusById.get(api.id);
+                      const isZeroBalanceBlocked =
+                        zeroBalanceStatus?.state === "zero_balance_blocked";
+                      const isZeroBalanceManuallyReleased =
+                        zeroBalanceStatus?.state === "manually_released";
                       const usage = dailyUsageById.get(api.id);
                       const health = healthByApiId.get(api.id);
                       const probeCost = probeCostByApiId.get(api.id);
@@ -961,76 +988,141 @@ export default function AggregateApiPage() {
                               </Tooltip>
                             )}
                           </TableCell>
-                          <TableCell className="min-w-[120px] py-2 align-middle">
-                            {isCoolingDown && runtimeStatus ? (
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={<div />}
-                                  className="flex flex-col items-start gap-1"
-                                >
-                                  <Badge className="h-5 w-fit border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-300">
-                                    {coolingStatuses.length > 1
-                                      ? `${coolingStatuses.length} ${t("个模型冷却中")}`
-                                      : t("冷却中")}{" "}
-                                    {formatCooldownRemaining(
-                                      runtimeStatus.cooldownUntil,
-                                      runtimeStatusNowSeconds,
-                                    )}
+                          <TableCell className="min-w-[160px] py-2 align-middle">
+                            <div className="flex flex-col items-start gap-1">
+                              {isZeroBalanceBlocked && zeroBalanceStatus ? (
+                                <>
+                                  <Tooltip>
+                                    <TooltipTrigger
+                                      render={<div />}
+                                      className="flex cursor-help flex-col items-start gap-0.5"
+                                    >
+                                      <Badge className="h-5 w-fit border-rose-500/20 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-300">
+                                        {t("余额为 0")} · {t("已临时排除")}
+                                      </Badge>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-sm text-xs">
+                                      {t("最近零余额观测")}: {formatTsFromSeconds(
+                                        zeroBalanceStatus.observedAt,
+                                        t("未知时间"),
+                                      )}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="xs"
+                                    className="min-h-6 min-w-6 w-fit gap-1 px-1.5 text-[10px] text-rose-700 hover:text-rose-800 dark:text-rose-300 dark:hover:text-rose-200"
+                                    aria-label={t("解除余额禁用")}
+                                    disabled={!isServiceReady || resetZeroBalanceStatusMutation.isPending}
+                                    onClick={() => setResetZeroBalanceApi(api)}
+                                  >
+                                    <RotateCcw className="h-3 w-3" />
+                                    {t("解除余额禁用")}
+                                  </Button>
+                                </>
+                              ) : isZeroBalanceManuallyReleased && zeroBalanceStatus ? (
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={<div />}
+                                    className="flex cursor-help flex-col items-start gap-0.5"
+                                  >
+                                    <Badge className="h-5 w-fit border-sky-500/20 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300">
+                                      {t("余额为 0")} · {t("已手动放行")}
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-sm space-y-1 text-xs">
+                                    <div>
+                                      {t("最近零余额观测")}: {formatTsFromSeconds(
+                                        zeroBalanceStatus.observedAt,
+                                        t("未知时间"),
+                                      )}
+                                    </div>
+                                    <div>
+                                      {t("手动放行时间")}: {formatTsFromSeconds(
+                                        zeroBalanceStatus.releasedAt,
+                                        t("未知时间"),
+                                      )}
+                                    </div>
+                                    <div>{t("下次成功的余额查询仍为零时会再次禁用。")}</div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : null}
+
+                              {isCoolingDown && runtimeStatus ? (
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={<div />}
+                                    className="flex cursor-help flex-col items-start gap-1"
+                                  >
+                                    <Badge className="h-5 w-fit border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-300">
+                                      {coolingStatuses.length > 1
+                                        ? `${coolingStatuses.length} ${t("个模型冷却中")}`
+                                        : t("冷却中")} {" "}
+                                      {formatCooldownRemaining(
+                                        runtimeStatus.cooldownUntil,
+                                        runtimeStatusNowSeconds,
+                                      )}
+                                    </Badge>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] text-muted-foreground">
+                                        {t("连续失败")} {runtimeStatus.consecutiveFailures}/
+                                        {runtimeStatus.failureThreshold}
+                                      </span>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-5 w-fit gap-1 px-1 text-[10px] text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+                                        disabled={!isServiceReady || resetCooldownMutation.isPending}
+                                        onClick={() => setResetCooldownApi(api)}
+                                      >
+                                        <RotateCcw className="h-3 w-3" />
+                                        {t("解除冷却")}
+                                      </Button>
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-sm space-y-1 text-xs">
+                                    <div className="grid gap-1">
+                                      <span>
+                                        {t("模型")}: {runtimeStatus.upstreamModel || t("未指定")}
+                                      </span>
+                                      <span>{runtimeStatus.reason || t("连续上游请求失败")}</span>
+                                      <span>
+                                        {t("最后失败")}: {" "}
+                                        {formatTsFromSeconds(
+                                          runtimeStatus.lastFailureAt,
+                                          t("未知时间"),
+                                        )}
+                                      </span>
+                                      <span>
+                                        {t("冷却截止")}: {" "}
+                                        {formatTsFromSeconds(
+                                          runtimeStatus.cooldownUntil,
+                                          t("未知时间"),
+                                        )}
+                                      </span>
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : null}
+
+                              {!isZeroBalanceBlocked &&
+                              !isZeroBalanceManuallyReleased &&
+                              !isCoolingDown ? (
+                                <>
+                                  <Badge className="h-5 w-fit border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-300">
+                                    {t("正常")}
                                   </Badge>
-                                  <div className="flex items-center gap-1">
+                                  {runtimeStatus && runtimeStatus.consecutiveFailures > 0 ? (
                                     <span className="text-[10px] text-muted-foreground">
                                       {t("连续失败")} {runtimeStatus.consecutiveFailures}/
                                       {runtimeStatus.failureThreshold}
                                     </span>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-5 w-fit gap-1 px-1 text-[10px] text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
-                                      disabled={!isServiceReady || resetCooldownMutation.isPending}
-                                      onClick={() => setResetCooldownApi(api)}
-                                    >
-                                      <RotateCcw className="h-3 w-3" />
-                                      {t("解除冷却")}
-                                    </Button>
-                                  </div>
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-sm space-y-1 text-xs">
-                                  <div className="grid gap-1">
-                                    <span>
-                                      {t("模型")}: {runtimeStatus.upstreamModel || t("未指定")}
-                                    </span>
-                                    <span>{runtimeStatus.reason || t("连续上游请求失败")}</span>
-                                    <span>
-                                      {t("最后失败")}:{" "}
-                                      {formatTsFromSeconds(
-                                        runtimeStatus.lastFailureAt,
-                                        t("未知时间"),
-                                      )}
-                                    </span>
-                                    <span>
-                                      {t("冷却截止")}:{" "}
-                                      {formatTsFromSeconds(
-                                        runtimeStatus.cooldownUntil,
-                                        t("未知时间"),
-                                      )}
-                                    </span>
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              <div className="flex flex-col items-start gap-0.5">
-                                <Badge className="h-5 w-fit border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-300">
-                                  {t("正常")}
-                                </Badge>
-                                {runtimeStatus && runtimeStatus.consecutiveFailures > 0 ? (
-                                  <span className="text-[10px] text-muted-foreground">
-                                    {t("连续失败")} {runtimeStatus.consecutiveFailures}/
-                                    {runtimeStatus.failureThreshold}
-                                  </span>
-                                ) : null}
-                              </div>
-                            )}
+                                  ) : null}
+                                </>
+                              ) : null}
+                            </div>
                           </TableCell>
                           <TableCell className="min-w-[128px] py-2">
                             <Tooltip>
@@ -1251,6 +1343,26 @@ export default function AggregateApiPage() {
         onConfirm={() => {
           if (!resetCooldownApi) return;
           resetCooldownMutation.mutate(resetCooldownApi.id);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(resetZeroBalanceApi)}
+        onOpenChange={(open) => {
+          if (!open) setResetZeroBalanceApi(null);
+        }}
+        title={t("解除余额禁用")}
+        description={t(
+          "解除后仅撤销零余额路由排除；若下次成功余额查询仍为零，该 API 会再次被禁用。",
+        )}
+        confirmText={t("确认解除余额禁用")}
+        onConfirm={async () => {
+          if (!resetZeroBalanceApi) return false;
+          try {
+            await resetZeroBalanceStatusMutation.mutateAsync(resetZeroBalanceApi.id);
+          } catch {
+            return false;
+          }
         }}
       />
     </>

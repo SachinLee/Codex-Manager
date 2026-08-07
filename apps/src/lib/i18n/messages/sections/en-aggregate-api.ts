@@ -112,6 +112,20 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   "确认解除": "Confirm clear",
   "解除后该上游会立即重新进入路由候选。若上游仍不稳定，可能很快再次触发冷却。":
     "The upstream will immediately rejoin routing candidates. If it remains unstable, it may quickly enter cooldown again.",
+  "余额为 0": "Balance is 0",
+  "已临时排除": "Temporarily excluded",
+  "解除余额禁用": "Release balance block",
+  "确认解除余额禁用": "Confirm release balance block",
+  "已手动放行": "Manually released",
+  "最近零余额观测": "Most recent zero-balance observation",
+  "手动放行时间": "Manually released at",
+  "下次成功的余额查询仍为零时会再次禁用。":
+    "The API will be blocked again if the next successful balance query is still zero.",
+  "已解除余额禁用，API 已手动放行":
+    "Balance block released; the API is now manually released.",
+  "解除余额禁用失败": "Failed to release balance block",
+  "解除后仅撤销零余额路由排除；若下次成功余额查询仍为零，该 API 会再次被禁用。":
+    "This only releases the zero-balance routing exclusion. The API will be blocked again if the next successful balance query is still zero.",
   "今日用量": "Usage today",
   "今日 Token": "Today's tokens",
   "今日费用": "Cost today",

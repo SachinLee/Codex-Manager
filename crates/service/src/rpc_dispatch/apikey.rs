@@ -96,6 +96,7 @@ fn filter_model_v2_for_actor(
     }
     model.routes.clear();
     model.permission_group_ids.clear();
+    model.fallback_model_slugs.clear();
     model.instructions_text = None;
     Ok(model)
 }

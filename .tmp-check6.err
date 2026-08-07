@@ -1,0 +1,12 @@
+warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Checking codexmanager-core v0.4.4 (D:\my-works\codex-extends\Codex-Manager\crates\core)
+crates\core\src\storage\request_token_stats.rs:139:8: error[E0063]: missing field `cache_write_input_tokens` in initializer of `TokenUsageRollup`: missing `cache_write_input_tokens`
+crates\core\src\storage\request_token_stats.rs:153:5: error[E0063]: missing fields `guard_retry_estimated_cost_usd`, `guard_retry_total_tokens`, `legacy_candidate_count` and 3 other fields in initializer of `RequestLogQuerySummary`: missing `guard_retry_estimated_cost_usd`, `guard_retry_total_tokens`, `legacy_candidate_count` and 3 other fields
+crates\core\src\storage\request_token_stats.rs:163:5: error[E0063]: missing field `cache_write_input_tokens` in initializer of `RequestLogTodaySummary`: missing `cache_write_input_tokens`
+crates\core\src\storage\request_token_stats.rs:173:8: error[E0063]: missing field `cache_write_input_tokens` in initializer of `RequestLogTodaySummary`: missing `cache_write_input_tokens`
+crates\core\src\storage\request_token_stats.rs:645:8: error[E0063]: missing field `cache_write_input_tokens` in initializer of `TokenUsageSummary`: missing `cache_write_input_tokens`
+crates\core\src\storage\request_token_stats.rs:657:8: error[E0063]: missing field `cache_write_input_tokens` in initializer of `ApiKeyModelTokenUsageSummary`: missing `cache_write_input_tokens`
+crates\core\src\storage\request_token_stats.rs:859:40: error[E0599]: no method named `params` found for struct `PairedKeyIdSqlFilter<'a>` in the current scope
+error: could not compile `codexmanager-core` (lib) due to 7 previous errors
