@@ -1,8 +1,0 @@
-D	crates/service/src/apikey/apikey_models.rs
-D	crates/service/src/apikey/apikey_models_tests.rs
-D	crates/service/src/gateway/model_picker/mod.rs
-D	crates/service/src/gateway/model_picker/mod_tests.rs
-D	crates/service/src/gateway/model_picker/parse.rs
-D	crates/service/src/gateway/model_picker/parse_tests.rs
-D	crates/service/src/gateway/model_picker/request.rs
-D	crates/service/src/gateway/model_picker/request_tests.rs

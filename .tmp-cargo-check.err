@@ -1,7 +1,0 @@
-warning: `C:\Users\shuan\.cargo\config` is deprecated in favor of `config.toml`
-  |
-  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
-    Updating `tuna` index
-warning: spurious network error (3 tries remaining): failed to send request: 无法解析服务器的名称或地址
-; class=Os (2)
-EXIT:1

@@ -1,9 +1,0 @@
-
-running 4 tests
-test account::proxy_testing::latency::tests::latency_test_accepts_204_empty_body_success ... ok
-test account::proxy_testing::latency::tests::latency_test_reports_redirect_without_following_it ... ok
-test gateway::http_bridge::tests::passthrough_sse_reader_emits_keepalive_for_responses_stream ... ok
-test usage::http::tests::success_body_read_failure_does_not_reclassify_redeem_as_failed ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1272 filtered out; finished in 7.78s
-

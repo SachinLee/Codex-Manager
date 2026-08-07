@@ -1,6 +1,0 @@
-
-running 1 test
-test gateway::http_bridge::tests::images_reader_streams_partial_and_completed_events ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1275 filtered out; finished in 0.13s
-
