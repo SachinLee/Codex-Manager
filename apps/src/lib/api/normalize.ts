@@ -2360,6 +2360,10 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     closeToTraySupported: asBoolean(source.closeToTraySupported, false),
     keepWindowUiMounted,
     lowTransparency: asBoolean(source.lowTransparency, false),
+    zoomFactor: Math.min(
+      1.25,
+      Math.max(0.75, toNullableNumber(source.zoomFactor) ?? 1),
+    ),
     lightweightModeOnCloseToTray: !keepWindowUiMounted,
     codexCliGuideDismissed: asBoolean(source.codexCliGuideDismissed, false),
     webAccessPasswordConfigured: asBoolean(

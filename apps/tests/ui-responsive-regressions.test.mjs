@@ -79,16 +79,38 @@ test("mobile management toolbars wrap without hidden page overflow", async () =>
 });
 
 test("wide tables retain reachable actions and visible empty states", async () => {
-  const [accountsSource, apiKeysSource, modelsSource] = await Promise.all([
-    readSource("src/app/accounts/accounts-page-view.tsx"),
-    readSource("src/app/apikeys/page.tsx"),
-    readSource("src/app/models/page.tsx"),
-  ]);
+  const [accountsSource, apiKeysSource, modelsSource, stylesSource] =
+    await Promise.all([
+      readSource("src/app/accounts/accounts-page-view.tsx"),
+      readSource("src/app/apikeys/page.tsx"),
+      readSource("src/app/models/page.tsx"),
+      readSource("src/app/globals.css"),
+    ]);
 
   assert.match(accountsSource, /w-\[calc\(100dvw-6rem\)\]/);
   assert.match(apiKeysSource, /w-\[calc\(100dvw-6rem\)\]/);
   assert.match(modelsSource, /table-sticky-action-head/);
   assert.match(modelsSource, /table-sticky-action-cell/);
+  assert.match(
+    accountsSource,
+    /account-pool-layout[\s\S]*account-pool-main-pane[\s\S]*account-pool-main-table[\s\S]*account-pool-col-status[\s\S]*account-pool-action-rail/,
+  );
+  assert.doesNotMatch(accountsSource, /table-sticky-action-(?:head|cell)/);
+  assert.match(accountsSource, /new ResizeObserver\(syncRowHeights\)/);
+  assert.match(accountsSource, /data-account-pool-main-row/);
+  assert.match(accountsSource, /data-account-pool-action-row/);
+  assert.match(
+    stylesSource,
+    /\.account-pool-layout[\s\S]*grid-template-columns: minmax\(0, 1fr\) var\(--account-pool-action-width\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.account-pool-main-table[\s\S]*table-layout: fixed;[\s\S]*width: 100%;[\s\S]*min-width: 1280px;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.account-pool-action-rail[\s\S]*position: relative;[\s\S]*z-index: 5;[\s\S]*width: var\(--account-pool-action-width\);/,
+  );
 });
 
 test("primary and theme buttons expose clear interaction state", async () => {

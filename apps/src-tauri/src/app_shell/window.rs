@@ -11,9 +11,7 @@ use tauri::{
 #[cfg(debug_assertions)]
 use tauri::Url;
 
-use super::state::{
-    APP_EXIT_REQUESTED, KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE, KEEP_WINDOW_UI_MOUNTED,
-};
+use super::state::{APP_EXIT_REQUESTED, KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE, KEEP_WINDOW_UI_MOUNTED};
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 pub(crate) const TRAY_PREVIEW_WINDOW_LABEL: &str = "tray-preview";
@@ -27,11 +25,6 @@ struct MainWindowHandle {
     window: tauri::WebviewWindow,
     created: bool,
     created_after_initial: bool,
-}
-
-struct TrayPreviewWindowHandle {
-    window: tauri::WebviewWindow,
-    created: bool,
 }
 
 /// 函数 `show_main_window`
@@ -60,9 +53,22 @@ fn show_main_window(app: &tauri::AppHandle) -> bool {
         main_window.created,
         main_window.created_after_initial,
     ) {
-        navigate_created_main_window_to_app(&main_window.window);
+        navigate_main_window_to_app(&main_window.window);
     }
     reveal_main_window(&main_window.window)
+}
+
+pub(crate) fn initialize_main_window(app: &tauri::AppHandle) -> bool {
+    if APP_EXIT_REQUESTED.load(Ordering::Relaxed) {
+        log::info!("initialize main window skipped because app exit is already requested");
+        return false;
+    }
+
+    let initialized = ensure_main_window(app).is_some();
+    if initialized {
+        log::info!("main window initialized in the background");
+    }
+    initialized
 }
 
 fn reveal_main_window(window: &tauri::WebviewWindow) -> bool {
@@ -178,22 +184,14 @@ pub(crate) fn toggle_tray_preview_window(
     click_position: PhysicalPosition<f64>,
     tray_rect: Rect,
 ) {
-    let Some(tray_preview) = ensure_tray_preview_window(app) else {
+    let Some(window) = ensure_tray_preview_window(app) else {
         return;
     };
-    let window = tray_preview.window;
     if window.is_visible().unwrap_or(false) {
         dismiss_tray_preview_window(app);
         return;
     }
 
-    // A request can remain pending forever when WebView2 suspends a hidden
-    // retained window. Reloading before the next show resets that stale state.
-    if should_reload_tray_preview_window(tray_preview.created) {
-        if let Err(err) = window.reload() {
-            log::warn!("reload retained tray preview window failed: {}", err);
-        }
-    }
     position_tray_preview_window(app, &window, click_position, tray_rect);
     if let Err(err) = window.show() {
         log::warn!("show tray preview window failed: {}", err);
@@ -253,7 +251,10 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<MainWindowHandle> {
             if window.label() != MAIN_WINDOW_LABEL {
                 return;
             }
-            log::info!("main window page loaded");
+            log::info!("main window page loaded: {}", payload.url());
+            if should_navigate_loaded_main_window_to_app(payload.url().path()) {
+                navigate_main_window_to_app(&window);
+            }
         })
         .build()
     {
@@ -284,10 +285,14 @@ fn should_navigate_created_main_window_to_app(created: bool, created_after_initi
     cfg!(debug_assertions) && created && created_after_initial
 }
 
-fn navigate_created_main_window_to_app(window: &tauri::WebviewWindow) {
+fn should_navigate_loaded_main_window_to_app(path: &str) -> bool {
+    cfg!(debug_assertions) && path == "/startup.html"
+}
+
+fn navigate_main_window_to_app(window: &tauri::WebviewWindow) {
     if let Err(err) = navigate_window_to_app_url(window) {
         log::warn!(
-            "navigate recreated main window from startup page to app failed: {}",
+            "navigate main window from startup page to app failed: {}",
             err
         );
     }
@@ -311,13 +316,10 @@ fn navigate_window_to_app_url(_window: &tauri::WebviewWindow) -> tauri::Result<(
     Ok(())
 }
 
-fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<TrayPreviewWindowHandle> {
+fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     if let Some(window) = app.get_webview_window(TRAY_PREVIEW_WINDOW_LABEL) {
         apply_tray_preview_window_size(&window);
-        return Some(TrayPreviewWindowHandle {
-            window,
-            created: false,
-        });
+        return Some(window);
     }
 
     let builder = WebviewWindowBuilder::new(
@@ -354,27 +356,17 @@ fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<TrayPreviewWindo
     match builder.build() {
         Ok(window) => {
             apply_tray_preview_window_size(&window);
-            Some(TrayPreviewWindowHandle {
-                window,
-                created: true,
-            })
+            Some(window)
         }
         Err(err) => {
             if let Some(window) = app.get_webview_window(TRAY_PREVIEW_WINDOW_LABEL) {
                 apply_tray_preview_window_size(&window);
-                return Some(TrayPreviewWindowHandle {
-                    window,
-                    created: false,
-                });
+                return Some(window);
             }
             log::warn!("create tray preview window failed: {}", err);
             None
         }
     }
-}
-
-fn should_reload_tray_preview_window(created: bool) -> bool {
-    !created
 }
 
 fn tray_preview_window_size() -> Size {
@@ -459,7 +451,7 @@ fn resolve_tray_preview_position(
 mod tests {
     use super::{
         resolve_tray_preview_position, should_navigate_created_main_window_to_app,
-        should_reload_tray_preview_window,
+        should_navigate_loaded_main_window_to_app,
     };
     use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalRect, PhysicalSize, Rect};
 
@@ -508,8 +500,14 @@ mod tests {
     }
 
     #[test]
-    fn retained_tray_preview_is_reloaded_before_it_is_shown_again() {
-        assert!(should_reload_tray_preview_window(false));
-        assert!(!should_reload_tray_preview_window(true));
+    fn loaded_startup_page_navigates_to_the_dev_app() {
+        #[cfg(debug_assertions)]
+        {
+            assert!(should_navigate_loaded_main_window_to_app("/startup.html"));
+            assert!(!should_navigate_loaded_main_window_to_app("/"));
+            assert!(!should_navigate_loaded_main_window_to_app("/tray-preview/"));
+        }
+        #[cfg(not(debug_assertions))]
+        assert!(!should_navigate_loaded_main_window_to_app("/startup.html"));
     }
 }

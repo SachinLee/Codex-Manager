@@ -50,7 +50,7 @@ pub use model_billing_v2::{
 };
 pub use model_catalog_v2::{
     ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
-    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelPriceV2, ModelRouteV2,
+    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
 
@@ -622,11 +622,11 @@ pub struct LoginSession {
 }
 
 fn login_session_select_columns() -> &'static str {
-    "login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at"
+    "login_id, code_verifier, state, status, error, workspace_id, note, tags, group_name, created_at, updated_at"
 }
 
 fn insert_login_session_sql() -> &'static str {
-    "INSERT INTO login_sessions (login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+    "INSERT INTO login_sessions (login_id, code_verifier, state, status, error, workspace_id, note, tags, group_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
 }
 
 fn login_session_by_id_sql() -> String {
@@ -2655,6 +2655,18 @@ impl Storage {
             include_str!("../../migrations/133_model_catalog_fallback_chain.sql"),
             |s| s.ensure_model_fallback_chain_column(),
         )?;
+        self.apply_sql_migration(
+            "128_login_sessions_group_name",
+            include_str!("../../migrations/128_login_sessions_group_name.sql"),
+        )?;
+        self.apply_sql_migration(
+            "129_model_fast_policy",
+            include_str!("../../migrations/129_model_fast_policy.sql"),
+        )?;
+        self.apply_sql_migration(
+            "130_accounts_subject_identity",
+            include_str!("../../migrations/130_accounts_subject_identity.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_model_fallback_chain_column()?;
         self.ensure_api_key_account_group_filter_column()?;
@@ -2788,6 +2800,7 @@ impl Storage {
                 &session.workspace_id,
                 &session.note,
                 &session.tags,
+                &session.group_name,
                 session.created_at,
                 session.updated_at,
             ),
@@ -2820,9 +2833,9 @@ impl Storage {
                 workspace_id: row.get(5)?,
                 note: row.get(6)?,
                 tags: row.get(7)?,
-                group_name: None,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+                group_name: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             }))
         } else {
             Ok(None)

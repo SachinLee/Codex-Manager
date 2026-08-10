@@ -75,6 +75,27 @@ pub struct ModelRouteV2 {
     pub weight: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelFastPolicyV2 {
+    #[default]
+    Passthrough,
+    Filter,
+    Force,
+    Block,
+}
+
+impl ModelFastPolicyV2 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passthrough => "passthrough",
+            Self::Filter => "filter",
+            Self::Force => "force",
+            Self::Block => "block",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedModelV2 {
@@ -107,6 +128,8 @@ pub struct ManagedModelV2 {
     pub instructions_mode: String,
     #[serde(default)]
     pub instructions_text: Option<String>,
+    #[serde(default)]
+    pub fast_policy: ModelFastPolicyV2,
     #[serde(default)]
     pub builtin_revision: Option<i64>,
     #[serde(default)]
@@ -379,6 +402,17 @@ fn map_model(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<ManagedModelV
             .unwrap_or(Value::Object(Default::default())),
         instructions_mode: row.get(17)?,
         instructions_text: row.get(18)?,
+        fast_policy: match row.get::<_, String>(30)?.as_str() {
+            "passthrough" => ModelFastPolicyV2::Passthrough,
+            "filter" => ModelFastPolicyV2::Filter,
+            "force" => ModelFastPolicyV2::Force,
+            "block" => ModelFastPolicyV2::Block,
+            value => {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "invalid model fast policy: {value}"
+                )))
+            }
+        },
         builtin_revision: row.get(19)?,
         user_edited: row.get::<_, i64>(20)? != 0,
         created_at: row.get(21)?,
@@ -408,7 +442,7 @@ const MODEL_SELECT: &str = "SELECT
     m.max_context_window,m.default_reasoning_effort,m.capabilities_json,
     m.instructions_mode,m.instructions_text,m.builtin_revision,m.user_edited,m.created_at,m.updated_at,
     p.price_status,p.price_source,p.input_microusd_per_1m,p.cached_input_microusd_per_1m,
-    p.cache_write_microusd_per_1m,p.output_microusd_per_1m,m.fallback_model_slugs_json
+    p.cache_write_microusd_per_1m,p.output_microusd_per_1m,m.fallback_model_slugs_json,m.fast_policy
   FROM models m JOIN model_prices p ON p.model_id=m.id";
 
 fn list_tiers(conn: &Connection, model_id: &str) -> Result<Vec<ModelPriceTierV2>> {
@@ -1283,8 +1317,8 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
         "INSERT INTO models(id,slug,display_name,description,provider,family,category,tags_json,
            origin,enabled,supported_in_api,visibility,sort_order,context_window,max_context_window,
            default_reasoning_effort,capabilities_json,instructions_mode,instructions_text,
-           builtin_revision,user_edited,created_at,updated_at,fallback_model_slugs_json)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,1,?21,?22,?23)
+           builtin_revision,user_edited,created_at,updated_at,fallback_model_slugs_json,fast_policy)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,1,?21,?22,?23,?24)
          ON CONFLICT(id) DO UPDATE SET slug=excluded.slug,display_name=excluded.display_name,
            description=excluded.description,provider=excluded.provider,family=excluded.family,
            category=excluded.category,tags_json=excluded.tags_json,enabled=excluded.enabled,
@@ -1294,7 +1328,7 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
            default_reasoning_effort=excluded.default_reasoning_effort,
            capabilities_json=excluded.capabilities_json,instructions_mode=excluded.instructions_mode,
            instructions_text=excluded.instructions_text,user_edited=1,updated_at=excluded.updated_at,
-           fallback_model_slugs_json=excluded.fallback_model_slugs_json",
+           fallback_model_slugs_json=excluded.fallback_model_slugs_json,fast_policy=excluded.fast_policy",
         params![id,model.slug,model.display_name,model.description,model.provider,model.family,model.category,
             serde_json::to_string(&model.tags)
                 .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,origin,model.enabled,
@@ -1302,7 +1336,8 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
             model.default_reasoning_effort,model.capabilities.to_string(),model.instructions_mode,model.instructions_text,
             model.builtin_revision,created_at,now,
             serde_json::to_string(&model.fallback_model_slugs)
-                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?],
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+            model.fast_policy.as_str()],
     )?;
     tx.execute(
         "INSERT INTO model_prices(model_id,currency,input_microusd_per_1m,
@@ -2321,6 +2356,60 @@ mod tests {
             .iter()
             .all(|model| model.instructions_mode == "passthrough"
                 && model.instructions_text.is_none()));
+        assert!(all
+            .iter()
+            .all(|model| model.fast_policy == ModelFastPolicyV2::Passthrough));
+    }
+
+    #[test]
+    fn model_fast_policy_round_trips() {
+        let storage = storage();
+        let mut model = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        model.fast_policy = ModelFastPolicyV2::Filter;
+
+        let saved = storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                previous_slug: Some(model.slug.clone()),
+                model,
+            })
+            .unwrap();
+
+        assert_eq!(saved.fast_policy, ModelFastPolicyV2::Filter);
+        assert_eq!(
+            storage
+                .get_managed_model_v2("gpt-5.4")
+                .unwrap()
+                .unwrap()
+                .fast_policy,
+            ModelFastPolicyV2::Filter
+        );
+    }
+
+    #[test]
+    fn fast_policy_migration_defaults_existing_models() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE models(id TEXT PRIMARY KEY);
+             INSERT INTO models(id) VALUES('existing');",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!("../../migrations/129_model_fast_policy.sql"))
+            .unwrap();
+
+        let policy: String = conn
+            .query_row(
+                "SELECT fast_policy FROM models WHERE id='existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(policy, "passthrough");
+        assert!(conn
+            .execute(
+                "UPDATE models SET fast_policy='invalid' WHERE id='existing'",
+                [],
+            )
+            .is_err());
     }
 
     #[test]
@@ -3202,6 +3291,10 @@ mod tests {
         storage
             .ensure_model_fallback_chain_column()
             .expect("add fallback chain compatibility column");
+        storage
+            .conn
+            .execute_batch(include_str!("../../migrations/129_model_fast_policy.sql"))
+            .expect("add model fast policy schema");
 
         assert_eq!(
             storage

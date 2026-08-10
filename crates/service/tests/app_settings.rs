@@ -11,6 +11,7 @@ use support::{test_env_guard, EnvGuard};
 const LEGACY_COMPACT_MODEL_FORWARD_RULES_SETTING_KEY: &str = "gateway.compact_model_forward_rules";
 
 const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
+    "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT",
     "CODEXMANAGER_SERVICE_ADDR",
     "CODEXMANAGER_WEB_ADDR",
     "CODEXMANAGER_ROUTE_STRATEGY",
@@ -584,6 +585,39 @@ fn sync_runtime_settings_from_storage_preserves_process_env_when_override_not_pe
     });
 }
 
+#[test]
+fn sync_runtime_settings_ignores_legacy_max_inflight_env_override() {
+    with_temp_db(|db_path| {
+        let storage = Storage::open(db_path).expect("open storage");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
+                "1",
+                now_ts(),
+            )
+            .expect("save account max inflight");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_ENV_OVERRIDES_KEY,
+                &serde_json::to_string(&json!({
+                    "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT": "0"
+                }))
+                .expect("serialize legacy env override"),
+                now_ts(),
+            )
+            .expect("save legacy env override");
+        drop(storage);
+
+        codexmanager_service::sync_runtime_settings_from_storage();
+
+        assert_eq!(
+            codexmanager_service::current_gateway_account_max_inflight(),
+            1
+        );
+        assert!(std::env::var_os("CODEXMANAGER_ACCOUNT_MAX_INFLIGHT").is_none());
+    });
+}
+
 /// 函数 `sync_runtime_settings_from_storage_preserves_explicit_process_env_over_persisted_override`
 ///
 /// 作者: gaohongshun
@@ -876,6 +910,7 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
             "lightweightModeOnCloseToTray": true,
             "codexCliGuideDismissed": true,
             "lowTransparency": true,
+            "zoomFactor": 0.9,
             "theme": "dark",
             "appearancePreset": "classic",
             "serviceAddr": "127.0.0.1:4999",
@@ -952,6 +987,10 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 .get("appearancePreset")
                 .and_then(|value| value.as_str()),
             Some("classic")
+        );
+        assert_eq!(
+            snapshot.get("zoomFactor").and_then(|value| value.as_f64()),
+            Some(0.9)
         );
         assert_eq!(
             snapshot

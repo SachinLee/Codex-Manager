@@ -704,8 +704,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(low.min_input_tokens, 0);
-        assert_eq!(exact.min_input_tokens, 272_000);
-        assert_eq!(high.min_input_tokens, 272_000);
+        assert_eq!(exact.min_input_tokens, 0);
+        assert_eq!(high.min_input_tokens, 272_001);
         let result = compute_charge_v2(10, 20, 20, 0, &low, 1_000).unwrap();
         assert_eq!(result.uncached_input_tokens, 0);
         assert_eq!(result.cache_write_tokens, 0);
@@ -811,7 +811,7 @@ mod tests {
             .select_model_price_tier_with_long_context_billing_v2("gpt-5.4", 300_000, false)
             .unwrap()
             .unwrap();
-        assert_eq!(long.min_input_tokens, 272_000);
+        assert_eq!(long.min_input_tokens, 272_001);
         assert_eq!(base.min_input_tokens, 0);
     }
 
