@@ -870,6 +870,7 @@ pub struct AggregateApiSummary {
     pub last_balance_status: Option<String>,
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
+    pub enable_consecutive_failure_freeze: bool,
     #[serde(default)]
     pub model_slugs: Vec<String>,
 }

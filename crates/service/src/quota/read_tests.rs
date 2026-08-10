@@ -98,6 +98,7 @@ fn aggregate_api(id: &str, balance_json: Option<&str>, now: i64) -> AggregateApi
         last_balance_status: Some("success".to_string()),
         last_balance_error: None,
         last_balance_json: balance_json.map(str::to_string),
+        enable_consecutive_failure_freeze: true,
     }
 }
 

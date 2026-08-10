@@ -1257,7 +1257,9 @@ pub(crate) fn gateway_is_aggregate_api_in_cooldown(
     api_id: &str,
     upstream_model: Option<&str>,
 ) -> bool {
-    aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id, upstream_model)
+    let memory_cooldown = aggregate_api_consecutive_freeze_enabled_or(storage, api_id, true)
+        && aggregate_api_cooldown::is_aggregate_api_in_cooldown(api_id, upstream_model);
+    memory_cooldown
         || crate::aggregate_api_health::is_routing_blocked_with_storage(
             storage,
             api_id,
@@ -1281,7 +1283,29 @@ pub(crate) fn gateway_record_aggregate_api_failure(
         None,
         Some("aggregate API upstream request failed"),
     );
+    // 关闭连续失败冻结的 API 不进入内存冷却；health 观察仍记录（其 generic
+    // 冷却转换在 record_observation_with_storage 内部已按开关抑制）。
+    if !aggregate_api_consecutive_freeze_enabled_or(storage, api_id, true) {
+        return false;
+    }
     aggregate_api_cooldown::record_aggregate_api_failure(api_id, upstream_model)
+}
+
+/// 读取聚合 API 的连续失败冻结开关；读取失败或 API 不存在时返回 `fallback`。
+fn aggregate_api_consecutive_freeze_enabled_or(
+    storage: &Storage,
+    api_id: &str,
+    fallback: bool,
+) -> bool {
+    storage
+        .aggregate_api_consecutive_freeze_enabled(api_id)
+        .ok()
+        .flatten()
+        .unwrap_or(fallback)
+}
+
+pub(crate) fn gateway_clear_aggregate_api_cooldowns(api_id: &str) {
+    aggregate_api_cooldown::clear_aggregate_api_cooldowns(api_id);
 }
 
 pub(crate) fn gateway_clear_aggregate_api_cooldown(

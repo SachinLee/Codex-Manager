@@ -229,6 +229,7 @@ interface AggregateApiPayload {
   balanceQueryAccessToken?: string | null;
   balanceQueryUserId?: string | null;
   balanceQueryConfigJson?: string | null;
+  enableConsecutiveFailureFreeze?: boolean | null;
 }
 
 const MAX_IMPORT_RPC_BODY_BYTES = 4 * 1024 * 1024;
@@ -927,6 +928,10 @@ export const accountClient = {
           typeof params.balanceQueryConfigJson === "string"
             ? params.balanceQueryConfigJson
             : null,
+        enableConsecutiveFailureFreeze:
+          typeof params.enableConsecutiveFailureFreeze === "boolean"
+            ? params.enableConsecutiveFailureFreeze
+            : null,
       })
     );
     return normalizeAggregateApiCreateResult(result);
@@ -986,6 +991,10 @@ export const accountClient = {
         balanceQueryConfigJson:
           typeof params.balanceQueryConfigJson === "string"
             ? params.balanceQueryConfigJson
+            : null,
+        enableConsecutiveFailureFreeze:
+          typeof params.enableConsecutiveFailureFreeze === "boolean"
+            ? params.enableConsecutiveFailureFreeze
             : null,
       })
     ),

@@ -1008,6 +1008,10 @@ export function normalizeAggregateApi(item: unknown): AggregateApi | null {
       asString(source.lastBalanceError ?? source.last_balance_error) || null,
     lastBalanceJson:
       asString(source.lastBalanceJson ?? source.last_balance_json) || null,
+    enableConsecutiveFailureFreeze: asBoolean(
+      source.enableConsecutiveFailureFreeze ?? source.enable_consecutive_failure_freeze,
+      true
+    ),
     modelSlugs: asStringArray(source.modelSlugs ?? source.model_slugs),
   };
 }

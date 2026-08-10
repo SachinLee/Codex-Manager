@@ -93,6 +93,7 @@ fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
         last_balance_status: None,
         last_balance_error: None,
         last_balance_json: None,
+        enable_consecutive_failure_freeze: true,
     }
 }
 
@@ -299,6 +300,7 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
                 last_balance_status: None,
                 last_balance_error: None,
                 last_balance_json: None,
+                enable_consecutive_failure_freeze: true,
             })
             .expect("insert aggregate api");
     }
@@ -408,6 +410,7 @@ fn explicit_aggregate_api_id_promotes_matching_active_provider_candidate_only() 
                 last_balance_status: None,
                 last_balance_error: None,
                 last_balance_json: None,
+                enable_consecutive_failure_freeze: true,
             })
             .expect("insert aggregate api");
     }

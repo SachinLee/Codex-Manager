@@ -1917,6 +1917,7 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
             last_balance_status: item.last_balance_status,
             last_balance_error: item.last_balance_error,
             last_balance_json: item.last_balance_json,
+            enable_consecutive_failure_freeze: item.enable_consecutive_failure_freeze,
         })
         .collect())
 }
@@ -2027,6 +2028,7 @@ pub(crate) fn create_aggregate_api(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
+    enable_consecutive_failure_freeze: Option<bool>,
 ) -> Result<AggregateApiCreateResult, String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let normalized_provider_type = normalize_provider_type(provider_type)?;
@@ -2107,6 +2109,7 @@ pub(crate) fn create_aggregate_api(
         last_balance_status: None,
         last_balance_error: None,
         last_balance_json: None,
+        enable_consecutive_failure_freeze: enable_consecutive_failure_freeze.unwrap_or(true),
     };
     storage
         .insert_aggregate_api(&record)
@@ -2168,6 +2171,7 @@ pub(crate) fn update_aggregate_api(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
+    enable_consecutive_failure_freeze: Option<bool>,
 ) -> Result<(), String> {
     if api_id.is_empty() {
         return Err("aggregate api id required".to_string());
@@ -2200,10 +2204,12 @@ pub(crate) fn update_aggregate_api(
             .update_aggregate_api_type(api_id, normalized_provider_type.as_str())
             .map_err(|err| err.to_string())?;
     }
-    let normalized_supplier_name = normalize_supplier_name(supplier_name)?;
-    storage
-        .update_aggregate_api_supplier_name(api_id, Some(normalized_supplier_name.as_str()))
-        .map_err(|err| err.to_string())?;
+    if let Some(supplier_name) = supplier_name {
+        let normalized_supplier_name = normalize_supplier_name(Some(supplier_name))?;
+        storage
+            .update_aggregate_api_supplier_name(api_id, Some(normalized_supplier_name.as_str()))
+            .map_err(|err| err.to_string())?;
+    }
     if sort.is_some() {
         storage
             .update_aggregate_api_sort(api_id, normalize_sort(sort))
@@ -2348,6 +2354,7 @@ pub(crate) fn update_aggregate_api(
             .map_err(|err| err.to_string())?;
     }
 
+
     if next_auth_type == AGGREGATE_API_AUTH_APIKEY {
         let normalized_secret = normalize_secret(key);
         if auth_type_changed && normalized_secret.is_none() {
@@ -2377,6 +2384,15 @@ pub(crate) fn update_aggregate_api(
             storage
                 .upsert_aggregate_api_secret(api_id, &secret)
                 .map_err(|err| err.to_string())?;
+        }
+    }
+    if let Some(enabled) = enable_consecutive_failure_freeze {
+        storage
+            .update_aggregate_api_consecutive_freeze(api_id, enabled)
+            .map_err(|err| err.to_string())?;
+        if !enabled {
+            // 关闭连续失败冻结时立即解除既有内存冷却，避免 UI 残留冷却状态。
+            gateway::gateway_clear_aggregate_api_cooldowns(api_id);
         }
     }
     Ok(())

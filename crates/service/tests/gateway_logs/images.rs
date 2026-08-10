@@ -29,6 +29,7 @@ fn aggregate_api_for_test(id: &str, sort: i64, url: String, now: i64) -> Aggrega
         last_balance_status: None,
         last_balance_error: None,
         last_balance_json: None,
+        enable_consecutive_failure_freeze: true,
     }
 }
 

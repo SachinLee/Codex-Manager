@@ -13,8 +13,7 @@ use crate::{
     reset_aggregate_api_capability_override, reset_aggregate_api_health,
     reset_aggregate_api_runtime_status, reset_aggregate_api_zero_balance_status,
     set_aggregate_api_capability_override, set_aggregate_api_capability_routing_mode,
-    test_aggregate_api_connection, update_aggregate_api,
-    update_aggregate_api_health_config,
+    test_aggregate_api_connection, update_aggregate_api, update_aggregate_api_health_config,
 };
 
 /// 函数 `api_id_param`
@@ -122,6 +121,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let balance_query_access_token = super::string_param(req, "balanceQueryAccessToken");
             let balance_query_user_id = super::string_param(req, "balanceQueryUserId");
             let balance_query_config_json = super::string_param(req, "balanceQueryConfigJson");
+            let enable_consecutive_failure_freeze =
+                super::bool_param(req, "enableConsecutiveFailureFreeze");
             super::value_or_error(create_aggregate_api(
                 url,
                 key,
@@ -144,6 +145,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 balance_query_access_token,
                 balance_query_user_id,
                 balance_query_config_json,
+                enable_consecutive_failure_freeze,
             ))
         }
         "aggregateApi/update" => {
@@ -174,6 +176,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let balance_query_access_token = super::string_param(req, "balanceQueryAccessToken");
             let balance_query_user_id = super::string_param(req, "balanceQueryUserId");
             let balance_query_config_json = super::string_param(req, "balanceQueryConfigJson");
+            let enable_consecutive_failure_freeze =
+                super::bool_param(req, "enableConsecutiveFailureFreeze");
             super::ok_or_error(update_aggregate_api(
                 api_id,
                 url,
@@ -198,6 +202,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 balance_query_access_token,
                 balance_query_user_id,
                 balance_query_config_json,
+                enable_consecutive_failure_freeze,
             ))
         }
         "aggregateApi/readSecret" => {

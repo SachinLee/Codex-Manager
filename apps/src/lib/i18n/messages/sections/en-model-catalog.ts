@@ -115,4 +115,6 @@ export const EN_MODEL_CATALOG_MESSAGES: MessageCatalog = {
   模型已保存: "Model saved",
   删除模型失败: "Failed to delete model",
   模型已删除: "Model deleted",
+  "降级模型不能是当前模型自身": "A fallback model cannot be the current model itself",
+  "降级模型链存在重复项": "Fallback model chain contains duplicate entries",
 };

@@ -628,6 +628,7 @@ fn gateway_aggregate_api_model_override_rewrites_minimax_responses_request() {
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         })
         .expect("insert aggregate api");
     storage
@@ -834,6 +835,7 @@ fn gateway_aggregate_codex_failover_to_minimax_isolates_candidate_request_bodies
         last_balance_status: None,
         last_balance_error: None,
         last_balance_json: None,
+        enable_consecutive_failure_freeze: true,
     };
     storage
         .insert_aggregate_api(&codex_candidate)

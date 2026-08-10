@@ -1,5 +1,6 @@
 use super::*;
 use codexmanager_core::storage::now_ts;
+use codexmanager_core::storage::AggregateApi;
 
 #[test]
 fn aggregate_api_cooldown_enters_after_five_failures() {
@@ -151,5 +152,86 @@ fn aggregate_api_cooldown_success_only_clears_matching_model() {
         "agg-model-success",
         Some("claude-sonnet-4")
     ));
+    clear_aggregate_api_cooldown_for_tests();
+}
+
+#[test]
+fn gateway_freeze_switch_gates_memory_cooldown() {
+    let _guard = crate::test_env_guard();
+    clear_aggregate_api_cooldown_for_tests();
+
+    let storage = codexmanager_core::storage::Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let api_id = "agg-gateway-switch";
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: api_id.to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: Some("gateway switch".to_string()),
+            sort: 0,
+            url: "https://gateway-switch.example/v1".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
+            status: "active".to_string(),
+            created_at: now_ts(),
+            updated_at: now_ts(),
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+            enable_consecutive_failure_freeze: false,
+        })
+        .expect("insert aggregate api");
+
+    // 开关关闭：连续失败不进入内存冷却，冷却检查直接放行。
+    for _ in 0..5 {
+        assert!(!crate::gateway::gateway_record_aggregate_api_failure(
+            &storage,
+            api_id,
+            Some("gpt-5"),
+        ));
+    }
+    assert!(!crate::gateway::gateway_is_aggregate_api_in_cooldown(
+        &storage,
+        api_id,
+        Some("gpt-5"),
+    ));
+    assert!(list_aggregate_api_cooldown_statuses().is_empty());
+
+    // 开关开启：同样的失败序列进入内存冷却。
+    storage
+        .update_aggregate_api_consecutive_freeze(api_id, true)
+        .expect("enable freeze");
+    for _ in 0..4 {
+        crate::gateway::gateway_record_aggregate_api_failure(&storage, api_id, Some("gpt-5"));
+        assert!(!crate::gateway::gateway_is_aggregate_api_in_cooldown(
+            &storage,
+            api_id,
+            Some("gpt-5"),
+        ));
+    }
+    assert!(crate::gateway::gateway_record_aggregate_api_failure(
+        &storage,
+        api_id,
+        Some("gpt-5"),
+    ));
+    assert!(crate::gateway::gateway_is_aggregate_api_in_cooldown(
+        &storage,
+        api_id,
+        Some("gpt-5"),
+    ));
+
     clear_aggregate_api_cooldown_for_tests();
 }

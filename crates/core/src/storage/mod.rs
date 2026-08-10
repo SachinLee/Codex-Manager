@@ -1529,6 +1529,7 @@ pub struct AggregateApi {
     pub last_balance_status: Option<String>,
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
+    pub enable_consecutive_failure_freeze: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1566,6 +1567,7 @@ pub struct AggregateApiListSummary {
     pub last_balance_status: Option<String>,
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
+    pub enable_consecutive_failure_freeze: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2654,6 +2656,11 @@ impl Storage {
             "133_model_catalog_fallback_chain",
             include_str!("../../migrations/133_model_catalog_fallback_chain.sql"),
             |s| s.ensure_model_fallback_chain_column(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "134_aggregate_api_enable_consecutive_failure_freeze",
+            include_str!("../../migrations/134_aggregate_api_enable_consecutive_failure_freeze.sql"),
+            |s| s.ensure_aggregate_apis_table(),
         )?;
         self.apply_sql_migration(
             "128_login_sessions_group_name",

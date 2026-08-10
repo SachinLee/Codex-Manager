@@ -51,8 +51,9 @@ impl Storage {
                 last_balance_at,
                 last_balance_status,
                 last_balance_error,
-                last_balance_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                last_balance_json,
+                enable_consecutive_failure_freeze
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 &api.id,
                 &api.provider_type,
@@ -80,6 +81,7 @@ impl Storage {
                 &api.last_balance_status,
                 &api.last_balance_error,
                 &api.last_balance_json,
+                api.enable_consecutive_failure_freeze,
             ],
         )?;
         Ok(())
@@ -599,6 +601,34 @@ impl Storage {
         Ok(())
     }
 
+    /// 更新聚合 API 的连续失败冻结开关。返回该 API 是否真实存在。
+    pub fn update_aggregate_api_consecutive_freeze(
+        &self,
+        api_id: &str,
+        enabled: bool,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            update_aggregate_api_consecutive_freeze_sql(),
+            (enabled, now_ts(), api_id),
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// 读取聚合 API 的连续失败冻结开关；API 不存在返回 `Ok(None)`。
+    pub fn aggregate_api_consecutive_freeze_enabled(&self, api_id: &str) -> Result<Option<bool>> {
+        self.conn
+            .query_row(
+                aggregate_api_consecutive_freeze_enabled_sql(),
+                [api_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+    }
+
     /// 函数 `delete_aggregate_api`
     ///
     /// 作者: gaohongshun
@@ -802,7 +832,8 @@ impl Storage {
                 last_balance_at INTEGER,
                 last_balance_status TEXT,
                 last_balance_error TEXT,
-                last_balance_json TEXT
+                last_balance_json TEXT,
+                enable_consecutive_failure_freeze INTEGER NOT NULL DEFAULT 1
             )",
             [],
         )?;
@@ -841,6 +872,11 @@ impl Storage {
         self.ensure_column("aggregate_apis", "last_balance_status", "TEXT")?;
         self.ensure_column("aggregate_apis", "last_balance_error", "TEXT")?;
         self.ensure_column("aggregate_apis", "last_balance_json", "TEXT")?;
+        self.ensure_column(
+            "aggregate_apis",
+            "enable_consecutive_failure_freeze",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
         self.ensure_aggregate_api_balance_query_lookup_index()?;
         self.ensure_aggregate_api_status_order_index()?;
         self.ensure_aggregate_api_provider_status_order_index()?;
@@ -1093,14 +1129,15 @@ fn map_aggregate_api_row(row: &Row<'_>) -> Result<AggregateApi> {
         last_balance_status: row.get(23)?,
         last_balance_error: row.get(24)?,
         last_balance_json: row.get(25)?,
+        enable_consecutive_failure_freeze: row.get(26)?,
     })
 }
 
 fn map_aggregate_api_with_secrets_row(row: &Row<'_>) -> Result<AggregateApiWithSecrets> {
     Ok(AggregateApiWithSecrets {
         api: map_aggregate_api_row(row)?,
-        secret_value: row.get(26)?,
-        balance_access_token: row.get(27)?,
+        secret_value: row.get(27)?,
+        balance_access_token: row.get(28)?,
     })
 }
 
@@ -1132,6 +1169,7 @@ fn map_aggregate_api_list_summary_row(row: &Row<'_>) -> Result<AggregateApiListS
         last_balance_status: row.get(23)?,
         last_balance_error: row.get(24)?,
         last_balance_json: row.get(25)?,
+        enable_consecutive_failure_freeze: row.get(26)?,
     })
 }
 
@@ -1456,7 +1494,29 @@ mod supplier_model_tests {
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         }
+    }
+
+    #[test]
+    fn init_records_consecutive_failure_freeze_migration() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("initialize schema");
+
+        assert!(storage
+            .has_column("aggregate_apis", "enable_consecutive_failure_freeze")
+            .expect("check freeze column"));
+        let applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(1)
+                 FROM schema_migrations
+                 WHERE version = '134_aggregate_api_enable_consecutive_failure_freeze'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count freeze migration");
+        assert_eq!(applied, 1);
     }
 
     fn collect_query_plan_details(storage: &Storage, sql: &str) -> Vec<String> {

@@ -546,6 +546,7 @@ fn delete_aggregate_api_removes_aggregate_model_source_routes() {
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         })
         .expect("insert aggregate api");
     storage
@@ -676,6 +677,87 @@ fn delete_aggregate_api_removes_aggregate_model_source_routes() {
         1
     );
 }
+#[test]
+fn aggregate_api_consecutive_freeze_flag_roundtrips() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let now = now_ts();
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: "agg-freeze-flag".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            supplier_name: Some("freeze flag".to_string()),
+            sort: 0,
+            url: "https://freeze-flag.example/v1".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+            enable_consecutive_failure_freeze: false,
+        })
+        .expect("insert aggregate api");
+
+    // 写入 false 后读取一致
+    assert_eq!(
+        storage
+            .aggregate_api_consecutive_freeze_enabled("agg-freeze-flag")
+            .expect("read freeze flag"),
+        Some(false)
+    );
+
+    // 通过更新函数打开开关
+    assert!(storage
+        .update_aggregate_api_consecutive_freeze("agg-freeze-flag", true)
+        .expect("update freeze flag"));
+    assert_eq!(
+        storage
+            .aggregate_api_consecutive_freeze_enabled("agg-freeze-flag")
+            .expect("read freeze flag after update"),
+        Some(true)
+    );
+
+    // 列表与单查均携带该字段
+    let listed = storage
+        .list_aggregate_api_summaries()
+        .expect("list aggregate apis");
+    let listed_item = listed
+        .iter()
+        .find(|item| item.id == "agg-freeze-flag")
+        .expect("find listed aggregate api");
+    assert!(listed_item.enable_consecutive_failure_freeze);
+    let fetched = storage
+        .find_aggregate_api_by_id("agg-freeze-flag")
+        .expect("find aggregate api")
+        .expect("aggregate api exists");
+    assert!(fetched.enable_consecutive_failure_freeze);
+
+    // 不存在的 API 返回 None
+    assert_eq!(
+        storage
+            .aggregate_api_consecutive_freeze_enabled("agg-missing")
+            .expect("read missing freeze flag"),
+        None
+    );
+}
+
+
 #[test]
 fn delete_account_preserves_legacy_model_source_routes() {
     let mut storage = Storage::open_in_memory().expect("open in memory");
@@ -2044,6 +2126,7 @@ fn request_token_stats_rollups_use_owner_and_actual_source_precedence() {
                 last_balance_status: None,
                 last_balance_error: None,
                 last_balance_json: None,
+                enable_consecutive_failure_freeze: true,
             })
             .expect("insert aggregate api");
     }

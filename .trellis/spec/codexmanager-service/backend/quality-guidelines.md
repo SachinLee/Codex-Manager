@@ -326,6 +326,68 @@ state.entries.remove(api_id);
 clear_system_policy_action(PolicyTargetKind::AggregateApi, api_id);
 ```
 
+## Scenario: Per-Aggregate-API Consecutive Failure Freeze Policy
+
+### 1. Scope / Trigger
+
+- Trigger: adding a per-source setting that controls the existing five-failure Aggregate API freeze across SQLite, gateway health state, service RPC, Tauri commands, and typed frontend clients.
+- Applies to `crates/core/src/storage/aggregate_apis.rs`, `crates/service/src/aggregate_api_health.rs`, `crates/service/src/gateway/mod.rs`, `apps/src-tauri/src/commands/aggregate_api.rs`, and Aggregate API UI wrappers.
+
+### 2. Signatures
+
+- DB column: `aggregate_apis.enable_consecutive_failure_freeze INTEGER NOT NULL DEFAULT 1`.
+- RPC methods: `aggregateApi/list`, `aggregateApi/create`, and `aggregateApi/update`; field is `enableConsecutiveFailureFreeze: boolean` in camelCase.
+- Tauri create/update commands must accept and forward `enable_consecutive_failure_freeze: Option<bool>`.
+- Frontend model: `AggregateApi.enableConsecutiveFailureFreeze: boolean`, normalized with default `true`.
+
+### 3. Contracts
+
+- Missing/legacy values resolve to `true`; existing APIs retain current behavior.
+- `false` suppresses only generic consecutive-failure cooldown: memory cooldown entries are not recorded/checked, and persisted generic cooldown states do not block routing.
+- Persisted `auth`, `model_not_supported`, and `rate_limited` cooldowns remain route-blocking when proactive health monitoring is enabled; `unhealthy` remains blocking.
+- Health observations and failure counters remain recorded when freeze is disabled; disabling the switch clears the API's in-memory cooldown entries but does not erase health history.
+- The aggregate API page may expose the setting in a table switch and edit modal; the unused health-monitoring column must not issue probe-cost or active-probe configuration queries.
+
+### 4. Validation & Error Matrix
+
+- Missing switch on create/list -> default `true`.
+- Unknown API on update -> existing `aggregate api not found` behavior.
+- Storage read error while deciding a freeze -> fail closed to the existing behavior (`true`); do not silently disable protection.
+- Generic five failures + switch false -> no route freeze.
+- Auth/model/rate-limit failure + switch false -> classified cooldown remains effective.
+
+### 5. Good / Base / Bad Cases
+
+- Good: storage, service list, Tauri/Web RPC, modal, and table switch all round-trip the same boolean.
+- Base: an old database row receives default `1` and routes exactly as before.
+- Bad: gateway returns early when the switch is false and thereby skips persisted auth/rate-limit health blocking.
+- Bad: updating only the frontend payload while omitting the Tauri command or service RPC parameter.
+
+### 6. Tests Required
+
+- Storage round-trip: insert false, read/list false, update true, and missing id returns `None`.
+- Health regression: generic threshold is disabled by false; classified cooldown remains enabled; persisted generic cooldown is ignored after disabling.
+- Gateway regression: memory cooldown is gated by the switch while persisted health checks still run.
+- Service list contract: `AggregateApiSummary` returns the field.
+- Frontend runtime/build: normalization defaults true; table source has no health-monitoring column or probe-cost/config query; static build passes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+if !freeze_enabled {
+    return false; // skips both memory and persisted classified cooldowns
+}
+```
+
+#### Correct
+
+```rust
+let memory_cooldown = freeze_enabled && is_aggregate_api_in_cooldown(api_id, model);
+memory_cooldown || is_routing_blocked_with_storage(storage, api_id, model)
+```
+
 ## Scenario: Gateway integration fixtures after Model Catalog V2
 
 ### 1. Scope / Trigger

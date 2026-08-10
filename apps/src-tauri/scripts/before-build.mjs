@@ -28,7 +28,12 @@ const candidates = [
 ];
 
 function hasFrontendPackage(dir) {
-  return existsSync(resolve(dir, "package.json"));
+  return (
+    existsSync(resolve(dir, "package.json")) &&
+    ["next.config.ts", "next.config.mjs", "next.config.js"].some((file) =>
+      existsSync(resolve(dir, file)),
+    )
+  );
 }
 
 function hasBuiltFrontendDist(dir) {

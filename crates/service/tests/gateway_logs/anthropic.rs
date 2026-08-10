@@ -219,6 +219,7 @@ fn gateway_aggregate_compatible_messages_passthrough_accepts_message_stop() {
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         })
         .expect("insert aggregate api");
     storage
@@ -383,6 +384,7 @@ fn gateway_aggregate_responses_bridge_adds_anthropic_headers_and_messages_path()
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         })
         .expect("insert aggregate api");
     storage

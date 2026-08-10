@@ -122,6 +122,18 @@ fn sanitize_reason(reason: Option<&str>) -> Option<String> {
     Some(reason.chars().take(240).collect())
 }
 
+/// 读取聚合 API 的连续失败冻结开关；读取失败或 API 不存在时按默认开启处理。
+fn aggregate_api_consecutive_freeze_enabled_or(
+    storage: &codexmanager_core::storage::Storage,
+    api_id: &str,
+) -> bool {
+    storage
+        .aggregate_api_consecutive_freeze_enabled(api_id)
+        .ok()
+        .flatten()
+        .unwrap_or(true)
+}
+
 fn failure_category(status: Option<i64>, reason: Option<&str>) -> &'static str {
     match status {
         Some(401 | 403) => "auth",
@@ -243,7 +255,11 @@ pub(crate) fn record_observation_with_storage(
             Some("auth") => Some(AUTH_COOLDOWN_SECS),
             Some("model_not_supported") => Some(MODEL_UNSUPPORTED_COOLDOWN_SECS),
             Some("rate_limited") => Some(TRANSIENT_COOLDOWN_SECS),
-            _ if state.consecutive_failures >= FAILURE_THRESHOLD => Some(TRANSIENT_COOLDOWN_SECS),
+            _ if state.consecutive_failures >= FAILURE_THRESHOLD
+                && aggregate_api_consecutive_freeze_enabled_or(storage, api_id) =>
+            {
+                Some(TRANSIENT_COOLDOWN_SECS)
+            }
             _ => None,
         };
         if let Some(seconds) = cooldown_secs {
@@ -296,6 +312,27 @@ pub(crate) fn record_observation(
     );
 }
 
+fn health_state_blocks_routing(
+    state: &AggregateApiHealthState,
+    now: i64,
+    consecutive_freeze_enabled: bool,
+) -> bool {
+    if !matches!(state.state.as_str(), "cooldown" | "unhealthy")
+        || !state.cooldown_until.map_or(true, |until| until > now)
+    {
+        return false;
+    }
+    if state.state == "unhealthy" || consecutive_freeze_enabled {
+        return true;
+    }
+    // The setting only disables the generic threshold-based cooldown. Keep
+    // explicit auth, model-support, and rate-limit cooling behavior intact.
+    matches!(
+        state.last_error_category.as_deref(),
+        Some("auth" | "model_not_supported" | "rate_limited")
+    )
+}
+
 pub(crate) fn is_routing_blocked_with_storage(
     storage: &codexmanager_core::storage::Storage,
     api_id: &str,
@@ -313,14 +350,12 @@ pub(crate) fn is_routing_blocked_with_storage(
         return false;
     }
     let now = now_ts();
+    let consecutive_freeze_enabled = aggregate_api_consecutive_freeze_enabled_or(storage, api_id);
     let source_blocked = storage
         .aggregate_api_health_state(api_id, None, None)
         .ok()
         .flatten()
-        .is_some_and(|state| {
-            matches!(state.state.as_str(), "cooldown" | "unhealthy")
-                && state.cooldown_until.map_or(true, |until| until > now)
-        });
+        .is_some_and(|state| health_state_blocks_routing(&state, now, consecutive_freeze_enabled));
     if source_blocked {
         return true;
     }
@@ -328,10 +363,7 @@ pub(crate) fn is_routing_blocked_with_storage(
         .aggregate_api_health_state(api_id, model, None)
         .ok()
         .flatten()
-        .is_some_and(|state| {
-            matches!(state.state.as_str(), "cooldown" | "unhealthy")
-                && state.cooldown_until.map_or(true, |until| until > now)
-        })
+        .is_some_and(|state| health_state_blocks_routing(&state, now, consecutive_freeze_enabled))
 }
 
 pub(crate) fn list_health() -> Result<AggregateApiHealthListResult, String> {
@@ -790,6 +822,7 @@ mod tests {
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         }
     }
 
@@ -866,5 +899,118 @@ mod tests {
             api_id,
             Some(model)
         ));
+
+        storage
+            .update_aggregate_api_consecutive_freeze(api_id, false)
+            .expect("disable consecutive freeze");
+        assert!(!is_routing_blocked_with_storage(
+            &storage,
+            api_id,
+            Some(model)
+        ));
+
+        // 分类冷却不受连续失败冻结开关影响。
+        record_observation_with_storage(
+            &storage,
+            api_id,
+            Some(model),
+            None,
+            "passive",
+            false,
+            Some(401),
+            None,
+            None,
+        );
+        assert!(is_routing_blocked_with_storage(
+            &storage,
+            api_id,
+            Some(model)
+        ));
+    }
+
+    #[test]
+    fn consecutive_generic_failures_respect_freeze_switch() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("initialize storage");
+        let api_id = "aggregate-health-freeze-switch";
+        let model = "gpt-5.6-terra";
+
+        // 开关关闭：连续达到阈值后仍不进入 cooldown（状态保持 degraded）。
+        storage
+            .insert_aggregate_api(&AggregateApi {
+                enable_consecutive_failure_freeze: false,
+                ..aggregate_api(api_id)
+            })
+            .expect("insert aggregate api with freeze disabled");
+        for _ in 0..=FAILURE_THRESHOLD {
+            record_observation_with_storage(
+                &storage,
+                api_id,
+                Some(model),
+                None,
+                "passive",
+                false,
+                Some(502),
+                None,
+                Some("upstream 502"),
+            );
+        }
+        let state = storage
+            .aggregate_api_health_state(api_id, Some(model), None)
+            .expect("read health state")
+            .expect("health state exists");
+        assert_eq!(state.consecutive_failures, FAILURE_THRESHOLD + 1);
+        assert_eq!(state.state, "degraded");
+        assert!(state.cooldown_until.is_none());
+
+        // 分类冷却不受开关影响：auth 失败仍进入 cooldown。
+        record_observation_with_storage(
+            &storage,
+            api_id,
+            Some(model),
+            None,
+            "passive",
+            false,
+            Some(401),
+            None,
+            None,
+        );
+        // auth 分类冷却写入全局 scope（不区分模型）。
+        let state = storage
+            .aggregate_api_health_state(api_id, None, None)
+            .expect("read health state")
+            .expect("health state exists");
+        assert_eq!(state.state, "cooldown");
+        assert!(state.cooldown_until.is_some());
+
+        // 开关开启：generic 连续失败重新触发 cooldown。
+        storage
+            .insert_aggregate_api(&AggregateApi {
+                enable_consecutive_failure_freeze: true,
+                ..aggregate_api(api_id)
+            })
+            .expect("insert aggregate api with freeze enabled");
+        storage
+            .reset_aggregate_api_health_state(api_id, Some(model), None)
+            .expect("reset health state");
+        for _ in 0..=FAILURE_THRESHOLD {
+            record_observation_with_storage(
+                &storage,
+                api_id,
+                Some(model),
+                None,
+                "passive",
+                false,
+                Some(502),
+                None,
+                Some("upstream 502"),
+            );
+        }
+        let state = storage
+            .aggregate_api_health_state(api_id, Some(model), None)
+            .expect("read health state")
+            .expect("health state exists");
+        assert_eq!(state.state, "cooldown");
+        assert!(state.cooldown_until.is_some());
     }
 }

@@ -167,6 +167,7 @@ pub async fn service_aggregate_api_create(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
+    enable_consecutive_failure_freeze: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "providerType": provider_type,
@@ -190,6 +191,7 @@ pub async fn service_aggregate_api_create(
         "balanceQueryAccessToken": balance_query_access_token,
         "balanceQueryUserId": balance_query_user_id,
         "balanceQueryConfigJson": balance_query_config_json,
+        "enableConsecutiveFailureFreeze": enable_consecutive_failure_freeze,
     });
     rpc_call_in_background("aggregateApi/create", addr, Some(params)).await
 }
@@ -238,6 +240,7 @@ pub async fn service_aggregate_api_update(
     balance_query_access_token: Option<String>,
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
+    enable_consecutive_failure_freeze: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({
         "id": id,
@@ -262,6 +265,7 @@ pub async fn service_aggregate_api_update(
         "balanceQueryAccessToken": balance_query_access_token,
         "balanceQueryUserId": balance_query_user_id,
         "balanceQueryConfigJson": balance_query_config_json,
+        "enableConsecutiveFailureFreeze": enable_consecutive_failure_freeze,
     });
     if let Some(value) = daily_spend_limit_usd {
         params["dailySpendLimitUsd"] = serde_json::Value::from(value);

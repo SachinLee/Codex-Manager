@@ -25,7 +25,8 @@ pub(super) const AGGREGATE_API_SELECT_SQL: &str = "SELECT
     last_balance_at,
     last_balance_status,
     last_balance_error,
-    last_balance_json
+    last_balance_json,
+    enable_consecutive_failure_freeze
  FROM aggregate_apis";
 pub(super) const AGGREGATE_API_MODEL_SOURCE_KIND: &str = "aggregate_api";
 pub(super) const AGGREGATE_API_ACTIVE_STATUS_CONDITION: &str =
@@ -69,6 +70,7 @@ pub(super) fn aggregate_api_with_secrets_by_id_sql() -> &'static str {
         a.last_balance_status,
         a.last_balance_error,
         a.last_balance_json,
+        a.enable_consecutive_failure_freeze,
         s.secret_value,
         bs.access_token
      FROM aggregate_apis a
@@ -254,4 +256,18 @@ pub(super) fn aggregate_api_secret_by_id_sql() -> &'static str {
 
 pub(super) fn aggregate_api_balance_secret_by_id_sql() -> &'static str {
     "SELECT access_token FROM aggregate_api_balance_secrets WHERE aggregate_api_id = ?1 LIMIT 1"
+}
+
+pub(super) fn update_aggregate_api_consecutive_freeze_sql() -> &'static str {
+    "UPDATE aggregate_apis
+     SET enable_consecutive_failure_freeze = ?1,
+         updated_at = ?2
+     WHERE id = ?3"
+}
+
+pub(super) fn aggregate_api_consecutive_freeze_enabled_sql() -> &'static str {
+    "SELECT enable_consecutive_failure_freeze
+     FROM aggregate_apis
+     WHERE id = ?1
+     LIMIT 1"
 }

@@ -140,6 +140,8 @@ export function AggregateApiModal({
   const [costMultiplier, setCostMultiplier] = useState("1");
   const [dailySpendLimitUsd, setDailySpendLimitUsd] = useState("");
   const [balanceQueryEnabled, setBalanceQueryEnabled] = useState(false);
+  const [enableConsecutiveFailureFreeze, setEnableConsecutiveFailureFreeze] =
+    useState(true);
   const [balanceQueryTemplate, setBalanceQueryTemplate] =
     useState<BalanceQueryTemplate>("generic");
   const [balanceQueryBaseUrl, setBalanceQueryBaseUrl] = useState("");
@@ -237,6 +239,9 @@ export function AggregateApiModal({
       aggregateApi?.dailySpendLimitUsd ? String(aggregateApi.dailySpendLimitUsd) : ""
     );
     setBalanceQueryEnabled(Boolean(aggregateApi?.balanceQueryEnabled));
+    setEnableConsecutiveFailureFreeze(
+      aggregateApi?.enableConsecutiveFailureFreeze ?? true
+    );
     const nextBalanceQueryTemplate =
       aggregateApi?.balanceQueryTemplate === "new_api"
         ? "new_api"
@@ -461,6 +466,7 @@ export function AggregateApiModal({
           balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
           balanceQueryUserId: balanceQueryUserId.trim(),
           balanceQueryConfigJson,
+          enableConsecutiveFailureFreeze,
         });
         toast.success(t("聚合 API 已更新"));
         await Promise.all([
@@ -495,6 +501,7 @@ export function AggregateApiModal({
         balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
         balanceQueryUserId: balanceQueryUserId.trim(),
         balanceQueryConfigJson,
+        enableConsecutiveFailureFreeze,
       });
       setGeneratedKey(result.key);
       toast.success(t("聚合 API 已创建"));
@@ -979,6 +986,33 @@ export function AggregateApiModal({
 
               <Card size="sm">
                 <CardContent className="grid gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <Label htmlFor="aggregate-api-consecutive-failure-freeze" className="text-sm">
+                        {t("连续失败冻结")}
+                      </Label>
+                      <p
+                        id="aggregate-api-consecutive-failure-freeze-description"
+                        className="text-[11px] text-muted-foreground"
+                      >
+                        {t("开启后，该聚合 API 连续 5 次请求失败（如 502）会自动冻结并暂时移出路由候选；关闭后持续使用该 API。")}
+                      </p>
+                    </div>
+                    <Switch
+                      id="aggregate-api-consecutive-failure-freeze"
+                      aria-describedby="aggregate-api-consecutive-failure-freeze-description"
+                      checked={enableConsecutiveFailureFreeze}
+                      disabled={!isServiceReady}
+                      onCheckedChange={(checked) =>
+                        setEnableConsecutiveFailureFreeze(Boolean(checked))
+                      }
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card size="sm">
+                <CardContent className="grid gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <Label className="text-sm">{t("余额检测")}</Label>
@@ -994,7 +1028,6 @@ export function AggregateApiModal({
                     }
                   />
                 </div>
-
                 {balanceQueryEnabled ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="grid gap-2">

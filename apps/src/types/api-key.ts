@@ -53,6 +53,7 @@ export interface AggregateApi {
   lastBalanceStatus: string | null;
   lastBalanceError: string | null;
   lastBalanceJson: string | null;
+  enableConsecutiveFailureFreeze: boolean;
   modelSlugs: string[];
 }
 

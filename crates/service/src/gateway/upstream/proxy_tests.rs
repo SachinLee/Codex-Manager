@@ -55,6 +55,7 @@ fn insert_test_aggregate_api_with_provider(storage: &Storage, id: &str, provider
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         })
         .expect("insert aggregate api");
 }
@@ -89,6 +90,7 @@ fn insert_test_aggregate_api_with_model_override(storage: &Storage, id: &str, mo
             last_balance_status: None,
             last_balance_error: None,
             last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
         })
         .expect("insert aggregate api");
 }

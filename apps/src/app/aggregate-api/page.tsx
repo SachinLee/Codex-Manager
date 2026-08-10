@@ -79,7 +79,6 @@ import type {
   AggregateApiBalanceSnapshot,
   AggregateApiDailyUsageStat,
   AggregateApiSecretResult,
-  AggregateApiHealthState,
 } from "@/types/api-key";
 import type { ModelDailyUsageStat } from "@/types/request-log";
 
@@ -91,15 +90,6 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const AGGREGATE_API_TABLE_COLUMNS = 12;
-
-const HEALTH_STATE_META: Record<AggregateApiHealthState, { label: string; className: string }> = {
-  healthy: { label: "推荐使用", className: "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" },
-  unknown: { label: "可用", className: "border-slate-500/20 bg-slate-500/10 text-slate-700 dark:text-slate-300" },
-  degraded: { label: "需注意", className: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300" },
-  unhealthy: { label: "不可用", className: "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300" },
-  cooldown: { label: "冷却中", className: "border-orange-500/20 bg-orange-500/10 text-orange-700 dark:text-orange-300" },
-  recovering: { label: "冷却中", className: "border-orange-500/20 bg-orange-500/10 text-orange-700 dark:text-orange-300" },
-};
 
 function buildAggregateApiDailyUsageMap(
   items: AggregateApiDailyUsageStat[],
@@ -208,6 +198,9 @@ export default function AggregateApiPage() {
   );
   const [refreshingBalances, setRefreshingBalances] = useState(false);
   const [togglingApiId, setTogglingApiId] = useState<string | null>(null);
+  const [freezeTogglingApiIds, setFreezeTogglingApiIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [capabilityApiId, setCapabilityApiId] = useState<string | null>(null);
   const [diagnosingApiId, setDiagnosingApiId] = useState<string | null>(null);
   const [diagnosticsResult, setDiagnosticsResult] =
@@ -239,26 +232,6 @@ export default function AggregateApiPage() {
   const healthByApiId = useMemo(
     () => new Map((healthQuery.data || []).map((item) => [item.aggregateApiId, item])),
     [healthQuery.data],
-  );
-  const probeCostRange = useMemo(() => {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    return {
-      startTs: Math.floor(start.getTime() / 1_000),
-      endTs: Math.floor(end.getTime() / 1_000),
-    };
-  }, []);
-  const probeCostQuery = useQuery({
-    queryKey: ["aggregate-api-health-costs", probeCostRange.startTs, probeCostRange.endTs],
-    queryFn: () => accountClient.listAggregateApiProbeCosts(probeCostRange.startTs, probeCostRange.endTs),
-    enabled: isQueryEnabled,
-    staleTime: 15_000,
-    refetchInterval: isQueryEnabled ? 60_000 : false,
-  });
-  const probeCostByApiId = useMemo(
-    () => new Map((probeCostQuery.data || []).map((item) => [item.aggregateApiId, item])),
-    [probeCostQuery.data],
   );
 
   const dailyUsageQuery = useQuery({
@@ -436,27 +409,10 @@ export default function AggregateApiPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
         queryClient.invalidateQueries({ queryKey: ["aggregate-api-health"] }),
-        queryClient.invalidateQueries({ queryKey: ["aggregate-api-health-costs"] }),
       ]);
     },
   });
 
-  const activeProbeMutation = useMutation({
-    mutationFn: async ({ apiId, enabled, probeModel }: { apiId: string; enabled: boolean; probeModel?: string | null }) => {
-      const detail = await accountClient.getAggregateApiHealth(apiId);
-      return accountClient.updateAggregateApiHealthConfig(apiId, {
-        enabled,
-        probeIntervalSecs: detail.config.probeIntervalSecs || 900,
-        probeTimeoutMs: detail.config.probeTimeoutMs || 30_000,
-        probeModel: probeModel === undefined ? detail.config.probeModel : probeModel,
-      });
-    },
-    onSuccess: async (_result, variables) => {
-      await queryClient.invalidateQueries({ queryKey: ["aggregate-api-health"] });
-      toast.success(variables.enabled ? t("主动监测已开启") : t("主动监测已关闭"));
-    },
-    onError: (error: unknown) => toast.error(`${t("更新监测设置失败")}: ${getAppErrorMessage(error)}`),
-  });
 
   const resetCooldownMutation = useMutation({
     mutationFn: (apiId: string) => accountClient.resetAggregateApiRuntimeStatus(apiId),
@@ -550,6 +506,32 @@ export default function AggregateApiPage() {
       toast.error(`${t("更新状态失败")}: ${error instanceof Error ? error.message : String(error)}`);
     },
     onSettled: () => setTogglingApiId(null),
+  });
+
+  const freezeToggleMutation = useMutation({
+    mutationFn: ({ api, enabled }: { api: AggregateApi; enabled: boolean }) =>
+      accountClient.updateAggregateApi(api.id, {
+        supplierName: api.supplierName || api.url,
+        enableConsecutiveFailureFreeze: enabled,
+      }),
+    onMutate: ({ api }) =>
+      setFreezeTogglingApiIds((current) => new Set(current).add(api.id)),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["aggregate-api-runtime-status"] }),
+      ]);
+      toast.success(t("连续失败冻结设置已更新"));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("更新连续失败冻结失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    },
+    onSettled: (_data, _error, { api }) =>
+      setFreezeTogglingApiIds((current) => {
+        const next = new Set(current);
+        next.delete(api.id);
+        return next;
+      }),
   });
 
   const diagnosticsMutation = useMutation({
@@ -818,7 +800,8 @@ export default function AggregateApiPage() {
                     <TableHead className="h-9">{t("余额")}</TableHead>
                     <TableHead className="h-9">{t("今日用量")}</TableHead>
                     <TableHead className="h-9">{t("运行状态")}</TableHead>
-                    <TableHead className="h-9">{t("健康监测")}</TableHead>
+
+                    <TableHead className="h-9">{t("连续失败冻结")}</TableHead>
                     <TableHead className="h-9">{t("连通性")}</TableHead>
                     <TableHead className="h-9">{t("启用")}</TableHead>
                     <TableHead className="h-9 text-right">{t("操作")}</TableHead>
@@ -859,8 +842,6 @@ export default function AggregateApiPage() {
                         zeroBalanceStatus?.state === "manually_released";
                       const usage = dailyUsageById.get(api.id);
                       const health = healthByApiId.get(api.id);
-                      const probeCost = probeCostByApiId.get(api.id);
-                      const healthMeta = HEALTH_STATE_META[health?.state || "unknown"];
                       return (
                         <TableRow key={api.id}>
                           <TableCell className="py-2 font-mono tabular-nums">
@@ -1124,67 +1105,6 @@ export default function AggregateApiPage() {
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell className="min-w-[128px] py-2">
-                            <Tooltip>
-                              <TooltipTrigger render={<div />} className="flex cursor-help flex-col items-start gap-1">
-                                <Badge className={`h-5 text-[10px] ${healthMeta.className}`}>
-                                  {t(healthMeta.label)}
-                                </Badge>
-                                <span className="text-[10px] text-muted-foreground">
-                                  {health?.latencyMs != null ? `${health.latencyMs} ms` : t("暂无观测")}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-xs space-y-1 text-xs">
-                                <div>{health?.errorCategory || t("暂无上游错误")}</div>
-                                {health?.errorReason ? <div>{health.errorReason}</div> : null}
-                                {health?.lastObservedAt ? <div>{t("最近观测")}: {formatTsFromSeconds(health.lastObservedAt, "-")}</div> : null}
-                              </TooltipContent>
-                            </Tooltip>
-                            <div className="mt-1 flex items-center gap-1">
-                              <Switch
-                                checked={health?.activeProbeEnabled || false}
-                                disabled={!isServiceReady || activeProbeMutation.isPending}
-                                onCheckedChange={(enabled) => activeProbeMutation.mutate({ apiId: api.id, enabled })}
-                                aria-label={t("主动监测")}
-                              />
-                              <span className="text-[10px] text-muted-foreground">{t("主动")}</span>
-                            </div>
-                            <Select
-                              value={health?.probeModel || "__auto"}
-                              onValueChange={(value) => activeProbeMutation.mutate({
-                                apiId: api.id,
-                                enabled: health?.activeProbeEnabled || false,
-                                probeModel: value === "__auto" ? null : value,
-                              })}
-                              disabled={!isServiceReady || activeProbeMutation.isPending}
-                            >
-                              <SelectTrigger
-                                className="mt-1 h-6 w-[126px] px-1.5 text-[10px]"
-                                aria-label={t("检测模型")}
-                              >
-                                <SelectValue placeholder={t("自动选择模型")} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="__auto">{t("自动选择模型")}</SelectItem>
-                                {(health?.availableProbeModels || []).map((model) => (
-                                  <SelectItem key={model} value={model}>{model}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <Tooltip>
-                              <TooltipTrigger render={<span />} className="mt-1 block cursor-help text-[10px] text-muted-foreground">
-                                {probeCost?.probeCount
-                                  ? `${t("本月探测")} ${probeCost.unknownCostProbeCount > 0
-                                    ? `${probeCost.pricedProbeCount > 0 ? `${formatUsdAmount(probeCost.estimatedCostUsd)} + ` : ""}${t("金额未知")} ${probeCost.unknownCostProbeCount} ${t("次")}`
-                                    : formatUsdAmount(probeCost.estimatedCostUsd)} · ${probeCost.probeCount} ${t("次")}`
-                                  : t("本月暂无探测")}
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-xs space-y-1 text-xs">
-                                <div>{t("主动")} {probeCost?.scheduledProbeCount || 0} · {t("半开恢复")} {probeCost?.halfOpenProbeCount || 0} · {t("手动")} {probeCost?.manualProbeCount || 0}</div>
-                                <div>{t("已定价")} {probeCost?.pricedProbeCount || 0} · {t("金额未知")} {probeCost?.unknownCostProbeCount || 0}</div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
                           <TableCell className="py-2">
                             <div className="flex items-center gap-1.5">
                               {api.lastTestStatus === "failed" && testError ? (
@@ -1233,6 +1153,31 @@ export default function AggregateApiPage() {
                                 {testingApiId === api.id ? t("测试中...") : t("测试")}
                               </Button>
                             </div>
+                          </TableCell>
+                          <TableCell className="py-2">
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<div />}
+                                className="flex cursor-help items-center gap-1.5"
+                              >
+                                <Switch
+                                  checked={api.enableConsecutiveFailureFreeze !== false}
+                                  disabled={!isServiceReady || freezeTogglingApiIds.has(api.id)}
+                                  onCheckedChange={(enabled) =>
+                                    freezeToggleMutation.mutate({ api, enabled })
+                                  }
+                                  aria-label={t("连续失败冻结")}
+                                />
+                                <span className="text-[10px] text-muted-foreground">
+                                  {api.enableConsecutiveFailureFreeze !== false
+                                    ? t("开启")
+                                    : t("关闭")}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs text-xs">
+                                {t("开启后，连续 5 次请求失败会自动冻结该聚合 API；可在编辑弹窗中修改。")}
+                              </TooltipContent>
+                            </Tooltip>
                           </TableCell>
                           <TableCell className="py-2">
                             <Switch

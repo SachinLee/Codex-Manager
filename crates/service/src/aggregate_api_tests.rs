@@ -11,11 +11,11 @@ use super::{
     action_path_or_default, extract_custom_balance, extract_generic_balance,
     extract_new_api_balance, list_aggregate_api_zero_balance_statuses, list_aggregate_apis,
     normalize_action_override, normalize_custom_balance_query_config, normalize_provider_type,
-    normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
-    read_aggregate_api_secret, refresh_aggregate_api_balance,
+    normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint,
+    provider_default_url, read_aggregate_api_secret, refresh_aggregate_api_balance,
     reset_aggregate_api_zero_balance_status, run_diagnostic_request, CustomBalanceQueryConfig,
-    AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
-    AGGREGATE_API_PROVIDER_COMPATIBLE, AGGREGATE_API_PROVIDER_GEMINI,
+    AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX, AGGREGATE_API_PROVIDER_COMPATIBLE,
+    AGGREGATE_API_PROVIDER_GEMINI,
 };
 
 static AGGREGATE_API_TEST_DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -79,6 +79,7 @@ fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
         last_balance_status: None,
         last_balance_error: None,
         last_balance_json: None,
+        enable_consecutive_failure_freeze: true,
     }
 }
 
@@ -92,6 +93,7 @@ fn list_aggregate_apis_reads_model_assignments_from_v2_routes_only() {
     let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     let mut api = aggregate_api_with_action(None);
     api.id = "agg-listed".to_string();
+    api.enable_consecutive_failure_freeze = false;
     storage.insert_aggregate_api(&api).expect("insert api");
     let mut model = storage
         .get_managed_model_v2("gpt-5.4")
@@ -126,6 +128,7 @@ fn list_aggregate_apis_reads_model_assignments_from_v2_routes_only() {
 
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "agg-listed");
+    assert!(!items[0].enable_consecutive_failure_freeze);
     assert_eq!(items[0].model_slugs, vec!["gpt-5.4".to_string()]);
 }
 
@@ -861,9 +864,7 @@ fn refreshing_positive_balance_clears_zero_balance_block() {
             true,
             Some(r#"{"isValid":true,"remaining":0}"#),
             None,
-            codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block {
-                observed_at: 1,
-            },
+            codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block { observed_at: 1 },
         )
         .expect("seed zero-balance block");
 
@@ -890,8 +891,8 @@ fn zero_balance_reset_only_releases_existing_blocked_state() {
     api.balance_query_enabled = true;
     storage.insert_aggregate_api(&api).expect("insert API");
 
-    let not_blocked = reset_aggregate_api_zero_balance_status(api.id.as_str())
-        .expect("reset normal API");
+    let not_blocked =
+        reset_aggregate_api_zero_balance_status(api.id.as_str()).expect("reset normal API");
     assert_eq!(not_blocked.state, "not_blocked");
     assert!(storage
         .aggregate_api_zero_balance_state(api.id.as_str())
@@ -904,13 +905,11 @@ fn zero_balance_reset_only_releases_existing_blocked_state() {
             true,
             Some(r#"{"isValid":true,"remaining":0}"#),
             None,
-            codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block {
-                observed_at: 1,
-            },
+            codexmanager_core::storage::AggregateApiZeroBalanceTransition::Block { observed_at: 1 },
         )
         .expect("seed zero-balance block");
-    let released = reset_aggregate_api_zero_balance_status(api.id.as_str())
-        .expect("release blocked API");
+    let released =
+        reset_aggregate_api_zero_balance_status(api.id.as_str()).expect("release blocked API");
     assert_eq!(released.state, "manually_released");
     assert_eq!(released.aggregate_api_id, api.id);
     assert!(released.released_at.is_some());
@@ -918,8 +917,8 @@ fn zero_balance_reset_only_releases_existing_blocked_state() {
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, "manually_released");
 
-    let repeated = reset_aggregate_api_zero_balance_status(api.id.as_str())
-        .expect("repeat release");
+    let repeated =
+        reset_aggregate_api_zero_balance_status(api.id.as_str()).expect("repeat release");
     assert_eq!(repeated.state, "manually_released");
     assert_eq!(repeated.released_at, released.released_at);
 }

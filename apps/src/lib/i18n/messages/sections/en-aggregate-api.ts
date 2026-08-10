@@ -144,4 +144,12 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   "个模型冷却中": "models cooling down",
   "今日模型用量": "Model usage today",
   "按模型汇总当天 Token、费用与缓存率。": "Daily token, cost, and cache rate rolled up by model.",
+  "连续失败冻结": "Consecutive failure freeze",
+  开启: "Enabled",
+  "连续失败冻结设置已更新": "Consecutive failure freeze updated",
+  "更新连续失败冻结失败": "Failed to update consecutive failure freeze",
+  "开启后，该聚合 API 连续 5 次请求失败（如 502）会自动冻结并暂时移出路由候选；关闭后持续使用该 API。":
+    "When enabled, this API is temporarily removed from routing after five consecutive request failures such as 502. When disabled, it remains eligible.",
+  "开启后，连续 5 次请求失败会自动冻结该聚合 API；可在编辑弹窗中修改。":
+    "When enabled, five consecutive request failures automatically freeze this aggregate API. Change it in the edit dialog.",
 };
