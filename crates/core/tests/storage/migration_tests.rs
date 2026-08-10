@@ -986,6 +986,49 @@ fn account_subject_identity_migration_backfills_legacy_account_ids() {
 }
 
 #[test]
+fn init_migrates_unedited_legacy_gpt54_price_tier_boundary() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("initialize current schema");
+    storage
+        .conn
+        .execute(
+            "DELETE FROM schema_migrations WHERE version = '129_model_catalog_inclusive_price_tier_thresholds'",
+            [],
+        )
+        .expect("remove migration marker");
+    storage
+        .conn
+        .execute(
+            "UPDATE model_price_tiers
+             SET min_input_tokens = 272000
+             WHERE model_id = (SELECT id FROM models WHERE slug = 'gpt-5.4')
+               AND min_input_tokens = 272001",
+            [],
+        )
+        .expect("restore legacy tier boundary");
+
+    storage.init().expect("apply tier boundary migration");
+
+    let (_, tier) = storage
+        .select_model_price_tier_v2("gpt-5.4", 272_000)
+        .expect("select model tier")
+        .expect("seeded model tier");
+    assert_eq!(tier.min_input_tokens, 0);
+    let long_tier_exists: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1)
+             FROM model_price_tiers
+             WHERE model_id = (SELECT id FROM models WHERE slug = 'gpt-5.4')
+               AND min_input_tokens = 272001",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count corrected tier");
+    assert_eq!(long_tier_exists, 1);
+}
+
+#[test]
 fn init_repairs_legacy_aggregate_api_balance_columns_before_indexes() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage

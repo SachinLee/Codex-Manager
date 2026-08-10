@@ -2664,6 +2664,10 @@ impl Storage {
             include_str!("../../migrations/129_model_fast_policy.sql"),
         )?;
         self.apply_sql_migration(
+            "129_model_catalog_inclusive_price_tier_thresholds",
+            include_str!("../../migrations/129_model_catalog_inclusive_price_tier_thresholds.sql"),
+        )?;
+        self.apply_sql_migration(
             "130_accounts_subject_identity",
             include_str!("../../migrations/130_accounts_subject_identity.sql"),
         )?;
