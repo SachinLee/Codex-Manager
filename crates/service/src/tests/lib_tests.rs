@@ -137,6 +137,7 @@ fn member_actor_cannot_call_admin_only_rpc() {
         "codexSkills/marketplacePluginInstall",
         "apikey/managedModelUpdateStateV2",
         "apikey/managedModelBatchUpdateStateV2",
+        "apikey/managedModelAddAggregateRouteV2",
         "requestlog/sessionTitles",
     ] {
         let req = JsonRpcRequest {
@@ -239,7 +240,21 @@ fn admin_actor_can_reach_codex_skills_marketplace_rpc() {
     );
     assert!(!err.contains("permission_denied"));
 }
-
+#[test]
+fn admin_actor_reaches_managed_model_aggregate_route_rpc() {
+    let resp = response_result(handle_request_with_actor(
+        JsonRpcRequest {
+            id: 24.into(),
+            method: "apikey/managedModelAddAggregateRouteV2".to_string(),
+            params: None,
+            trace: None,
+        },
+        RpcActor::system_admin(),
+    ));
+    let err = rpc_error(&resp);
+    assert!(err.contains("missing managed model aggregate route payload"));
+    assert!(!err.contains("permission_denied"));
+}
 #[test]
 fn admin_actor_can_update_managed_model_state_v2() {
     let _guard = test_env_guard();

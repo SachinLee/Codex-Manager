@@ -1,7 +1,8 @@
 use codexmanager_core::rpc::types::{
     AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
-    AggregateApiRuntimeStatus, AggregateApiSecretResult, AggregateApiSummary,
-    AggregateApiTestResult, AggregateApiZeroBalanceStatus,
+    AggregateApiModelDiscoveryItem, AggregateApiModelDiscoveryResult, AggregateApiRuntimeStatus,
+    AggregateApiSecretResult, AggregateApiSummary, AggregateApiTestResult,
+    AggregateApiZeroBalanceStatus,
 };
 use codexmanager_core::storage::{
     now_ts, AggregateApi, AggregateApiZeroBalanceState, AggregateApiZeroBalanceStateKind,
@@ -677,6 +678,45 @@ fn apply_probe_auth(
 ///
 /// # 返回
 /// 返回函数执行结果
+pub(crate) const AGGREGATE_API_UPSTREAM_PROTOCOL_RESPONSES: &str = "responses";
+pub(crate) const AGGREGATE_API_UPSTREAM_PROTOCOL_CHAT_COMPLETIONS: &str = "chat_completions";
+
+/// 归一化可选的 `upstream_protocol` 声明。NULL 保持原样（遗留客户端依赖行为）；
+/// 显式值仅允许 `responses` 与 `chat_completions`。
+fn normalize_upstream_protocol(value: Option<String>) -> Result<Option<String>, String> {
+    match value {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                AGGREGATE_API_UPSTREAM_PROTOCOL_RESPONSES
+                | AGGREGATE_API_UPSTREAM_PROTOCOL_CHAT_COMPLETIONS => Ok(Some(normalized)),
+                other => Err(format!(
+                    "unsupported aggregate api upstream protocol: {other}"
+                )),
+            }
+        }
+    }
+}
+
+/// 校验 provider_type 与 upstream_protocol 组合。非 NULL 的 OpenAI 协议仅对
+/// codex/compatible 合法；Claude/Gemini 携带非 NULL 协议返回统一校验错误。
+fn validate_upstream_protocol_combination(
+    provider_type: &str,
+    upstream_protocol: Option<&str>,
+) -> Result<(), String> {
+    if let Some(protocol) = upstream_protocol {
+        if provider_type != AGGREGATE_API_PROVIDER_CODEX
+            && provider_type != AGGREGATE_API_PROVIDER_COMPATIBLE
+        {
+            return Err(format!(
+                "upstreamProtocol '{protocol}' is only valid for codex or compatible providers"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalize_provider_type(value: Option<String>) -> Result<String, String> {
     match value {
         Some(raw) => {
@@ -1690,13 +1730,14 @@ fn probe_codex_responses_endpoint(
     secret: &str,
     model: &str,
 ) -> Result<i64, String> {
-    let action_hint = api
-        .action
+    // 探测路径与请求体只由声明的上游协议决定（action 仅覆盖路径）：
+    // chat_completions -> /chat/completions + Chat 请求体；NULL/其余 -> /responses。
+    let declared_chat = api
+        .upstream_protocol
         .as_deref()
         .map(str::trim)
-        .unwrap_or("/responses")
-        .to_ascii_lowercase();
-    let default_path = if action_hint.contains("chat/completions") {
+        .is_some_and(|value| value == "chat_completions");
+    let default_path = if declared_chat {
         "/chat/completions"
     } else {
         "/responses"
@@ -1712,7 +1753,7 @@ fn probe_codex_responses_endpoint(
     } else {
         builder
     };
-    let request_body = if probe_path.to_ascii_lowercase().contains("chat/completions") {
+    let request_body = if declared_chat {
         json!({
             "model": model,
             "messages": [{"role":"user","content":"hi"}],
@@ -1918,6 +1959,7 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
             last_balance_error: item.last_balance_error,
             last_balance_json: item.last_balance_json,
             enable_consecutive_failure_freeze: item.enable_consecutive_failure_freeze,
+            upstream_protocol: item.upstream_protocol,
         })
         .collect())
 }
@@ -2029,9 +2071,15 @@ pub(crate) fn create_aggregate_api(
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
     enable_consecutive_failure_freeze: Option<bool>,
+    upstream_protocol: Option<String>,
 ) -> Result<AggregateApiCreateResult, String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let normalized_provider_type = normalize_provider_type(provider_type)?;
+    let normalized_upstream_protocol = normalize_upstream_protocol(upstream_protocol)?;
+    validate_upstream_protocol_combination(
+        normalized_provider_type.as_str(),
+        normalized_upstream_protocol.as_deref(),
+    )?;
     let normalized_supplier_name = normalize_supplier_name(supplier_name)?;
     let normalized_sort = normalize_sort(sort);
     let normalized_url = normalize_upstream_base_url(url)?
@@ -2110,6 +2158,7 @@ pub(crate) fn create_aggregate_api(
         last_balance_error: None,
         last_balance_json: None,
         enable_consecutive_failure_freeze: enable_consecutive_failure_freeze.unwrap_or(true),
+        upstream_protocol: normalized_upstream_protocol,
     };
     storage
         .insert_aggregate_api(&record)
@@ -2172,15 +2221,33 @@ pub(crate) fn update_aggregate_api(
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
     enable_consecutive_failure_freeze: Option<bool>,
+    upstream_protocol: Option<String>,
 ) -> Result<(), String> {
     if api_id.is_empty() {
         return Err("aggregate api id required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let existing = storage
-        .find_aggregate_api_update_config_by_id(api_id)
+        .find_aggregate_api_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api not found".to_string())?;
+    let next_provider_type = match &provider_type {
+        Some(raw) => normalize_provider_type(Some(raw.clone()))?,
+        None => existing.provider_type.clone(),
+    };
+    let next_upstream_protocol = match &upstream_protocol {
+        Some(raw) => normalize_upstream_protocol(Some(raw.clone()))?,
+        None => existing.upstream_protocol.clone(),
+    };
+    validate_upstream_protocol_combination(
+        next_provider_type.as_str(),
+        next_upstream_protocol.as_deref(),
+    )?;
+    if upstream_protocol.is_some() {
+        storage
+            .update_aggregate_api_upstream_protocol(api_id, next_upstream_protocol.as_deref())
+            .map_err(|err| err.to_string())?;
+    }
     let existing_auth_type = normalize_auth_type(Some(existing.auth_type.clone()))
         .unwrap_or_else(|_| AGGREGATE_API_AUTH_APIKEY.to_string());
     let normalized_auth_type = match auth_type {
@@ -2353,7 +2420,6 @@ pub(crate) fn update_aggregate_api(
             .delete_aggregate_api_balance_secret(api_id)
             .map_err(|err| err.to_string())?;
     }
-
 
     if next_auth_type == AGGREGATE_API_AUTH_APIKEY {
         let normalized_secret = normalize_secret(key);
@@ -2588,6 +2654,184 @@ fn probe_status_code_from_error(message: &str) -> Option<i64> {
         .collect::<String>()
         .parse()
         .ok()
+}
+
+fn models_catalog_url(api: &AggregateApi) -> String {
+    let provider_type = normalize_provider_type_value(api.provider_type.as_str());
+    if provider_type == AGGREGATE_API_PROVIDER_GEMINI {
+        let base = api.url.trim().trim_end_matches('/');
+        if base.ends_with("/v1beta") {
+            format!("{base}/models")
+        } else {
+            format!("{base}/v1beta/models")
+        }
+    } else {
+        normalize_probe_url(api.url.as_str(), "/models")
+    }
+}
+
+const MAX_MODELS_CATALOG_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// 只读地请求一个已保存聚合 API 的 `/models` 目录，返回结构化、去重、可展示的结果。
+/// 本函数不写 storage、不修改模型目录/路由/供应商配置，也不持久化任何发现结果。
+pub(crate) fn discover_aggregate_api_models(
+    api_id: &str,
+) -> Result<AggregateApiModelDiscoveryResult, String> {
+    if api_id.trim().is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let api_with_secrets = storage
+        .find_aggregate_api_with_secrets_by_id(api_id)
+        .map_err(|_| "aggregate api lookup failed".to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let api = api_with_secrets.api;
+    let secret = api_with_secrets.secret_value;
+
+    gateway::prepare_upstream_client_for_aggregate_api_candidate(api.id.as_str(), api.url.as_str())
+        .map_err(|_| "models request client unavailable".to_string())?;
+    let client =
+        gateway::upstream_client_for_aggregate_api_candidate(api.id.as_str(), api.url.as_str());
+    let url = models_catalog_url(&api);
+    let discovered_at = now_ts();
+
+    let outcome = (|| -> Result<(i64, Vec<u8>), String> {
+        let request = client.get(url.as_str());
+        let request = match secret.as_deref() {
+            Some(secret) => {
+                let (request, updated_url) = apply_probe_auth(request, url.clone(), &api, secret)
+                    .map_err(|_| {
+                    "models request authentication could not be prepared".to_string()
+                })?;
+                if updated_url != url {
+                    let rebuilt = client.get(updated_url.as_str());
+                    apply_probe_auth(rebuilt, updated_url, &api, secret)
+                        .map_err(|_| {
+                            "models request authentication could not be prepared".to_string()
+                        })?
+                        .0
+                } else {
+                    request
+                }
+            }
+            None => request,
+        };
+        let response = add_codex_probe_headers(request)
+            .map_err(|_| "models request headers could not be prepared".to_string())?
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .map_err(|err| {
+                if err.is_timeout() {
+                    "models request timed out".to_string()
+                } else {
+                    "models request failed".to_string()
+                }
+            })?;
+        let status = response.status().as_u16() as i64;
+        if !response.status().is_success() {
+            return Err(format!(
+                "models endpoint returned HTTP {status} (http_status={status})"
+            ));
+        }
+        let mut body = Vec::new();
+        response
+            .take((MAX_MODELS_CATALOG_BODY_BYTES + 1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|_| "models response body could not be read".to_string())?;
+        if body.len() > MAX_MODELS_CATALOG_BODY_BYTES {
+            return Err("models response exceeded the size limit".to_string());
+        }
+        Ok((status, body))
+    })();
+
+    match outcome {
+        Ok((status_code, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(catalog) => match extract_model_catalog_items(&catalog) {
+                Ok(items) => Ok(AggregateApiModelDiscoveryResult {
+                    api_id: api.id.to_string(),
+                    ok: true,
+                    message: if items.is_empty() {
+                        Some("models endpoint returned an empty catalog".to_string())
+                    } else {
+                        None
+                    },
+                    items,
+                    status_code,
+                    discovered_at,
+                }),
+                Err(()) => Ok(AggregateApiModelDiscoveryResult {
+                    api_id: api.id.to_string(),
+                    ok: false,
+                    items: Vec::new(),
+                    status_code,
+                    discovered_at,
+                    message: Some("models response is not a supported catalog".to_string()),
+                }),
+            },
+            Err(_) => Ok(AggregateApiModelDiscoveryResult {
+                api_id: api.id.to_string(),
+                ok: false,
+                items: Vec::new(),
+                status_code,
+                discovered_at,
+                message: Some("models response is not valid JSON".to_string()),
+            }),
+        },
+        Err(message) => Ok(AggregateApiModelDiscoveryResult {
+            api_id: api.id.to_string(),
+            ok: false,
+            items: Vec::new(),
+            status_code: probe_status_code_from_error(message.as_str()).unwrap_or(0),
+            discovered_at,
+            message: Some(message),
+        }),
+    }
+}
+
+fn extract_model_catalog_items(
+    catalog: &serde_json::Value,
+) -> Result<Vec<AggregateApiModelDiscoveryItem>, ()> {
+    let arrays = if let Some(array) = catalog.as_array() {
+        vec![array]
+    } else {
+        let data = catalog.get("data").and_then(|value| value.as_array());
+        let models = catalog.get("models").and_then(|value| value.as_array());
+        if data.is_none() && models.is_none() {
+            return Err(());
+        }
+        [data, models].into_iter().flatten().collect()
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    for array in arrays {
+        for entry in array {
+            let id = entry
+                .get("id")
+                .or_else(|| entry.get("name"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let Some(id) = id else {
+                continue;
+            };
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let display_name = entry
+                .get("display_name")
+                .or_else(|| entry.get("displayName"))
+                .or_else(|| entry.get("name"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            items.push(AggregateApiModelDiscoveryItem { id, display_name });
+        }
+    }
+    Ok(items)
 }
 
 pub(crate) fn refresh_aggregate_api_balance(

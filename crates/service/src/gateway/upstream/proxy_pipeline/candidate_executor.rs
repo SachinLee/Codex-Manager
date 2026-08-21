@@ -20,7 +20,9 @@ use super::response_finalize::{
 };
 use super::stream_preflight::{preflight_stream_response, StreamPreflightOutcome};
 
-const MAX_UPSTREAM_CAPACITY_RETRIES: usize = 1;
+/// 账号池单候选的容量重试预算：与 Aggregate API 路径共享同一常量。
+pub(super) const MAX_UPSTREAM_CAPACITY_RETRIES: usize =
+    super::super::support::capacity::MAX_UPSTREAM_CAPACITY_RETRIES;
 
 /// 函数 `extract_prompt_cache_key_for_trace`
 ///
@@ -655,6 +657,7 @@ pub(in super::super) fn execute_candidate_sequence(
                         path,
                         trace_id,
                         started_at,
+                        request_deadline,
                         attempt_model_for_log,
                         Some(attempted_account_ids.as_slice()),
                         context.has_more_candidates(idx),
@@ -723,7 +726,6 @@ pub(in super::super) fn execute_candidate_sequence(
                                     }
                                     capacity_retry_budget_remaining =
                                         capacity_retry_budget_remaining.saturating_sub(1);
-                                    super::super::super::record_gateway_upstream_capacity_internal_retry();
                                 }
                             }
 

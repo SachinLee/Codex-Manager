@@ -3,7 +3,7 @@ use super::{
     has_enabled_default_account_pool_route, hybrid_route_error_message, next_fallback_model,
     provider_upstream_hint, request_deadline_for_path, resolve_aggregate_candidates_for_route,
     resolve_upstream_is_stream, respond_when_account_candidates_empty, rewrite_model_in_path,
-    should_fallback_to_aggregate_after_account_exhaustion,
+    route_exhaustion_terminal_status, should_fallback_to_aggregate_after_account_exhaustion,
     should_try_provider_executor_aggregate_route, validate_model_route,
 };
 use crate::gateway::upstream::executor::{
@@ -56,6 +56,7 @@ fn insert_test_aggregate_api_with_provider(storage: &Storage, id: &str, provider
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         })
         .expect("insert aggregate api");
 }
@@ -91,6 +92,7 @@ fn insert_test_aggregate_api_with_model_override(storage: &Storage, id: &str, mo
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         })
         .expect("insert aggregate api");
 }
@@ -810,5 +812,54 @@ fn fallback_helpers_skip_attempted_models_and_rewrite_gemini_paths() {
     assert_eq!(
         rewrite_model_in_path("/v1/responses", "gpt-5.4"),
         "/v1/responses"
+    );
+}
+
+/// 路由耗尽的 404/503 归一化为 502 终态（客户端不再无限重试）。
+#[test]
+fn route_exhaustion_terminal_status_normalizes_unavailable_routes_to_502() {
+    assert_eq!(
+        route_exhaustion_terminal_status(404, "aggregate api not found"),
+        502
+    );
+    assert_eq!(
+        route_exhaustion_terminal_status(503, "无可用账号(no available account)"),
+        502
+    );
+    assert_eq!(
+        route_exhaustion_terminal_status(503, "all aggregate apis are cooling down"),
+        502
+    );
+    assert_eq!(
+        route_exhaustion_terminal_status(503, "aggregate api upstream response failed"),
+        502
+    );
+}
+
+/// 客户端语义状态保持原状：model_not_found、鉴权、配额、4xx、非容量 5xx。
+#[test]
+fn route_exhaustion_terminal_status_keeps_client_semantics() {
+    assert_eq!(
+        route_exhaustion_terminal_status(404, "model_not_found"),
+        404
+    );
+    assert_eq!(
+        route_exhaustion_terminal_status(404, "model_not_found: gpt-5.4"),
+        404
+    );
+    assert_eq!(
+        route_exhaustion_terminal_status(503, "model_not_found: gpt-5.4"),
+        503
+    );
+    assert_eq!(route_exhaustion_terminal_status(400, "bad request"), 400);
+    assert_eq!(route_exhaustion_terminal_status(401, "unauthorized"), 401);
+    assert_eq!(
+        route_exhaustion_terminal_status(402, "payment required"),
+        402
+    );
+    assert_eq!(route_exhaustion_terminal_status(429, "quota exceeded"), 429);
+    assert_eq!(
+        route_exhaustion_terminal_status(500, "upstream exploded"),
+        500
     );
 }

@@ -2,6 +2,7 @@ use codexmanager_core::rpc::types::{
     ApiKeyListResult, ApiKeyUsageStatListResult, JsonRpcRequest, JsonRpcResponse,
 };
 use codexmanager_core::storage::{
+    ManagedModelAggregateRouteAddV2, ManagedModelAggregateRouteAddV2Result,
     ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
     ManagedModelV2Upsert, ModelCatalogV2Stats,
 };
@@ -208,6 +209,26 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 crate::models_v2::get(slug)
                     .and_then(|model| filter_model_v2_for_actor(actor, model)),
             )
+        }
+        "apikey/managedModelAddAggregateRouteV2" => {
+            if !actor.is_admin() {
+                super::value_or_error::<ManagedModelAggregateRouteAddV2Result>(Err(
+                    super::permission_denied("apikey/managedModelAddAggregateRouteV2"),
+                ))
+            } else {
+                let params = req
+                    .params
+                    .clone()
+                    .ok_or_else(|| "missing managed model aggregate route payload".to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<ManagedModelAggregateRouteAddV2>(value).map_err(
+                            |err| {
+                                format!("parse managed model aggregate route payload failed: {err}")
+                            },
+                        )
+                    });
+                super::value_or_error(params.and_then(crate::models_v2::add_aggregate_route))
+            }
         }
         "apikey/managedModelUpsertV2" => {
             if !actor.is_admin() {

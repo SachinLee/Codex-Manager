@@ -188,6 +188,7 @@ mod tests {
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         }
     }
 

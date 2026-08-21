@@ -545,6 +545,9 @@ pub(super) fn convert_success_body_for_adapter(
         ResponseAdapter::ResponsesFromAnthropicMessages => {
             convert_anthropic_messages_body_to_responses(body)
         }
+        ResponseAdapter::ResponsesFromChatCompletions => {
+            convert_chat_completions_body_to_responses(body)
+        }
         ResponseAdapter::ChatCompletionsFromResponses => {
             convert_responses_body_to_chat_completions(body)
         }
@@ -624,6 +627,128 @@ fn responses_usage_to_chat_usage(usage: &Value) -> Value {
         mapped["completion_tokens_details"] = details.clone();
     }
     mapped
+}
+
+/// 将 Chat Completions 完成响应转换为 Responses 形状（上游 Chat 路径的规范模型）。
+///
+/// finish 映射：`stop`/`tool_calls` -> `completed`；`length` -> `incomplete`
+/// (max_output_tokens)；`content_filter`/未知 -> None（上层按类型化本地失败处理，
+/// 绝不以原始 Chat body 回退）。
+fn convert_chat_completions_body_to_responses_inner(body: &[u8]) -> Option<Vec<u8>> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    let response_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("resp_codexmanager");
+    let model = value.get("model").and_then(Value::as_str).unwrap_or("");
+    let created_at = value
+        .get("created")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let mut output = Vec::new();
+    let mut output_text = String::new();
+    let choices = value.get("choices").and_then(Value::as_array);
+    let mut finish_reason = "stop";
+    if let Some(choice) = choices.and_then(|choices| choices.first()) {
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            finish_reason = reason;
+        }
+        if let Some(message) = choice.get("message") {
+            if let Some(content) = message.get("content") {
+                collect_chat_completion_message_text(content, &mut output_text);
+            }
+            if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+                for call in tool_calls {
+                    let Some(call_obj) = call.as_object() else {
+                        continue;
+                    };
+                    let call_id = call_obj
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("call_unknown");
+                    let name = call_obj
+                        .get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
+                    let arguments = call_obj
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}");
+                    output.push(json!({
+                        "id": call_id,
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": arguments,
+                    }));
+                }
+            }
+        }
+    }
+    let normalized_status = match finish_reason {
+        "length" => "incomplete",
+        "content_filter" => return None,
+        _ => "completed",
+    };
+    if !output_text.is_empty() {
+        output.insert(
+            0,
+            json!({
+                "id": format!("msg_{response_id}"),
+                "type": "message",
+                "status": normalized_status,
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": output_text, "annotations": [] }],
+            }),
+        );
+    }
+    let mut payload = json!({
+        "id": response_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": normalized_status,
+        "model": model,
+        "output": output,
+        "usage": chat_usage_to_responses_usage(value.get("usage")),
+    });
+    if normalized_status == "incomplete" {
+        payload["incomplete_details"] = json!({ "reason": "max_output_tokens" });
+    }
+    if !output_text.is_empty() {
+        payload["output_text"] = Value::String(output_text);
+    }
+    serde_json::to_vec(&payload).ok()
+}
+
+/// Chat usage -> Responses usage。缺失保持缺失；显式零保持 `Some(0)`。
+fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
+    let Some(usage) = usage else {
+        return json!({});
+    };
+    let mut mapped = serde_json::Map::new();
+    if let Some(tokens) = usage.get("prompt_tokens") {
+        mapped.insert("input_tokens".to_string(), tokens.clone());
+    }
+    if let Some(tokens) = usage.get("completion_tokens") {
+        mapped.insert("output_tokens".to_string(), tokens.clone());
+    }
+    if let Some(tokens) = usage.get("total_tokens") {
+        mapped.insert("total_tokens".to_string(), tokens.clone());
+    }
+    if let Some(details) = usage.get("completion_tokens_details") {
+        mapped.insert("output_tokens_details".to_string(), details.clone());
+    }
+    if let Some(details) = usage.get("prompt_tokens_details") {
+        mapped.insert("input_tokens_details".to_string(), details.clone());
+    }
+    Value::Object(mapped)
+}
+
+pub(crate) fn convert_chat_completions_body_to_responses(body: &[u8]) -> Option<Vec<u8>> {
+    convert_chat_completions_body_to_responses_inner(body)
 }
 
 pub(super) fn convert_responses_body_to_chat_completions(body: &[u8]) -> Option<Vec<u8>> {
@@ -842,6 +967,7 @@ pub(super) fn convert_error_body_for_adapter(
             convert_upstream_error_to_anthropic_body(message)
         }
         ResponseAdapter::ResponsesFromAnthropicMessages
+        | ResponseAdapter::ResponsesFromChatCompletions
         | ResponseAdapter::ChatCompletionsFromResponses => serde_json::to_vec(&json!({
             "error": {
                 "message": message,
@@ -883,6 +1009,7 @@ pub(super) fn compatibility_stream_content_type(
     match response_adapter {
         ResponseAdapter::AnthropicMessagesFromResponses => "text/event-stream",
         ResponseAdapter::ResponsesFromAnthropicMessages
+        | ResponseAdapter::ResponsesFromChatCompletions
         | ResponseAdapter::ChatCompletionsFromResponses => "text/event-stream",
         ResponseAdapter::CompactFromChatCompletions => "application/json",
         ResponseAdapter::ImagesB64JsonFromResponses | ResponseAdapter::ImagesUrlFromResponses => {

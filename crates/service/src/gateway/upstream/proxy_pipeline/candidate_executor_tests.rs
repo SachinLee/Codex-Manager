@@ -8,6 +8,8 @@ use axum::http::{HeaderMap, HeaderValue};
 use bytes::Bytes;
 use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use serde_json::Value;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tiny_http::{Response, Server, StatusCode};
@@ -305,4 +307,146 @@ fn candidate_sequence_does_not_add_fourth_stateless_retry() {
     );
 
     assert_three_stage_candidate_shape(&captured);
+}
+
+const CAPACITY_ERROR_JSON: &str = r#"{"type":"error","error":{"message":"Selected model is at capacity. Please try a different model","code":"capacity"}}"#;
+
+/// 账号池路径容量错误：同一候选重放两次后以 502 终态结束，
+/// 客户端日志记录与客户端可见状态一致（均为 502）。
+#[test]
+fn capacity_error_replays_twice_on_same_candidate_then_terminates_502() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let now = now_ts();
+    let account = build_account("acc-capacity-502", now);
+    let token = build_token(account.id.as_str(), now);
+    storage.insert_account(&account).expect("insert account");
+    storage.insert_token(&token).expect("insert token");
+
+    let server = Server::http("127.0.0.1:0").expect("start server");
+    let addr = format!("http://{}", server.server_addr());
+    let canonical_url = format!("{addr}/backend-api/codex/responses");
+    let hit_count = Arc::new(AtomicUsize::new(0));
+    let hit_count_thread = Arc::clone(&hit_count);
+    let join = thread::spawn(move || {
+        for _ in 0..3 {
+            let mut request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive candidate request")
+                .expect("candidate request present");
+            hit_count_thread.fetch_add(1, Ordering::SeqCst);
+            let mut body = Vec::new();
+            std::io::Read::read_to_end(request.as_reader(), &mut body).expect("read body");
+            request
+                .respond(
+                    Response::from_string(CAPACITY_ERROR_JSON)
+                        .with_status_code(StatusCode(429))
+                        .with_header(
+                            tiny_http::Header::from_bytes("content-type", "application/json")
+                                .expect("content type header"),
+                        ),
+                )
+                .expect("respond candidate request");
+        }
+    });
+
+    let incoming_headers = codex_session_headers();
+    let body = Bytes::from_static(
+        br#"{"model":"gpt-5.5","input":[{"type":"reasoning","encrypted_content":"encrypted-current"}]}"#,
+    );
+    let setup = super::super::request_setup::UpstreamRequestSetup {
+        upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        upstream_fallback_base: None,
+        url: canonical_url,
+        url_alt: None,
+        candidate_count: 1,
+        account_max_inflight: 1,
+        anthropic_has_thread_anchor: false,
+        has_sticky_fallback_session: false,
+        has_sticky_fallback_conversation: false,
+        has_body_encrypted_content: true,
+        conversation_routing: None,
+        route_strategy_for_log: "ordered",
+        route_source_for_log: "test",
+    };
+    let context = super::super::execution_context::GatewayUpstreamExecutionContext::new(
+        "acc-capacity-502",
+        &storage,
+        "candidate-test-key",
+        "/v1/responses",
+        "/v1/responses",
+        "POST",
+        ResponseAdapter::Passthrough,
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("account_rotation"),
+        None,
+        None,
+        Some(setup.route_strategy_for_log),
+        Some(setup.route_source_for_log),
+        1,
+        setup.candidate_count,
+        setup.account_max_inflight,
+    );
+    let tool_name_restore_map = ToolNameRestoreMap::new();
+    let request: tiny_http::Request = tiny_http::TestRequest::new()
+        .with_method(tiny_http::Method::Post)
+        .with_path("/v1/responses")
+        .into();
+
+    let result = execute_candidate_sequence(
+        request,
+        vec![(account, token)],
+        CandidateExecutorParams {
+            storage: &storage,
+            method: &reqwest::Method::POST,
+            incoming_headers: &incoming_headers,
+            body: &body,
+            path: "/v1/responses",
+            request_shape: Some("responses"),
+            trace_id: "acc-capacity-502",
+            model_for_log: None,
+            response_adapter: ResponseAdapter::Passthrough,
+            gemini_stream_output_mode: None,
+            tool_name_restore_map: &tool_name_restore_map,
+            context: &context,
+            setup: &setup,
+            request_deadline: None,
+            started_at: Instant::now(),
+            client_is_stream: false,
+            upstream_is_stream: false,
+            debug: false,
+            allow_openai_fallback: false,
+            disable_challenge_stateless_retry: false,
+        },
+    )
+    .expect("execute candidate sequence");
+
+    assert!(matches!(result, CandidateExecutionResult::Handled));
+    join.join().expect("join upstream server");
+    assert_eq!(
+        hit_count.load(Ordering::SeqCst),
+        3,
+        "initial request + two same-candidate capacity replays"
+    );
+    let logs = storage
+        .list_request_logs(None, 10)
+        .expect("list request logs");
+    let row = logs
+        .iter()
+        .find(|log| log.trace_id.as_deref() == Some("acc-capacity-502"))
+        .expect("terminal request log");
+    assert_eq!(
+        row.status_code,
+        Some(502),
+        "client-visible terminal status must be 502, not 429"
+    );
 }

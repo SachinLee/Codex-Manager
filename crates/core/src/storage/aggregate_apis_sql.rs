@@ -26,7 +26,8 @@ pub(super) const AGGREGATE_API_SELECT_SQL: &str = "SELECT
     last_balance_status,
     last_balance_error,
     last_balance_json,
-    enable_consecutive_failure_freeze
+    enable_consecutive_failure_freeze,
+    upstream_protocol
  FROM aggregate_apis";
 pub(super) const AGGREGATE_API_MODEL_SOURCE_KIND: &str = "aggregate_api";
 pub(super) const AGGREGATE_API_ACTIVE_STATUS_CONDITION: &str =
@@ -71,6 +72,7 @@ pub(super) fn aggregate_api_with_secrets_by_id_sql() -> &'static str {
         a.last_balance_error,
         a.last_balance_json,
         a.enable_consecutive_failure_freeze,
+        a.upstream_protocol,
         s.secret_value,
         bs.access_token
      FROM aggregate_apis a
@@ -149,6 +151,10 @@ pub(super) fn update_aggregate_api_action_sql() -> &'static str {
 
 pub(super) fn update_aggregate_api_model_override_sql() -> &'static str {
     "UPDATE aggregate_apis SET model_override = ?1, updated_at = ?2 WHERE id = ?3"
+}
+
+pub(super) fn update_aggregate_api_upstream_protocol_sql() -> &'static str {
+    "UPDATE aggregate_apis SET upstream_protocol = ?1, updated_at = ?2 WHERE id = ?3"
 }
 
 pub(super) fn update_aggregate_api_balance_query_sql() -> &'static str {

@@ -18,6 +18,7 @@ export function createAggregateApiWebCommands(): Record<string, WebCommandDescri
     service_aggregate_api_delete: { rpcMethod: "aggregateApi/delete" },
     service_aggregate_api_read_secret: { rpcMethod: "aggregateApi/readSecret" },
     service_aggregate_api_test_connection: { rpcMethod: "aggregateApi/testConnection" },
+    service_aggregate_api_models_discover: { rpcMethod: "aggregateApi/models/discover" },
     service_aggregate_api_diagnose_capabilities: { rpcMethod: "aggregateApi/diagnoseCapabilities" },
     service_aggregate_api_capabilities_get: { rpcMethod: "aggregateApi/capabilities/get" },
     service_aggregate_api_capabilities_set_override: { rpcMethod: "aggregateApi/capabilities/setOverride" },

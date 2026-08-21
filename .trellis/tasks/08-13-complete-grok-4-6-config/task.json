@@ -1,0 +1,28 @@
+{
+  "id": "complete-grok-4-6-config",
+  "name": "complete-grok-4-6-config",
+  "title": "补全 Grok 4.6 模型配置",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "sachin",
+  "assignee": "sachin",
+  "createdAt": "2026-08-13",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "verification": "passed"
+  }
+}

@@ -1,0 +1,2 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Model metadata flows from SQLite through gateway /v1/models into OMP discovery/cache and picker; verify each boundary."}
+{"file":".trellis/spec/codexmanager-core/backend/database-guidelines.md","reason":"SQLite update requires transaction, backup, FK validation, and preserving child-table invariants."}

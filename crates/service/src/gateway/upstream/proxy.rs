@@ -32,6 +32,18 @@ fn next_fallback_model(chain: &[String], attempted: &[String]) -> Option<String>
         .cloned()
 }
 
+/// 路由耗尽的终态归一化：仅在已确认没有任何候选/账号/模型回退可用的终态分支调用。
+///
+/// 把路由不可用类的 404/503 收敛为 `502`（如空账号池、账号耗尽、混合路径两侧耗尽、
+/// Aggregate 无匹配/冷却/零余额、配置模型无可用路由）；`model_not_found`、鉴权、
+/// 配额与日限额等客户端语义状态保持原状。
+fn route_exhaustion_terminal_status(status_code: u16, message: &str) -> u16 {
+    match status_code {
+        404 | 503 if !message.contains("model_not_found") => 502,
+        _ => status_code,
+    }
+}
+
 /// 把 `/v1beta/models/<model>:action` 形态路径里的模型段替换为 `model`。
 /// 路径不含 `/models/` 时原样返回（非 Gemini 协议即走这一支）。
 fn rewrite_model_in_path(path: &str, model: &str) -> String {
@@ -579,6 +591,7 @@ fn proxy_with_aggregate_candidates(
     method: &reqwest::Method,
     body: &bytes::Bytes,
     client_is_stream: bool,
+    tool_name_restore_map: &super::super::ToolNameRestoreMap,
     gateway_mode_for_log: Option<&str>,
     client_model_for_log: Option<&str>,
     model_for_log: Option<&str>,
@@ -622,6 +635,7 @@ fn proxy_with_aggregate_candidates(
             body,
             is_stream: client_is_stream,
             response_adapter: super::super::ResponseAdapter::Passthrough,
+            tool_name_restore_map,
             gateway_mode_for_log,
             route_strategy_for_log: Some(super::super::current_route_strategy()),
             route_source_for_log: Some(if aggregate_api_id.is_some() {
@@ -855,6 +869,7 @@ pub(in super::super) fn proxy_validated_request(
                 let previous_unavailable = last_unavailable.clone();
                 let (status_code, message) = record_unavailable_and_advance!(status_code, message);
                 let (status_code, message) = previous_unavailable.unwrap_or((status_code, message));
+                let status_code = route_exhaustion_terminal_status(status_code, message.as_str());
                 return respond_model_route_error(
                     request,
                     &storage,
@@ -880,6 +895,7 @@ pub(in super::super) fn proxy_validated_request(
                 );
             }
             Err((status_code, message)) => {
+                let status_code = route_exhaustion_terminal_status(status_code, message.as_str());
                 return respond_model_route_error(
                     request,
                     &storage,
@@ -940,6 +956,8 @@ pub(in super::super) fn proxy_validated_request(
                     let (status_code, message) = record_unavailable_and_advance!(503, message);
                     let (status_code, message) =
                         previous_unavailable.unwrap_or((status_code, message));
+                    let status_code =
+                        route_exhaustion_terminal_status(status_code, message.as_str());
                     return respond_aggregate_route_error(
                         request,
                         &storage,
@@ -965,6 +983,7 @@ pub(in super::super) fn proxy_validated_request(
                     );
                 }
                 Err(message) => {
+                    let status_code = route_exhaustion_terminal_status(404, message.as_str());
                     return respond_aggregate_route_error(
                         request,
                         &storage,
@@ -985,7 +1004,7 @@ pub(in super::super) fn proxy_validated_request(
                         reasoning_for_log.as_deref(),
                         reasoning_source_for_log.as_deref(),
                         started_at,
-                        404,
+                        status_code,
                         message,
                     );
                 }
@@ -1001,6 +1020,7 @@ pub(in super::super) fn proxy_validated_request(
                 &method,
                 aggregate_body,
                 client_is_stream,
+                &tool_name_restore_map,
                 gateway_mode_for_log.as_deref(),
                 client_model_for_log.as_deref(),
                 model_for_log.as_deref(),
@@ -1028,6 +1048,8 @@ pub(in super::super) fn proxy_validated_request(
                     request = returned;
                     let (status_code, message) =
                         record_unavailable_and_advance!(status_code, message);
+                    let status_code =
+                        route_exhaustion_terminal_status(status_code, message.as_str());
                     return respond_aggregate_route_error(
                         request,
                         &storage,
@@ -1095,7 +1117,7 @@ pub(in super::super) fn proxy_validated_request(
                         Ok(candidates) => candidates,
                         Err(error) => {
                             request = empty_request;
-                            let (_status_code, message) = record_unavailable_and_advance!(
+                            let (_, message) = record_unavailable_and_advance!(
                                 503,
                                 hybrid_route_error_message(
                                     Some("无可用账号(no available account)"),
@@ -1139,6 +1161,7 @@ pub(in super::super) fn proxy_validated_request(
                         &method,
                         &passthrough_body,
                         client_is_stream,
+                        &tool_name_restore_map,
                         gateway_mode_for_log.as_deref(),
                         client_model_for_log.as_deref(),
                         model_for_log.as_deref(),
@@ -1166,8 +1189,10 @@ pub(in super::super) fn proxy_validated_request(
                             message,
                         } => {
                             request = returned;
-                            let (_status_code, message) =
+                            let (status_code, message) =
                                 record_unavailable_and_advance!(status_code, message);
+                            let status_code =
+                                route_exhaustion_terminal_status(status_code, message.as_str());
                             return respond_hybrid_route_error(
                                 request,
                                 &storage,
@@ -1198,6 +1223,7 @@ pub(in super::super) fn proxy_validated_request(
                 request = empty_request;
                 let message = exhausted_gateway_error_for_log(&[], 0, 0, None);
                 let (status_code, message) = record_unavailable_and_advance!(503, message);
+                let status_code = route_exhaustion_terminal_status(status_code, message.as_str());
                 return respond_terminal(request, status_code, message, Some(trace_id.as_str()));
             }
             CandidatePrecheckResult::Responded => return Ok(()),
@@ -1345,10 +1371,12 @@ pub(in super::super) fn proxy_validated_request(
                 Ok(candidates) => candidates,
                 Err(error) => {
                     request = exhausted_request;
-                    let (_status_code, message) = record_unavailable_and_advance!(
+                    let (status_code, message) = record_unavailable_and_advance!(
                         503,
                         hybrid_route_error_message(Some(final_error.as_str()), error.as_str())
                     );
+                    let status_code =
+                        route_exhaustion_terminal_status(status_code, message.as_str());
                     return respond_hybrid_route_error(
                         request,
                         &storage,
@@ -1369,7 +1397,7 @@ pub(in super::super) fn proxy_validated_request(
                         reasoning_for_log.as_deref(),
                         reasoning_source_for_log.as_deref(),
                         started_at,
-                        503,
+                        status_code,
                         Some(final_error.as_str()),
                         message,
                     );
@@ -1386,6 +1414,7 @@ pub(in super::super) fn proxy_validated_request(
                 &method,
                 &passthrough_body,
                 client_is_stream,
+                &tool_name_restore_map,
                 gateway_mode_for_log.as_deref(),
                 client_model_for_log.as_deref(),
                 model_for_log.as_deref(),
@@ -1411,8 +1440,10 @@ pub(in super::super) fn proxy_validated_request(
                     message,
                 } => {
                     request = returned;
-                    let (_status_code, message) =
+                    let (status_code, message) =
                         record_unavailable_and_advance!(status_code, message);
+                    let status_code =
+                        route_exhaustion_terminal_status(status_code, message.as_str());
                     return respond_hybrid_route_error(
                         request,
                         &storage,
@@ -1442,6 +1473,7 @@ pub(in super::super) fn proxy_validated_request(
         }
         request = exhausted_request;
         let (status_code, message) = record_unavailable_and_advance!(503, final_error);
+        let status_code = route_exhaustion_terminal_status(status_code, message.as_str());
         let message = if attempted_models.len() > 1 {
             format!(
                 "{message}; model_fallback_attempted={}",

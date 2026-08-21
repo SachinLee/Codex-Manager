@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
-  ChevronDown,
+  Cable,
   CircleDollarSign,
   Coins,
   Copy,
@@ -23,10 +23,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { AggregateApiModelDiscoveryDialog } from "@/components/aggregate-api/aggregate-api-model-discovery-dialog";
+import { AggregateApiModelQuickAddDialog } from "@/components/aggregate-api/aggregate-api-model-quick-add-dialog";
+import { CapabilityDiagnosticsDialog } from "@/components/aggregate-api/capability-diagnostics-dialog";
+import { CapabilityRoutingPanel } from "@/components/aggregate-api/capability-routing-panel";
 import { PageHeader, MetricCard, PageWorkspace } from "@/components/layout/page-workspace";
 import { AggregateApiModal } from "@/components/modals/aggregate-api-modal";
-import { CapabilityRoutingPanel } from "@/components/aggregate-api/capability-routing-panel";
-import { CapabilityDiagnosticsDialog } from "@/components/aggregate-api/capability-diagnostics-dialog";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -72,15 +74,16 @@ import {
   formatUsdAmount,
 } from "@/lib/utils/billing";
 import { copyTextToClipboard } from "@/lib/utils/clipboard";
+import { MANAGED_MODELS_V2_QUERY_KEY } from "@/hooks/useManagedModels";
 import { formatTsFromSeconds } from "@/lib/utils/usage";
 import type {
   AggregateApi,
   AggregateApiCapabilityDiagnosticsResult,
   AggregateApiBalanceSnapshot,
   AggregateApiDailyUsageStat,
+  AggregateApiModelDiscoveryItem,
   AggregateApiSecretResult,
 } from "@/types/api-key";
-import type { ModelDailyUsageStat } from "@/types/request-log";
 
 const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
@@ -108,19 +111,13 @@ function buildDailyUsageTooltip(
     `${t("Guard 重试")} ${formatMillionTokenAmount(usage.guardRetryTotalTokens)} tok / ${formatUsdAmount(usage.guardRetryEstimatedCostUsd)}`,
     `${t("计费合计")} ${formatMillionTokenAmount(usage.billableTotalTokens)} tok / ${formatUsdAmount(usage.billableEstimatedCostUsd)}`,
     t("含 Guard 重试"),
-  ].join("\n");
-}
-
-function buildModelDailyUsageTooltip(
-  usage: ModelDailyUsageStat,
-  t: (key: string) => string,
-): string {
-  return [
-    `${t("请求")} ${usage.requestCount}`,
-    `${t("输入")} ${formatMillionTokenAmount(usage.inputTokens)} / ${t("缓存")} ${formatMillionTokenAmount(usage.cachedInputTokens)} / ${t("缓存写入")} ${formatMillionTokenAmount(usage.cacheWriteInputTokens)} / ${t("计费输入")} ${formatMillionTokenAmount(usage.billableInputTokens)}`,
-    `${t("输出")} ${formatMillionTokenAmount(usage.outputTokens)} / ${t("推理输出")} ${formatMillionTokenAmount(usage.reasoningOutputTokens)}`,
-    `${t("合计")} ${formatMillionTokenAmount(usage.totalTokens)} tok / ${formatUsdAmount(usage.estimatedCostUsd)}`,
-    `${t("缓存率")} ${formatCacheRateValue(usage.cacheHitRate)}`,
+    ...(usage.budgetSpentUsd != null
+      ? [
+          `${t("预算已用")} ${formatUsdAmount(usage.budgetSpentUsd)}${usage.budgetReservedUsd ? ` / ${t("预占")} ${formatUsdAmount(usage.budgetReservedUsd)}` : ""}${usage.budgetHeldUsd ? ` / ${t("保留")} ${formatUsdAmount(usage.budgetHeldUsd)}` : ""}`,
+          `${t("剩余预算")} ${usage.budgetRemainingUsd != null ? formatUsdAmount(usage.budgetRemainingUsd) : "-"}${usage.budgetOverLimit ? ` · ${t("已超限")}` : ""}`,
+          t("未设输出上限的请求可能使最终费用超过预算"),
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -187,7 +184,6 @@ export default function AggregateApiPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [providerFilter, setProviderFilter] = useState("all");
-  const [modelDailyUsageExpanded, setModelDailyUsageExpanded] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<
     Record<string, AggregateApiSecretResult>
   >({});
@@ -208,6 +204,11 @@ export default function AggregateApiPage() {
   const [resetCooldownApi, setResetCooldownApi] = useState<AggregateApi | null>(null);
   const [resetZeroBalanceApi, setResetZeroBalanceApi] = useState<AggregateApi | null>(null);
 
+  const [modelDiscoveryOpen, setModelDiscoveryOpen] = useState(false);
+  const [quickAddSelection, setQuickAddSelection] = useState<{
+    api: AggregateApi;
+    item: AggregateApiModelDiscoveryItem;
+  } | null>(null);
   const {
     byApiId: aggregateApiRuntimeStatusById,
     nowSeconds: runtimeStatusNowSeconds,
@@ -256,28 +257,6 @@ export default function AggregateApiPage() {
     refetchOnReconnect: "always",
   });
 
-  const modelDailyUsageQuery = useQuery({
-    queryKey: [
-      "requestlog",
-      "model-daily-usage",
-      localDayRange.dayStartTs,
-      localDayRange.dayEndTs,
-    ],
-    queryFn: () =>
-      accountClient.listModelDailyUsageStats({
-        dayStartTs: localDayRange.dayStartTs,
-        dayEndTs: localDayRange.dayEndTs,
-      }),
-    enabled: isQueryEnabled,
-    retry: 1,
-    staleTime: 0,
-    refetchInterval: isQueryEnabled ? 5_000 : false,
-    refetchIntervalInBackground: true,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: "always",
-    refetchOnReconnect: "always",
-  });
-
   usePageTransitionReady("/aggregate-api/", !isServiceReady || !isLoading);
 
   useEffect(() => {
@@ -288,6 +267,8 @@ export default function AggregateApiPage() {
       setDeleteId(null);
       setResetCooldownApi(null);
       setResetZeroBalanceApi(null);
+      setModelDiscoveryOpen(false);
+      setQuickAddSelection(null);
       setRevealedSecrets({});
     });
     return () => window.cancelAnimationFrame(frameId);
@@ -340,15 +321,25 @@ export default function AggregateApiPage() {
     let cachedInputTokens = 0;
     let billableTotalTokens = 0;
     let billableEstimatedCostUsd = 0;
+    // When any budget bucket exists, the header cost uses the enforcement
+    // ledger instead of the legacy page aggregate.
+    let budgetSpentUsd = 0;
+    let hasBudget = false;
 
     for (const api of filteredApis) {
       const usage = dailyUsageById.get(api.id);
-      if (!usage || usage.requestCount <= 0) continue;
+      if (!usage) continue;
+      const usageHasBudget = usage.budgetSpentUsd != null;
+      if (usage.requestCount <= 0 && !usageHasBudget) continue;
       requestCount += usage.requestCount;
       inputTokens += usage.inputTokens;
       cachedInputTokens += usage.cachedInputTokens;
       billableTotalTokens += usage.billableTotalTokens;
       billableEstimatedCostUsd += usage.billableEstimatedCostUsd;
+      if (usage.budgetSpentUsd != null) {
+        budgetSpentUsd += usage.budgetSpentUsd;
+        hasBudget = true;
+      }
     }
 
     return {
@@ -357,6 +348,8 @@ export default function AggregateApiPage() {
       cachedInputTokens,
       billableTotalTokens,
       billableEstimatedCostUsd,
+      displayCostUsd: hasBudget ? budgetSpentUsd : billableEstimatedCostUsd,
+      hasBudget,
       cacheHitRate:
         inputTokens > 0
           ? Math.min(1, Math.max(0, cachedInputTokens / inputTokens))
@@ -576,11 +569,20 @@ export default function AggregateApiPage() {
         <PageHeader
           eyebrow={t("显式路由")}
           title={t("聚合 API")}
-          description={t("这里只管理上游连接；模型路由在“模型管理”中显式配置，页面不会访问供应商 `/models`。")}
+          description={t("在此管理上游连接；模型路由仍在“模型管理”中显式配置。可按需只读查询供应商模型目录，结果不会写入模型目录或路由。")}
           actions={
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 type="button"
+                variant="outline"
+                size="sm"
+                disabled={!isServiceReady}
+                onClick={() => setModelDiscoveryOpen(true)}
+              >
+                <Cable className="mr-1.5 h-4 w-4" />
+                {t("发现上游模型")}
+              </Button>
+              <Button
                 variant="outline"
                 size="sm"
                 disabled={!isServiceReady || refreshingBalances}
@@ -641,9 +643,13 @@ export default function AggregateApiPage() {
             value={
               dailyUsageQuery.isLoading
                 ? "..."
-                : formatUsdAmount(filteredDailyUsageSummary.billableEstimatedCostUsd)
+                : formatUsdAmount(filteredDailyUsageSummary.displayCostUsd)
             }
-            detail={t("含 Guard 重试")}
+            detail={
+              filteredDailyUsageSummary.hasBudget
+                ? t("按每日预算账本")
+                : t("含 Guard 重试")
+            }
             icon={CircleDollarSign}
             tone="emerald"
           />
@@ -663,106 +669,6 @@ export default function AggregateApiPage() {
             tone="violet"
           />
         </section>
-
-        <Card className="glass-card overflow-hidden py-0">
-          <CardHeader className="border-b border-border/50 px-3 py-2">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <CardTitle className="text-base">{t("今日模型用量")}</CardTitle>
-                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                  {t("按模型汇总当天 Token、费用与缓存率。")}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="text-[11px] text-muted-foreground">
-                  {modelDailyUsageQuery.isLoading
-                    ? "..."
-                    : `${(modelDailyUsageQuery.data || []).length} ${t("个模型")}`}
-                </span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1 px-2 text-xs"
-                  aria-expanded={modelDailyUsageExpanded}
-                  aria-controls="model-daily-usage-table"
-                  onClick={() => setModelDailyUsageExpanded((expanded) => !expanded)}
-                >
-                  {modelDailyUsageExpanded ? t("收起") : t("展开")}
-                  <ChevronDown
-                    className={`h-3.5 w-3.5 transition-transform ${
-                      modelDailyUsageExpanded ? "rotate-180" : ""
-                    }`}
-                  />
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          {modelDailyUsageExpanded ? (
-            <CardContent id="model-daily-usage-table" className="p-0">
-              <div className="max-h-[180px] overflow-auto">
-                <Table className="text-xs">
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="sticky top-0 h-8 bg-card">{t("模型")}</TableHead>
-                      <TableHead className="sticky top-0 h-8 bg-card">{t("请求")}</TableHead>
-                      <TableHead className="sticky top-0 h-8 bg-card">{t("Token")}</TableHead>
-                      <TableHead className="sticky top-0 h-8 bg-card">{t("费用")}</TableHead>
-                      <TableHead className="sticky top-0 h-8 bg-card">{t("缓存率")}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {modelDailyUsageQuery.isLoading ? (
-                      Array.from({ length: 3 }).map((_, index) => (
-                        <TableRow key={index}>
-                          {Array.from({ length: 5 }).map((__, cell) => (
-                            <TableCell key={cell} className="py-1.5">
-                              <Skeleton className="h-4 w-full" />
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))
-                    ) : (modelDailyUsageQuery.data || []).length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={5} className="h-16 text-center text-muted-foreground">
-                          {t("今日无请求")}
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      (modelDailyUsageQuery.data || []).map((usage) => (
-                        <TableRow key={usage.model}>
-                          <TableCell className="max-w-[220px] py-1.5">
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={<div />}
-                                className="cursor-help truncate font-medium"
-                              >
-                                {usage.model}
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-sm whitespace-pre-wrap break-words">
-                                {buildModelDailyUsageTooltip(usage, t)}
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
-                          <TableCell className="py-1.5 tabular-nums">{usage.requestCount}</TableCell>
-                          <TableCell className="py-1.5 font-mono tabular-nums">
-                            {formatMillionTokenAmount(usage.totalTokens)}
-                          </TableCell>
-                          <TableCell className="py-1.5 font-mono tabular-nums">
-                            {formatUsdAmount(usage.estimatedCostUsd)}
-                          </TableCell>
-                          <TableCell className="py-1.5 tabular-nums">
-                            {formatCacheRateValue(usage.cacheHitRate)}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          ) : null}
-        </Card>
 
         <Card className="glass-card overflow-hidden py-0">
           <CardHeader className="border-b border-border/50 px-3 py-2">
@@ -945,7 +851,8 @@ export default function AggregateApiPage() {
                           <TableCell className="min-w-[130px] py-2">
                             {dailyUsageQuery.isLoading ? (
                               <Skeleton className="h-6 w-24" />
-                            ) : !usage || usage.requestCount <= 0 ? (
+                            ) : !usage ||
+                              (usage.requestCount <= 0 && usage.budgetSpentUsd == null) ? (
                               <span className="text-xs text-muted-foreground">
                                 {t("今日无请求")}
                               </span>
@@ -959,8 +866,9 @@ export default function AggregateApiPage() {
                                     {formatMillionTokenAmount(usage.billableTotalTokens)} tok
                                   </span>
                                   <span className="truncate text-[10px] text-muted-foreground">
-                                    {formatUsdAmount(usage.billableEstimatedCostUsd)} · cache{" "}
-                                    {formatCacheRateValue(usage.cacheHitRate)}
+                                    {usage.budgetSpentUsd != null
+                                      ? `${formatUsdAmount(usage.budgetSpentUsd)}${usage.budgetOverLimit ? ` · ${t("已超限")}` : ""}`
+                                      : `${formatUsdAmount(usage.billableEstimatedCostUsd)} · cache ${formatCacheRateValue(usage.cacheHitRate)}`}
                                   </span>
                                 </TooltipTrigger>
                                 <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
@@ -1244,6 +1152,40 @@ export default function AggregateApiPage() {
           </Card>
         ) : null}
       </PageWorkspace>
+
+      <AggregateApiModelDiscoveryDialog
+        apis={aggregateApis}
+        isActive={isServiceReady && isPageActive}
+        open={modelDiscoveryOpen}
+        onOpenChange={setModelDiscoveryOpen}
+        onAddModel={(api, item) => setQuickAddSelection({ api, item })}
+      />
+
+      <AggregateApiModelQuickAddDialog
+        api={quickAddSelection?.api ?? null}
+        item={quickAddSelection?.item ?? null}
+        open={quickAddSelection !== null}
+        onOpenChange={(open) => {
+          if (!open) setQuickAddSelection(null);
+        }}
+        onSuccess={(result) => {
+          void Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: MANAGED_MODELS_V2_QUERY_KEY,
+            }),
+            queryClient.invalidateQueries({ queryKey: ["model-groups"] }),
+            queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+            queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+          ]);
+          toast.success(
+            result.routeAction === "unchanged"
+              ? t("模型与路由已存在")
+              : result.routeAction === "created"
+                ? t("模型与路由已添加")
+                : t("模型路由已更新"),
+          );
+        }}
+      />
 
       <AggregateApiModal
         open={modalOpen}

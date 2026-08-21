@@ -15,7 +15,7 @@ const REQUEST_LOG_LIST_SELECT_COLUMNS: &str = "r.trace_id, r.session_id, r.conve
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.request_type, r.gateway_mode, r.route_strategy, r.route_source, r.transparent_mode, r.enhanced_mode, r.client_model, r.model, r.model_source, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.client_reasoning_effort, r.reasoning_effort, r.reasoning_source, r.service_tier, r.effective_service_tier, r.service_tier_source, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
                 t.input_tokens, t.cached_input_tokens, t.cache_write_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
-                r.error, r.created_at";
+                r.error, r.created_at, r.upstream_protocol";
 
 pub(super) fn request_log_retention_days() -> i64 {
     std::env::var(REQUEST_LOG_RETENTION_DAYS_ENV)
@@ -164,8 +164,8 @@ impl Storage {
             "INSERT INTO request_logs (
                 trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
-                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
+                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at, upstream_protocol
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
             params![
                 &log.trace_id,
                 &log.session_id,
@@ -207,6 +207,7 @@ impl Storage {
                 log.first_response_ms,
                 &log.error,
                 log.created_at,
+                &log.upstream_protocol,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -235,8 +236,8 @@ impl Storage {
             "INSERT INTO request_logs (
                 trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
-                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
+                method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at, upstream_protocol
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
             params![
                 &log.trace_id,
                 &log.session_id,
@@ -278,6 +279,7 @@ impl Storage {
                 log.first_response_ms,
                 &log.error,
                 log.created_at,
+                &log.upstream_protocol,
             ],
         )?;
         let request_log_id = tx.last_insert_rowid();
@@ -830,6 +832,9 @@ impl Storage {
         )?;
         self.ensure_request_logs_indexes()?;
         self.ensure_request_log_session_context_columns()?;
+        // 兼容路径必须补齐 INSERT 引用的全部列；upstream_protocol 是新增可空列，
+        // 老库/仅建表的初始化路径缺了它会导致 “no column named upstream_protocol”。
+        self.ensure_request_log_trace_context_columns()?;
         Ok(())
     }
 
@@ -936,6 +941,7 @@ impl Storage {
         self.ensure_column("request_logs", "original_path", "TEXT")?;
         self.ensure_column("request_logs", "adapted_path", "TEXT")?;
         self.ensure_column("request_logs", "response_adapter", "TEXT")?;
+        self.ensure_column("request_logs", "upstream_protocol", "TEXT")?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_logs_trace_id_created_at_id ON request_logs(trace_id, created_at DESC, id DESC)",
             [],
@@ -1292,6 +1298,7 @@ fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
         estimated_cost_usd: row.get(44)?,
         error: row.get(45)?,
         created_at: row.get(46)?,
+        upstream_protocol: row.get(47)?,
     })
 }
 

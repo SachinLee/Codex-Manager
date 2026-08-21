@@ -1,0 +1,6 @@
+{"file":".trellis/spec/codexmanager-core/backend/index.md","reason":"Core storage ownership and required context for the new durable daily budget tables and migrations."}
+{"file":".trellis/spec/codexmanager-core/backend/database-guidelines.md","reason":"SQLite migration, rollup, integer-cost, and storage regression-test requirements."}
+{"file":".trellis/spec/codexmanager-service/backend/index.md","reason":"Service gateway ownership boundary for Aggregate API request execution and RPC projection."}
+{"file":".trellis/spec/codexmanager-service/backend/model-catalog-billing.md","reason":"Immutable pricing, provider-cost precedence, multiplier, and long-context billing contracts."}
+{"file":".trellis/spec/codexmanager-service/backend/logging-guidelines.md","reason":"Reasoning Guard async-event contract and no-secret request-path logging constraints."}
+{"file":".trellis/tasks/08-20-diagnose-daily-api-spend-cap-overrun/research/daily-spend-cap-evidence.md","reason":"Evidence for the reproduced 97.421556 + 3.350178 USD accounting mismatch."}

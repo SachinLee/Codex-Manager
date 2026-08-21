@@ -43,8 +43,9 @@ use super::{
     AnthropicSseReader, ChatCompletionsFromResponsesSseReader, GeminiSseReader,
     ImagesFromResponsesSseReader, ImagesResponseFormat, OpenAIResponsesPassthroughSseReader,
     PassthroughSseCollector, PassthroughSseProtocol, PassthroughSseUsageReader,
-    ReasoningGuardBridgeAction, ResponsesFromAnthropicSseReader, SseKeepAliveFrame,
-    UpstreamResponseBridgeResult, UpstreamResponseUsage,
+    ReasoningGuardBridgeAction, ResponsesFromAnthropicSseReader,
+    ResponsesFromChatCompletionsSseReader, SseKeepAliveFrame, UpstreamResponseBridgeResult,
+    UpstreamResponseUsage,
 };
 use super::{hosted_image_generation_semantic_error, image_generation_semantic_error_body};
 
@@ -739,6 +740,31 @@ pub(crate) fn respond_with_upstream(
                         Arc::clone(&usage_collector),
                         fallback_model,
                         request_started_at,
+                    ));
+                return Ok(respond_usage_collector_stream(
+                    request,
+                    status,
+                    headers,
+                    response_body,
+                    usage_collector,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ));
+            }
+            ResponseAdapter::ResponsesFromChatCompletions => {
+                let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+                let response_body: Box<dyn std::io::Read + Send> =
+                    Box::new(ResponsesFromChatCompletionsSseReader::new(
+                        upstream,
+                        Arc::clone(&usage_collector),
+                        fallback_model,
+                        request_started_at,
+                        Some(crate::gateway::global_chat_completions_context()),
                     ));
                 return Ok(respond_usage_collector_stream(
                     request,
@@ -1456,6 +1482,7 @@ pub(crate) fn respond_with_upstream(
         }
         ResponseAdapter::AnthropicMessagesFromResponses
         | ResponseAdapter::ResponsesFromAnthropicMessages
+        | ResponseAdapter::ResponsesFromChatCompletions
         | ResponseAdapter::ChatCompletionsFromResponses
         | ResponseAdapter::ImagesB64JsonFromResponses
         | ResponseAdapter::ImagesUrlFromResponses
@@ -1689,6 +1716,34 @@ pub(crate) fn respond_with_stream_upstream(
                         Arc::clone(&usage_collector),
                         fallback_model,
                         request_started_at,
+                    ));
+                return Ok(respond_usage_collector_stream(
+                    request,
+                    status,
+                    headers,
+                    response_body,
+                    usage_collector,
+                    UpstreamDebugMetaRefs {
+                        request_id: &upstream_request_id,
+                        cf_ray: &upstream_cf_ray,
+                        auth_error: &upstream_auth_error,
+                        identity_error_code: &upstream_identity_error_code,
+                        content_type: &upstream_content_type,
+                    },
+                ));
+            }
+            ResponseAdapter::ResponsesFromChatCompletions => {
+                let upstream_body = upstream
+                    .read_all_bytes()
+                    .map_err(|err| format!("read upstream body failed: {err}"))?;
+                let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+                let response_body: Box<dyn std::io::Read + Send> =
+                    Box::new(ResponsesFromChatCompletionsSseReader::from_reader(
+                        std::io::Cursor::new(upstream_body.to_vec()),
+                        Arc::clone(&usage_collector),
+                        fallback_model,
+                        request_started_at,
+                        Some(crate::gateway::global_chat_completions_context()),
                     ));
                 return Ok(respond_usage_collector_stream(
                     request,
@@ -2398,6 +2453,7 @@ pub(crate) fn respond_with_stream_upstream(
         }
         ResponseAdapter::AnthropicMessagesFromResponses
         | ResponseAdapter::ResponsesFromAnthropicMessages
+        | ResponseAdapter::ResponsesFromChatCompletions
         | ResponseAdapter::ChatCompletionsFromResponses
         | ResponseAdapter::ImagesB64JsonFromResponses
         | ResponseAdapter::ImagesUrlFromResponses
@@ -2415,7 +2471,8 @@ fn resolve_stream_keepalive_frame(
     match response_adapter {
         // Prefer protocol-aware keepalive when available; fall back to SSE comments
         // so image generation and long-lived streams stay alive.
-        ResponseAdapter::ResponsesFromAnthropicMessages => SseKeepAliveFrame::Anthropic,
+        ResponseAdapter::ResponsesFromAnthropicMessages
+        | ResponseAdapter::ResponsesFromChatCompletions => SseKeepAliveFrame::Anthropic,
         ResponseAdapter::Passthrough
         | ResponseAdapter::AnthropicMessagesFromResponses
         | ResponseAdapter::ChatCompletionsFromResponses

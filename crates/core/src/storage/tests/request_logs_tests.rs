@@ -1363,3 +1363,56 @@ fn request_logs_for_large_key_sets_use_temp_filter() {
     assert_eq!(summary.output_tokens, 10);
     assert_eq!(summary.estimated_cost_usd, 0.04);
 }
+
+/// 回归：136 迁移未注册，升级库（已记录 005/062）永远缺 upstream_protocol 列，
+/// 列表 SELECT 引用该列报错，请求日志页显示 0 条。init 必须补齐该列并恢复查询。
+#[test]
+fn upgraded_db_without_upstream_protocol_column_is_repaired_on_init() {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "codexmanager-upgrade-regression-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    {
+        let storage = Storage::open(&path).expect("open");
+        storage.init().expect("init");
+        // Simulate a pre-136 upgraded database: column missing and 136 not recorded.
+        storage
+            .conn
+            .execute("ALTER TABLE request_logs DROP COLUMN upstream_protocol", [])
+            .expect("drop column");
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version = '136_request_logs_upstream_protocol'",
+                [],
+            )
+            .expect("unrecord 136");
+    }
+    // Reopen: fresh migration cache; init must re-apply 136 and repair the column.
+    let storage = Storage::open(&path).expect("reopen");
+    storage.init().expect("init repairs column");
+
+    let inserted = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trc-upgrade-repair".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            created_at: 9_000,
+            upstream_protocol: Some("chat_completions".to_string()),
+            ..RequestLog::default()
+        })
+        .expect("insert after repair");
+    assert!(inserted > 0);
+
+    let rows = storage.list_request_logs(None, 10).expect("list after repair");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].trace_id.as_deref(), Some("trc-upgrade-repair"));
+    assert_eq!(rows[0].upstream_protocol.as_deref(), Some("chat_completions"));
+
+    let _ = std::fs::remove_file(&path);
+}

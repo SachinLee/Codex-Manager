@@ -54,6 +54,7 @@ export interface AggregateApi {
   lastBalanceError: string | null;
   lastBalanceJson: string | null;
   enableConsecutiveFailureFreeze: boolean;
+  upstreamProtocol: string | null;
   modelSlugs: string[];
 }
 
@@ -254,6 +255,12 @@ export interface AggregateApiDailyUsageStat {
   billableTotalTokens: number;
   billableEstimatedCostUsd: number;
   cacheHitRate: number;
+  /** Optional daily-budget projection; present only when a budget bucket exists for the day. */
+  budgetSpentUsd?: number;
+  budgetReservedUsd?: number;
+  budgetHeldUsd?: number;
+  budgetRemainingUsd?: number;
+  budgetOverLimit?: boolean;
 }
 
 export interface AggregateApiReasoningGuardStat {
@@ -303,6 +310,20 @@ export interface AggregateApiTestResult {
   message: string | null;
   testedAt: number;
   latencyMs: number;
+}
+
+export interface AggregateApiModelDiscoveryItem {
+  id: string;
+  displayName: string | null;
+}
+
+export interface AggregateApiModelDiscoveryResult {
+  apiId: string;
+  ok: boolean;
+  items: AggregateApiModelDiscoveryItem[];
+  statusCode: number;
+  discoveredAt: number;
+  message: string | null;
 }
 
 export interface AggregateApiBalanceSnapshot {

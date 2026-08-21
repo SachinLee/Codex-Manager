@@ -33,6 +33,11 @@ pub(crate) fn read_aggregate_api_daily_usage_stats(
             billable_total_tokens: item.billable_total_tokens.max(0),
             billable_estimated_cost_usd: item.billable_estimated_cost_usd.max(0.0),
             cache_hit_rate: item.cache_hit_rate.clamp(0.0, 1.0),
+            budget_spent_usd: item.budget_spent_usd.map(|value| value.max(0.0)),
+            budget_reserved_usd: item.budget_reserved_usd.map(|value| value.max(0.0)),
+            budget_held_usd: item.budget_held_usd.map(|value| value.max(0.0)),
+            budget_remaining_usd: item.budget_remaining_usd.map(|value| value.max(0.0)),
+            budget_over_limit: item.budget_over_limit,
         })
         .collect();
     Ok(AggregateApiDailyUsageStatsResult { items })

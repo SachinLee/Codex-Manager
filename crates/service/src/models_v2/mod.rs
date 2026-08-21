@@ -6,6 +6,7 @@ use codexmanager_core::rpc::types::{
     ModelInfo, ModelReasoningLevel, ModelServiceTier, ModelTruncationPolicy, ModelsResponse,
 };
 use codexmanager_core::storage::{
+    ManagedModelAggregateRouteAddV2, ManagedModelAggregateRouteAddV2Result,
     ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
     ManagedModelV2Upsert, ModelCatalogV2Stats,
 };
@@ -51,6 +52,18 @@ pub(crate) fn get(slug: &str) -> Result<ManagedModelV2, String> {
         .get_managed_model_v2(slug)
         .map_err(|err| format!("read managed model V2 failed: {err}"))?
         .ok_or_else(|| "model_not_found".to_string())
+}
+
+pub(crate) fn add_aggregate_route(
+    input: ManagedModelAggregateRouteAddV2,
+) -> Result<ManagedModelAggregateRouteAddV2Result, String> {
+    let storage =
+        crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let result = storage
+        .add_managed_model_aggregate_route_v2(&input)
+        .map_err(|err| format!("add aggregate model route failed: {err}"))?;
+    sync_active_gateway_catalog_best_effort(&storage);
+    Ok(result)
 }
 
 pub(crate) fn upsert(input: ManagedModelV2Upsert) -> Result<ManagedModelV2, String> {

@@ -400,6 +400,28 @@ test("createWebCommandMap 为模型目录 V2 原子命令提供 Web RPC 映射",
     upsert.mapParams({ payload: { previousSlug: null, model: { slug: "local-x" } } }),
     { previousSlug: null, model: { slug: "local-x" } },
   );
+  const addAggregateRoute = commandMap.service_managed_model_add_aggregate_route_v2;
+  assert.equal(
+    addAggregateRoute.rpcMethod,
+    "apikey/managedModelAddAggregateRouteV2",
+  );
+  assert.ok(addAggregateRoute.mapParams);
+  assert.deepEqual(
+    addAggregateRoute.mapParams({
+      payload: {
+        slug: "local-x",
+        displayName: "Local X",
+        aggregateApiId: "aggregate-1",
+        upstreamModel: "upstream-x",
+      },
+    }),
+    {
+      slug: "local-x",
+      displayName: "Local X",
+      aggregateApiId: "aggregate-1",
+      upstreamModel: "upstream-x",
+    },
+  );
 
   const updateState = commandMap.service_managed_model_update_state_v2;
   assert.equal(updateState.rpcMethod, "apikey/managedModelUpdateStateV2");

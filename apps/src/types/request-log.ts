@@ -109,7 +109,7 @@ export interface RequestLog {
   createdAt: number | null;
 }
 
-export type RequestLogSessionSource = "codex" | "omp";
+export type RequestLogSessionSource = "codex" | "omp" | "pi";
 
 export interface RequestLogSessionTitle {
   sessionId: string;

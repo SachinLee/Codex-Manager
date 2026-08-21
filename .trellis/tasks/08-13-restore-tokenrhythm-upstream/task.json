@@ -1,0 +1,29 @@
+{
+  "id": "restore-tokenrhythm-upstream",
+  "name": "restore-tokenrhythm-upstream",
+  "title": "Restore tokenrhythm upstream",
+  "description": "Make the configured tokenrhythm Chat Completions upstream usable for streamed Responses traffic.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "codexmanager-service",
+  "priority": "P1",
+  "creator": "sachin",
+  "assignee": "sachin",
+  "createdAt": "2026-08-13",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "crates/service/src/gateway/upstream/protocol/aggregate_api.rs",
+    "crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs"
+  ],
+  "notes": "Task directory was created by task.py before its Git/default-branch resolution hung; metadata and planning artifacts were restored manually without product code changes.",
+  "meta": {}
+}

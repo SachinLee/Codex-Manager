@@ -129,3 +129,17 @@ export interface ManagedModelImportPreviewV2Result {
   ignoredFields: string[];
   committed: number;
 }
+export type ManagedModelAggregateRouteActionV2 = "created" | "updated" | "unchanged";
+
+export interface ManagedModelAggregateRouteAddV2 {
+  slug: string;
+  displayName: string;
+  aggregateApiId: string;
+  upstreamModel: string;
+}
+
+export interface ManagedModelAggregateRouteAddV2Result {
+  model: ManagedModelV2;
+  created: boolean;
+  routeAction: ManagedModelAggregateRouteActionV2;
+}

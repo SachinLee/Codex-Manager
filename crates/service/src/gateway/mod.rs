@@ -88,6 +88,8 @@ mod anchor_fingerprint;
 mod capability;
 #[path = "observability/capability_attempt_events.rs"]
 mod capability_attempt_events;
+#[path = "chat_completions_context.rs"]
+mod chat_completions_context;
 mod concurrency;
 #[path = "routing/conversation_binding.rs"]
 mod conversation_binding;
@@ -154,6 +156,7 @@ pub(crate) use capability::{
     IMAGE_GENERATION_CAPABILITY, REQUIRED_CAPABILITIES_HEADER,
 };
 pub(crate) use capability_attempt_events::record_gateway_capability_attempt_event;
+pub(crate) use chat_completions_context::{global_chat_completions_context, ChatCompletionsContextStore};
 pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
@@ -174,7 +177,8 @@ pub(crate) use policy_action::{
 };
 use protocol_adapter::build_gemini_error_body;
 use protocol_adapter::{
-    adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
+    adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ResponsePlan,
+    ToolNameRestoreMap, UpstreamProtocol,
 };
 pub(crate) use reasoning_guard_events::record_gateway_reasoning_guard_event;
 #[cfg(test)]
@@ -285,6 +289,7 @@ use http_bridge::respond_with_upstream;
 pub(crate) use http_bridge::summarize_upstream_error_hint_from_body;
 pub(crate) use http_bridge::PassthroughSseProtocol;
 pub(crate) use http_bridge::ReasoningGuardBridgeAction;
+pub(crate) use http_bridge::convert_chat_completions_body_to_responses;
 /// 函数 `extract_identity_error_code_from_headers`
 ///
 /// 作者: gaohongshun

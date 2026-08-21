@@ -547,6 +547,7 @@ fn delete_aggregate_api_removes_aggregate_model_source_routes() {
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         })
         .expect("insert aggregate api");
     storage
@@ -711,6 +712,7 @@ fn aggregate_api_consecutive_freeze_flag_roundtrips() {
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: false,
+            upstream_protocol: None,
         })
         .expect("insert aggregate api");
 
@@ -756,7 +758,6 @@ fn aggregate_api_consecutive_freeze_flag_roundtrips() {
         None
     );
 }
-
 
 #[test]
 fn delete_account_preserves_legacy_model_source_routes() {
@@ -2127,6 +2128,7 @@ fn request_token_stats_rollups_use_owner_and_actual_source_precedence() {
                 last_balance_error: None,
                 last_balance_json: None,
                 enable_consecutive_failure_freeze: true,
+                upstream_protocol: None,
             })
             .expect("insert aggregate api");
     }
@@ -2940,4 +2942,79 @@ fn storage_can_roundtrip_api_key_quota_limit_and_usage() {
             .expect("read cleared quota"),
         None
     );
+}
+
+/// 函数 `aggregate_api_upstream_protocol_round_trips_through_storage`
+///
+/// 覆盖新增列的 INSERT/SELECT 投影与独立 UPDATE，以及遗留 NULL 原样往返。
+#[test]
+fn aggregate_api_upstream_protocol_round_trips_through_storage() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let mut api = AggregateApi {
+        id: "agg-proto-roundtrip".to_string(),
+        provider_type: "codex".to_string(),
+        supplier_name: Some("test".to_string()),
+        sort: 0,
+        url: "https://example.com/v1".to_string(),
+        auth_type: "apikey".to_string(),
+        auth_params_json: None,
+        action: None,
+        model_override: None,
+        cost_multiplier: 1.0,
+        daily_spend_limit_usd: None,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+        last_test_at: None,
+        last_test_status: None,
+        last_test_error: None,
+        balance_query_enabled: false,
+        balance_query_template: None,
+        balance_query_base_url: None,
+        balance_query_user_id: None,
+        balance_query_config_json: None,
+        last_balance_at: None,
+        last_balance_status: None,
+        last_balance_error: None,
+        last_balance_json: None,
+        enable_consecutive_failure_freeze: true,
+        upstream_protocol: Some("chat_completions".to_string()),
+    };
+    storage.insert_aggregate_api(&api).expect("insert api");
+
+    let read = storage
+        .find_aggregate_api_by_id("agg-proto-roundtrip")
+        .expect("read api")
+        .expect("api exists");
+    assert_eq!(read.upstream_protocol.as_deref(), Some("chat_completions"));
+
+    storage
+        .update_aggregate_api_upstream_protocol("agg-proto-roundtrip", Some("responses"))
+        .expect("update protocol");
+    let read = storage
+        .find_aggregate_api_by_id("agg-proto-roundtrip")
+        .expect("read api")
+        .expect("api exists");
+    assert_eq!(read.upstream_protocol.as_deref(), Some("responses"));
+
+    storage
+        .update_aggregate_api_upstream_protocol("agg-proto-roundtrip", None)
+        .expect("clear protocol");
+    let read = storage
+        .find_aggregate_api_by_id("agg-proto-roundtrip")
+        .expect("read api")
+        .expect("api exists");
+    assert_eq!(read.upstream_protocol, None);
+
+    // 遗留 NULL 语义：未声明的候选读回 None，而非空字符串。
+    api.upstream_protocol = None;
+    api.id = "agg-proto-null".to_string();
+    storage.insert_aggregate_api(&api).expect("insert null api");
+    let read = storage
+        .find_aggregate_api_by_id("agg-proto-null")
+        .expect("read null api")
+        .expect("api exists");
+    assert_eq!(read.upstream_protocol, None);
 }

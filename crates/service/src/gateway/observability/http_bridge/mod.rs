@@ -4,6 +4,7 @@ use crate::gateway::upstream::GatewayUpstreamResponse;
 
 mod aggregate;
 mod body_conversion;
+pub(crate) use body_conversion::convert_chat_completions_body_to_responses;
 mod compact_delivery;
 mod compact_errors;
 mod images;
@@ -145,7 +146,7 @@ pub(super) fn respond_with_upstream(
 pub(super) use stream_readers::{
     ChatCompletionsFromResponsesSseReader, ImagesFromResponsesSseReader,
     OpenAIResponsesPassthroughSseReader, PassthroughSseCollector, PassthroughSseUsageReader,
-    ResponsesFromAnthropicSseReader, SseKeepAliveFrame,
+    ResponsesFromAnthropicSseReader, ResponsesFromChatCompletionsSseReader, SseKeepAliveFrame,
 };
 
 pub(super) use stream_readers::{AnthropicSseReader, GeminiSseReader};

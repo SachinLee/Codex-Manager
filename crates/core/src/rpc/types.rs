@@ -871,6 +871,7 @@ pub struct AggregateApiSummary {
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
     pub enable_consecutive_failure_freeze: bool,
+    pub upstream_protocol: Option<String>,
     #[serde(default)]
     pub model_slugs: Vec<String>,
 }
@@ -970,6 +971,24 @@ pub struct PluginRunLogSummary {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AggregateApiListResult {
     pub items: Vec<AggregateApiSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiModelDiscoveryItem {
+    pub id: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiModelDiscoveryResult {
+    pub api_id: String,
+    pub ok: bool,
+    pub items: Vec<AggregateApiModelDiscoveryItem>,
+    pub status_code: i64,
+    pub discovered_at: i64,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1926,6 +1945,19 @@ pub struct AggregateApiDailyUsageStatSummary {
     pub billable_total_tokens: i64,
     pub billable_estimated_cost_usd: f64,
     pub cache_hit_rate: f64,
+    /// Optional daily-budget projection. Present only when a budget bucket
+    /// exists for the API on the queried day; otherwise the legacy aggregate
+    /// cost fields are the display source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_spent_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_reserved_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_held_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_remaining_usd: Option<f64>,
+    #[serde(default)]
+    pub budget_over_limit: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

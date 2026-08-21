@@ -21,7 +21,7 @@ CodexManager는 Codex 워크플로를 위한 로컬 desktop + service-process �
 - 사용량 표시: 5시간 + 7일 윈도우, 단일 윈도우 계정, Code Review / Spark 등 공식 추가 버킷.
 - 계정 인증: `chatgpt.com` 브라우저 OAuth 및 Device Code 로그인. 브라우저 OAuth는 콜백 URL 수동 처리도 지원합니다.
 - 플랫폼 Key: 생성, 비활성화, 삭제, 모델 바인딩, 추론 등급, 서비스 등급을 지원합니다. 관리자는 Key를 사용자 지정 계정 그룹에 바인딩하고 플랜 필터와 교집합을 적용하여 허용된 풀 안에서만 순환시킬 수 있습니다.
-- Aggregate API: 서드파티 릴레이 업스트림 생성/수정/연결 테스트, 공급자명, 우선순위.
+- Aggregate API: 공급자명과 우선순위로 서드파티 relay upstream을 생성/수정/연결 테스트하고, 필요 시 upstream `/models` 카탈로그를 읽기 전용으로 조회합니다. 관리자는 확인 후 로컬 모델을 생성 또는 재사용하고 해당 API의 명시적 route를 추가 또는 갱신할 수 있으며, 검색 결과는 저장되거나 가격·기능·청구 권한을 추론하지 않습니다.
 - 플러그인 센터: 내장/사설/커스텀 소스 모드, 작업/로그 화면, Rhai 연동.
 - Skills 및 플러그인: `/skills/`에서 **Skills 설치**와 **Codex 플러그인 설치**를 별도 탭으로 제공합니다. 내장/사용자 지정 GitHub 저장소와 skills.sh 검색 결과에서 Skill을 개별 설치하거나 ZIP 및 기존 디렉터리에서 가져올 수 있습니다. Codex 기본 Marketplace의 전체 플러그인 설치도 유지되며 `.system` Skill은 읽기 전용입니다.
 - 데스크톱 프로젝트 실행기: 로컬 프로젝트 폴더를 즐겨찾기에 추가하고 로컬 CodexManager 프로필로 새 터미널에서 Codex 또는 현재 프로젝트의 `resume` 선택기를 열 수 있습니다. Web/Docker는 장치 폴더에 접근하지 않습니다.

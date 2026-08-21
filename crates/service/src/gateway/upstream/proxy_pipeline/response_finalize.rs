@@ -210,6 +210,7 @@ pub(super) fn finalize_upstream_response(
     path: &str,
     trace_id: &str,
     started_at: std::time::Instant,
+    request_deadline: Option<std::time::Instant>,
     model_for_log: Option<&str>,
     attempted_account_ids: Option<&[String]>,
     has_more_candidates: bool,
@@ -218,6 +219,16 @@ pub(super) fn finalize_upstream_response(
     attempt_body: &Bytes,
 ) -> Result<FinalizeUpstreamResponseOutcome, String> {
     let status_code = response.status().as_u16();
+    // 在桥接消费响应前读取上游 Retry-After，供容量重放等待决策使用。
+    // sleep_capacity_wait 内部做有界解析；这里只保留原始头值，避免重复解析。
+    let upstream_retry_after = match &response {
+        GatewayUpstreamResponse::Blocking(resp) => resp
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+        GatewayUpstreamResponse::Stream(_) => None,
+    };
 
     let mut bridge = super::super::super::respond_with_upstream(
         request,
@@ -288,6 +299,14 @@ pub(super) fn finalize_upstream_response(
         .as_deref()
         .is_some_and(super::super::super::is_selected_model_capacity_error)
         && bridge.pending_failover_request.is_some();
+    // 容量命中指标与 Aggregate API 路径语义一致：每次识别到容量错误计一次，
+    // 无论是否具备重放条件（已交付流的容量错误同样计入命中）。
+    if final_error
+        .as_deref()
+        .is_some_and(super::super::super::is_selected_model_capacity_error)
+    {
+        super::super::super::record_gateway_upstream_capacity_error();
+    }
     let reasoning_guard_retry_attempt_index = crate::gateway::reasoning_guard_retry_attempts()
         .saturating_sub(reasoning_guard_retry_budget_remaining)
         as i64;
@@ -344,6 +363,33 @@ pub(super) fn finalize_upstream_response(
     }
     if should_retry_upstream_capacity && capacity_retry_budget_remaining > 0 {
         if let Some(request) = bridge.pending_failover_request.take() {
+            // 与 Aggregate API 路径共享的容量等待决策：优先合法 Retry-After，
+            // 否则有界全抖动；均受 request deadline 约束。
+            let retry_attempt = super::candidate_executor::MAX_UPSTREAM_CAPACITY_RETRIES
+                .saturating_sub(capacity_retry_budget_remaining)
+                as u32;
+            if !super::super::support::capacity::sleep_capacity_wait(
+                upstream_retry_after.as_deref(),
+                retry_attempt,
+                request_deadline,
+            ) {
+                log::warn!(
+                    "event=gateway_upstream_capacity_recovery_deadline trace_id={} account_id={} retry_attempt={}",
+                    trace_id,
+                    account_id,
+                    retry_attempt.saturating_add(1),
+                );
+                respond_total_timeout(
+                    request,
+                    context,
+                    trace_id,
+                    started_at,
+                    model_for_log,
+                    attempted_account_ids,
+                )?;
+                return Ok(FinalizeUpstreamResponseOutcome::Handled);
+            }
+            super::super::super::record_gateway_upstream_capacity_internal_retry();
             return Ok(FinalizeUpstreamResponseOutcome::RetrySameCandidate {
                 request,
                 reason: RetrySameCandidateReason::UpstreamCapacity,
@@ -376,6 +422,12 @@ pub(super) fn finalize_upstream_response(
         upstream_stream_failed,
         client_delivery_failed,
     );
+    // 容量预算耗尽时客户端收到一次 502 终态；日志记录同一状态，保持跨层一致。
+    let status_for_log = if should_retry_upstream_capacity && capacity_retry_budget_remaining == 0 {
+        502
+    } else {
+        status_for_log
+    };
 
     if upstream_stream_failed {
         super::super::super::mark_account_cooldown(
@@ -421,9 +473,12 @@ pub(super) fn finalize_upstream_response(
     );
     if should_retry_upstream_capacity {
         if let Some(request) = bridge.pending_failover_request.take() {
+            // 容量预算耗尽：以 502 终态结束，保留原始上游诊断；
+            // 不冷却账号、不进入网关错误后续处理。
+            super::super::super::record_gateway_upstream_capacity_exhausted();
             return respond_terminal(
                 request,
-                status_code,
+                502,
                 final_error.unwrap_or_else(|| "upstream capacity error".to_string()),
                 Some(trace_id),
             )

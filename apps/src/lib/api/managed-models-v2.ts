@@ -1,4 +1,6 @@
 import type {
+  ManagedModelAggregateRouteAddV2,
+  ManagedModelAggregateRouteAddV2Result,
   ManagedModelBatchStateV2Update,
   ManagedModelImportPreviewV2Result,
   ManagedModelImportV2Params,
@@ -33,6 +35,14 @@ export const managedModelsV2Client = {
   upsert(input: ManagedModelV2Upsert): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_upsert_v2",
+      withAddr({ payload: input }),
+    );
+  },
+  addAggregateRoute(
+    input: ManagedModelAggregateRouteAddV2,
+  ): Promise<ManagedModelAggregateRouteAddV2Result> {
+    return invoke<ManagedModelAggregateRouteAddV2Result>(
+      "service_managed_model_add_aggregate_route_v2",
       withAddr({ payload: input }),
     );
   },

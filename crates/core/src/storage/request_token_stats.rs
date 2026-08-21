@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use super::key_id_filters::{PairedKeyIdSqlFilter, TempKeyIdFilter};
 use super::reasoning_guard_events::GUARD_RETRY_ACTION_SQL;
 use super::{
-    now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary, ApiKeyModelTokenUsageSummary,
+    now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary,
+    ApiKeyModelTokenUsageSummary,
     ApiKeyTokenUsageSummary, DailyTokenUsageRollup, MemberDashboardUsageBreakdownSnapshot,
     ModelDailyUsageSummary, ModelTokenUsageRollup, RequestLogQuerySummary, RequestLogTodaySummary,
     RequestTokenStat, SourceTokenUsageRollup, Storage, TokenUsageRollup, TokenUsageSummary,
@@ -2366,7 +2367,95 @@ impl Storage {
                 billable_total_tokens: total_tokens.saturating_add(guard_retry_total_tokens),
                 billable_estimated_cost_usd: estimated_cost_usd + guard_retry_estimated_cost_usd,
                 cache_hit_rate: cache_hit_rate(input_tokens, cached_input_tokens),
+                budget_spent_usd: None,
+                budget_reserved_usd: None,
+                budget_held_usd: None,
+                budget_remaining_usd: None,
+                budget_over_limit: false,
             });
+        }
+
+        // Attach optional daily-budget projections from durable buckets so the
+        // page and enforcement share the same accounting scope. A budget-only
+        // in-flight API receives a zero-token summary row so reservations and
+        // held attempts remain visible before a final request log exists.
+        let budget_summaries =
+            self.list_aggregate_api_daily_spend_summaries_between(start_ts, end_ts)?;
+        let apply_budget = |item: &mut AggregateApiDailyUsageSummary| {
+            let mut found = false;
+            let mut spent_microusd = 0i64;
+            let mut reserved_microusd = 0i64;
+            let mut held_microusd = 0i64;
+            let mut remaining_microusd = 0i64;
+            let mut all_remaining_known = true;
+            let mut over_limit = false;
+            for budget in budget_summaries
+                .iter()
+                .filter(|budget| budget.aggregate_api_id == item.aggregate_api_id)
+            {
+                found = true;
+                spent_microusd = spent_microusd
+                    .saturating_add(budget.opening_spend_microusd)
+                    .saturating_add(budget.settled_spend_microusd);
+                reserved_microusd =
+                    reserved_microusd.saturating_add(budget.reserved_spend_microusd);
+                held_microusd = held_microusd.saturating_add(budget.held_spend_microusd);
+                if let Some(remaining) = budget.remaining_microusd {
+                    remaining_microusd = remaining_microusd.saturating_add(remaining);
+                } else {
+                    all_remaining_known = false;
+                }
+                over_limit |= budget.over_limit;
+            }
+            if !found {
+                return;
+            }
+            item.budget_spent_usd = Some(spent_microusd as f64 / 1_000_000.0);
+            item.budget_reserved_usd = Some(reserved_microusd as f64 / 1_000_000.0);
+            item.budget_held_usd = Some(held_microusd as f64 / 1_000_000.0);
+            item.budget_remaining_usd = all_remaining_known
+                .then_some(remaining_microusd as f64 / 1_000_000.0);
+            item.budget_over_limit = over_limit;
+        };
+        for item in items.iter_mut() {
+            apply_budget(item);
+        }
+        for budget in &budget_summaries {
+            if items
+                .iter()
+                .any(|item| item.aggregate_api_id == budget.aggregate_api_id)
+            {
+                continue;
+            }
+            let Some(api) = self.find_aggregate_api_by_id(budget.aggregate_api_id.as_str())? else {
+                continue;
+            };
+            let mut item = AggregateApiDailyUsageSummary {
+                aggregate_api_id: budget.aggregate_api_id.clone(),
+                aggregate_api_supplier_name: api.supplier_name,
+                aggregate_api_url: Some(api.url),
+                request_count: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                billable_input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                reasoning_output_tokens: 0,
+                estimated_cost_usd: 0.0,
+                guard_retry_total_tokens: 0,
+                guard_retry_estimated_cost_usd: 0.0,
+                billable_total_tokens: 0,
+                billable_estimated_cost_usd: 0.0,
+                cache_hit_rate: 0.0,
+                budget_spent_usd: None,
+                budget_reserved_usd: None,
+                budget_held_usd: None,
+                budget_remaining_usd: None,
+                budget_over_limit: false,
+            };
+            apply_budget(&mut item);
+            items.push(item);
         }
         Ok(items)
     }

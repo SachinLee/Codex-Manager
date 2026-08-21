@@ -1,7 +1,8 @@
 use super::{
     expire_omp_session_title_cache_for_tests, list_omp_session_titles_cached,
-    list_omp_session_titles_from_root, merge_request_log_session_titles, OmpSessionTitleCandidate,
-    RequestLogSessionSource, RequestLogSessionTitle,
+    list_omp_session_titles_from_root, list_pi_session_titles_from_root,
+    merge_request_log_session_titles, ExternalSessionTitleCandidate, RequestLogSessionSource,
+    RequestLogSessionTitle, MAX_PI_SESSION_ENTRY_BYTES,
 };
 use std::fs;
 use std::io::Write;
@@ -42,6 +43,41 @@ fn write_omp_session(root: &Path, id: &str, title: &str, transcript: &str) {
     .expect("write OMP fixture");
 }
 
+fn write_pi_session(root: &Path, id: &str, prompt: &str, name: Option<&str>) {
+    fs::create_dir_all(root).expect("create fixture directory");
+    let header = serde_json::json!({
+        "type": "session",
+        "version": 3,
+        "id": id,
+        "timestamp": "2026-07-30T00:00:00.000Z",
+        "cwd": "D:/work/pi-example"
+    });
+    let user_message = serde_json::json!({
+        "type": "message",
+        "id": "11111111",
+        "parentId": null,
+        "timestamp": "2026-07-30T00:00:01.000Z",
+        "message": { "role": "user", "content": prompt }
+    });
+    let mut entries = vec![header.to_string(), user_message.to_string()];
+    if let Some(name) = name {
+        entries.push(
+            serde_json::json!({
+                "type": "session_info",
+                "id": "22222222",
+                "parentId": "11111111",
+                "timestamp": "2026-07-30T00:00:02.000Z",
+                "name": name
+            })
+            .to_string(),
+        );
+    }
+    fs::write(
+        root.join(format!("2026-07-30T00-00-00-000Z_{id}.jsonl")),
+        format!("{}\n", entries.join("\n")),
+    )
+    .expect("write Pi fixture");
+}
 #[test]
 fn omp_title_index_reads_only_session_metadata() {
     let root = unique_temp_dir("omp-session-title");
@@ -161,6 +197,77 @@ fn omp_title_index_skips_invalid_metadata_and_missing_roots() {
 }
 
 #[test]
+fn pi_title_index_uses_first_user_prompt_when_unnamed() {
+    let root = unique_temp_dir("pi-session-title-prompt");
+    let id = "019fb0d2-4d04-7000-90dd-9c6255e994e7";
+    write_pi_session(&root, id, "  Fix   Pi\nsession title  ", None);
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, id);
+    assert_eq!(sessions[0].title.as_deref(), Some("Fix Pi session title"));
+    assert_eq!(sessions[0].cwd.as_deref(), Some("D:/work/pi-example"));
+    assert_eq!(sessions[0].source, RequestLogSessionSource::Pi);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pi_title_index_prefers_explicit_name() {
+    let root = unique_temp_dir("pi-session-title-name");
+    let id = "019fb0d2-4d04-7000-90dd-9c6255e994e8";
+    write_pi_session(
+        &root,
+        id,
+        "Fallback request title",
+        Some("Named Pi session"),
+    );
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].title.as_deref(), Some("Named Pi session"));
+    assert_eq!(sessions[0].source, RequestLogSessionSource::Pi);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pi_title_index_skips_oversized_entries_without_losing_later_names() {
+    let root = unique_temp_dir("pi-session-title-oversized-entry");
+    let id = "019fb0d2-4d04-7000-90dd-9c6255e994e9";
+    write_pi_session(&root, id, "Fallback request title", None);
+    let path = root.join(format!("2026-07-30T00-00-00-000Z_{id}.jsonl"));
+    let oversized_entry = format!(
+        "{{\"type\":\"message\",\"payload\":\"{}\"}}",
+        "x".repeat(MAX_PI_SESSION_ENTRY_BYTES)
+    );
+    let session_info = serde_json::json!({
+        "type": "session_info",
+        "id": "33333333",
+        "parentId": "11111111",
+        "timestamp": "2026-07-30T00:00:03.000Z",
+        "name": "Name after oversized entry"
+    });
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open fixture");
+    writeln!(file, "{oversized_entry}").expect("append oversized entry");
+    writeln!(file, "{session_info}").expect("append session name");
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0].title.as_deref(),
+        Some("Name after oversized entry")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+#[test]
 fn omp_title_cache_refreshes_changed_metadata_after_expiry() {
     let root = unique_temp_dir("omp-session-title-cache");
     let id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
@@ -262,7 +369,7 @@ fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
         cwd: None,
         source: RequestLogSessionSource::Codex,
     };
-    let omp_collision = OmpSessionTitleCandidate {
+    let omp_collision = ExternalSessionTitleCandidate {
         title: RequestLogSessionTitle {
             session_id: shared_id.clone(),
             title: Some("OMP 标题".to_string()),
@@ -271,7 +378,7 @@ fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
         },
         updated_at: 99,
     };
-    let omp_newer = OmpSessionTitleCandidate {
+    let omp_newer = ExternalSessionTitleCandidate {
         title: RequestLogSessionTitle {
             session_id: "019fb0d2-4d04-7000-90dd-9c6255e994e5".to_string(),
             title: Some("最新 OMP 标题".to_string()),

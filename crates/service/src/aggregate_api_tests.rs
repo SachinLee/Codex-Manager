@@ -9,11 +9,13 @@ use tiny_http::{Response, Server};
 
 use super::{
     action_path_or_default, extract_custom_balance, extract_generic_balance,
-    extract_new_api_balance, list_aggregate_api_zero_balance_statuses, list_aggregate_apis,
-    normalize_action_override, normalize_custom_balance_query_config, normalize_provider_type,
-    normalize_provider_type_value, probe_claude_endpoint, probe_codex_endpoint,
-    provider_default_url, read_aggregate_api_secret, refresh_aggregate_api_balance,
-    reset_aggregate_api_zero_balance_status, run_diagnostic_request, CustomBalanceQueryConfig,
+    extract_model_catalog_items, extract_new_api_balance, list_aggregate_api_zero_balance_statuses,
+    list_aggregate_apis, models_catalog_url, normalize_action_override,
+    normalize_custom_balance_query_config, normalize_provider_type, normalize_provider_type_value,
+    normalize_upstream_protocol, probe_claude_endpoint, probe_codex_endpoint, provider_default_url,
+    read_aggregate_api_secret, refresh_aggregate_api_balance,
+    reset_aggregate_api_zero_balance_status, run_diagnostic_request,
+    validate_upstream_protocol_combination, CustomBalanceQueryConfig,
     AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX, AGGREGATE_API_PROVIDER_COMPATIBLE,
     AGGREGATE_API_PROVIDER_GEMINI,
 };
@@ -80,7 +82,52 @@ fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
         last_balance_error: None,
         last_balance_json: None,
         enable_consecutive_failure_freeze: true,
+        upstream_protocol: None,
     }
+}
+
+#[test]
+fn upstream_protocol_normalization_preserves_null_and_accepts_explicit_values() {
+    assert_eq!(normalize_upstream_protocol(None).expect("null ok"), None);
+    assert_eq!(
+        normalize_upstream_protocol(Some("chat_completions".to_string()))
+            .expect("chat ok")
+            .as_deref(),
+        Some("chat_completions")
+    );
+    assert_eq!(
+        normalize_upstream_protocol(Some("  RESPONSES ".to_string()))
+            .expect("trim ok")
+            .as_deref(),
+        Some("responses")
+    );
+    assert!(normalize_upstream_protocol(Some("gpt".to_string())).is_err());
+    assert!(normalize_upstream_protocol(Some("".to_string())).is_err());
+}
+
+#[test]
+fn upstream_protocol_combination_allows_openai_families_and_rejects_claude_gemini() {
+    assert!(validate_upstream_protocol_combination(
+        AGGREGATE_API_PROVIDER_CODEX,
+        Some("chat_completions"),
+    )
+    .is_ok());
+    assert!(validate_upstream_protocol_combination(
+        AGGREGATE_API_PROVIDER_COMPATIBLE,
+        Some("responses"),
+    )
+    .is_ok());
+    assert!(validate_upstream_protocol_combination(AGGREGATE_API_PROVIDER_CODEX, None).is_ok());
+    assert!(validate_upstream_protocol_combination(
+        AGGREGATE_API_PROVIDER_CLAUDE,
+        Some("responses"),
+    )
+    .is_err());
+    assert!(validate_upstream_protocol_combination(
+        AGGREGATE_API_PROVIDER_GEMINI,
+        Some("chat_completions"),
+    )
+    .is_err());
 }
 
 #[test]
@@ -209,6 +256,90 @@ fn gemini_provider_type_is_normalized_independently() {
     assert_eq!(
         normalize_provider_type_value("compatible"),
         AGGREGATE_API_PROVIDER_COMPATIBLE
+    );
+}
+
+#[test]
+fn model_catalog_parser_uses_name_as_id_fallback_and_preserves_first_order() {
+    let catalog: Value = serde_json::json!({
+        "data": [
+            { "id": "model-a", "display_name": "Model A" },
+            { "name": "model-b" },
+            { "id": "model-a", "displayName": "Ignored duplicate" },
+            { "id": "   " },
+            { "name": "model-c", "displayName": "Model C" }
+        ]
+    });
+
+    let items = extract_model_catalog_items(&catalog).expect("parse catalog");
+
+    assert_eq!(
+        items
+            .into_iter()
+            .map(|item| (item.id, item.display_name))
+            .collect::<Vec<_>>(),
+        vec![
+            ("model-a".to_string(), Some("Model A".to_string())),
+            ("model-b".to_string(), Some("model-b".to_string())),
+            ("model-c".to_string(), Some("Model C".to_string())),
+        ],
+    );
+}
+
+#[test]
+fn model_catalog_parser_accepts_root_array_and_models_key() {
+    let root_array: Value = serde_json::json!([
+        { "id": "root-model" },
+        { "name": "root-unnamed" }
+    ]);
+    let from_root = extract_model_catalog_items(&root_array).expect("parse root array");
+    assert_eq!(from_root.len(), 2);
+    assert_eq!(from_root[0].id, "root-model");
+
+    let models_key: Value = serde_json::json!({ "models": [{ "id": "m1" }, { "id": "m2" }] });
+    let from_models = extract_model_catalog_items(&models_key).expect("parse models key");
+    assert_eq!(from_models.len(), 2);
+}
+
+#[test]
+fn model_catalog_parser_rejects_unsupported_shapes() {
+    assert!(extract_model_catalog_items(&Value::Null).is_err());
+    assert!(extract_model_catalog_items(&serde_json::json!({ "error": "boom" })).is_err());
+    assert!(extract_model_catalog_items(&serde_json::json!({ "data": "not-an-array" })).is_err());
+}
+
+#[test]
+fn model_catalog_url_preserves_gemini_v1beta_and_openai_v1_paths() {
+    let mut gemini = aggregate_api_with_action(None);
+    gemini.provider_type = AGGREGATE_API_PROVIDER_GEMINI.to_string();
+    gemini.url = "https://generativelanguage.googleapis.com".to_string();
+    assert_eq!(
+        models_catalog_url(&gemini),
+        "https://generativelanguage.googleapis.com/v1beta/models"
+    );
+
+    let mut gemini_with_v1beta = aggregate_api_with_action(None);
+    gemini_with_v1beta.provider_type = AGGREGATE_API_PROVIDER_GEMINI.to_string();
+    gemini_with_v1beta.url = "https://generativelanguage.googleapis.com/v1beta".to_string();
+    assert_eq!(
+        models_catalog_url(&gemini_with_v1beta),
+        "https://generativelanguage.googleapis.com/v1beta/models"
+    );
+
+    let mut compatible = aggregate_api_with_action(None);
+    compatible.provider_type = AGGREGATE_API_PROVIDER_COMPATIBLE.to_string();
+    compatible.url = "https://api.example.test/v1".to_string();
+    assert_eq!(
+        models_catalog_url(&compatible),
+        "https://api.example.test/v1/models"
+    );
+
+    let mut claude = aggregate_api_with_action(None);
+    claude.provider_type = AGGREGATE_API_PROVIDER_CLAUDE.to_string();
+    claude.url = "https://api.anthropic.test/v1".to_string();
+    assert_eq!(
+        models_catalog_url(&claude),
+        "https://api.anthropic.test/v1/models"
     );
 }
 

@@ -1,0 +1,2 @@
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用共享容量等待与终态归一化，避免多路径复制。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"验证上游响应、网关终态和客户端错误协议边界。"}

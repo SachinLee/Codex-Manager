@@ -12,6 +12,7 @@ mod account_subscriptions;
 mod accounts;
 mod accounts_sql;
 mod agent_identities;
+mod aggregate_api_daily_spend;
 mod aggregate_api_health;
 mod aggregate_api_probe_costs;
 mod aggregate_api_zero_balance;
@@ -44,11 +45,21 @@ mod settings;
 mod tokens;
 mod usage;
 
+pub use aggregate_api_daily_spend::{
+    AggregateApiDailySpendBucket, AggregateApiDailySpendSummary,
+    AggregateApiSpendReservation, AggregateApiSpendReserveOutcome,
+    DAILY_SPEND_RESERVATION_HOLD_AFTER_SECS,
+    SPEND_ATTEMPT_KIND_CAPACITY_RETRY, SPEND_ATTEMPT_KIND_CONTINUATION_RECOVERY,
+    SPEND_ATTEMPT_KIND_GUARD_RETRY, SPEND_ATTEMPT_KIND_INITIAL,
+    SPEND_ATTEMPT_KIND_TRANSPORT_RETRY, SPEND_PRICING_PROVIDER_REPORTED,
+    SPEND_PRICING_QUOTED, SPEND_PRICING_UNBOUNDED_OUTPUT, SPEND_PRICING_UNPRICED_MODEL,
+};
 pub use model_billing_v2::{
     compute_charge_v2, ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2,
     ModelPriceTierV2,
 };
 pub use model_catalog_v2::{
+    ManagedModelAggregateRouteAddV2, ManagedModelAggregateRouteAddV2Result,
     ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
     ManagedModelV2Upsert, ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
@@ -836,6 +847,7 @@ pub struct RequestLog {
     pub effective_service_tier: Option<String>,
     pub service_tier_source: Option<String>,
     pub response_adapter: Option<String>,
+    pub upstream_protocol: Option<String>,
     pub upstream_url: Option<String>,
     pub aggregate_api_supplier_name: Option<String>,
     pub aggregate_api_url: Option<String>,
@@ -1413,6 +1425,13 @@ pub struct AggregateApiDailyUsageSummary {
     pub billable_total_tokens: i64,
     pub billable_estimated_cost_usd: f64,
     pub cache_hit_rate: f64,
+    /// Optional daily-budget projection (present only when a budget bucket
+    /// exists for the API on the queried day).
+    pub budget_spent_usd: Option<f64>,
+    pub budget_reserved_usd: Option<f64>,
+    pub budget_held_usd: Option<f64>,
+    pub budget_remaining_usd: Option<f64>,
+    pub budget_over_limit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1530,6 +1549,7 @@ pub struct AggregateApi {
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
     pub enable_consecutive_failure_freeze: bool,
+    pub upstream_protocol: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1568,6 +1588,7 @@ pub struct AggregateApiListSummary {
     pub last_balance_error: Option<String>,
     pub last_balance_json: Option<String>,
     pub enable_consecutive_failure_freeze: bool,
+    pub upstream_protocol: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2659,8 +2680,24 @@ impl Storage {
         )?;
         self.apply_sql_or_compat_migration(
             "134_aggregate_api_enable_consecutive_failure_freeze",
-            include_str!("../../migrations/134_aggregate_api_enable_consecutive_failure_freeze.sql"),
+            include_str!(
+                "../../migrations/134_aggregate_api_enable_consecutive_failure_freeze.sql"
+            ),
             |s| s.ensure_aggregate_apis_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "135_aggregate_api_upstream_protocol",
+            include_str!("../../migrations/135_aggregate_api_upstream_protocol.sql"),
+            |s| s.ensure_aggregate_apis_table(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "136_request_logs_upstream_protocol",
+            include_str!("../../migrations/136_request_logs_upstream_protocol.sql"),
+            |s| s.ensure_request_log_trace_context_columns(),
+        )?;
+        self.apply_sql_migration(
+            "137_aggregate_api_daily_spend",
+            include_str!("../../migrations/137_aggregate_api_daily_spend.sql"),
         )?;
         self.apply_sql_migration(
             "128_login_sessions_group_name",

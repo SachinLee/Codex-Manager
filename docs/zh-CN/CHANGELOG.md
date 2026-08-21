@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- 聚合 API 候选可声明 `upstream_protocol`（`responses` / `chat_completions`），仅支持 Chat Completions 的上游可通过网关的共享请求转换器与规范响应转换（非流式与 SSE）服务于 Responses、Anthropic、客户端 Chat 与 Compact 流量。NULL 保持既有按客户端路径的 Claude 桥接与 Responses 行为；非 NULL 的 OpenAI 协议仅对 Codex / 通用兼容类型通过校验。
+- 聚合 API 每日费用上限改为基于每个聚合 API、每个本地自然日的持久化预算账本，并以原子预占控制上游调用。账本包含 Guard 重试与续写恢复，聚合 API 用量页与限额判断使用同一口径；未提供可计价输出上限的请求默认仍可发送，但页面会明确提示其完成后可能超过设定金额。
+
 ## [0.5.3] - 2026-08-08
 
 ### Fixed

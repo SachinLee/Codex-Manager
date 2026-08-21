@@ -149,6 +149,24 @@ pub struct ManagedModelV2 {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ManagedModelAggregateRouteAddV2 {
+    pub slug: String,
+    #[serde(default)]
+    pub display_name: String,
+    pub aggregate_api_id: String,
+    pub upstream_model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedModelAggregateRouteAddV2Result {
+    pub model: ManagedModelV2,
+    pub created: bool,
+    pub route_action: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedModelV2Upsert {
     #[serde(default)]
     pub previous_slug: Option<String>,
@@ -1802,12 +1820,173 @@ impl Storage {
     }
 
     pub fn get_enabled_model_v2(&self, slug: &str) -> Result<Option<ManagedModelV2>> {
-        let sql = format!("{MODEL_SELECT} WHERE m.slug=?1 COLLATE NOCASE AND m.enabled=1 AND m.supported_in_api=1");
+        let sql = format!(
+            "{MODEL_SELECT} WHERE m.slug=?1 COLLATE NOCASE AND m.enabled=1 AND m.supported_in_api=1"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query([slug.trim()])?;
         rows.next()?
             .map(|row| map_model(&self.conn, row))
             .transpose()
+    }
+
+    pub fn add_managed_model_aggregate_route_v2(
+        &self,
+        input: &ManagedModelAggregateRouteAddV2,
+    ) -> Result<ManagedModelAggregateRouteAddV2Result> {
+        let slug = input.slug.trim();
+        let display_name = input.display_name.trim();
+        let aggregate_api_id = input.aggregate_api_id.trim();
+        let upstream_model = input.upstream_model.trim();
+        if slug.is_empty() || aggregate_api_id.is_empty() || upstream_model.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "aggregate model route fields must not be empty".to_string(),
+            ));
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let api_exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM aggregate_apis WHERE id=?1",
+            [aggregate_api_id],
+            |row| row.get(0),
+        )?;
+        if api_exists == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+
+        let existing = tx
+            .query_row(
+                "SELECT id FROM models WHERE slug=?1 COLLATE NOCASE",
+                [slug],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let (created, route_action) = if let Some(model_id) = existing {
+            let matching_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM model_routes
+                 WHERE model_id=?1 AND source_kind='aggregate_api' AND source_id=?2",
+                [model_id.as_str(), aggregate_api_id],
+                |row| row.get(0),
+            )?;
+            let canonical = tx
+                .query_row(
+                    "SELECT id,upstream_model FROM model_routes
+                     WHERE model_id=?1 AND source_kind='aggregate_api' AND source_id=?2
+                     ORDER BY priority DESC,id ASC LIMIT 1",
+                    [model_id.as_str(), aggregate_api_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+
+            if let Some((route_id, current_upstream_model)) = canonical {
+                let changed = current_upstream_model != upstream_model;
+                let had_duplicates = matching_count > 1;
+                let now = now_ts();
+                if had_duplicates {
+                    tx.execute(
+                        "DELETE FROM model_routes
+                         WHERE model_id=?1 AND source_kind='aggregate_api' AND source_id=?2
+                           AND id<>?3",
+                        [model_id.as_str(), aggregate_api_id, route_id.as_str()],
+                    )?;
+                }
+                if changed {
+                    tx.execute(
+                        "UPDATE model_routes SET upstream_model=?1,updated_at=?2 WHERE id=?3",
+                        params![upstream_model, now, route_id],
+                    )?;
+                }
+                (
+                    false,
+                    if changed || had_duplicates {
+                        "updated"
+                    } else {
+                        "unchanged"
+                    },
+                )
+            } else {
+                let now = now_ts();
+                let route = ModelRouteV2 {
+                    source_kind: "aggregate_api".to_string(),
+                    source_id: aggregate_api_id.to_string(),
+                    upstream_model: upstream_model.to_string(),
+                    enabled: true,
+                    priority: 0,
+                    weight: 1,
+                    ..Default::default()
+                };
+                tx.execute(
+                    "INSERT INTO model_routes(id,model_id,source_kind,source_id,upstream_model,
+                    enabled,priority,weight,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+                    params![
+                        route_id(&model_id, &route),
+                        model_id,
+                        route.source_kind,
+                        route.source_id,
+                        route.upstream_model,
+                        route.enabled,
+                        route.priority,
+                        route.weight,
+                        now
+                    ],
+                )?;
+                (false, "created")
+            }
+        } else {
+            let next_sort_order: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM models",
+                [],
+                |row| row.get(0),
+            )?;
+            let model = ManagedModelV2 {
+                slug: slug.to_string(),
+                display_name: if display_name.is_empty() {
+                    slug.to_string()
+                } else {
+                    display_name.to_string()
+                },
+                origin: "custom".to_string(),
+                enabled: true,
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                sort_order: next_sort_order,
+                capabilities: Value::Object(Default::default()),
+                instructions_mode: "passthrough".to_string(),
+                fast_policy: ModelFastPolicyV2::default(),
+                price: ModelPriceV2 {
+                    price_status: "missing".to_string(),
+                    ..Default::default()
+                },
+                routes: vec![ModelRouteV2 {
+                    source_kind: "aggregate_api".to_string(),
+                    source_id: aggregate_api_id.to_string(),
+                    upstream_model: upstream_model.to_string(),
+                    enabled: true,
+                    priority: 0,
+                    weight: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            write_model(
+                &tx,
+                &ManagedModelV2Upsert {
+                    previous_slug: None,
+                    model,
+                },
+            )?;
+            (true, "created")
+        };
+
+        tx.commit()?;
+        let saved = self
+            .get_managed_model_v2(slug)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        Ok(ManagedModelAggregateRouteAddV2Result {
+            model: saved,
+            created,
+            route_action: route_action.to_string(),
+        })
     }
 
     pub fn model_catalog_v2_stats(&self) -> Result<ModelCatalogV2Stats> {
@@ -2138,6 +2317,39 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::storage::AggregateApi;
+    fn aggregate_api(id: &str) -> AggregateApi {
+        let now = now_ts();
+        AggregateApi {
+            id: id.to_string(),
+            provider_type: "compatible".to_string(),
+            supplier_name: Some("test aggregate".to_string()),
+            sort: 0,
+            url: "https://aggregate.example.test/v1".to_string(),
+            auth_type: "bearer".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: None,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
+        }
+    }
 
     fn storage() -> Storage {
         let storage = Storage::open_in_memory().expect("open storage");
@@ -3337,6 +3549,7 @@ mod tests {
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         };
         storage
             .insert_aggregate_api(&api)
@@ -3463,6 +3676,227 @@ mod tests {
             grok_after.capabilities["reasoning_efforts"],
             serde_json::json!(["low"])
         );
+    }
+    #[test]
+    fn add_aggregate_route_creates_or_merges_without_overwriting_model_metadata() {
+        let storage = storage();
+        storage
+            .insert_aggregate_api(&aggregate_api("agg-route"))
+            .expect("insert aggregate api");
+
+        let created = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "Provider-Model".to_string(),
+                display_name: "Provider Model".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-model-v1".to_string(),
+            })
+            .expect("create custom model and route");
+        assert!(created.created);
+        assert_eq!(created.route_action, "created");
+        assert_eq!(created.model.display_name, "Provider Model");
+        assert_eq!(created.model.price.price_status, "missing");
+        assert_eq!(created.model.capabilities, serde_json::json!({}));
+        assert!(created.model.permission_group_ids.is_empty());
+        assert_eq!(created.model.routes.len(), 1);
+
+        let updated = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "provider-model".to_string(),
+                display_name: "Ignored display name".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-model-v2".to_string(),
+            })
+            .expect("update same source route");
+        assert!(!updated.created);
+        assert_eq!(updated.route_action, "updated");
+        assert_eq!(updated.model.slug, "Provider-Model");
+        assert_eq!(updated.model.display_name, "Provider Model");
+        assert_eq!(updated.model.routes.len(), 1);
+        assert_eq!(updated.model.routes[0].upstream_model, "provider-model-v2");
+
+        let before = storage
+            .get_managed_model_v2("gpt-5.4")
+            .expect("read builtin model")
+            .expect("builtin exists");
+        let account_route_before = before
+            .routes
+            .iter()
+            .find(|route| route.source_kind == "account_pool")
+            .expect("builtin account route")
+            .clone();
+        let routed = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "GPT-5.4".to_string(),
+                display_name: "Ignored builtin display name".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-gpt-5.4-v1".to_string(),
+            })
+            .expect("route existing builtin");
+        assert!(!routed.created);
+        assert_eq!(routed.model.id, before.id);
+        assert_eq!(routed.model.display_name, before.display_name);
+        assert_eq!(routed.model.price, before.price);
+        assert_eq!(routed.model.user_edited, before.user_edited);
+        assert_eq!(routed.model.updated_at, before.updated_at);
+        let account_route_after = routed
+            .model
+            .routes
+            .iter()
+            .find(|route| route.source_kind == "account_pool")
+            .expect("preserved builtin account route");
+        assert_eq!(account_route_after.id, account_route_before.id);
+        assert_eq!(
+            account_route_after.upstream_model,
+            account_route_before.upstream_model
+        );
+        assert_eq!(account_route_after.enabled, account_route_before.enabled);
+        assert_eq!(account_route_after.priority, account_route_before.priority);
+        assert_eq!(account_route_after.weight, account_route_before.weight);
+
+        let mut configured = routed.model.clone();
+        let route = configured
+            .routes
+            .iter_mut()
+            .find(|route| route.source_kind == "aggregate_api" && route.source_id == "agg-route")
+            .expect("aggregate route");
+        route.enabled = false;
+        route.priority = 7;
+        route.weight = 3;
+        let route_id = route.id.clone();
+        storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                previous_slug: Some(configured.slug.clone()),
+                model: configured,
+            })
+            .expect("configure aggregate route");
+
+        let preserved = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "gpt-5.4".to_string(),
+                display_name: "Ignored again".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-gpt-5.4-v2".to_string(),
+            })
+            .expect("preserve route configuration");
+        let route = preserved
+            .model
+            .routes
+            .iter()
+            .find(|route| route.source_kind == "aggregate_api" && route.source_id == "agg-route")
+            .expect("updated aggregate route");
+        assert_eq!(route.id, route_id);
+        assert!(!route.enabled);
+        assert_eq!(route.priority, 7);
+        assert_eq!(route.weight, 3);
+        assert_eq!(route.upstream_model, "provider-gpt-5.4-v2");
+        let unchanged = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "gpt-5.4".to_string(),
+                display_name: "Ignored unchanged name".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-gpt-5.4-v2".to_string(),
+            })
+            .expect("keep matching aggregate route");
+        assert_eq!(unchanged.route_action, "unchanged");
+
+        storage
+            .conn
+            .execute(
+                "INSERT INTO model_routes(
+                    id,model_id,source_kind,source_id,upstream_model,
+                    enabled,priority,weight,created_at,updated_at
+                 ) VALUES(?1,(SELECT id FROM models WHERE slug=?2),?3,?4,?5,?6,?7,?8,?9,?9)",
+                rusqlite::params![
+                    "priority-eight-route",
+                    "gpt-5.4",
+                    "aggregate_api",
+                    "agg-route",
+                    "legacy-upstream-model",
+                    true,
+                    8,
+                    4,
+                    now_ts(),
+                ],
+            )
+            .expect("insert duplicate aggregate route");
+        let deduplicated = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "gpt-5.4".to_string(),
+                display_name: "Ignored duplicate name".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-gpt-5.4-v3".to_string(),
+            })
+            .expect("deduplicate aggregate routes");
+        let routes = deduplicated
+            .model
+            .routes
+            .iter()
+            .filter(|route| route.source_kind == "aggregate_api" && route.source_id == "agg-route")
+            .collect::<Vec<_>>();
+        assert_eq!(deduplicated.route_action, "updated");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "priority-eight-route");
+        assert!(routes[0].enabled);
+        assert_eq!(routes[0].priority, 8);
+        assert_eq!(routes[0].weight, 4);
+        assert_eq!(routes[0].upstream_model, "provider-gpt-5.4-v3");
+
+        storage
+            .conn
+            .execute(
+                "INSERT INTO model_routes(
+                    id,model_id,source_kind,source_id,upstream_model,
+                    enabled,priority,weight,created_at,updated_at
+                 ) VALUES(?1,(SELECT id FROM models WHERE slug=?2),?3,?4,?5,?6,?7,?8,?9,?9)",
+                rusqlite::params![
+                    "target-upstream-duplicate",
+                    "gpt-5.4",
+                    "aggregate_api",
+                    "agg-route",
+                    "provider-gpt-5.4-v4",
+                    true,
+                    7,
+                    1,
+                    now_ts(),
+                ],
+            )
+            .expect("insert target-upstream duplicate route");
+        let conflict_free = storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "gpt-5.4".to_string(),
+                display_name: "Ignored duplicate name".to_string(),
+                aggregate_api_id: "agg-route".to_string(),
+                upstream_model: "provider-gpt-5.4-v4".to_string(),
+            })
+            .expect("delete duplicate before updating canonical route");
+        let routes = conflict_free
+            .model
+            .routes
+            .iter()
+            .filter(|route| route.source_kind == "aggregate_api" && route.source_id == "agg-route")
+            .collect::<Vec<_>>();
+        assert_eq!(conflict_free.route_action, "updated");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "priority-eight-route");
+        assert_eq!(routes[0].upstream_model, "provider-gpt-5.4-v4");
+    }
+
+    #[test]
+    fn add_aggregate_route_rejects_unknown_api_without_creating_model() {
+        let storage = storage();
+        assert!(storage
+            .add_managed_model_aggregate_route_v2(&ManagedModelAggregateRouteAddV2 {
+                slug: "uncreated-model".to_string(),
+                display_name: "Uncreated Model".to_string(),
+                aggregate_api_id: "unknown-api".to_string(),
+                upstream_model: "upstream-model".to_string(),
+            })
+            .is_err());
+        assert!(storage
+            .get_managed_model_v2("uncreated-model")
+            .expect("read catalog")
+            .is_none());
     }
     #[test]
     fn fallback_model_slugs_round_trip_and_validate() {

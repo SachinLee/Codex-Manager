@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/codexmanager-service/backend/grok-billing.md", "reason": "Usage/billing normalization contract: terminal snapshot replaces running value, missing vs explicit-zero semantics, exactly-once mapping into billing — directly constrains Phase 3/5 usage conversion."}
+{"file": ".trellis/spec/codexmanager-service/backend/model-catalog-billing.md", "reason": "Model catalog long-context billing: global tier selection and immutable billing audit — Aggregate Chat candidates must feed existing billing paths unchanged."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "R6 cross-layer sync: storage, service RPC, Tauri/Web, frontend types, normalizer, modal — new field spans 3+ layers."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Phase 2 extracts one shared Responses->Chat converter and removes duplicate conversion logic; search-before-create rule applies."}

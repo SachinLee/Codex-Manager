@@ -15,6 +15,9 @@ const MAX_OMP_DIRECTORY_ENTRIES: usize = 16_000;
 const MAX_OMP_PROJECT_DIRECTORIES: usize = 512;
 const MAX_OMP_TITLE_SLOT_BYTES: usize = 1_024;
 const MAX_OMP_SESSION_HEADER_BYTES: usize = 3 * 1024;
+const MAX_PI_SESSION_HEADER_BYTES: usize = 4 * 1024;
+const MAX_PI_SESSION_ENTRY_BYTES: usize = 16 * 1024;
+const MAX_PI_SESSION_ENTRIES: usize = 4_096;
 const MAX_SESSION_ID_BYTES: usize = 256;
 const MAX_TITLE_BYTES: usize = 256;
 const MAX_CWD_BYTES: usize = 4 * 1024;
@@ -25,6 +28,7 @@ const OMP_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) enum RequestLogSessionSource {
     Codex,
     Omp,
+    Pi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -37,27 +41,32 @@ pub(crate) struct RequestLogSessionTitle {
 }
 
 #[derive(Debug, Clone)]
-struct OmpSessionTitleCandidate {
+struct ExternalSessionTitleCandidate {
     title: RequestLogSessionTitle,
     updated_at: i64,
 }
 
 #[derive(Debug, Clone)]
-struct CachedOmpSessionTitle {
+struct CachedSessionTitle {
     modified_at: Option<SystemTime>,
     size: u64,
-    candidate: Option<OmpSessionTitleCandidate>,
+    candidate: Option<ExternalSessionTitleCandidate>,
 }
 
 #[derive(Default)]
-struct OmpSessionTitleCache {
+struct SessionTitleCache {
     root: Option<PathBuf>,
     refreshed_at: Option<Instant>,
-    entries: HashMap<PathBuf, CachedOmpSessionTitle>,
+    entries: HashMap<PathBuf, CachedSessionTitle>,
 }
 
-static OMP_SESSION_TITLE_CACHE: LazyLock<Mutex<OmpSessionTitleCache>> =
-    LazyLock::new(|| Mutex::new(OmpSessionTitleCache::default()));
+static OMP_SESSION_TITLE_CACHE: LazyLock<Mutex<SessionTitleCache>> =
+    LazyLock::new(|| Mutex::new(SessionTitleCache::default()));
+static PI_SESSION_TITLE_CACHE: LazyLock<Mutex<SessionTitleCache>> =
+    LazyLock::new(|| Mutex::new(SessionTitleCache::default()));
+
+type SessionTitleReader =
+    fn(&OmpSessionFile, Option<&Metadata>) -> Option<ExternalSessionTitleCandidate>;
 
 #[derive(Clone)]
 struct OmpSessionDirectory {
@@ -101,23 +110,28 @@ pub(crate) fn list_request_log_session_titles(
             ))
         })
         .collect();
+    let mut external_titles = list_pi_session_titles_cached(&resolve_pi_sessions_root(), limit);
+    external_titles.extend(list_omp_session_titles_cached(
+        &resolve_omp_sessions_root(),
+        limit,
+    ));
     Ok(merge_request_log_session_titles(
         codex_titles,
-        list_omp_session_titles_cached(&resolve_omp_sessions_root(), limit),
+        external_titles,
         limit,
     ))
 }
 
 fn merge_request_log_session_titles(
     codex_titles: Vec<(RequestLogSessionTitle, i64)>,
-    omp_titles: Vec<OmpSessionTitleCandidate>,
+    external_titles: Vec<ExternalSessionTitleCandidate>,
     limit: usize,
 ) -> Vec<RequestLogSessionTitle> {
     let mut titles = HashMap::<String, (RequestLogSessionTitle, i64, u8)>::new();
     for (title, updated_at) in codex_titles {
         titles.insert(title.session_id.clone(), (title, updated_at, 1));
     }
-    for candidate in omp_titles {
+    for candidate in external_titles {
         let session_id = candidate.title.session_id.clone();
         titles
             .entry(session_id)
@@ -139,13 +153,28 @@ pub(crate) fn list_omp_session_titles_from_root(
     root: &Path,
     limit: usize,
 ) -> Vec<RequestLogSessionTitle> {
+    list_session_titles_from_root(root, limit, read_omp_session_title)
+}
+
+pub(crate) fn list_pi_session_titles_from_root(
+    root: &Path,
+    limit: usize,
+) -> Vec<RequestLogSessionTitle> {
+    list_session_titles_from_root(root, limit, read_pi_session_title)
+}
+
+fn list_session_titles_from_root(
+    root: &Path,
+    limit: usize,
+    read_title: SessionTitleReader,
+) -> Vec<RequestLogSessionTitle> {
     let Some(directory) = open_omp_session_directory(root) else {
         return Vec::new();
     };
     let paths = collect_omp_session_paths(&directory);
     let mut titles = paths
         .into_iter()
-        .filter_map(|path| read_omp_session_title(&path, None))
+        .filter_map(|path| read_title(&path, None))
         .collect::<Vec<_>>();
     titles.sort_by(|left, right| {
         right
@@ -160,32 +189,50 @@ pub(crate) fn list_omp_session_titles_from_root(
         .collect()
 }
 
-fn list_omp_session_titles_cached(root: &Path, limit: usize) -> Vec<OmpSessionTitleCandidate> {
+fn list_omp_session_titles_cached(root: &Path, limit: usize) -> Vec<ExternalSessionTitleCandidate> {
+    list_session_titles_cached(
+        &OMP_SESSION_TITLE_CACHE,
+        root,
+        limit,
+        read_omp_session_title,
+    )
+}
+
+fn list_pi_session_titles_cached(root: &Path, limit: usize) -> Vec<ExternalSessionTitleCandidate> {
+    list_session_titles_cached(&PI_SESSION_TITLE_CACHE, root, limit, read_pi_session_title)
+}
+
+fn list_session_titles_cached(
+    cache: &LazyLock<Mutex<SessionTitleCache>>,
+    root: &Path,
+    limit: usize,
+    read_title: SessionTitleReader,
+) -> Vec<ExternalSessionTitleCandidate> {
     let prior_entries = {
-        let cache = OMP_SESSION_TITLE_CACHE
+        let cache_guard = cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if cache.root.as_deref() == Some(root)
-            && cache
+        if cache_guard.root.as_deref() == Some(root)
+            && cache_guard
                 .refreshed_at
                 .is_some_and(|refreshed_at| refreshed_at.elapsed() < OMP_CACHE_REFRESH_INTERVAL)
         {
-            return cached_omp_session_titles(&cache.entries, limit);
+            return cached_session_titles(&cache_guard.entries, limit);
         }
-        if cache.root.as_deref() == Some(root) {
-            cache.entries.clone()
+        if cache_guard.root.as_deref() == Some(root) {
+            cache_guard.entries.clone()
         } else {
             HashMap::new()
         }
     };
 
     let Some(directory) = open_omp_session_directory(root) else {
-        let mut cache = OMP_SESSION_TITLE_CACHE
+        let mut cache_guard = cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache.root = Some(root.to_path_buf());
-        cache.refreshed_at = Some(Instant::now());
-        cache.entries.clear();
+        cache_guard.root = Some(root.to_path_buf());
+        cache_guard.refreshed_at = Some(Instant::now());
+        cache_guard.entries.clear();
         return Vec::new();
     };
     let paths = collect_omp_session_paths(&directory);
@@ -202,11 +249,11 @@ fn list_omp_session_titles_cached(root: &Path, limit: usize) -> Vec<OmpSessionTi
         {
             entry.candidate.clone()
         } else {
-            read_omp_session_title(&path, Some(&metadata))
+            read_title(&path, Some(&metadata))
         };
         next_entries.insert(
             path.cache_path,
-            CachedOmpSessionTitle {
+            CachedSessionTitle {
                 modified_at,
                 size: metadata.len(),
                 candidate,
@@ -214,19 +261,19 @@ fn list_omp_session_titles_cached(root: &Path, limit: usize) -> Vec<OmpSessionTi
         );
     }
 
-    let mut cache = OMP_SESSION_TITLE_CACHE
+    let mut cache_guard = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.root = Some(root.to_path_buf());
-    cache.refreshed_at = Some(Instant::now());
-    cache.entries = next_entries;
-    cached_omp_session_titles(&cache.entries, limit)
+    cache_guard.root = Some(root.to_path_buf());
+    cache_guard.refreshed_at = Some(Instant::now());
+    cache_guard.entries = next_entries;
+    cached_session_titles(&cache_guard.entries, limit)
 }
 
-fn cached_omp_session_titles(
-    entries: &HashMap<PathBuf, CachedOmpSessionTitle>,
+fn cached_session_titles(
+    entries: &HashMap<PathBuf, CachedSessionTitle>,
     limit: usize,
-) -> Vec<OmpSessionTitleCandidate> {
+) -> Vec<ExternalSessionTitleCandidate> {
     let mut titles = entries
         .values()
         .filter_map(|entry| entry.candidate.clone())
@@ -399,7 +446,7 @@ fn read_omp_session_metadata(path: &OmpSessionFile) -> Option<Metadata> {
 fn read_omp_session_title(
     path: &OmpSessionFile,
     expected_metadata: Option<&Metadata>,
-) -> Option<OmpSessionTitleCandidate> {
+) -> Option<ExternalSessionTitleCandidate> {
     let mut file = open_omp_session_file(path).ok()?;
     let opened_metadata = file.metadata().ok()?;
     if !opened_metadata.is_file()
@@ -420,7 +467,7 @@ fn read_omp_session_title(
     let title = normalize_title(title_slot.get("title").and_then(Value::as_str))
         .or_else(|| normalize_title(session_header.get("title").and_then(Value::as_str)));
     let cwd = normalize_cwd(session_header.get("cwd").and_then(Value::as_str));
-    Some(OmpSessionTitleCandidate {
+    Some(ExternalSessionTitleCandidate {
         title: RequestLogSessionTitle {
             session_id,
             title,
@@ -429,6 +476,91 @@ fn read_omp_session_title(
         },
         updated_at: system_time_to_seconds(opened_metadata.modified().ok()),
     })
+}
+
+fn read_pi_session_title(
+    path: &OmpSessionFile,
+    expected_metadata: Option<&Metadata>,
+) -> Option<ExternalSessionTitleCandidate> {
+    let mut file = open_omp_session_file(path).ok()?;
+    let opened_metadata = file.metadata().ok()?;
+    if !opened_metadata.is_file()
+        || metadata_is_unsafe_link_or_reparse(&opened_metadata)
+        || expected_metadata.is_some_and(|expected| !metadata_matches(expected, &opened_metadata))
+    {
+        return None;
+    }
+    let session_header =
+        parse_json_object(&read_jsonl_line(&mut file, MAX_PI_SESSION_HEADER_BYTES)?)?;
+    if session_header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    let session_id = normalize_omp_session_id(session_header.get("id").and_then(Value::as_str))?;
+    let cwd = normalize_cwd(session_header.get("cwd").and_then(Value::as_str));
+    let mut explicit_name = None;
+    let mut first_user_title = None;
+
+    // Pi records names and messages as JSONL entries after the session header.
+    for _ in 0..MAX_PI_SESSION_ENTRIES {
+        let Some(line) = read_pi_session_entry(&mut file) else {
+            break;
+        };
+        let Some(entry) = parse_json_object(&line) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) == Some("session_info") {
+            if let Some(name) = normalize_title(entry.get("name").and_then(Value::as_str)) {
+                explicit_name = Some(name);
+            }
+            continue;
+        }
+        if first_user_title.is_none() {
+            first_user_title = pi_user_message_title(&entry);
+        }
+    }
+
+    Some(ExternalSessionTitleCandidate {
+        title: RequestLogSessionTitle {
+            session_id,
+            title: explicit_name.or(first_user_title),
+            cwd,
+            source: RequestLogSessionSource::Pi,
+        },
+        updated_at: system_time_to_seconds(opened_metadata.modified().ok()),
+    })
+}
+
+fn pi_user_message_title(entry: &serde_json::Map<String, Value>) -> Option<String> {
+    if entry.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let message = entry.get("message")?.as_object()?;
+    if message.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    match message.get("content")? {
+        Value::String(content) => normalize_pi_prompt_title(content),
+        Value::Array(parts) => parts.iter().find_map(|part| {
+            let part = part.as_object()?;
+            (part.get("type").and_then(Value::as_str) == Some("text"))
+                .then(|| part.get("text").and_then(Value::as_str))
+                .flatten()
+                .and_then(normalize_pi_prompt_title)
+        }),
+        _ => None,
+    }
+}
+
+fn normalize_pi_prompt_title(value: &str) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title = String::new();
+    for character in normalized.chars() {
+        if title.len() + character.len_utf8() > MAX_TITLE_BYTES {
+            break;
+        }
+        title.push(character);
+    }
+    normalize_title(Some(title.as_str()))
 }
 
 #[cfg(not(windows))]
@@ -459,6 +591,32 @@ fn read_jsonl_line(file: &mut File, max_bytes: usize) -> Option<String> {
     None
 }
 
+fn read_pi_session_entry(file: &mut File) -> Option<String> {
+    let mut bytes = Vec::with_capacity(256);
+    let mut oversized = false;
+    loop {
+        let mut byte = [0_u8; 1];
+        if file.read(&mut byte).ok()? == 0 {
+            return (!bytes.is_empty() && !oversized)
+                .then(|| String::from_utf8(bytes).ok())
+                .flatten();
+        }
+        if byte[0] == b'\n' {
+            if oversized {
+                return Some(String::new());
+            }
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return String::from_utf8(bytes).ok();
+        }
+        if bytes.len() < MAX_PI_SESSION_ENTRY_BYTES {
+            bytes.push(byte[0]);
+        } else {
+            oversized = true;
+        }
+    }
+}
 fn metadata_matches(left: &Metadata, right: &Metadata) -> bool {
     left.len() == right.len() && left.modified().ok() == right.modified().ok()
 }
@@ -902,8 +1060,8 @@ fn system_time_to_seconds(value: Option<SystemTime>) -> i64 {
         .unwrap_or_default()
 }
 
-fn resolve_omp_sessions_root() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
+fn resolve_home_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .or_else(|| {
             let drive = std::env::var_os("HOMEDRIVE")?;
@@ -911,7 +1069,24 @@ fn resolve_omp_sessions_root() -> PathBuf {
             Some(PathBuf::from(drive).join(path).into_os_string())
         })
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_pi_sessions_root() -> PathBuf {
+    if let Some(session_dir) =
+        std::env::var_os("PI_CODING_AGENT_SESSION_DIR").filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(session_dir);
+    }
+    let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| resolve_home_dir().join(".pi").join("agent"));
+    agent_dir.join("sessions")
+}
+
+fn resolve_omp_sessions_root() -> PathBuf {
+    let home = resolve_home_dir();
     let config_dir = std::env::var_os("PI_CONFIG_DIR")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| ".omp".into());

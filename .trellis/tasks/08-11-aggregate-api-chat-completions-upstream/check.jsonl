@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/codexmanager-service/backend/grok-billing.md", "reason": "Verify usage tests distinguish missing, partial, explicit-zero and exactly-once normalization for converted Chat usage."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify API parity: storage, service, RPC, Tauri, Web, frontend types, normalizer, UI stay synchronized."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Verify no duplicated Chat->Responses / Chat->Anthropic state machines and one shared request converter remains."}

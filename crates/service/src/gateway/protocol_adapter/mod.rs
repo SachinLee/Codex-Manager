@@ -1,11 +1,16 @@
 mod request_router;
+mod responses_to_chat_completions;
 mod types;
 
 pub(super) use self::request_router::{
     adapt_openai_responses_to_anthropic_messages, adapt_request_for_protocol,
 };
+pub(super) use self::responses_to_chat_completions::{
+    convert_responses_request_to_chat_completions, ChatConversionFailure,
+};
 pub(super) use self::types::{
-    AdaptedGatewayRequest, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
+    AdaptedGatewayRequest, GeminiStreamOutputMode, ResponseAdapter, ResponsePlan,
+    ToolNameRestoreMap, UpstreamProtocol,
 };
 
 pub(super) fn build_gemini_error_body(message: &str) -> Vec<u8> {

@@ -135,3 +135,27 @@ fn zero_balance_status_reset_requires_an_aggregate_api_id() {
     .expect("zero-balance reset response");
     assert_ne!(error_message(&with_api_id), "aggregate api id required");
 }
+
+#[test]
+fn models_discover_accepts_id_and_api_id() {
+    let missing = try_handle(&rpc_request(
+        "aggregateApi/models/discover",
+        serde_json::json!({}),
+    ))
+    .expect("discover response");
+    assert_eq!(error_message(&missing), "aggregate api id required");
+
+    let with_id = try_handle(&rpc_request(
+        "aggregateApi/models/discover",
+        serde_json::json!({ "id": "ag_test" }),
+    ))
+    .expect("discover response");
+    assert_ne!(error_message(&with_id), "aggregate api id required");
+
+    let with_api_id = try_handle(&rpc_request(
+        "aggregateApi/models/discover",
+        serde_json::json!({ "apiId": "ag_test" }),
+    ))
+    .expect("discover response");
+    assert_ne!(error_message(&with_api_id), "aggregate api id required");
+}

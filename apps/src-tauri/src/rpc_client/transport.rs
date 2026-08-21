@@ -12,6 +12,7 @@ const RPC_BULK_USAGE_REFRESH_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_ACCOUNT_IMPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT: Duration = Duration::from_secs(60);
+const RPC_AGGREGATE_API_MODELS_DISCOVER_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 函数 `rpc_io_timeout`
 ///
@@ -49,6 +50,13 @@ fn rpc_io_timeout(method: &str, params: Option<&serde_json::Value>) -> Duration 
 
     if method == "codexSkills/registrySearch" {
         return RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT;
+    }
+
+    // Upstream /models discovery performs a bounded network request against the saved
+    // aggregate API with a 15s service-side timeout; keep the desktop RPC socket open
+    // so slow-but-valid catalogs are not truncated by the default 10s IO timeout.
+    if method == "aggregateApi/models/discover" {
+        return RPC_AGGREGATE_API_MODELS_DISCOVER_IO_TIMEOUT;
     }
 
     if method == "account/usage/refresh"
@@ -233,7 +241,8 @@ pub(crate) fn rpc_call(
 #[cfg(test)]
 mod tests {
     use super::{
-        rpc_io_timeout, RPC_BULK_USAGE_REFRESH_IO_TIMEOUT, RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT,
+        rpc_io_timeout, RPC_AGGREGATE_API_MODELS_DISCOVER_IO_TIMEOUT,
+        RPC_BULK_USAGE_REFRESH_IO_TIMEOUT, RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT,
         RPC_CODEX_SKILLS_SEARCH_IO_TIMEOUT, RPC_DEFAULT_IO_TIMEOUT,
     };
 
@@ -252,6 +261,14 @@ mod tests {
     fn bulk_usage_refresh_uses_extended_timeout() {
         let timeout = rpc_io_timeout("account/usage/refresh", None);
         assert_eq!(timeout, RPC_BULK_USAGE_REFRESH_IO_TIMEOUT);
+    }
+
+    #[test]
+    fn models_discover_uses_extended_timeout() {
+        assert_eq!(
+            rpc_io_timeout("aggregateApi/models/discover", None),
+            RPC_AGGREGATE_API_MODELS_DISCOVER_IO_TIMEOUT
+        );
     }
 
     /// 函数 `single_usage_refresh_keeps_default_timeout`

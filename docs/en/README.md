@@ -21,7 +21,7 @@ CodexManager is a local desktop + service-process account pool manager and gatew
 - Usage display: 5-hour + 7-day windows, single-window accounts, and official extra buckets such as Code Review / Spark.
 - Account authorization: `chatgpt.com` browser OAuth and Device Code login; browser OAuth also supports manual callback parsing.
 - Platform keys: create, disable, delete, model binding, reasoning tier, and service tier; administrators can bind a key to a custom account group, intersect it with the plan filter, and rotate only inside that authorized pool.
-- Aggregate API: create/edit/test third-party relay upstreams with supplier naming and priority ordering.
+- Aggregate API: create, edit, test third-party relay upstreams with supplier naming and priority ordering; read an upstream `/models` catalog on demand, then let administrators confirm creation or reuse of a local model and an explicit route for that API without persisting discovery results or inferring prices, capabilities, or billing permissions.
 - Plugin center: built-in, private, and custom source modes with task/log views and Rhai integration.
 - Skills and plugins: `/skills/` separates **Skills Installation** from **Codex Plugin Installation**. Skills can be installed individually from built-in or custom GitHub repositories and skills.sh search results, or imported from ZIPs and existing directories; the native Codex Marketplace remains available for complete plugin installation, and `.system` skills stay read-only.
 - Desktop project launcher: bookmark local project folders; on Windows and macOS, open the workspace in the ChatGPT Codex App, while Sessions keeps the local Codex CLI `resume` picker with the local CodexManager profile. Web and Docker never access device folders.

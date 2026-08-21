@@ -53,7 +53,7 @@ export function SessionInfoCell({
 
   const title = String(session?.title || "").trim();
   const cwd = String(session?.cwd || "").trim();
-  const source = session?.source === "omp" ? "OMP" : "Codex";
+  const source = session?.source === "omp" ? "OMP" : session?.source === "pi" ? "Pi" : "Codex";
   const displayTitle = normalizedSessionId
     ? title || (session ? t("无标题会话") : t("未匹配会话"))
     : t("未记录会话 ID");

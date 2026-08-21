@@ -75,6 +75,7 @@ fn insert_aggregate_api(storage: &Storage, aggregate_id: &str, addr: &str, actio
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         })
         .expect("insert aggregate API");
     storage

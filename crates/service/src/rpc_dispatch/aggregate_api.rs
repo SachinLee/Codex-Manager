@@ -5,8 +5,9 @@ use codexmanager_core::rpc::types::{
 
 use crate::{
     clear_aggregate_api_capability_observation, create_aggregate_api, delete_aggregate_api,
-    diagnose_aggregate_api_capabilities, get_aggregate_api_capabilities, get_aggregate_api_health,
-    list_aggregate_api_health, list_aggregate_api_probe_costs, list_aggregate_api_runtime_statuses,
+    diagnose_aggregate_api_capabilities, discover_aggregate_api_models,
+    get_aggregate_api_capabilities, get_aggregate_api_health, list_aggregate_api_health,
+    list_aggregate_api_probe_costs, list_aggregate_api_runtime_statuses,
     list_aggregate_api_zero_balance_statuses, list_aggregate_apis,
     list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
     read_aggregate_api_secret, refresh_aggregate_api_balance,
@@ -123,6 +124,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let balance_query_config_json = super::string_param(req, "balanceQueryConfigJson");
             let enable_consecutive_failure_freeze =
                 super::bool_param(req, "enableConsecutiveFailureFreeze");
+            let upstream_protocol = super::string_param(req, "upstreamProtocol");
             super::value_or_error(create_aggregate_api(
                 url,
                 key,
@@ -146,6 +148,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 balance_query_user_id,
                 balance_query_config_json,
                 enable_consecutive_failure_freeze,
+                upstream_protocol,
             ))
         }
         "aggregateApi/update" => {
@@ -178,6 +181,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let balance_query_config_json = super::string_param(req, "balanceQueryConfigJson");
             let enable_consecutive_failure_freeze =
                 super::bool_param(req, "enableConsecutiveFailureFreeze");
+            let upstream_protocol = super::string_param(req, "upstreamProtocol");
             super::ok_or_error(update_aggregate_api(
                 api_id,
                 url,
@@ -203,6 +207,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 balance_query_user_id,
                 balance_query_config_json,
                 enable_consecutive_failure_freeze,
+                upstream_protocol,
             ))
         }
         "aggregateApi/readSecret" => {
@@ -216,6 +221,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "aggregateApi/testConnection" => {
             let api_id = api_id_param(req).unwrap_or("");
             super::value_or_error(test_aggregate_api_connection(api_id))
+        }
+        "aggregateApi/models/discover" => {
+            let api_id = api_id_param(req).unwrap_or("");
+            super::value_or_error(discover_aggregate_api_models(api_id))
         }
         "aggregateApi/diagnoseCapabilities" => {
             super::value_or_error(diagnose_aggregate_api_capabilities(

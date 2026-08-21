@@ -29,6 +29,8 @@ mod openai_responses;
 mod passthrough;
 #[path = "stream_readers/responses_from_anthropic.rs"]
 mod responses_from_anthropic;
+#[path = "stream_readers/responses_from_chat_completions.rs"]
+mod responses_from_chat_completions;
 
 pub(crate) use anthropic::AnthropicSseReader;
 pub(crate) use chat_completions::ChatCompletionsFromResponsesSseReader;
@@ -47,6 +49,7 @@ pub(crate) use images::ImagesFromResponsesSseReader;
 pub(crate) use openai_responses::OpenAIResponsesPassthroughSseReader;
 pub(crate) use passthrough::PassthroughSseUsageReader;
 pub(crate) use responses_from_anthropic::ResponsesFromAnthropicSseReader;
+pub(crate) use responses_from_chat_completions::ResponsesFromChatCompletionsSseReader;
 
 #[cfg(test)]
 struct SseKeepaliveRuntimeGuard {

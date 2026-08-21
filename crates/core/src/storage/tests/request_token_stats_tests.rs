@@ -1,7 +1,10 @@
 use rusqlite::{params, params_from_iter, types::Value};
 
 use super::{RequestTokenStat, Storage};
-use crate::storage::{ApiKey, ApiKeyOwner, AppUser, RequestLog};
+use crate::storage::{
+    AggregateApi, ApiKey, ApiKeyOwner, AppUser, RequestLog, SPEND_ATTEMPT_KIND_INITIAL,
+    SPEND_PRICING_QUOTED,
+};
 
 fn collect_query_plan_details_with_params(
     storage: &Storage,
@@ -1982,6 +1985,70 @@ fn aggregate_api_daily_usage_falls_back_to_actual_source_context() {
     assert_eq!(items[0].request_count, 1);
     assert_eq!(items[0].total_tokens, 150);
     assert_float_close(items[0].estimated_cost_usd, 0.15);
+}
+
+#[test]
+fn aggregate_api_daily_usage_includes_budget_only_inflight_api() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: "agg-budget".to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: Some("budget".to_string()),
+            sort: 0,
+            url: "https://budget.example.test".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            cost_multiplier: 1.0,
+            daily_spend_limit_usd: Some(5.0),
+            status: "active".to_string(),
+            created_at: 1_000,
+            updated_at: 1_000,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+            enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
+        })
+        .expect("insert api");
+    storage
+        .reserve_aggregate_api_daily_spend(
+            "agg-budget",
+            0,
+            86_400,
+            Some(5_000_000),
+            "budget-only-attempt",
+            Some("trace-budget-only"),
+            SPEND_ATTEMPT_KIND_INITIAL,
+            SPEND_PRICING_QUOTED,
+            1_250_000,
+        )
+        .expect("reserve budget");
+
+    let items = storage
+        .summarize_request_token_stats_by_aggregate_api_between(0, 86_400)
+        .expect("summarize aggregate api usage");
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(item.aggregate_api_id, "agg-budget");
+    assert_eq!(item.request_count, 0);
+    assert_eq!(item.budget_spent_usd, Some(0.0));
+    assert_eq!(item.budget_reserved_usd, Some(1.25));
+    assert_eq!(item.budget_held_usd, Some(0.0));
+    assert_eq!(item.budget_remaining_usd, Some(3.75));
+    assert!(!item.budget_over_limit);
 }
 
 #[test]

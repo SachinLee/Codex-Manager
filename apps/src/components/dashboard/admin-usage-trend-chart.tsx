@@ -28,6 +28,7 @@ import {
 } from "@/lib/dashboard/format";
 import type { AppLocale } from "@/lib/i18n/config";
 import { useI18n } from "@/lib/i18n/provider";
+import { formatCacheRateValue, formatUsdAmount } from "@/lib/utils/billing";
 import type {
   DashboardAdminUsageSummary,
   DashboardTokenUsage,
@@ -89,6 +90,14 @@ function metricValue(usage: DashboardTokenUsage, metric: AdminUsageMetric): numb
 
 function finiteChartIndex(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function tooltipCacheRate(usage: DashboardTokenUsage): string {
+  const input = Math.max(0, usage.inputTokens);
+  if (input <= 0) return formatCacheRateValue(0);
+  return formatCacheRateValue(
+    Math.min(Math.max(0, usage.cachedInputTokens), input) / input,
+  );
 }
 
 function fallbackSeries(summary: DashboardAdminUsageSummary): DashboardUsageSeriesPoint[] {
@@ -197,17 +206,21 @@ export function AdminUsageTrendChart({
         granularity,
         locale,
       );
-      const row: Record<string, number | string> = {
+      const row: Record<string, number | string | DashboardTokenUsage> = {
         bucketStartTs: point.bucketStartTs,
         label,
         name: label,
         total: metricValue(point.usage, metric),
+        total_usage: point.usage,
       };
       for (const definition of modelDefinitions) {
         const usage = modelPointMaps
           .get(definition.model)
           ?.get(point.bucketStartTs);
         row[definition.key] = usage ? metricValue(usage, metric) : 0;
+        if (usage) {
+          row[`${definition.key}_usage`] = usage;
+        }
       }
       return row;
     });
@@ -577,18 +590,45 @@ export function AdminUsageTrendChart({
                   <ChartTooltipContent
                     indicator="line"
                     labelFormatter={(value) => value}
-                    formatter={(value, name) =>
-                      Number(value) === 0 && String(name) !== "total" ? null : (
-                        <div className="flex min-w-40 items-center justify-between gap-4">
-                          <span className="truncate text-muted-foreground">
-                            {String(name) === "total" ? t("全部模型") : String(name)}
-                          </span>
-                          <span className="font-mono font-medium text-foreground">
-                            {formatMetric(Number(value))}
-                          </span>
+                    formatter={(value, name, item) => {
+                      if (Number(value) === 0 && String(name) !== "total") {
+                        return null;
+                      }
+                      const usageKey = `${String(item.dataKey)}_usage`;
+                      const usage = item.payload[usageKey] as
+                        | DashboardTokenUsage
+                        | undefined;
+                      const displayName =
+                        String(name) === "total" ? t("全部模型") : String(name);
+                      return (
+                        <div className="flex min-w-40 flex-col gap-0.5">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="truncate text-muted-foreground">
+                              {displayName}
+                            </span>
+                            <span className="font-mono font-medium text-foreground">
+                              {formatMetric(Number(value))}
+                            </span>
+                          </div>
+                          {usage != null ? (
+                            <>
+                              <div className="flex items-center justify-between gap-4 text-[10px] text-muted-foreground">
+                                <span>{t("费用")}</span>
+                                <span className="font-mono">
+                                  {formatUsdAmount(usage.estimatedCostUsd)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4 text-[10px] text-muted-foreground">
+                                <span>{t("缓存率")}</span>
+                                <span className="font-mono">
+                                  {tooltipCacheRate(usage)}
+                                </span>
+                              </div>
+                            </>
+                          ) : null}
                         </div>
-                      )
-                    }
+                      );
+                    }}
                   />
                 }
               />

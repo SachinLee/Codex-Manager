@@ -192,6 +192,7 @@ fn gateway_freeze_switch_gates_memory_cooldown() {
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: false,
+            upstream_protocol: None,
         })
         .expect("insert aggregate api");
 

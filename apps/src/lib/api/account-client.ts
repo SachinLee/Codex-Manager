@@ -13,6 +13,7 @@ import {
   normalizeModelDailyUsageStats,
   normalizeAggregateApiReasoningGuardStats,
   normalizeAggregateApiList,
+  normalizeAggregateApiModelDiscoveryResult,
   normalizeAggregateApiSecretResult,
   normalizeAggregateApiTestResult,
   normalizeAggregateApiRuntimeStatus,
@@ -81,6 +82,7 @@ import {
   AggregateApiBalanceRefreshResult,
   AggregateApiCreateResult,
   AggregateApiSecretResult,
+  AggregateApiModelDiscoveryResult,
   AggregateApiTestResult,
   AggregateApiCapabilityDiagnosticsResult,
   AggregateApiCapabilitiesResult,
@@ -230,6 +232,7 @@ interface AggregateApiPayload {
   balanceQueryUserId?: string | null;
   balanceQueryConfigJson?: string | null;
   enableConsecutiveFailureFreeze?: boolean | null;
+  upstreamProtocol?: string | null;
 }
 
 const MAX_IMPORT_RPC_BODY_BYTES = 4 * 1024 * 1024;
@@ -932,6 +935,10 @@ export const accountClient = {
           typeof params.enableConsecutiveFailureFreeze === "boolean"
             ? params.enableConsecutiveFailureFreeze
             : null,
+        upstreamProtocol:
+          typeof params.upstreamProtocol === "string"
+            ? params.upstreamProtocol
+            : null,
       })
     );
     return normalizeAggregateApiCreateResult(result);
@@ -996,6 +1003,10 @@ export const accountClient = {
           typeof params.enableConsecutiveFailureFreeze === "boolean"
             ? params.enableConsecutiveFailureFreeze
             : null,
+        upstreamProtocol:
+          typeof params.upstreamProtocol === "string"
+            ? params.upstreamProtocol
+            : null,
       })
     ),
   deleteAggregateApi: (apiId: string) =>
@@ -1013,6 +1024,13 @@ export const accountClient = {
       withAddr({ id: apiId })
     );
     return normalizeAggregateApiTestResult(result);
+  },
+  async discoverAggregateApiModels(apiId: string): Promise<AggregateApiModelDiscoveryResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_models_discover",
+      withAddr({ id: apiId })
+    );
+    return normalizeAggregateApiModelDiscoveryResult(result);
   },
   async diagnoseAggregateApiCapabilities(
     apiId: string,

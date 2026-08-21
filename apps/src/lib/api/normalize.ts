@@ -25,6 +25,8 @@ import {
   AggregateApiHealthEvent,
   AggregateApiHealthState,
   AggregateApiHealthSummary,
+  AggregateApiModelDiscoveryItem,
+  AggregateApiModelDiscoveryResult,
   AggregateApiProbeCostSummary,
   AggregateApiSecretResult,
   AggregateApiTestResult,
@@ -534,6 +536,19 @@ export function normalizeAggregateApiDailyUsageStats(
           record.billableEstimatedCostUsd ?? record.billable_estimated_cost_usd
         ) ?? base.estimatedCostUsd
       ),
+      budgetSpentUsd: toNullableNumber(
+        record.budgetSpentUsd ?? record.budget_spent_usd,
+      ) ?? undefined,
+      budgetReservedUsd: toNullableNumber(
+        record.budgetReservedUsd ?? record.budget_reserved_usd,
+      ) ?? undefined,
+      budgetHeldUsd: toNullableNumber(
+        record.budgetHeldUsd ?? record.budget_held_usd,
+      ) ?? undefined,
+      budgetRemainingUsd: toNullableNumber(
+        record.budgetRemainingUsd ?? record.budget_remaining_usd,
+      ) ?? undefined,
+      budgetOverLimit: asBoolean(record.budgetOverLimit ?? record.budget_over_limit, false),
     });
     return result;
   }, []);
@@ -1012,6 +1027,15 @@ export function normalizeAggregateApi(item: unknown): AggregateApi | null {
       source.enableConsecutiveFailureFreeze ?? source.enable_consecutive_failure_freeze,
       true
     ),
+    upstreamProtocol: (() => {
+      const value =
+        source.upstreamProtocol ?? source.upstream_protocol;
+      if (typeof value !== "string") return null;
+      const normalized = value.trim().toLowerCase();
+      return normalized === "responses" || normalized === "chat_completions"
+        ? normalized
+        : null;
+    })(),
     modelSlugs: asStringArray(source.modelSlugs ?? source.model_slugs),
   };
 }
@@ -1298,6 +1322,34 @@ export function normalizeAggregateApiTestResult(payload: unknown): AggregateApiT
     message: asString(source.message) || null,
     testedAt: asInteger(source.testedAt ?? source.tested_at, 0, 0),
     latencyMs: asInteger(source.latencyMs ?? source.latency_ms, 0, 0),
+  };
+}
+
+export function normalizeAggregateApiModelDiscoveryResult(
+  payload: unknown
+): AggregateApiModelDiscoveryResult {
+  const source = asObject(payload);
+  const rawItems = asArray(source.items ?? source.models ?? []);
+  const items: AggregateApiModelDiscoveryItem[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawItems) {
+    const entry = asObject(raw);
+    const id = asString(entry.id || entry.name);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    items.push({
+      id,
+      displayName:
+        asString(entry.displayName ?? entry.display_name ?? entry.name) || null,
+    });
+  }
+  return {
+    apiId: asString(source.apiId ?? source.api_id ?? source.id),
+    ok: asBoolean(source.ok),
+    items,
+    statusCode: asInteger(source.statusCode ?? source.status_code, 0, 0),
+    discoveredAt: asInteger(source.discoveredAt ?? source.discovered_at, 0, 0),
+    message: asString(source.message) || null,
   };
 }
 
@@ -1771,7 +1823,10 @@ export function normalizeRequestLogSessionTitles(payload: unknown): RequestLogSe
       const source = asObject(item);
       const sessionId = asString(source.sessionId ?? source.session_id);
       const sessionSource = asString(source.source);
-      if (!sessionId || (sessionSource !== "codex" && sessionSource !== "omp")) {
+      if (
+        !sessionId ||
+        (sessionSource !== "codex" && sessionSource !== "omp" && sessionSource !== "pi")
+      ) {
         return null;
       }
       return {

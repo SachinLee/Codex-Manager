@@ -64,6 +64,19 @@ pub async fn service_managed_model_upsert_v2(
 }
 
 #[tauri::command]
+pub async fn service_managed_model_add_aggregate_route_v2(
+    addr: Option<String>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "apikey/managedModelAddAggregateRouteV2",
+        addr,
+        Some(payload),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn service_managed_model_update_state_v2(
     addr: Option<String>,
     payload: serde_json::Value,

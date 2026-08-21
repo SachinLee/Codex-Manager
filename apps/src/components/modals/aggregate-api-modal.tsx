@@ -115,6 +115,9 @@ export function AggregateApiModal({
   const serviceStatus = useAppStore((state) => state.serviceStatus);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
   const [providerType, setProviderType] = useState("codex");
+  const [upstreamProtocol, setUpstreamProtocol] = useState<
+    "" | "responses" | "chat_completions"
+  >("");
   const [supplierName, setSupplierName] = useState("");
   const [sortDraft, setSortDraft] = useState("0");
   const [url, setUrl] = useState("");
@@ -184,6 +187,13 @@ export function AggregateApiModal({
     if (!open) return;
     const nextProviderType = aggregateApi?.providerType || "codex";
     setProviderType(nextProviderType);
+    setUpstreamProtocol(
+      (nextProviderType === "claude" || nextProviderType === "gemini") ||
+        (aggregateApi?.upstreamProtocol !== "responses" &&
+          aggregateApi?.upstreamProtocol !== "chat_completions")
+        ? ""
+        : aggregateApi.upstreamProtocol
+    );
     setSupplierName(aggregateApi?.supplierName || "");
     setSortDraft(String(aggregateApi?.sort ?? defaultSort));
     setUrl(aggregateApi?.url || "");
@@ -467,6 +477,7 @@ export function AggregateApiModal({
           balanceQueryUserId: balanceQueryUserId.trim(),
           balanceQueryConfigJson,
           enableConsecutiveFailureFreeze,
+          upstreamProtocol: upstreamProtocol || null,
         });
         toast.success(t("聚合 API 已更新"));
         await Promise.all([
@@ -502,6 +513,7 @@ export function AggregateApiModal({
         balanceQueryUserId: balanceQueryUserId.trim(),
         balanceQueryConfigJson,
         enableConsecutiveFailureFreeze,
+        upstreamProtocol: upstreamProtocol || null,
       });
       setGeneratedKey(result.key);
       toast.success(t("聚合 API 已创建"));
@@ -625,6 +637,12 @@ export function AggregateApiModal({
                       if (aggregateApiUsesIncomingPath(value)) {
                         setActionCustomEnabled(false);
                       }
+                      if (
+                        value === "claude" ||
+                        value === "gemini"
+                      ) {
+                        setUpstreamProtocol("");
+                      }
                     }}
                   >
                     <SelectTrigger id="aggregate-api-provider" className="w-full">
@@ -654,6 +672,58 @@ export function AggregateApiModal({
                     </p>
                   ) : null}
                 </div>
+
+                {providerType === "codex" || providerType === "compatible" ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="aggregate-api-upstream-protocol">
+                      {t("上游协议")}
+                    </Label>
+                    <Select
+                      value={upstreamProtocol || "default"}
+                      disabled={!isServiceReady}
+                      onValueChange={(value) => {
+                        if (value === "responses") {
+                          setUpstreamProtocol("responses");
+                        } else if (value === "chat_completions") {
+                          setUpstreamProtocol("chat_completions");
+                        } else {
+                          setUpstreamProtocol("");
+                        }
+                      }}
+                    >
+                      <SelectTrigger
+                        id="aggregate-api-upstream-protocol"
+                        className="w-full"
+                      >
+                        <SelectValue>
+                          {(value) =>
+                            String(value || "") === "chat_completions"
+                              ? t("Chat Completions")
+                              : String(value || "") === "responses"
+                                ? t("Responses")
+                                : t("未指定（默认按客户端路径）")
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="default">
+                            {t("未指定（默认按客户端路径）")}
+                          </SelectItem>
+                          <SelectItem value="responses">
+                            {t("Responses")}
+                          </SelectItem>
+                          <SelectItem value="chat_completions">
+                            {t("Chat Completions")}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] leading-4 text-muted-foreground">
+                      {t("声明上游仅支持 Chat Completions 时，网关负责协议转换；仅对 Codex / 通用兼容类型可用。")}
+                    </p>
+                  </div>
+                ) : null}
 
                 <div className="grid gap-2">
                   <Label htmlFor="aggregate-api-auth-type">{t("认证类型")}</Label>
@@ -979,7 +1049,7 @@ export function AggregateApiModal({
                     onChange={(event) => setDailySpendLimitUsd(event.target.value)}
                   />
                   <p className="text-[11px] leading-4 text-muted-foreground">
-                    {t("用于聚合 API 当日消耗控制；留空不限制。")}
+                    {t("用于聚合 API 当日消耗控制；预占每次上游调用的可计算费用并计入 Guard 重试。未设置输出上限的请求可能在完成后超过设定值。")}
                   </p>
                 </div>
               </div>

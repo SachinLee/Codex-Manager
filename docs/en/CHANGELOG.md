@@ -5,6 +5,11 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+### Added
+
+- Aggregate API candidates can declare an `upstream_protocol` (`responses` / `chat_completions`), letting Chat Completions-only upstreams serve Responses, Anthropic, client Chat, and Compact flows through the gateway's shared request converter and canonical response conversion (non-streaming and SSE). NULL keeps the legacy client-path behavior for Claude bridging and Responses upstreams; non-NULL OpenAI protocols are validated only for Codex / compatible providers.
+- Aggregate API daily spend limits now use a durable per-API, per-local-day budget ledger with atomic reservations. The ledger includes Guard retries and continuation recovery, aligns the usage page with enforcement, and by default keeps requests without a priceable output bound eligible while clearly reporting that they may settle above the configured amount after completion.
+
 ## [0.5.3] - 2026-08-08
 
 ### Fixed

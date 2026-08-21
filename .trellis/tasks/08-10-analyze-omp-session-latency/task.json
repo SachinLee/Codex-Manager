@@ -1,0 +1,26 @@
+{
+  "id": "analyze-omp-session-latency",
+  "name": "analyze-omp-session-latency",
+  "title": "分析 OMP 会话执行时长",
+  "description": "基于仓库配置、运行时会话记录和执行链路，定位 OMP 每个会话耗时过长的主要原因，并给出可验证的优化建议。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "调查",
+  "package": null,
+  "priority": "P1",
+  "creator": "shuan",
+  "assignee": "shuan",
+  "createdAt": "2026-08-10",
+  "completedAt": "2026-08-10",
+  "branch": null,
+  "base_branch": null,
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "task.py 在当前 Python 环境中无输出并以 49 退出，因此按现有任务格式创建规划元数据；只读调查结论已写入 research/findings.md。"
+  "meta": {}
+}

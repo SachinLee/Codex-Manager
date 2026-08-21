@@ -50,6 +50,7 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub effective_service_tier: Option<&'a str>,
     pub service_tier_source: Option<&'a str>,
     pub response_adapter: Option<super::ResponseAdapter>,
+    pub upstream_protocol: Option<&'a str>,
     pub aggregate_api_supplier_name: Option<&'a str>,
     pub aggregate_api_url: Option<&'a str>,
     pub attempted_aggregate_api_ids: Option<&'a [String]>,
@@ -58,6 +59,9 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub actual_source_id: Option<&'a str>,
     /// Aggregate API 价格倍率只在最终 charge snapshot 中应用一次。
     pub aggregate_api_cost_multiplier: Option<f64>,
+    /// Optional daily-spend reservation that must be settled from the final
+    /// charge snapshot after a successful response.
+    pub aggregate_api_daily_spend_attempt_id: Option<&'a str>,
 }
 
 /// 函数 `normalize_token`
@@ -363,6 +367,7 @@ fn response_adapter_label(value: super::ResponseAdapter) -> &'static str {
         super::ResponseAdapter::Passthrough => "Passthrough",
         super::ResponseAdapter::AnthropicMessagesFromResponses => "AnthropicMessagesFromResponses",
         super::ResponseAdapter::ResponsesFromAnthropicMessages => "ResponsesFromAnthropicMessages",
+        super::ResponseAdapter::ResponsesFromChatCompletions => "ResponsesFromChatCompletions",
         super::ResponseAdapter::ChatCompletionsFromResponses => "ChatCompletionsFromResponses",
         super::ResponseAdapter::CompactFromChatCompletions => "CompactFromChatCompletions",
         super::ResponseAdapter::ImagesB64JsonFromResponses => "ImagesB64JsonFromResponses",
@@ -594,6 +599,7 @@ pub(crate) fn write_request_log_with_attempts(
                 .response_adapter
                 .map(response_adapter_label)
                 .map(str::to_string),
+            upstream_protocol: trace_context.upstream_protocol.map(str::to_string),
             upstream_url: upstream_url.map(|v| v.to_string()),
             aggregate_api_supplier_name: trace_context
                 .aggregate_api_supplier_name
@@ -709,6 +715,27 @@ pub(crate) fn write_request_log_with_attempts(
                     base_cost_override_microusd,
                 ) {
                     Ok(charge) => {
+                        if let Some(attempt_id) = trace_context.aggregate_api_daily_spend_attempt_id {
+                            match storage.settle_aggregate_api_daily_spend_attempt(
+                                attempt_id,
+                                charge.charged_cost_microusd,
+                                Some(request_log_id),
+                            ) {
+                                Ok(true) => log::info!(
+                                    "event=aggregate_api_daily_spend_settled request_log_id={} attempt={} microusd={}",
+                                    request_log_id,
+                                    attempt_id,
+                                    charge.charged_cost_microusd,
+                                ),
+                                Ok(false) => {},
+                                Err(err) => log::warn!(
+                                    "event=aggregate_api_daily_spend_settle_failed request_log_id={} attempt={} err={}",
+                                    request_log_id,
+                                    attempt_id,
+                                    err,
+                                ),
+                            }
+                        }
                         if let Err(err) = persist_request_pricing_snapshot(
                             storage,
                             request_log_id,

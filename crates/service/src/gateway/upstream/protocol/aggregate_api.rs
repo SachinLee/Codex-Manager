@@ -1,6 +1,9 @@
 use bytes::Bytes;
 use codexmanager_core::storage::{
-    now_ts, AggregateApi, GatewayReasoningGuardEvent, GatewayUpstreamAttemptEvent, Storage,
+    now_ts, AggregateApi, AggregateApiSpendReserveOutcome, GatewayReasoningGuardEvent,
+    GatewayUpstreamAttemptEvent, SPEND_ATTEMPT_KIND_CAPACITY_RETRY,
+    SPEND_ATTEMPT_KIND_CONTINUATION_RECOVERY, SPEND_ATTEMPT_KIND_GUARD_RETRY,
+    SPEND_ATTEMPT_KIND_INITIAL, SPEND_ATTEMPT_KIND_TRANSPORT_RETRY, Storage,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
@@ -8,23 +11,47 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tiny_http::Request;
 
-use super::super::GatewayUpstreamResponse;
+use super::super::{
+    GatewayByteStream, GatewayStreamResponse, GatewayUpstreamResponse,
+};
+use crate::gateway::upstream::response::GatewayStreamPrefetchTerminal;
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_AUTH_USERPASS, AGGREGATE_API_PROVIDER_CLAUDE,
     AGGREGATE_API_PROVIDER_CODEX, AGGREGATE_API_PROVIDER_COMPATIBLE, AGGREGATE_API_PROVIDER_GEMINI,
 };
-use crate::gateway::protocol_adapter::adapt_openai_responses_to_anthropic_messages;
+use crate::gateway::protocol_adapter::{
+    adapt_openai_responses_to_anthropic_messages, convert_responses_request_to_chat_completions,
+    ChatConversionFailure,
+};
 use crate::gateway::request_log::RequestLogUsage;
+use crate::quota::model_pricing::{
+    quote_aggregate_api_attempt_spend, settle_aggregate_api_usage_microusd,
+    AggregateApiSpendPricingState,
+};
 use crate::gateway::{
     apply_transform, classify_capability_error, current_capability_routing_mode,
     parse_required_capabilities, record_runtime_capability_rejection,
     resolve_persisted_candidate_plan, structural_contract_signature, CandidatePlan,
-    CandidatePlanPhase, CapabilityRoutingMode, TransformCode, REQUIRED_CAPABILITIES_HEADER,
+    CandidatePlanPhase, CapabilityRoutingMode, TransformCode,
+    REQUIRED_CAPABILITIES_HEADER,
 };
 use serde_json::Value;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
 const AGGREGATE_API_LARGE_REQUEST_BODY_BYTES: usize = 20 * 1024 * 1024;
+
+/// 日志/追踪 URL 投影：剥离 userinfo、fragment 与全部 query 值（query 可能携带
+/// ApiKeyQuery 凭据），仅保留 scheme/host/path。解析失败时原样返回，避免吞错。
+fn sanitize_url_for_log(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_fragment(None);
+    parsed.set_query(None);
+    parsed.to_string()
+}
 
 fn daily_spend_limit_microusd(limit_usd: Option<f64>) -> Option<i64> {
     let limit_usd = limit_usd?;
@@ -38,21 +65,168 @@ fn daily_spend_limit_microusd(limit_usd: Option<f64>) -> Option<i64> {
     Some(microusd.ceil() as i64)
 }
 
-fn aggregate_api_has_daily_budget(
-    storage: &Storage,
-    candidate: &AggregateApi,
-    day_start: i64,
-    day_end: i64,
-) -> Result<bool, String> {
-    let Some(limit_microusd) = daily_spend_limit_microusd(candidate.daily_spend_limit_usd) else {
-        return Ok(true);
-    };
-    let charged_microusd = storage
-        .sum_aggregate_api_charged_spend_microusd_between(candidate.id.as_str(), day_start, day_end)
-        .map_err(|err| format!("read aggregate api daily spend failed: {err}"))?;
-    Ok(charged_microusd < limit_microusd)
+fn aggregate_multiplier_millis_for(multiplier: f64) -> i64 {
+    if !multiplier.is_finite() || multiplier <= 0.0 {
+        return 1_000;
+    }
+    let scaled = (multiplier * 1_000.0).round();
+    if !scaled.is_finite() || scaled < 1.0 || scaled > i64::MAX as f64 {
+        return 1_000;
+    }
+    scaled as i64
 }
-const AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS: usize = 2;
+
+/// Best-effort output bound for a transformed upstream body. A missing bound
+/// keeps the quote to the known input portion (compatibility-first policy).
+fn output_bound_tokens_for_upstream_body(
+    protocol: crate::gateway::UpstreamProtocol,
+    body: &[u8],
+) -> Option<i64> {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return None;
+    };
+    let max = match protocol {
+        crate::gateway::UpstreamProtocol::ChatCompletions => value
+            .get("max_completion_tokens")
+            .or_else(|| value.get("max_tokens"))
+            .and_then(Value::as_i64)
+            .map(|value| value.max(0)),
+        crate::gateway::UpstreamProtocol::AnthropicMessages => {
+            value.get("max_tokens").and_then(Value::as_i64).map(|value| value.max(0))
+        }
+        crate::gateway::UpstreamProtocol::Responses => value
+            .get("max_output_tokens")
+            .and_then(Value::as_i64)
+            .map(|value| value.max(0)),
+    }?;
+    if protocol == crate::gateway::UpstreamProtocol::ChatCompletions {
+        let n = value
+            .get("n")
+            .and_then(Value::as_i64)
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        Some(max.saturating_mul(n))
+    } else {
+        Some(max)
+    }
+}
+
+/// Extract (input, cached, output) usage tokens from an upstream body when
+/// the response carried usage despite a non-success status.
+fn extract_usage_tokens_from_body(body: &[u8]) -> Option<(i64, i64, i64)> {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return None;
+    };
+    let usage = value.get("usage");
+    let input = usage
+        .and_then(|usage| usage.get("input_tokens").and_then(Value::as_i64))
+        .or_else(|| usage.and_then(|usage| usage.get("prompt_tokens").and_then(Value::as_i64)))
+        .or_else(|| value.get("input_tokens").and_then(Value::as_i64));
+    let output = usage
+        .and_then(|usage| usage.get("output_tokens").and_then(Value::as_i64))
+        .or_else(|| usage.and_then(|usage| usage.get("completion_tokens").and_then(Value::as_i64)))
+        .or_else(|| value.get("output_tokens").and_then(Value::as_i64));
+    match (input, output) {
+        (Some(input), Some(output)) => Some((input.max(0), 0, output.max(0))),
+        (Some(input), None) => Some((input.max(0), 0, 0)),
+        (None, Some(output)) => Some((0, 0, output.max(0))),
+        (None, None) => None,
+    }
+}
+
+/// Settle the current reservation from the actual usage of the completed
+/// upstream round (Guard settlements and billable failures).
+fn settle_daily_spend_from_usage(
+    storage: &Storage,
+    current_attempt_id: &mut Option<String>,
+    trace_id: &str,
+    model: Option<&str>,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    multiplier_millis: i64,
+) {
+    let Some(attempt_id) = current_attempt_id.take() else {
+        return;
+    };
+    let microusd = settle_aggregate_api_usage_microusd(
+        storage,
+        model,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        multiplier_millis,
+    );
+    match storage.settle_aggregate_api_daily_spend_attempt(&attempt_id, microusd, None) {
+        Ok(true) => log::info!(
+            "event=aggregate_api_daily_spend_settled trace_id={} attempt={} microusd={} source=usage",
+            trace_id,
+            attempt_id,
+            microusd,
+        ),
+        Ok(false) => {}
+        Err(err) => log::warn!(
+            "event=aggregate_api_daily_spend_settle_failed trace_id={} attempt={} err={}",
+            trace_id,
+            attempt_id,
+            err,
+        ),
+    }
+}
+
+/// Release the current reservation when an upstream error carried no billable
+/// usage evidence.
+fn release_daily_spend_attempt(
+    storage: &Storage,
+    current_attempt_id: &mut Option<String>,
+    trace_id: &str,
+) {
+    let Some(attempt_id) = current_attempt_id.take() else {
+        return;
+    };
+    match storage.release_aggregate_api_daily_spend_attempt(&attempt_id) {
+        Ok(true) => log::info!(
+            "event=aggregate_api_daily_spend_released trace_id={} attempt={}",
+            trace_id,
+            attempt_id,
+        ),
+        Ok(false) => {}
+        Err(err) => log::warn!(
+            "event=aggregate_api_daily_spend_release_failed trace_id={} attempt={} err={}",
+            trace_id,
+            attempt_id,
+            err,
+        ),
+    }
+}
+
+/// Hold the current reservation (ambiguous in-flight outcome).
+fn hold_daily_spend_attempt(
+    storage: &Storage,
+    current_attempt_id: &mut Option<String>,
+    trace_id: &str,
+) {
+    let Some(attempt_id) = current_attempt_id.take() else {
+        return;
+    };
+    match storage.hold_aggregate_api_daily_spend_attempt(&attempt_id) {
+        Ok(true) => log::info!(
+            "event=aggregate_api_daily_spend_held trace_id={} attempt={}",
+            trace_id,
+            attempt_id,
+        ),
+        Ok(false) => {}
+        Err(err) => log::warn!(
+            "event=aggregate_api_daily_spend_hold_failed trace_id={} attempt={} err={}",
+            trace_id,
+            attempt_id,
+            err,
+        ),
+    }
+}
+
+const AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS: usize =
+    super::super::support::capacity::MAX_UPSTREAM_CAPACITY_RETRIES;
 const AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE: Duration = Duration::from_millis(500);
 const AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP: Duration = Duration::from_secs(1);
 
@@ -84,19 +258,6 @@ fn next_aggregate_api_capacity_retry(
     }
 }
 
-fn wait_for_aggregate_api_capacity_retry(
-    delay: Duration,
-    request_deadline: Option<Instant>,
-) -> bool {
-    let Some(delay) = super::super::support::deadline::cap_wait(delay, request_deadline) else {
-        return false;
-    };
-    if !delay.is_zero() {
-        std::thread::sleep(delay);
-    }
-    !super::super::support::deadline::is_expired(request_deadline)
-}
-
 fn schedule_aggregate_api_capacity_retry(
     remaining_retries: &mut usize,
     request_deadline: Option<Instant>,
@@ -104,6 +265,7 @@ fn schedule_aggregate_api_capacity_retry(
     aggregate_api_id: &str,
     upstream_model: Option<&str>,
     is_stream: bool,
+    retry_after: Option<&str>,
 ) -> AggregateApiCapacityRetryAction {
     super::super::super::record_gateway_upstream_capacity_error();
     let action = next_aggregate_api_capacity_retry(remaining_retries);
@@ -123,7 +285,13 @@ fn schedule_aggregate_api_capacity_retry(
         return action;
     };
 
-    if !wait_for_aggregate_api_capacity_retry(delay, request_deadline) {
+    // 与账号池路径共享的容量等待决策：优先合法 Retry-After，否则有界全抖动；
+    // 均受 request deadline 约束（0 起算的 retry_attempt）。
+    if !super::super::support::capacity::sleep_capacity_wait(
+        retry_after,
+        retry_attempt.saturating_sub(1),
+        request_deadline,
+    ) {
         log::warn!(
             "event=aggregate_api_capacity_recovery_deadline trace_id={} aggregate_api_id={} upstream_model={} stream={} retry_attempt={}",
             trace_id,
@@ -162,15 +330,20 @@ fn record_aggregate_api_reasoning_guard_event(
     attempt_index: i64,
     final_status_code: Option<u16>,
     usage: RequestLogUsage,
+    rate_multiplier_millis: i64,
 ) {
-    let estimated_cost_usd = crate::quota::model_pricing::estimate_cost_usd_for_log(
+    // Guard rounds are observable upstream usage. Keep the event in micro-USD
+    // so the daily spend page and budget use the same multiplier-adjusted
+    // amount as the final Aggregate API charge.
+    let estimated_cost_usd = settle_aggregate_api_usage_microusd(
         storage,
         upstream_model,
-        usage.input_tokens,
-        usage.cached_input_tokens,
-        usage.cache_write_tokens,
-        usage.output_tokens,
-    );
+        usage.input_tokens.unwrap_or(0),
+        usage.cached_input_tokens.unwrap_or(0),
+        usage.output_tokens.unwrap_or(0),
+        rate_multiplier_millis,
+    ) as f64
+        / 1_000_000.0;
     crate::gateway::record_gateway_reasoning_guard_event(GatewayReasoningGuardEvent {
         trace_id: Some(trace_id.to_string()),
         request_log_id: None,
@@ -488,6 +661,41 @@ fn should_bridge_responses_to_anthropic(candidate: &AggregateApi, path: &str) ->
         && (path == "/v1/responses" || path.starts_with("/v1/responses?"))
 }
 
+/// 解析候选声明的上游协议。NULL 保持遗留语义（Claude 走 Anthropic 桥接，
+/// 其余走 Responses）；显式值在服务边界已校验过 provider 组合。
+fn resolve_aggregate_upstream_protocol(
+    candidate: &AggregateApi,
+    path: &str,
+) -> crate::gateway::UpstreamProtocol {
+    match candidate.upstream_protocol.as_deref().map(str::trim) {
+        Some("chat_completions") => crate::gateway::UpstreamProtocol::ChatCompletions,
+        Some("responses") => crate::gateway::UpstreamProtocol::Responses,
+        _ => {
+            if should_bridge_responses_to_anthropic(candidate, path) {
+                crate::gateway::UpstreamProtocol::AnthropicMessages
+            } else {
+                crate::gateway::UpstreamProtocol::Responses
+            }
+        }
+    }
+}
+
+fn responses_to_chat_completions_action_path(candidate: &AggregateApi, path: &str) -> String {
+    if candidate.action.is_some() {
+        return effective_action_path(candidate, path);
+    }
+
+    let base_path = reqwest::Url::parse(candidate.url.as_str())
+        .ok()
+        .map(|url| url.path().trim_end_matches('/').to_string())
+        .unwrap_or_default();
+    if base_path == "/v1" || base_path.ends_with("/v1") {
+        "/chat/completions".to_string()
+    } else {
+        "/v1/chat/completions".to_string()
+    }
+}
+
 fn responses_to_anthropic_messages_action_path(candidate: &AggregateApi, path: &str) -> String {
     if candidate.action.is_some() {
         return effective_action_path(candidate, path);
@@ -649,6 +857,123 @@ fn resolve_passthrough_sse_protocol(
         return Some(super::super::super::PassthroughSseProtocol::AnthropicNative);
     }
     None
+}
+
+/// 函数 `should_skip_forward_header`
+
+const AGGREGATE_CHAT_PREFLIGHT_MAX_BYTES: usize = 64 * 1024;
+const AGGREGATE_CHAT_PREFLIGHT_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const AGGREGATE_CHAT_PREFLIGHT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 上游 Chat 流式 preflight 结果：`Ready` 保留已缓冲流继续交付，
+/// `Failover` 在未产出任何语义内容前把候选交还外层候选循环。
+enum ChatPreflightOutcome {
+    Ready(GatewayUpstreamResponse),
+    Failover(String),
+}
+
+fn preflight_chat_stream(
+    upstream: GatewayUpstreamResponse,
+    has_more_candidates: bool,
+) -> ChatPreflightOutcome {
+    if !has_more_candidates {
+        return ChatPreflightOutcome::Ready(upstream);
+    }
+    let (prefix, upstream, terminal) = upstream.prefetch_stream_prefix(
+        AGGREGATE_CHAT_PREFLIGHT_MAX_BYTES,
+        Some(AGGREGATE_CHAT_PREFLIGHT_IDLE_TIMEOUT),
+        Some(AGGREGATE_CHAT_PREFLIGHT_WALL_CLOCK_TIMEOUT),
+        |prefix| !matches!(classify_chat_preflight_prefix(prefix), ChatPrefixDecision::NeedMore),
+    );
+    match classify_chat_preflight_prefix(prefix.as_ref()) {
+        ChatPrefixDecision::Failover(message) => ChatPreflightOutcome::Failover(message),
+        ChatPrefixDecision::Deliver => ChatPreflightOutcome::Ready(upstream),
+        ChatPrefixDecision::NeedMore => match terminal {
+            GatewayStreamPrefetchTerminal::Open
+            | GatewayStreamPrefetchTerminal::PrefixLimit
+            | GatewayStreamPrefetchTerminal::WallClockTimeout => {
+                // 慢首事件/超长元数据按正常流交付，避免无限等待拖垮延迟。
+                ChatPreflightOutcome::Ready(upstream)
+            }
+            GatewayStreamPrefetchTerminal::IdleTimeout => ChatPreflightOutcome::Failover(
+                "chat upstream stream idle timeout before producing deliverable content".to_string(),
+            ),
+            GatewayStreamPrefetchTerminal::Eof => ChatPreflightOutcome::Failover(
+                "chat upstream stream ended before producing deliverable content".to_string(),
+            ),
+            GatewayStreamPrefetchTerminal::Error(err) => ChatPreflightOutcome::Failover(format!(
+                "chat upstream stream failed before producing deliverable content: {err}"
+            )),
+            GatewayStreamPrefetchTerminal::Disconnected => ChatPreflightOutcome::Failover(
+                "chat upstream stream disconnected before producing deliverable content".to_string(),
+            ),
+        },
+    }
+}
+
+enum ChatPrefixDecision {
+    NeedMore,
+    Deliver,
+    Failover(String),
+}
+
+/// 对 Chat SSE chunk 前缀分类：语义 delta / `[DONE]` -> Deliver；
+/// error JSON / content_filter 终态 -> Failover；元数据/截断帧 -> NeedMore。
+fn classify_chat_preflight_prefix(prefix: &[u8]) -> ChatPrefixDecision {
+    let normalized = String::from_utf8_lossy(prefix).replace("\r\n", "\n");
+    let complete = normalized.ends_with("\n\n");
+    let mut parts = normalized.split("\n\n").collect::<Vec<_>>();
+    if !complete {
+        let _ = parts.pop();
+    }
+    if parts.is_empty() {
+        return ChatPrefixDecision::NeedMore;
+    }
+    let frame_count = parts.len();
+    for (index, frame) in parts.into_iter().enumerate() {
+        let is_last = index + 1 == frame_count;
+        if !complete && is_last {
+            return ChatPrefixDecision::NeedMore;
+        }
+        let data = frame
+            .lines()
+            .filter_map(|line| line.trim_end_matches('\r').strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.trim() == "[DONE]" {
+            return ChatPrefixDecision::Deliver;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data.as_str()) else {
+            continue;
+        };
+        if value.get("error").is_some() {
+            return ChatPrefixDecision::Failover(
+                "upstream chat stream reported an error".to_string(),
+            );
+        }
+        if let Some(choices) = value.get("choices").and_then(Value::as_array) {
+            if let Some(choice) = choices.first() {
+                if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                    if reason == "content_filter" {
+                        return ChatPrefixDecision::Failover(
+                            "upstream chat stream content filter triggered".to_string(),
+                        );
+                    }
+                }
+                if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
+                    if delta.get("content").is_some()
+                        || delta.get("tool_calls").is_some()
+                        || delta.get("reasoning_content").is_some()
+                        || delta.get("reasoning").is_some()
+                    {
+                        return ChatPrefixDecision::Deliver;
+                    }
+                }
+            }
+        }
+    }
+    ChatPrefixDecision::NeedMore
 }
 
 /// 函数 `should_skip_forward_header`
@@ -1336,6 +1661,7 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub body: &'a Bytes,
     pub is_stream: bool,
     pub response_adapter: super::super::super::ResponseAdapter,
+    pub tool_name_restore_map: &'a super::super::super::ToolNameRestoreMap,
     pub gateway_mode_for_log: Option<&'a str>,
     pub route_strategy_for_log: Option<&'a str>,
     pub route_source_for_log: Option<&'a str>,
@@ -1401,6 +1727,7 @@ pub(in super::super) fn proxy_aggregate_request(
         body,
         is_stream,
         response_adapter,
+        tool_name_restore_map,
         gateway_mode_for_log,
         route_strategy_for_log,
         route_source_for_log,
@@ -1437,17 +1764,17 @@ pub(in super::super) fn proxy_aggregate_request(
                 message,
             });
         }
-        super::super::super::record_gateway_request_outcome(path, 404, Some("aggregate_api"));
+        super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
         super::super::super::trace_log::log_request_final(
             trace_id,
-            404,
+            502,
             Some(key_id),
             None,
             Some(message.as_str()),
             started_at.elapsed().as_millis(),
         );
         let request = request;
-        respond_error(request, 404, message.as_str(), Some(trace_id));
+        respond_error(request, 502, message.as_str(), Some(trace_id));
         return Ok(AggregateProxyOutcome::Handled);
     }
 
@@ -1488,7 +1815,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 message,
             });
         }
-        super::super::super::record_gateway_request_outcome(path, 503, Some("aggregate_api"));
+        super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
         super::super::super::write_request_log(
             storage,
             super::super::super::request_log::RequestLogTraceContext {
@@ -1507,7 +1834,7 @@ pub(in super::super) fn proxy_aggregate_request(
             model_for_log,
             reasoning_for_log,
             None,
-            Some(503),
+            Some(502),
             RequestLogUsage {
                 estimated_input_tokens: Some(estimated_input_tokens),
                 ..Default::default()
@@ -1515,7 +1842,7 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(message.as_str()),
             Some(started_at.elapsed().as_millis()),
         );
-        respond_error(request, 503, message.as_str(), Some(trace_id));
+        respond_error(request, 502, message.as_str(), Some(trace_id));
         return Ok(AggregateProxyOutcome::Handled);
     }
     let zero_balance_blocked_ids = storage
@@ -1543,10 +1870,10 @@ pub(in super::super) fn proxy_aggregate_request(
                 message,
             });
         }
-        super::super::super::record_gateway_request_outcome(path, 503, Some("aggregate_api"));
+        super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
         super::super::super::trace_log::log_request_final(
             trace_id,
-            503,
+            502,
             Some(key_id),
             None,
             Some(message.as_str()),
@@ -1569,7 +1896,7 @@ pub(in super::super) fn proxy_aggregate_request(
             model_for_log,
             reasoning_for_log,
             None,
-            Some(503),
+            Some(502),
             RequestLogUsage {
                 estimated_input_tokens: Some(estimated_input_tokens),
                 ..Default::default()
@@ -1577,88 +1904,17 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(message.as_str()),
             Some(started_at.elapsed().as_millis()),
         );
-        respond_error(request, 503, message.as_str(), Some(trace_id));
+        respond_error(request, 502, message.as_str(), Some(trace_id));
         return Ok(AggregateProxyOutcome::Handled);
     }
 
     let (day_start, day_end) = crate::time_bounds::local_day_bounds_ts()?;
-    let mut daily_limited_candidate_ids = Vec::new();
-    let mut budget_eligible_candidates = Vec::with_capacity(aggregate_api_candidates.len());
-    for candidate in aggregate_api_candidates {
-        if aggregate_api_has_daily_budget(storage, &candidate, day_start, day_end)? {
-            budget_eligible_candidates.push(candidate);
-        } else {
-            log::info!(
-                "event=aggregate_api_daily_spend_limit_reached trace_id={} aggregate_api_id={}",
-                trace_id,
-                candidate.id
-            );
-            daily_limited_candidate_ids.push(candidate.id.clone());
-        }
-    }
-    if budget_eligible_candidates.is_empty() {
-        let message = "aggregate api daily spend limit exceeded".to_string();
-        if allow_model_fallback {
-            super::super::super::trace_log::log_model_fallback_signal(
-                trace_id,
-                model_for_log,
-                429,
-                message.as_str(),
-            );
-            return Ok(AggregateProxyOutcome::Unavailable {
-                request,
-                status_code: 429,
-                message,
-            });
-        }
-        super::super::super::record_gateway_request_outcome(path, 429, Some("aggregate_api"));
-        super::super::super::trace_log::log_request_final(
-            trace_id,
-            429,
-            Some(key_id),
-            None,
-            Some(message.as_str()),
-            started_at.elapsed().as_millis(),
-        );
-        super::super::super::write_request_log(
-            storage,
-            super::super::super::request_log::RequestLogTraceContext {
-                trace_id: Some(trace_id),
-                original_path: Some(original_path),
-                adapted_path: Some(path),
-                gateway_mode: gateway_mode_for_log,
-                route_strategy: route_strategy_for_log,
-                route_source: route_source_for_log,
-                client_model: client_model_for_log,
-                model_source: model_source_for_log,
-                client_reasoning_effort: client_reasoning_for_log,
-                reasoning_source: reasoning_source_for_log,
-                service_tier: service_tier_for_log,
-                effective_service_tier: effective_service_tier_for_log,
-                service_tier_source: service_tier_source_for_log,
-                attempted_aggregate_api_ids: Some(daily_limited_candidate_ids.as_slice()),
-                session_id: session_id_for_log,
-                conversation_anchor: conversation_anchor_for_log,
-                ..Default::default()
-            },
-            Some(key_id),
-            None,
-            path,
-            request_method,
-            model_for_log,
-            reasoning_for_log,
-            None,
-            Some(429),
-            RequestLogUsage {
-                estimated_input_tokens: Some(estimated_input_tokens),
-                ..Default::default()
-            },
-            Some(message.as_str()),
-            Some(started_at.elapsed().as_millis()),
-        );
-        respond_error(request, 429, message.as_str(), Some(trace_id));
-        return Ok(AggregateProxyOutcome::Handled);
-    }
+    // Daily-spend admission moved to a per-dispatch reservation gate below;
+    // `daily_limited_candidate_ids` still records budget-rejected candidates
+    // so an all-exhausted request preserves the existing 429/fallback behavior.
+    let mut daily_limited_candidate_ids: Vec<String> = Vec::new();
+    let budget_eligible_candidates = aggregate_api_candidates;
+
 
     let image_generation_declared_required = match request_requires_image_generation(&request) {
         Ok(value) => value,
@@ -1670,14 +1926,11 @@ pub(in super::super) fn proxy_aggregate_request(
     };
     let capability_mode = current_capability_routing_mode();
     let capability_contract_signature = structural_contract_signature(body);
-    let capability_protocol = if path.contains("responses") {
-        "responses"
-    } else {
-        "chat_completions"
-    };
     let planned_candidates = budget_eligible_candidates
         .into_iter()
         .map(|candidate| {
+            let candidate_protocol_label =
+                resolve_aggregate_upstream_protocol(&candidate, path).label();
             let upstream_model = candidate
                 .model_override
                 .as_deref()
@@ -1694,7 +1947,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     storage,
                     candidate.id.as_str(),
                     upstream_model,
-                    capability_protocol,
+                    candidate_protocol_label,
                     path,
                     body,
                     image_generation_declared_required,
@@ -1726,9 +1979,11 @@ pub(in super::super) fn proxy_aggregate_request(
     let mut last_attempt_id: Option<String> = None;
     let mut last_attempt_upstream_model: Option<String> = None;
     let mut last_attempt_supplier_name: Option<String> = None;
+    let mut last_attempt_upstream_protocol: Option<&'static str> = None;
     let mut last_attempt_error: Option<String> = None;
     let mut last_failure_status = 502u16;
     let mut terminal_failure = false;
+    let mut capacity_budget_exhausted = false;
 
     let total_candidates = planned_candidates.len();
     let secrets_by_candidate_id = aggregate_api_secrets_by_candidate_id(
@@ -1760,6 +2015,8 @@ pub(in super::super) fn proxy_aggregate_request(
         );
         last_attempt_id = Some(candidate_id.clone());
         last_attempt_upstream_model = candidate_upstream_model.clone();
+        last_attempt_upstream_protocol =
+            Some(resolve_aggregate_upstream_protocol(&candidate, path).label());
         let mut capability_phase = candidate_plan.phase;
         let mut capability_transform_codes_json =
             serde_json::to_string(&candidate_plan.transform_codes)
@@ -1775,7 +2032,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 candidate_id.as_str(),
                 candidate_supplier_name.as_deref(),
                 candidate_upstream_model.as_deref(),
-                capability_protocol,
+                resolve_aggregate_upstream_protocol(&candidate, path).label(),
                 path,
                 capability_contract_signature.as_str(),
                 capability_transform_codes_json.as_str(),
@@ -1798,15 +2055,29 @@ pub(in super::super) fn proxy_aggregate_request(
         };
 
         let bridge_responses_to_anthropic = should_bridge_responses_to_anthropic(&candidate, path);
-        let effective_path = if bridge_responses_to_anthropic {
-            responses_to_anthropic_messages_action_path(&candidate, path)
-        } else {
-            effective_action_path(&candidate, path)
+        let upstream_protocol = resolve_aggregate_upstream_protocol(&candidate, path);
+        let effective_path = match upstream_protocol {
+            crate::gateway::UpstreamProtocol::AnthropicMessages => {
+                responses_to_anthropic_messages_action_path(&candidate, path)
+            }
+            crate::gateway::UpstreamProtocol::ChatCompletions => {
+                responses_to_chat_completions_action_path(&candidate, path)
+            }
+            crate::gateway::UpstreamProtocol::Responses => effective_action_path(&candidate, path),
         };
         let response_adapter_for_candidate = if bridge_responses_to_anthropic {
             super::super::super::ResponseAdapter::ResponsesFromAnthropicMessages
+        } else if upstream_protocol
+            == crate::gateway::UpstreamProtocol::ChatCompletions
+        {
+            super::super::super::ResponseAdapter::ResponsesFromChatCompletions
         } else {
             response_adapter
+        };
+        let response_plan = crate::gateway::ResponsePlan {
+            upstream_protocol,
+            client_encoder: response_adapter_for_candidate,
+            tool_name_restore_map: tool_name_restore_map.clone(),
         };
         let (auth_config, injected_headers) = match parse_auth_config(&candidate) {
             Ok(value) => value,
@@ -1832,6 +2103,11 @@ pub(in super::super) fn proxy_aggregate_request(
             };
         let mut succeeded = false;
         let mut cooldown_eligible_failure = false;
+        // Daily-spend attempt lifecycle for this candidate. The reservation is
+        // created right before each upstream dispatch and resolved on success,
+        // Guard/retry, failure, timeout, or candidate failover.
+        let mut current_attempt_id: Option<String> = None;
+        let mut next_attempt_kind = SPEND_ATTEMPT_KIND_INITIAL;
         // Every retry starts from this immutable candidate plan.  Candidate-local
         // transforms and continuation recovery must not leak into later retries.
         let original_candidate_body = candidate_plan.effective_body;
@@ -1851,19 +2127,32 @@ pub(in super::super) fn proxy_aggregate_request(
         for attempt_idx in 0..=max_attempts_per_channel {
             if super::super::support::deadline::is_expired(request_deadline) {
                 let message = "aggregate api request timeout".to_string();
+                // 网关本地超时（客户端收到 504）同样按 502 记作上游失败，计入连续失败冻结；
+                // 仅在本候选尚未记录冷却失败时补记，避免与传输超时路径重复计数。
+                if !cooldown_eligible_failure {
+                    super::super::super::gateway_record_aggregate_api_failure(
+                        storage,
+                        candidate_id.as_str(),
+                        candidate_upstream_model.as_deref(),
+                    );
+                }
+                // An in-flight attempt whose outcome is unknown after the
+                // deadline must not silently vanish from the daily budget.
+                hold_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
                 let request = request.take().ok_or_else(|| {
                     "aggregate api request already consumed before timeout response".to_string()
                 })?;
                 super::super::super::record_gateway_request_outcome(
                     path,
-                    504,
+                    502,
                     Some("aggregate_api"),
                 );
+                let sanitized_candidate_url = sanitize_url_for_log(candidate_url.as_str());
                 super::super::super::trace_log::log_request_final(
                     trace_id,
-                    504,
+                    502,
                     Some(key_id),
-                    Some(candidate_url.as_str()),
+                    Some(sanitized_candidate_url.as_str()),
                     Some(message.as_str()),
                     started_at.elapsed().as_millis(),
                 );
@@ -1885,7 +2174,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         effective_service_tier: effective_service_tier_for_log,
                         service_tier_source: service_tier_source_for_log,
                         aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
-                        aggregate_api_url: Some(candidate_url.as_str()),
+                        aggregate_api_url: Some(sanitized_candidate_url.as_str()),
                         attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
                         upstream_model: candidate_upstream_model.as_deref(),
                         actual_source_kind: Some("aggregate_api"),
@@ -1901,7 +2190,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     model_for_log,
                     reasoning_for_log,
                     Some(candidate_url.as_str()),
-                    Some(504),
+                    Some(502),
                     RequestLogUsage {
                         estimated_input_tokens: Some(estimated_input_tokens),
                         ..Default::default()
@@ -1909,7 +2198,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     Some(message.as_str()),
                     Some(started_at.elapsed().as_millis()),
                 );
-                respond_error(request, 504, message.as_str(), Some(trace_id));
+                respond_error(request, 502, message.as_str(), Some(trace_id));
                 return Ok(AggregateProxyOutcome::Handled);
             }
 
@@ -1951,28 +2240,64 @@ pub(in super::super) fn proxy_aggregate_request(
                 candidate.supplier_name.as_deref(),
                 path,
             );
-            let upstream_body = if bridge_responses_to_anthropic {
-                match adapt_openai_responses_to_anthropic_messages(
-                    candidate_body.as_ref(),
-                    candidate.model_override.as_deref(),
-                ) {
-                    Ok(body) => Bytes::from(body),
-                    Err(err) => {
-                        last_attempt_url = Some(base_upstream_url.to_string());
-                        last_attempt_supplier_name = candidate_supplier_name.clone();
-                        last_attempt_error = Some(err);
-                        last_failure_status = 502;
-                        break;
+            let upstream_body = match upstream_protocol {
+                crate::gateway::UpstreamProtocol::AnthropicMessages => {
+                    match adapt_openai_responses_to_anthropic_messages(
+                        candidate_body.as_ref(),
+                        candidate.model_override.as_deref(),
+                    ) {
+                        Ok(body) => Bytes::from(body),
+                        Err(err) => {
+                            last_attempt_url = Some(base_upstream_url.to_string());
+                            last_attempt_supplier_name = candidate_supplier_name.clone();
+                            last_attempt_error = Some(err);
+                            last_failure_status = 502;
+                            break;
+                        }
                     }
                 }
-            } else {
-                candidate_body
+                crate::gateway::UpstreamProtocol::ChatCompletions => {
+                    // 上游仅支持 Chat Completions：本地共享转换器执行
+                    // Responses -> Chat 请求映射。`previous_response_id` 续聊
+                    // 通过网关上下文缓存查找该响应历史 assistant 消息重建；
+                    // 缓存未命中且 input 不自包含时为有界本地失败，无原始回退。
+                    let previous_messages = crate::gateway::global_chat_completions_context()
+                        .lookup_previous_response_context(None, candidate_body.as_ref());
+                    match convert_responses_request_to_chat_completions(
+                        candidate_body.as_ref(),
+                        candidate.model_override.as_deref(),
+                        previous_messages.as_deref(),
+                    ) {
+                        Ok(body) => Bytes::from(body),
+                        Err(ChatConversionFailure::Incompatible(reason)) => {
+                            last_attempt_url = Some(base_upstream_url.to_string());
+                            last_attempt_supplier_name = candidate_supplier_name.clone();
+                            last_attempt_error =
+                                Some(format!("aggregate api chat upstream incompatible: {reason}"));
+                            last_failure_status = 502;
+                            // 本地不兼容按候选健康中性跳过（design §10），
+                            // 让后续 Responses 候选有机会承接该请求。
+                            continue;
+                        }
+                        Err(ChatConversionFailure::Invalid(reason)) => {
+                            last_attempt_url = Some(base_upstream_url.to_string());
+                            last_attempt_supplier_name = candidate_supplier_name.clone();
+                            last_attempt_error =
+                                Some(format!("aggregate api chat upstream conversion failed: {reason}"));
+                            last_failure_status = 502;
+                            continue;
+                        }
+                    }
+                }
+                crate::gateway::UpstreamProtocol::Responses => candidate_body,
             };
 
             let request_ref = request.as_ref().ok_or_else(|| {
                 "aggregate api request already consumed before upstream attempt".to_string()
             })?;
-            let builder = if bridge_responses_to_anthropic {
+            let builder = if upstream_protocol
+                == crate::gateway::UpstreamProtocol::AnthropicMessages
+            {
                 build_anthropic_bridge_aggregate_api_request(
                     &client,
                     request_ref,
@@ -2000,6 +2325,65 @@ pub(in super::super) fn proxy_aggregate_request(
                 )?
             };
 
+            // Reserve daily budget for this attempt immediately before dispatch.
+            let quote = quote_aggregate_api_attempt_spend(
+                storage,
+                candidate_upstream_model.as_deref(),
+                estimated_input_tokens,
+                output_bound_tokens_for_upstream_body(upstream_protocol, upstream_body.as_ref()),
+                aggregate_multiplier_millis_for(candidate.cost_multiplier),
+            );
+            let attempt_id_value =
+                format!("{trace_id}:{candidate_id}:{attempt_idx}:{next_attempt_kind}");
+            match storage
+                .reserve_aggregate_api_daily_spend(
+                candidate_id.as_str(),
+                day_start,
+                day_end,
+                daily_spend_limit_microusd(candidate.daily_spend_limit_usd),
+                &attempt_id_value,
+                Some(trace_id),
+                next_attempt_kind,
+                quote.pricing_state.as_str(),
+                quote.microusd,
+            )
+            .map_err(|err| format!("aggregate api daily spend reserve failed: {err}"))? {
+                AggregateApiSpendReserveOutcome::NotTracked => {}
+                AggregateApiSpendReserveOutcome::Granted(_) => {
+                    match quote.pricing_state {
+                        AggregateApiSpendPricingState::Quoted => log::info!(
+                            "event=aggregate_api_daily_spend_reserved trace_id={} aggregate_api_id={} attempt={} microusd={} kind={}",
+                            trace_id,
+                            candidate_id,
+                            attempt_id_value,
+                            quote.microusd,
+                            next_attempt_kind,
+                        ),
+                        _ => log::info!(
+                            "event=aggregate_api_daily_spend_unbounded_quote trace_id={} aggregate_api_id={} attempt={} microusd={} pricing={}",
+                            trace_id,
+                            candidate_id,
+                            attempt_id_value,
+                            quote.microusd,
+                            quote.pricing_state.as_str(),
+                        ),
+                    }
+                    current_attempt_id = Some(attempt_id_value);
+                }
+                AggregateApiSpendReserveOutcome::Rejected { remaining_microusd } => {
+                    log::info!(
+                        "event=aggregate_api_daily_spend_rejected trace_id={} aggregate_api_id={} remaining_microusd={}",
+                        trace_id,
+                        candidate_id,
+                        remaining_microusd,
+                    );
+                    daily_limited_candidate_ids.push(candidate_id.clone());
+                    last_attempt_error = Some("aggregate api daily spend limit exceeded".to_string());
+                    last_failure_status = 429;
+                    break;
+                }
+            }
+
             let attempt_started_at = Instant::now();
             let upstream = match builder.send() {
                 Ok(resp) => {
@@ -2018,6 +2402,14 @@ pub(in super::super) fn proxy_aggregate_request(
                         duration_ms,
                         true,
                     );
+                    // A connect-level refusal reached no billable execution; a
+                    // timeout or other ambiguity after dispatch is held so the
+                    // budget does not silently forget it.
+                    if err.is_connect() {
+                        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
+                    } else {
+                        hold_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
+                    }
                     let message = format!("aggregate api upstream error: {err}");
                     last_attempt_url = Some(url.as_str().to_string());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
@@ -2034,6 +2426,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     last_failure_status = 502;
                     cooldown_eligible_failure = true;
                     if transport_retry_budget_remaining > 0 {
+                        next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
                         transport_retry_budget_remaining =
                             transport_retry_budget_remaining.saturating_sub(1);
                         continue;
@@ -2054,6 +2447,9 @@ pub(in super::super) fn proxy_aggregate_request(
                     first_upstream_header(upstream.headers(), &["x-openai-authorization-error"]);
                 let upstream_identity_error_code =
                     crate::gateway::extract_identity_error_code_from_headers(upstream.headers());
+                // 必须在 `bytes()` 消费响应前读取，否则 headers 已随 response 移动。
+                let upstream_retry_after =
+                    first_upstream_header(upstream.headers(), &["retry-after"]);
                 let upstream_body = upstream
                     .bytes()
                     .map_err(|err| format!("read upstream body failed: {err}"))?;
@@ -2067,6 +2463,24 @@ pub(in super::super) fn proxy_aggregate_request(
                 );
                 last_attempt_url = Some(url.as_str().to_string());
                 last_attempt_supplier_name = candidate_supplier_name.clone();
+                // Settle the round when the error response carried usage;
+                // otherwise it reached no billable execution.
+                if let Some((input, cached, output)) =
+                    extract_usage_tokens_from_body(upstream_body.as_ref())
+                {
+                    settle_daily_spend_from_usage(
+                        storage,
+                        &mut current_attempt_id,
+                        trace_id,
+                        candidate_upstream_model.as_deref(),
+                        input,
+                        cached,
+                        output,
+                        aggregate_multiplier_millis_for(candidate.cost_multiplier),
+                    );
+                } else {
+                    release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
+                }
                 if let Some(status) = aggregate_api_terminal_failure_status(status_code, &message) {
                     last_attempt_error =
                         Some(aggregate_api_terminal_failure_message(status, &message));
@@ -2090,7 +2504,7 @@ pub(in super::super) fn proxy_aggregate_request(
                             candidate_id.as_str(),
                             candidate_supplier_name.as_deref(),
                             candidate_upstream_model.as_deref(),
-                            capability_protocol,
+                            resolve_aggregate_upstream_protocol(&candidate, path).label(),
                             path,
                             capability_contract_signature.as_str(),
                             capability_transform_codes_json.as_str(),
@@ -2107,7 +2521,7 @@ pub(in super::super) fn proxy_aggregate_request(
                             storage,
                             candidate_id.as_str(),
                             candidate_upstream_model.as_deref().unwrap_or("*"),
-                            capability_protocol,
+                            resolve_aggregate_upstream_protocol(&candidate, path).label(),
                             classified.capability_key,
                             classified.code,
                         ) {
@@ -2135,6 +2549,7 @@ pub(in super::super) fn proxy_aggregate_request(
                                     capability_retry_budget_remaining.saturating_sub(1);
                                 last_attempt_error = Some(message);
                                 last_failure_status = 502;
+                                next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
                                 continue;
                             }
                         }
@@ -2157,22 +2572,31 @@ pub(in super::super) fn proxy_aggregate_request(
                         candidate_id.as_str(),
                         candidate_upstream_model.as_deref(),
                         is_stream,
+                        upstream_retry_after.as_deref(),
                     ) {
-                        AggregateApiCapacityRetryAction::Retry { .. } => continue,
+                        AggregateApiCapacityRetryAction::Retry { .. } => {
+                            next_attempt_kind = SPEND_ATTEMPT_KIND_CAPACITY_RETRY;
+                            continue;
+                        }
                         AggregateApiCapacityRetryAction::Exhausted => {
-                            last_failure_status = 503;
+                            capacity_budget_exhausted = true;
+                            last_failure_status = 502;
                             terminal_failure = true;
                             break;
                         }
                         AggregateApiCapacityRetryAction::DeadlineExceeded => {
                             last_attempt_error = Some("aggregate api request timeout".to_string());
-                            last_failure_status = 504;
+                            // 网关本地超时按 502 收敛终态并计入失败（见总超时路径），
+                            // 避免客户端对 504 无限重试。
+                            cooldown_eligible_failure = true;
+                            last_failure_status = 502;
                             terminal_failure = true;
                             break;
                         }
                     }
                 }
                 if transport_retry_budget_remaining > 0 {
+                    next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
                     transport_retry_budget_remaining =
                         transport_retry_budget_remaining.saturating_sub(1);
                     continue;
@@ -2181,16 +2605,107 @@ pub(in super::super) fn proxy_aggregate_request(
             }
 
             let inflight_guard = super::super::super::acquire_account_inflight(key_id);
+
+            // 上游 Chat 非流式：先做类型化转换（禁止原始 body 回退），再以
+            // Responses 形状交付给统一 delivery。转换失败是交付前的候选级失败，
+            // 进入候选 failover（502），绝无 raw fallback。
+            let upstream_for_bridge = if upstream_protocol
+                == crate::gateway::UpstreamProtocol::ChatCompletions
+                && !is_stream
+            {
+                let upstream_status = upstream.status();
+                let upstream_body = match upstream.bytes() {
+                    Ok(body) => body,
+                    Err(err) => {
+                        last_attempt_url = Some(base_upstream_url.to_string());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error =
+                            Some(format!("aggregate api chat upstream body read failed: {err}"));
+                        last_failure_status = 502;
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                };
+                let converted = match super::super::super::convert_chat_completions_body_to_responses(
+                    upstream_body.as_ref(),
+                ) {
+                    Some(body) => body,
+                    None => {
+                        last_attempt_url = Some(base_upstream_url.to_string());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error = Some(
+                            "aggregate api chat upstream response conversion failed".to_string(),
+                        );
+                        last_failure_status = 502;
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                };
+                // 仅在 Responses 形状转换成功后缓存原始 Chat assistant 消息；
+                // 后续 previous_response_id 请求据此重建 Chat messages。
+                crate::gateway::global_chat_completions_context()
+                    .insert_from_chat_response_body(None, upstream_body.as_ref());
+                let status = upstream_status;
+                let mut fresh_headers = reqwest::header::HeaderMap::new();
+                fresh_headers.insert(
+                    reqwest::header::CONTENT_TYPE,
+                    reqwest::header::HeaderValue::from_static("application/json"),
+                );
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(trace_id) {
+                    fresh_headers.insert(crate::error_codes::TRACE_ID_HEADER_NAME, value);
+                }
+                GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
+                    status,
+                    fresh_headers,
+                    GatewayByteStream::from_bytes(Bytes::from(converted)),
+                ))
+            } else if upstream_protocol
+                == crate::gateway::UpstreamProtocol::ChatCompletions
+            {
+                // 流式 Chat 上游：delivery 前做有界 preflight。尚未产出任何
+                // 语义事件前的协议/边界/终态错误回到候选 failover；一旦首个
+                // 语义事件已交付则不再重放。
+                match preflight_chat_stream(
+                    GatewayUpstreamResponse::Blocking(upstream),
+                    candidate_idx + 1 < total_candidates,
+                ) {
+                    ChatPreflightOutcome::Ready(upstream) => upstream,
+                    ChatPreflightOutcome::Failover(message) => {
+                        last_attempt_url = Some(base_upstream_url.to_string());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error = Some(message);
+                        last_failure_status = 502;
+                        // The client has not received a semantic event. This is a
+                        // candidate-local upstream failure, so let the outer loop
+                        // try the next eligible candidate and record health below.
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                }
+            } else {
+                GatewayUpstreamResponse::Blocking(upstream)
+            };
             let passthrough_sse_protocol =
                 resolve_passthrough_sse_protocol(path, response_adapter_for_candidate);
+            // 非流式 Chat 上游 body 已预转换为 Responses 形状，delivery 必须按
+            // Passthrough 处理，避免二次转换；流式 Chat 走 ResponsesFromChatCompletions
+            // 状态机读取器。
+            let delivery_adapter = if upstream_protocol
+                == crate::gateway::UpstreamProtocol::ChatCompletions
+                && !is_stream
+            {
+                response_adapter
+            } else {
+                response_adapter_for_candidate
+            };
             let upstream_request = request.take().ok_or_else(|| {
                 "aggregate api request already consumed before bridge".to_string()
             })?;
             let mut bridge = super::super::super::respond_with_upstream(
                 upstream_request,
-                GatewayUpstreamResponse::Blocking(upstream),
+                upstream_for_bridge,
                 inflight_guard,
-                response_adapter_for_candidate,
+                delivery_adapter,
                 passthrough_sse_protocol,
                 None,
                 path,
@@ -2236,6 +2751,26 @@ pub(in super::super) fn proxy_aggregate_request(
                 // Reasoning Guard outcomes are local policy decisions.  They
                 // deliberately do not affect supplier cooldown health.
                 cooldown_eligible_failure = false;
+                // The matched round already reached the upstream and carried
+                // usage. Settle it synchronously before any retry is scheduled;
+                // the observability event below stays async.
+                match action {
+                    super::super::super::ReasoningGuardBridgeAction::InternalRetry
+                    | super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
+                    | super::super::super::ReasoningGuardBridgeAction::Block => {
+                        settle_daily_spend_from_usage(
+                            storage,
+                            &mut current_attempt_id,
+                            trace_id,
+                            candidate_upstream_model.as_deref(),
+                            bridge.usage.input_tokens.unwrap_or(0),
+                            bridge.usage.cached_input_tokens.unwrap_or(0),
+                            bridge.usage.output_tokens.unwrap_or(0),
+                            aggregate_multiplier_millis_for(candidate.cost_multiplier),
+                        );
+                    }
+                    _ => {} // ObserveOnly / Bypass continue to normal delivery.
+                }
                 let action_name = match action {
                     super::super::super::ReasoningGuardBridgeAction::ObserveOnly => "observe_only",
                     super::super::super::ReasoningGuardBridgeAction::InternalRetry => {
@@ -2273,6 +2808,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         first_response_ms: bridge.usage.first_response_ms,
                         ..Default::default()
                     },
+                    aggregate_multiplier_millis_for(candidate.cost_multiplier),
                 );
 
                 let should_retry_reasoning_guard = matches!(
@@ -2306,6 +2842,13 @@ pub(in super::super) fn proxy_aggregate_request(
                         continuation_body_override = Some(Bytes::from(continuation_body));
                     }
                     request = Some(returned_request);
+                    next_attempt_kind = if action
+                        == super::super::super::ReasoningGuardBridgeAction::ContinuationRecovery
+                    {
+                        SPEND_ATTEMPT_KIND_CONTINUATION_RECOVERY
+                    } else {
+                        SPEND_ATTEMPT_KIND_GUARD_RETRY
+                    };
                     reasoning_guard_retry_budget_remaining =
                         reasoning_guard_retry_budget_remaining.saturating_sub(1);
                     reasoning_guard_retry_attempts_used =
@@ -2331,6 +2874,8 @@ pub(in super::super) fn proxy_aggregate_request(
                 // The client has already received a stream event, so retrying could duplicate
                 // visible output or tool calls. Keep the error health-neutral instead.
                 cooldown_eligible_failure = false;
+                // The delivered round is ambiguous; hold its reservation for the day.
+                hold_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
                 super::super::super::record_gateway_upstream_capacity_error();
                 log::warn!(
                     "event=aggregate_api_capacity_recovery_not_replayed trace_id={} aggregate_api_id={} upstream_model={} stream={} reason=client_delivery_started",
@@ -2353,22 +2898,31 @@ pub(in super::super) fn proxy_aggregate_request(
                     candidate_id.as_str(),
                     candidate_upstream_model.as_deref(),
                     is_stream,
+                    None,
                 ) {
                     AggregateApiCapacityRetryAction::Retry { .. } => {
+                        // The pre-delivery capacity round produced no billable
+                        // output; release it before the same-candidate retry.
+                        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
+                        next_attempt_kind = SPEND_ATTEMPT_KIND_CAPACITY_RETRY;
                         request = Some(returned_request);
                         continue;
                     }
                     AggregateApiCapacityRetryAction::Exhausted => {
                         request = Some(returned_request);
                         last_attempt_error = final_error;
-                        last_failure_status = 503;
+                        capacity_budget_exhausted = true;
+                        last_failure_status = 502;
                         terminal_failure = true;
                         break;
                     }
                     AggregateApiCapacityRetryAction::DeadlineExceeded => {
                         request = Some(returned_request);
                         last_attempt_error = Some("aggregate api request timeout".to_string());
-                        last_failure_status = 504;
+                        // 网关本地超时按 502 收敛终态并计入失败（见总超时路径），
+                        // 避免客户端对 504 无限重试。
+                        cooldown_eligible_failure = true;
+                        last_failure_status = 502;
                         terminal_failure = true;
                         break;
                     }
@@ -2407,7 +2961,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     candidate_id.as_str(),
                     candidate_supplier_name.as_deref(),
                     candidate_upstream_model.as_deref(),
-                    capability_protocol,
+                    resolve_aggregate_upstream_protocol(&candidate, path).label(),
                     path,
                     capability_contract_signature.as_str(),
                     capability_transform_codes_json.as_str(),
@@ -2442,6 +2996,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     i64::try_from(reasoning_guard_retry_attempts_used).unwrap_or(i64::MAX),
                     Some(status_code),
                     RequestLogUsage::default(),
+                    aggregate_multiplier_millis_for(candidate.cost_multiplier),
                 );
             }
 
@@ -2450,11 +3005,13 @@ pub(in super::super) fn proxy_aggregate_request(
                 status_code,
                 Some("aggregate_api"),
             );
+            let sanitized_upstream_url = sanitize_url_for_log(url.as_str());
+            let sanitized_candidate_url = sanitize_url_for_log(candidate_url.as_str());
             super::super::super::trace_log::log_request_final(
                 trace_id,
                 status_code,
                 Some(key_id),
-                Some(url.as_str()),
+                Some(sanitized_upstream_url.as_str()),
                 final_error.as_deref(),
                 started_at.elapsed().as_millis(),
             );
@@ -2472,16 +3029,18 @@ pub(in super::super) fn proxy_aggregate_request(
                     client_reasoning_effort: client_reasoning_for_log,
                     reasoning_source: reasoning_source_for_log,
                     response_adapter: Some(response_adapter_for_candidate),
+                    upstream_protocol: Some(response_plan.upstream_protocol.label()),
                     service_tier: service_tier_for_log,
                     effective_service_tier: effective_service_tier_for_log,
                     service_tier_source: service_tier_source_for_log,
                     aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
-                    aggregate_api_url: Some(candidate_url.as_str()),
+                    aggregate_api_url: Some(sanitized_candidate_url.as_str()),
                     attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
                     upstream_model: candidate_upstream_model.as_deref(),
                     actual_source_kind: Some("aggregate_api"),
                     actual_source_id: Some(candidate_id.as_str()),
                     aggregate_api_cost_multiplier: Some(candidate.cost_multiplier),
+                    aggregate_api_daily_spend_attempt_id: current_attempt_id.as_deref(),
                     session_id: session_id_for_log,
                     conversation_anchor: conversation_anchor_for_log,
                     ..Default::default()
@@ -2492,7 +3051,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 request_method,
                 model_for_log,
                 reasoning_for_log,
-                Some(url.as_str()),
+                Some(sanitized_upstream_url.as_str()),
                 Some(status_code),
                 RequestLogUsage {
                     input_tokens: usage.input_tokens,
@@ -2513,6 +3072,10 @@ pub(in super::super) fn proxy_aggregate_request(
             succeeded = true;
             break;
         }
+
+        // Any residual reserved attempt that could not be resolved (e.g.
+        // all-retries-exhausted without a terminal snapshot) is held for the day.
+        hold_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
 
         if cooldown_eligible_failure {
             super::super::super::gateway_record_aggregate_api_failure(
@@ -2541,7 +3104,10 @@ pub(in super::super) fn proxy_aggregate_request(
     let request = request.take().ok_or_else(|| {
         "aggregate api request already consumed before failure response".to_string()
     })?;
-    if allow_model_fallback && (status_code == 429 || status_code >= 500) {
+    if allow_model_fallback
+        && !capacity_budget_exhausted
+        && (status_code == 429 || status_code >= 500)
+    {
         super::super::super::trace_log::log_model_fallback_signal(
             trace_id,
             model_for_log,
@@ -2555,11 +3121,12 @@ pub(in super::super) fn proxy_aggregate_request(
         });
     }
     super::super::super::record_gateway_request_outcome(path, status_code, Some("aggregate_api"));
+    let sanitized_last_attempt_url = last_attempt_url.as_deref().map(sanitize_url_for_log);
     super::super::super::trace_log::log_request_final(
         trace_id,
         status_code,
         Some(key_id),
-        last_attempt_url.as_deref(),
+        sanitized_last_attempt_url.as_deref(),
         Some(message.as_str()),
         started_at.elapsed().as_millis(),
     );
@@ -2577,11 +3144,12 @@ pub(in super::super) fn proxy_aggregate_request(
             client_reasoning_effort: client_reasoning_for_log,
             reasoning_source: reasoning_source_for_log,
             response_adapter: Some(response_adapter),
+            upstream_protocol: last_attempt_upstream_protocol,
             service_tier: service_tier_for_log,
             effective_service_tier: effective_service_tier_for_log,
             service_tier_source: service_tier_source_for_log,
             aggregate_api_supplier_name: last_attempt_supplier_name.as_deref(),
-            aggregate_api_url: last_attempt_url.as_deref(),
+            aggregate_api_url: sanitized_last_attempt_url.as_deref(),
             attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
             upstream_model: last_attempt_upstream_model.as_deref(),
             actual_source_kind: last_attempt_id.as_deref().map(|_| "aggregate_api"),
@@ -2667,6 +3235,7 @@ mod bridge_tests {
             last_balance_error: None,
             last_balance_json: None,
             enable_consecutive_failure_freeze: true,
+            upstream_protocol: None,
         }
     }
 

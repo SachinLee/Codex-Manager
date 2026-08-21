@@ -146,19 +146,6 @@ const USAGE_SNAPSHOTS = [
   },
 ];
 
-const MODEL_USAGE = {
-  model: "gpt-5.4",
-  requestCount: 1,
-  inputTokens: 1_000_000,
-  cachedInputTokens: 200_000,
-  cacheWriteInputTokens: 0,
-  billableInputTokens: 800_000,
-  outputTokens: 100_000,
-  totalTokens: 1_100_000,
-  reasoningOutputTokens: 50_000,
-  estimatedCostUsd: 1.25,
-  cacheHitRate: 0.2,
-};
 
 test("aggregate API usage refreshes while active and resumes after keep-alive navigation", async ({
   page,
@@ -247,7 +234,7 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
     }
     if (method === "requestlog/model_daily_usage") {
       modelUsageCallCount += 1;
-      await ok({ items: [{ ...MODEL_USAGE, requestCount: modelUsageCallCount }] });
+      await ok({ items: [] });
       return;
     }
 
@@ -265,26 +252,16 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
     });
   });
 
-  const waitForUsageResponses = () =>
-    Promise.all([
-      page.waitForResponse(
-        (response) => {
-          if (!response.url().includes("/api/rpc")) return false;
-          const payload = response.request().postDataJSON();
-          return payload?.method === "requestlog/aggregate_api_daily_usage";
-        },
-        { timeout: 2_000 },
-      ),
-      page.waitForResponse(
-        (response) => {
-          if (!response.url().includes("/api/rpc")) return false;
-          const payload = response.request().postDataJSON();
-          return payload?.method === "requestlog/model_daily_usage";
-        },
-        { timeout: 2_000 },
-      ),
-    ]);
 
+  const waitForAggregateUsageResponse = () =>
+    page.waitForResponse(
+      (response) => {
+        if (!response.url().includes("/api/rpc")) return false;
+        const payload = response.request().postDataJSON();
+        return payload?.method === "requestlog/aggregate_api_daily_usage";
+      },
+      { timeout: 2_000 },
+    );
   await page.goto("/aggregate-api/");
 
   const costMetric = page.locator(".console-metric").filter({ hasText: "今日费用" });
@@ -292,12 +269,6 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
     .locator("tbody tr")
     .filter({ hasText: AGGREGATE_API.supplierName })
     .first();
-  const modelUsageRow = page
-    .locator(".glass-card")
-    .filter({ hasText: "今日模型用量" })
-    .locator("tbody tr")
-    .filter({ hasText: MODEL_USAGE.model });
-  const modelUsageCard = page.locator(".glass-card").filter({ hasText: "今日模型用量" });
   const apiTable = page
     .locator(".glass-card")
     .filter({ hasText: "上游连接" })
@@ -306,7 +277,9 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
   await expect(costMetric.getByText("$19.27", { exact: true })).toBeVisible();
   await expect(aggregateRow.getByText("19M tok", { exact: true })).toBeVisible();
   await expect(aggregateRow.getByText(/\$19\.27 · cache/)).toBeVisible();
-  await expect(modelUsageRow).toHaveCount(0);
+  await expect(page.getByText("今日模型用量", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "展开", exact: true })).toHaveCount(0);
+  expect(modelUsageCallCount).toBe(0);
   await expect(apiTable.locator("tbody tr > td:first-child")).toHaveText([
     "0",
     "5",
@@ -320,8 +293,6 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
     "Last sort value",
   ]);
 
-  await modelUsageCard.getByRole("button", { name: "展开", exact: true }).click();
-  await expect(modelUsageRow).toBeVisible();
 
   usageVersion = 1;
   await expect(costMetric.getByText("$48.35", { exact: true })).toBeVisible({
@@ -330,12 +301,11 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
   await expect(aggregateRow.getByText("48M tok", { exact: true })).toBeVisible();
   await expect(aggregateRow.getByText(/\$48\.35 · cache/)).toBeVisible();
   expect(aggregateUsageCallCount).toBeGreaterThanOrEqual(2);
-  await expect.poll(() => modelUsageCallCount).toBeGreaterThanOrEqual(2);
+  expect(modelUsageCallCount).toBe(0);
 
   usageVersion = 2;
   const callsBeforeFocus = aggregateUsageCallCount;
-  const modelCallsBeforeFocus = modelUsageCallCount;
-  const focusResponses = waitForUsageResponses();
+  const focusResponse = waitForAggregateUsageResponse();
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
@@ -349,31 +319,24 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
     window.dispatchEvent(new Event("visibilitychange"));
     Reflect.deleteProperty(document, "visibilityState");
   });
-  await focusResponses;
+  await focusResponse;
   await expect(costMetric.getByText("$52.75", { exact: true })).toBeVisible();
   await expect(aggregateRow.getByText("52M tok", { exact: true })).toBeVisible();
-  await expect(
-    modelUsageRow.getByText(String(modelUsageCallCount), { exact: true }),
-  ).toBeVisible();
   expect(aggregateUsageCallCount).toBeGreaterThan(callsBeforeFocus);
-  expect(modelUsageCallCount).toBeGreaterThan(modelCallsBeforeFocus);
+  expect(modelUsageCallCount).toBe(0);
 
   usageVersion = 1;
   const callsBeforeReconnect = aggregateUsageCallCount;
-  const modelCallsBeforeReconnect = modelUsageCallCount;
-  const reconnectResponses = waitForUsageResponses();
+  const reconnectResponse = waitForAggregateUsageResponse();
   await page.evaluate(() => {
     window.dispatchEvent(new Event("offline"));
     window.dispatchEvent(new Event("online"));
   });
-  await reconnectResponses;
+  await reconnectResponse;
   await expect(costMetric.getByText("$48.35", { exact: true })).toBeVisible();
   await expect(aggregateRow.getByText("48M tok", { exact: true })).toBeVisible();
-  await expect(
-    modelUsageRow.getByText(String(modelUsageCallCount), { exact: true }),
-  ).toBeVisible();
   expect(aggregateUsageCallCount).toBeGreaterThan(callsBeforeReconnect);
-  expect(modelUsageCallCount).toBeGreaterThan(modelCallsBeforeReconnect);
+  expect(modelUsageCallCount).toBe(0);
 
   await page.getByRole("link", { name: "系统设置", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/$/);
@@ -381,10 +344,9 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
 
   await page.waitForTimeout(500);
   const inactiveAggregateUsageCallCount = aggregateUsageCallCount;
-  const inactiveModelUsageCallCount = modelUsageCallCount;
   await page.waitForTimeout(5_500);
   expect(aggregateUsageCallCount).toBe(inactiveAggregateUsageCallCount);
-  expect(modelUsageCallCount).toBe(inactiveModelUsageCallCount);
+  expect(modelUsageCallCount).toBe(0);
 
   usageVersion = 2;
   const callsBeforeReturn = aggregateUsageCallCount;
@@ -395,7 +357,5 @@ test("aggregate API usage refreshes while active and resumes after keep-alive na
   });
   await expect(aggregateRow.getByText("52M tok", { exact: true })).toBeVisible();
   expect(aggregateUsageCallCount).toBeGreaterThan(callsBeforeReturn);
-  await expect
-    .poll(() => modelUsageCallCount, { timeout: 2_000 })
-    .toBeGreaterThan(inactiveModelUsageCallCount);
+  expect(modelUsageCallCount).toBe(0);
 });

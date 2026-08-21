@@ -168,6 +168,7 @@ pub async fn service_aggregate_api_create(
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
     enable_consecutive_failure_freeze: Option<bool>,
+    upstream_protocol: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "providerType": provider_type,
@@ -192,6 +193,7 @@ pub async fn service_aggregate_api_create(
         "balanceQueryUserId": balance_query_user_id,
         "balanceQueryConfigJson": balance_query_config_json,
         "enableConsecutiveFailureFreeze": enable_consecutive_failure_freeze,
+        "upstreamProtocol": upstream_protocol,
     });
     rpc_call_in_background("aggregateApi/create", addr, Some(params)).await
 }
@@ -241,6 +243,7 @@ pub async fn service_aggregate_api_update(
     balance_query_user_id: Option<String>,
     balance_query_config_json: Option<String>,
     enable_consecutive_failure_freeze: Option<bool>,
+    upstream_protocol: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({
         "id": id,
@@ -266,6 +269,7 @@ pub async fn service_aggregate_api_update(
         "balanceQueryUserId": balance_query_user_id,
         "balanceQueryConfigJson": balance_query_config_json,
         "enableConsecutiveFailureFreeze": enable_consecutive_failure_freeze,
+        "upstreamProtocol": upstream_protocol,
     });
     if let Some(value) = daily_spend_limit_usd {
         params["dailySpendLimitUsd"] = serde_json::Value::from(value);
@@ -336,6 +340,16 @@ pub async fn service_aggregate_api_test_connection(
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({ "id": id });
     rpc_call_in_background("aggregateApi/testConnection", addr, Some(params)).await
+}
+
+/// 只读地请求已保存聚合 API 的上游 `/models` 目录；不写任何本地数据。
+#[tauri::command]
+pub async fn service_aggregate_api_models_discover(
+    addr: Option<String>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "id": id });
+    rpc_call_in_background("aggregateApi/models/discover", addr, Some(params)).await
 }
 
 #[tauri::command]

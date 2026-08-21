@@ -1,5 +1,6 @@
 pub(in super::super) mod backoff;
 pub(in super::super) mod candidates;
+pub(in super::super) mod capacity;
 pub(in super::super) mod deadline;
 pub(in super::super) mod failover_policy;
 pub(in super::super) mod outcome;
