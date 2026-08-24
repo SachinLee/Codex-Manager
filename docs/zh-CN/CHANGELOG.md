@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-23
+
+### Fixed
+
+- 修复桌面 service 恢复和启动窗口初始化的稳定性问题。
+
+## [0.5.4] - 2026-08-23
+
+### Changed
+
+- 改进 Responses WebSocket 恢复机制，并提升 CI 获取 Cargo Git 依赖的稳定性。
+
 ### Added
 
 - 聚合 API 候选可声明 `upstream_protocol`（`responses` / `chat_completions`），仅支持 Chat Completions 的上游可通过网关的共享请求转换器与规范响应转换（非流式与 SSE）服务于 Responses、Anthropic、客户端 Chat 与 Compact 流量。NULL 保持既有按客户端路径的 Claude 桥接与 Responses 行为；非 NULL 的 OpenAI 协议仅对 Codex / 通用兼容类型通过校验。

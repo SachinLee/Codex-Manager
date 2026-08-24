@@ -5,6 +5,18 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-23
+
+### Fixed
+
+- Fixed desktop service restore and startup-window initialization reliability.
+
+## [0.5.4] - 2026-08-23
+
+### Changed
+
+- Improved Responses WebSocket recovery, CI Cargo Git dependency fetching, and related release documentation.
+
 ### Added
 
 - Aggregate API candidates can declare an `upstream_protocol` (`responses` / `chat_completions`), letting Chat Completions-only upstreams serve Responses, Anthropic, client Chat, and Compact flows through the gateway's shared request converter and canonical response conversion (non-streaming and SSE). NULL keeps the legacy client-path behavior for Claude bridging and Responses upstreams; non-NULL OpenAI protocols are validated only for Codex / compatible providers.
