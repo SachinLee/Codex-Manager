@@ -27,5 +27,7 @@ export function createAggregateApiWebCommands(): Record<string, WebCommandDescri
     service_aggregate_api_capabilities_list_recent_attempts: { rpcMethod: "aggregateApi/capabilities/listRecentAttempts" },
     service_aggregate_api_capabilities_set_mode: { rpcMethod: "aggregateApi/capabilities/setMode" },
     service_aggregate_api_refresh_balance: { rpcMethod: "aggregateApi/refreshBalance" },
+    service_aggregate_api_fetch_models: { rpcMethod: "aggregateApi/fetchModels" },
+    service_aggregate_api_associate_models: { rpcMethod: "aggregateApi/associateModels" },
   };
 }

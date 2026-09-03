@@ -74,6 +74,7 @@ import { useCodexProfileModeStatus } from "@/hooks/useCodexProfileModeStatus";
 import {
   estimateChartYAxisWidth,
   formatCompactTokenAmount,
+  formatPercent,
 } from "@/lib/dashboard/format";
 import type { AppLocale } from "@/lib/i18n/config";
 import { useI18n } from "@/lib/i18n/provider";
@@ -699,6 +700,13 @@ function AdminUsageAnalyticsCard({
   const rangeUsage = isTodayOnlyRange
     ? summary.todayUsage
     : sumDashboardTokenUsages(summary.dailyUsage.map((item) => item.usage));
+  const rangeCacheHitRate =
+    rangeUsage.inputTokens > 0
+      ? Math.min(
+          100,
+          (Math.max(0, rangeUsage.cachedInputTokens) / rangeUsage.inputTokens) * 100,
+        )
+      : null;
   const hasZoomWindow =
     summary.modelUsage.length === 0 &&
     summary.dailyUsage.length > 1 &&
@@ -843,6 +851,9 @@ function AdminUsageAnalyticsCard({
             <div className="mt-1 font-mono font-semibold">
               {formatCompactTokenAmount(rangeUsage.cachedInputTokens)} /{" "}
               {formatCompactTokenAmount(rangeUsage.reasoningOutputTokens)}
+            </div>
+            <div className="text-muted-foreground">
+              {t("缓存命中率")} {formatPercent(rangeCacheHitRate)}
             </div>
           </div>
         </div>

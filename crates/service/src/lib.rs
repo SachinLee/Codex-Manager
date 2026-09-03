@@ -50,6 +50,7 @@ pub(crate) use account::plan as account_plan;
 pub(crate) use account::proxy as account_proxy;
 pub(crate) use account::proxy_testing::presets::proxy_test_presets;
 pub(crate) use account::status as account_status;
+pub(crate) use account::test as account_test;
 pub(crate) use account::update as account_update;
 pub(crate) use account::warmup as account_warmup;
 pub(crate) use aggregate_api::{
@@ -124,6 +125,7 @@ pub(crate) use usage::scheduler as usage_scheduler;
 pub(crate) use usage::snapshot_store as usage_snapshot_store;
 pub(crate) use usage::token_refresh as usage_token_refresh;
 
+pub use account_test::{set_account_test_event_handler, AccountTestEvent};
 pub use app_settings::{
     app_settings_get, app_settings_get_with_overrides, app_settings_set, author_content_get,
     bind_all_interfaces_enabled, bind_all_interfaces_enabled_for_mode,

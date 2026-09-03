@@ -8,6 +8,7 @@ use super::super::local_validation::LocalValidationResult;
 use super::executor::{
     resolve_gateway_upstream_execution_plan, GatewayUpstreamExecutorKind, GatewayUpstreamRouteKind,
 };
+use super::protocol::aggregate_api::{AggregateAttemptOutcome, AggregateFailurePolicy};
 use super::proxy_pipeline::candidate_executor::{
     execute_candidate_sequence, CandidateExecutionResult, CandidateExecutorParams,
 };
@@ -145,6 +146,10 @@ fn should_try_provider_executor_aggregate_route(
                     && !has_enabled_default_account_pool_route(model)
             })
         }
+        // 聚合优先混合轮转：只要聚合路由可用就先走聚合，聚合耗尽后回落账号池
+        GatewayUpstreamRouteKind::HybridAggregateFirst => {
+            configured_model.is_none_or(has_enabled_aggregate_api_route)
+        }
         GatewayUpstreamRouteKind::AccountRotation => false,
     }
 }
@@ -156,6 +161,30 @@ fn is_hybrid_account_first_route(
         execution_plan.route_kind,
         GatewayUpstreamRouteKind::HybridAccountFirst
     )
+}
+
+fn is_hybrid_aggregate_first_route(
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+) -> bool {
+    matches!(
+        execution_plan.route_kind,
+        GatewayUpstreamRouteKind::HybridAggregateFirst
+    )
+}
+
+fn should_fallback_to_account_after_aggregate_exhaustion(
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+    configured_model: Option<&ManagedModelV2>,
+) -> bool {
+    is_hybrid_aggregate_first_route(execution_plan)
+        && configured_model.is_none_or(has_enabled_default_account_pool_route)
+}
+
+/// 混合轮转（无论账号优先还是聚合优先）直连聚合时使用透传路径与透传请求体。
+fn is_hybrid_passthrough_route(
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+) -> bool {
+    is_hybrid_account_first_route(execution_plan) || is_hybrid_aggregate_first_route(execution_plan)
 }
 
 fn respond_when_account_candidates_empty(
@@ -197,6 +226,7 @@ fn route_kind_label(value: GatewayUpstreamRouteKind) -> &'static str {
         GatewayUpstreamRouteKind::AccountRotation => "account_rotation",
         GatewayUpstreamRouteKind::AggregateApi => "aggregate_api",
         GatewayUpstreamRouteKind::HybridAccountFirst => "hybrid_account_first",
+        GatewayUpstreamRouteKind::HybridAggregateFirst => "hybrid_aggregate_first",
     }
 }
 
@@ -257,6 +287,10 @@ fn validate_model_route(
         }
         GatewayUpstreamRouteKind::AggregateApi => has_enabled_aggregate_api_route(&managed_model),
         GatewayUpstreamRouteKind::HybridAccountFirst => {
+            has_enabled_default_account_pool_route(&managed_model)
+                || has_enabled_aggregate_api_route(&managed_model)
+        }
+        GatewayUpstreamRouteKind::HybridAggregateFirst => {
             has_enabled_default_account_pool_route(&managed_model)
                 || has_enabled_aggregate_api_route(&managed_model)
         }
@@ -658,6 +692,7 @@ fn proxy_with_aggregate_candidates(
             allow_model_fallback,
             request_deadline,
             started_at,
+            failure_policy,
         },
     )
 }

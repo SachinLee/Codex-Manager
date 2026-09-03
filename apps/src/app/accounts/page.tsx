@@ -3,6 +3,11 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAccounts } from "@/hooks/useAccounts";
+import {
+  isAdminRole,
+  resolveSessionRole,
+  useAppSession,
+} from "@/hooks/useAppSession";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
@@ -65,6 +70,10 @@ export default function AccountsPage() {
   const { t } = useI18n();
   const { isDesktopRuntime, canUseBrowserDownloadExport } =
     useRuntimeCapabilities();
+  const { data: session, isLoading: isSessionLoading } = useAppSession();
+  const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
+  const canTestAccounts =
+    isDesktopRuntime || (!isSessionLoading && isAdminRole(role));
   const {
     accounts,
     accountDailyUsageById,
@@ -76,6 +85,7 @@ export default function AccountsPage() {
     refreshAllAccountRt,
     refreshAllAccounts,
     refreshAccountList,
+    refreshAccountsSilently,
     deleteAccount,
     deleteManyAccounts,
     cleanupAccountsByStatuses,
@@ -142,6 +152,19 @@ export default function AccountsPage() {
     useState<AccountProxySource>("custom");
   const [proxyProfileIdDraft, setProxyProfileIdDraft] = useState("");
   const [proxyUrlDraft, setProxyUrlDraft] = useState("");
+  const [accountTestAccountId, setAccountTestAccountId] = useState<string | null>(
+    null,
+  );
+  const [accountTestAccountSnapshot, setAccountTestAccountSnapshot] =
+    useState<Account | null>(null);
+  // 从最新账号列表派生弹窗里的账号，测试结束后状态徽章可自动刷新；
+  // 列表短暂重取时回退到快照，避免弹窗闪烁关闭。
+  const accountTestAccount = useMemo(
+    () =>
+      accounts.find((account) => account.id === accountTestAccountId) ??
+      accountTestAccountSnapshot,
+    [accounts, accountTestAccountId, accountTestAccountSnapshot],
+  );
 
   const [accountEditorState, setAccountEditorState] =
     useState<AccountEditorState | null>(null);
@@ -557,6 +580,23 @@ const toggleCleanupStatus = (rawStatus: string) => {
     setProxyUrlDraft("");
   };
 
+  const openAccountTest = (account: Account) => {
+    if (!canTestAccounts) return;
+    setAccountTestAccountId(account.id);
+    setAccountTestAccountSnapshot(account);
+  };
+
+  const handleAccountTestOpenChange = (open: boolean) => {
+    if (open) return;
+    setAccountTestAccountId(null);
+    setAccountTestAccountSnapshot(null);
+  };
+
+  // 测试结束后静默刷新账号状态（不弹「账号用量已刷新」），让弹窗徽章与列表同步。
+  const handleAccountTestFinished = () => {
+    void refreshAccountsSilently();
+  };
+
   const handleTestProxySettings = async () => {
     if (!proxyDialogAccount) return;
     try {
@@ -879,6 +919,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
       proxyDialogAccount={proxyDialogAccount}
       proxySettings={proxySettings}
       proxyProfiles={proxyProfiles}
+      canTestAccounts={canTestAccounts}
+      accountTestAccount={accountTestAccount}
       isProxySettingsLoading={isProxySettingsLoading}
       proxyEnabledDraft={proxyEnabledDraft}
       proxySourceDraft={proxySourceDraft}
@@ -951,6 +993,9 @@ const toggleCleanupStatus = (rawStatus: string) => {
       handleDeleteSingle={handleDeleteSingle}
       openProxyDialog={openProxyDialog}
       handleProxyDialogOpenChange={handleProxyDialogOpenChange}
+      openAccountTest={openAccountTest}
+      handleAccountTestOpenChange={handleAccountTestOpenChange}
+      onAccountTestFinished={handleAccountTestFinished}
       handleSaveProxySettings={handleSaveProxySettings}
       handleClearProxySettings={handleClearProxySettings}
       handleTestProxySettings={handleTestProxySettings}

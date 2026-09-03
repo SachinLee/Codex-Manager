@@ -50,7 +50,7 @@ fn optional_f64_param(req: &JsonRpcRequest, key: &str) -> Option<Option<f64>> {
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonRpcResponse> {
     let result = match req.method.as_str() {
         "aggregateApi/list" => super::value_or_error(
             list_aggregate_apis().map(|items| AggregateApiListResult { items }),
@@ -274,6 +274,53 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         "aggregateApi/refreshBalance" => {
             let api_id = api_id_param(req).unwrap_or("");
             super::value_or_error(refresh_aggregate_api_balance(api_id))
+        }
+        "aggregateApi/fetchModels" => {
+            if !actor.is_admin() {
+                return Some(super::response(
+                    req,
+                    super::value_or_error::<()>(Err(
+                        "permission_denied: aggregateApi/fetchModels".to_string()
+                    )),
+                ));
+            }
+            let api_id = api_id_param(req).unwrap_or("");
+            super::value_or_error(fetch_aggregate_api_models(api_id))
+        }
+        "aggregateApi/associateModels" => {
+            if !actor.is_admin() {
+                return Some(super::response(
+                    req,
+                    super::value_or_error::<()>(Err(
+                        "permission_denied: aggregateApi/associateModels".to_string(),
+                    )),
+                ));
+            }
+            let api_id = api_id_param(req).unwrap_or("").to_string();
+            let upstream_models = req
+                .params
+                .as_ref()
+                .and_then(|value| value.get("upstreamModels"))
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let display_names = req
+                .params
+                .as_ref()
+                .and_then(|value| value.get("displayNames"))
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default();
+            super::value_or_error(associate_aggregate_api_models(
+                &api_id,
+                upstream_models,
+                display_names,
+            ))
         }
         _ => return None,
     };

@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   Gauge,
+  Link as LinkIcon,
   PencilLine,
   Percent,
   Plus,
@@ -29,10 +30,21 @@ import { CapabilityDiagnosticsDialog } from "@/components/aggregate-api/capabili
 import { CapabilityRoutingPanel } from "@/components/aggregate-api/capability-routing-panel";
 import { PageHeader, MetricCard, PageWorkspace } from "@/components/layout/page-workspace";
 import { AggregateApiModal } from "@/components/modals/aggregate-api-modal";
+import { AggregateApiModelAssociationModal } from "@/components/modals/aggregate-api-model-association-modal";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -64,6 +76,8 @@ import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useAggregateApiRuntimeStatuses } from "@/hooks/useAggregateApiRuntimeStatuses";
 import { useAggregateApiZeroBalanceStatuses } from "@/hooks/useAggregateApiZeroBalanceStatuses";
 import { accountClient } from "@/lib/api/account-client";
+import { appClient } from "@/lib/api/app-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
 import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
@@ -83,6 +97,7 @@ import type {
   AggregateApiDailyUsageStat,
   AggregateApiModelDiscoveryItem,
   AggregateApiSecretResult,
+  AggregateApiFetchedModel,
 } from "@/types/api-key";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -172,6 +187,8 @@ export default function AggregateApiPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const appSettings = useAppStore((state) => state.appSettings);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const isPageActive = useDesktopPageActive("/aggregate-api/");
@@ -263,6 +280,8 @@ export default function AggregateApiPage() {
     if (isPageActive) return;
     const frameId = window.requestAnimationFrame(() => {
       setModalOpen(false);
+      setAssociationApiId(null);
+      setAssociationItems([]);
       setEditingId(null);
       setDeleteId(null);
       setResetCooldownApi(null);
@@ -270,6 +289,7 @@ export default function AggregateApiPage() {
       setModelDiscoveryOpen(false);
       setQuickAddSelection(null);
       setRevealedSecrets({});
+      setProbeSettingsOpen(false);
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [isPageActive]);
@@ -430,6 +450,29 @@ export default function AggregateApiPage() {
     },
   });
 
+  const probeSettingsMutation = useMutation({
+    mutationFn: () =>
+      appClient.setSettings({
+        aggregateApiProbeUserAgentMode: probeUserAgentMode,
+        aggregateApiProbeUserAgent: probeUserAgent.trim(),
+      }),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(["app-settings-snapshot"], settings);
+      setAppSettings(settings);
+      setProbeSettingsOpen(false);
+      toast.success(t("连通性测试设置已更新"));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("更新连通性测试设置失败")}: ${getAppErrorMessage(error)}`);
+    },
+  });
+
+  const openProbeSettings = () => {
+    setProbeUserAgentMode(appSettings.aggregateApiProbeUserAgentMode || "codex");
+    setProbeUserAgent(appSettings.aggregateApiProbeUserAgent || "");
+    setProbeSettingsOpen(true);
+  };
+
   const balanceMutation = useMutation({
     mutationFn: (apiId: string) => accountClient.refreshAggregateApiBalance(apiId),
     onMutate: (apiId) => setRefreshingBalanceId(apiId),
@@ -560,6 +603,58 @@ export default function AggregateApiPage() {
       toast.error(`${t("读取密钥失败")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setLoadingSecretId(null);
+    }
+  };
+
+  const associationApi = associationApiId
+    ? aggregateApis.find((api) => api.id === associationApiId) || null
+    : null;
+
+  const openAssociation = async (apiId: string) => {
+    setFetchingModelsApiId(apiId);
+    try {
+      const result = await accountClient.fetchAggregateApiModels(apiId);
+      setAssociationApiId(apiId);
+      setAssociationItems(result.items);
+    } catch (error) {
+      toast.error(`${t("拉取模型失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setFetchingModelsApiId(null);
+    }
+  };
+
+  const associateModels = async (upstreamModels: string[]) => {
+    if (!associationApiId) return;
+    setAssociatingModels(true);
+    try {
+      const selectedSet = new Set(upstreamModels);
+      const displayNames = Object.fromEntries(
+        associationItems
+          .filter((item) => selectedSet.has(item.upstreamModel) && item.displayName)
+          .map((item) => [item.upstreamModel, item.displayName as string]),
+      );
+      const result = await accountClient.associateAggregateApiModels(
+        associationApiId,
+        upstreamModels,
+        displayNames,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
+        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
+      ]);
+      toast.success(t("关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}", {
+        created: result.createdModels.length,
+        added: result.addedRoutes.length,
+        unchanged: result.unchangedRoutes.length,
+      }));
+      setAssociationApiId(null);
+      setAssociationItems([]);
+    } catch (error) {
+      toast.error(`${t("关联模型失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAssociatingModels(false);
     }
   };
 
