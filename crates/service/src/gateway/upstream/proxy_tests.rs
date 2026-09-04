@@ -205,7 +205,7 @@ fn aggregate_candidate_filter_keeps_model_override_candidate_for_client_model() 
     );
 
     let candidates =
-        resolve_aggregate_candidates_for_route(&storage, "openai_responses", None, Some("gpt-5.4"))
+        resolve_aggregate_candidates_for_route(&storage, "openai_responses", None, Some("gpt-5.4"), "", None)
             .expect("resolve aggregate candidates");
 
     assert_eq!(candidates.len(), 1);
@@ -449,7 +449,7 @@ fn hybrid_aggregate_first_fallback_requires_default_account_pool_route() {
         hybrid,
         Some(&aggregate_only),
     ));
-    assert!(!should_fallback_to_account_after_aggregate_exhaustion(
+    assert!(!should_fallback_to_aggregate_after_account_exhaustion(
         hybrid,
         Some(&aggregate_only),
     ));
@@ -457,15 +457,15 @@ fn hybrid_aggregate_first_fallback_requires_default_account_pool_route() {
         hybrid,
         Some(&account_only),
     ));
-    assert!(should_fallback_to_account_after_aggregate_exhaustion(
+    assert!(should_fallback_to_aggregate_after_account_exhaustion(
         hybrid,
         Some(&dual_route),
     ));
-    assert!(!should_fallback_to_account_after_aggregate_exhaustion(
+    assert!(!should_fallback_to_aggregate_after_account_exhaustion(
         hybrid,
         Some(&non_default_pool),
     ));
-    assert!(should_fallback_to_account_after_aggregate_exhaustion(
+    assert!(should_fallback_to_aggregate_after_account_exhaustion(
         hybrid, None,
     ));
 }
@@ -539,6 +539,8 @@ fn aggregate_route_model_filter_uses_v2_routes() {
         "openai_responses",
         None,
         Some("vendor-batched"),
+        "",
+        None,
     )
     .expect("resolve aggregate candidates");
 
@@ -573,6 +575,8 @@ fn explicit_aggregate_route_candidate_precedes_provider_candidates() {
         "openai_responses",
         Some("agg-claude-explicit"),
         Some("vendor-cross-provider"),
+        "",
+        None,
     )
     .expect("resolve openai candidates with explicit claude aggregate");
     let openai_candidate_ids = openai_candidates
@@ -593,6 +597,8 @@ fn explicit_aggregate_route_candidate_precedes_provider_candidates() {
         "anthropic_native",
         Some("agg-codex-explicit"),
         Some("vendor-cross-provider"),
+        "",
+        None,
     )
     .expect("resolve anthropic candidates with explicit codex aggregate");
     let anthropic_candidate_ids = anthropic_candidates

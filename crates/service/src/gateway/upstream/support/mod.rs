@@ -7,3 +7,4 @@ pub(in super::super) mod outcome;
 pub(in super::super) mod payload_rewrite;
 pub(in super::super) mod precheck;
 pub(in super::super) mod retry;
+pub(in super::super) mod upstream_failure;

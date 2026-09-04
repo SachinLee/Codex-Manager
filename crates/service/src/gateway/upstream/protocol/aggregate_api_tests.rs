@@ -6,9 +6,9 @@ use super::{
     resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
     responses_to_anthropic_messages_action_path, rewrite_body_model_override,
     schedule_aggregate_api_capacity_retry, should_bridge_responses_to_anthropic,
-    AggregateApiCapacityRetryAction, AggregateProxyOutcome, AggregateProxyRequest,
-    AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS, AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE,
-    AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP,
+    AggregateApiCapacityRetryAction, AggregateAttemptOutcome, AggregateFailurePolicy,
+    AggregateProxyRequest, AGGREGATE_API_CAPACITY_RETRY_ATTEMPTS,
+    AGGREGATE_API_CAPACITY_RETRY_BACKOFF_BASE, AGGREGATE_API_CAPACITY_RETRY_BACKOFF_CAP,
 };
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -611,7 +611,7 @@ fn run_aggregate_capacity_scenario(
     candidates: Vec<AggregateApi>,
     allow_model_fallback: bool,
     deadline_after_secs: Option<u64>,
-) -> (Storage, AggregateProxyOutcome, usize) {
+) -> (Storage, AggregateAttemptOutcome, usize) {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let server = Server::http("127.0.0.1:0").expect("start server");
@@ -695,9 +695,11 @@ fn run_aggregate_capacity_scenario(
         session_id_for_log: None,
         conversation_anchor_for_log: None,
         aggregate_api_candidates: candidates,
-        allow_model_fallback,
+        allow_model_fallback: false,
         request_deadline,
         started_at,
+        failure_policy: AggregateFailurePolicy::RespondError,
+        aggregate_api_affinity: None,
     })
     .expect("proxy aggregate request");
 
@@ -716,9 +718,9 @@ fn terminal_request_log_status(storage: &Storage, trace_id: &str) -> Option<i64>
         .flatten()
 }
 
-/// 429 容量错误：同候选重放两次后以 502 终态结束（客户端不再无限重试）。
+/// 429 容量错误：同候选重放两次后以 503 终态结束（服务规范要求容量耗尽返回 503）。
 #[test]
-fn aggregate_api_capacity_429_replays_twice_then_terminates_502() {
+fn aggregate_api_capacity_429_replays_twice_then_terminates_503() {
     let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
         "capacity-429",
         vec![
@@ -734,17 +736,17 @@ fn aggregate_api_capacity_429_replays_twice_then_terminates_502() {
         request_count, 3,
         "initial request + two same-candidate replays"
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(
         terminal_request_log_status(&storage, "trc-capacity-429"),
-        Some(502),
-        "client-visible terminal status must be 502, not 429"
+        Some(503),
+        "client-visible terminal status must be 503 per capacity recovery contract"
     );
 }
 
-/// 503 纯文本容量错误：同样重放两次后以 502 终态结束。
+/// 503 纯文本容量错误：同样重放两次后以 503 终态结束。
 #[test]
-fn aggregate_api_capacity_503_plain_text_replays_twice_then_terminates_502() {
+fn aggregate_api_capacity_503_plain_text_replays_twice_then_terminates_503() {
     let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
         "capacity-503",
         vec![
@@ -760,10 +762,10 @@ fn aggregate_api_capacity_503_plain_text_replays_twice_then_terminates_502() {
         request_count, 3,
         "initial request + two same-candidate replays"
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(
         terminal_request_log_status(&storage, "trc-capacity-503"),
-        Some(502)
+        Some(503)
     );
 }
 
@@ -785,7 +787,7 @@ fn aggregate_api_capacity_honors_upstream_retry_after_but_not_past_deadline() {
         request_count, 1,
         "waiting 2s past a 1s deadline must not replay"
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(
         terminal_request_log_status(&storage, "trc-capacity-deadline"),
         Some(502),
@@ -814,10 +816,115 @@ fn aggregate_api_capacity_recovers_on_second_replay() {
         request_count, 3,
         "two capacity errors then a successful replay"
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(
         terminal_request_log_status(&storage, "trc-capacity-recover"),
         Some(200)
+    );
+}
+
+/// 请求级 400：不得消耗同候选传输重试预算（修复前会重放 3 次），
+/// 对外状态保持既有 502 收敛映射。
+#[test]
+fn aggregate_400_request_level_error_does_not_retry_same_candidate() {
+    const BAD_REQUEST_JSON: &str =
+        r#"{"error":{"code":"invalid_request_error","message":"invalid input"}}"#;
+    let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
+        "agg-400-terminal",
+        vec![(400, BAD_REQUEST_JSON, None)],
+        vec![aggregate_capacity_test_candidate("agg-400", "")],
+        false,
+        None,
+    );
+    assert_eq!(
+        request_count, 1,
+        "request-level 400 must not consume the transport retry budget"
+    );
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+    assert_eq!(
+        terminal_request_log_status(&storage, "trc-agg-400-terminal"),
+        Some(502),
+        "generic upstream failure keeps the existing 502 mapping"
+    );
+}
+
+/// 候选级 401：立即推进下一个候选，不在同候选上消耗传输预算。
+#[test]
+fn aggregate_401_fails_over_to_next_candidate_without_transport_retry() {
+    const AUTH_ERROR_JSON: &str =
+        r#"{"error":{"code":"authentication_error","message":"invalid key"}}"#;
+    let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
+        "agg-401-failover",
+        vec![(401, AUTH_ERROR_JSON, None), (200, CAPACITY_OK_JSON, None)],
+        vec![
+            aggregate_capacity_test_candidate("agg-401-first", ""),
+            aggregate_capacity_test_candidate("agg-401-second", ""),
+        ],
+        false,
+        None,
+    );
+    assert_eq!(
+        request_count, 2,
+        "401 must fail over after exactly one request per candidate"
+    );
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+    assert_eq!(
+        terminal_request_log_status(&storage, "trc-agg-401-failover"),
+        Some(200)
+    );
+}
+
+/// 外层 502 但错误码为 rate_limit_exceeded：按候选级限流处理，
+/// 推进下一个候选而非同候选重放或直接返回客户端。
+#[test]
+fn aggregate_502_rate_limit_exceeded_code_fails_over_to_next_candidate() {
+    const RATE_LIMIT_BODY: &str = r#"{"error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded, please retry later"}}"#;
+    let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
+        "agg-502-rate-limit-failover",
+        vec![(502, RATE_LIMIT_BODY, None), (200, CAPACITY_OK_JSON, None)],
+        vec![
+            aggregate_capacity_test_candidate("agg-rl-first", ""),
+            aggregate_capacity_test_candidate("agg-rl-second", ""),
+        ],
+        false,
+        None,
+    );
+    assert_eq!(
+        request_count, 2,
+        "rate_limit_exceeded must fail over without same-candidate replays"
+    );
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+    assert_eq!(
+        terminal_request_log_status(&storage, "trc-agg-502-rate-limit-failover"),
+        Some(200)
+    );
+}
+
+/// 普通 5xx：保留既有同候选传输重试预算（初始请求 + 最多 3 次重放）。
+#[test]
+fn aggregate_500_keeps_existing_same_candidate_transport_budget() {
+    const SERVER_ERROR_JSON: &str =
+        r#"{"error":{"code":"internal_error","message":"upstream exploded"}}"#;
+    let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
+        "agg-500-budget",
+        vec![
+            (500, SERVER_ERROR_JSON, None),
+            (500, SERVER_ERROR_JSON, None),
+            (500, SERVER_ERROR_JSON, None),
+            (500, SERVER_ERROR_JSON, None),
+        ],
+        vec![aggregate_capacity_test_candidate("agg-500", "")],
+        false,
+        None,
+    );
+    assert_eq!(
+        request_count, 4,
+        "5xx keeps the initial request plus the 3-attempt transport budget"
+    );
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+    assert_eq!(
+        terminal_request_log_status(&storage, "trc-agg-500-budget"),
+        Some(502)
     );
 }
 
@@ -827,7 +934,7 @@ fn aggregate_api_empty_candidates_terminate_502_without_upstream_traffic() {
     let (storage, outcome, request_count) =
         run_aggregate_capacity_scenario("capacity-empty", vec![], vec![], false, None);
     assert_eq!(request_count, 0, "no candidate means no upstream traffic");
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert!(terminal_request_log_status(&storage, "trc-capacity-empty").is_none());
 }
 
@@ -875,7 +982,7 @@ fn run_upstream_scenario(
     responses: Vec<(u16, &'static str)>,
     client_body: &'static [u8],
     allow_model_fallback: bool,
-) -> (Storage, AggregateProxyOutcome, Vec<MockUpstreamHit>) {
+) -> (Storage, AggregateAttemptOutcome, Vec<MockUpstreamHit>) {
     run_upstream_scenario_with_stream(
         test_name,
         candidates,
@@ -894,7 +1001,7 @@ fn run_upstream_scenario_with_stream(
     allow_model_fallback: bool,
     is_stream: bool,
     capture_body: bool,
-) -> (Storage, AggregateProxyOutcome, Vec<MockUpstreamHit>) {
+) -> (Storage, AggregateAttemptOutcome, Vec<MockUpstreamHit>) {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let server = Server::http("127.0.0.1:0").expect("start server");
@@ -975,8 +1082,8 @@ fn run_upstream_scenario_with_stream(
         response_adapter: ResponseAdapter::Passthrough,
         tool_name_restore_map: &BTreeMap::new(),
         gateway_mode_for_log: None,
-        route_strategy_for_log: Some("account_rotation"),
-        route_source_for_log: Some("test"),
+        route_strategy_for_log: None,
+        route_source_for_log: None,
         client_model_for_log: None,
         model_for_log: None,
         model_source_for_log: None,
@@ -992,6 +1099,8 @@ fn run_upstream_scenario_with_stream(
         allow_model_fallback,
         request_deadline: None,
         started_at,
+        failure_policy: AggregateFailurePolicy::RespondError,
+        aggregate_api_affinity: None,
     })
     .expect("proxy aggregate request");
 
@@ -1036,7 +1145,7 @@ fn chat_upstream_default_action_path_serves_responses_request() {
         br#"{"model":"gpt-5.4","input":"hello","stream":false}"#,
         false,
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(hits.len(), 1);
     assert_eq!(
         hits[0].path, "/v1/chat/completions",
@@ -1073,7 +1182,7 @@ fn chat_upstream_custom_action_path_is_used() {
         br#"{"model":"gpt-5.4","input":"hello","stream":false}"#,
         false,
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, "/v1/custom/chat");
 }
@@ -1097,7 +1206,7 @@ fn chat_upstream_incompatible_skips_to_responses_candidate() {
         br#"{"model":"gpt-5.4","input":"hello","store":true,"stream":false}"#,
         false,
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(
         hits.len(),
         1,
@@ -1126,16 +1235,12 @@ fn chat_upstream_all_incompatible_returns_unavailable_for_fallback() {
     );
     assert!(hits.is_empty(), "no upstream traffic on local incompatibility");
     match outcome {
-        AggregateProxyOutcome::Unavailable {
-            status_code, message, ..
+        AggregateAttemptOutcome::RequestReleased {
+            error, ..
         } => {
-            assert_eq!(
-                status_code, 502,
-                "502 >= 500 keeps the model-fallback signal available"
-            );
             assert!(
-                message.contains("incompatible"),
-                "error message names the local incompatibility: {message}"
+                error.contains("502") || error.contains("incompatible"),
+                "error message indicates >= 500 status or incompatibility for fallback signal: {error}"
             );
         }
         _ => panic!("expected Unavailable for model fallback"),
@@ -1152,7 +1257,7 @@ fn chat_upstream_terminal_failure_logs_protocol() {
         br#"{"model":"gpt-5.4","input":"hello","store":true,"stream":false}"#,
         false,
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert!(hits.is_empty(), "local incompatibility must not reach upstream");
     let log = request_log_for(&storage, "trc-chat-terminal-protocol");
     assert_eq!(log.status_code, Some(502));
@@ -1172,7 +1277,7 @@ fn claude_bridge_legacy_null_protocol_logs_anthropic_messages() {
         br#"{"model":"claude-3-5-sonnet","input":"hello","stream":false}"#,
         false,
     );
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(hits.len(), 1);
     assert_eq!(
         hits[0].path, "/v1/messages",
@@ -1206,7 +1311,7 @@ fn chat_preflight_empty_stream_fails_over_to_later_candidate() {
         false,
     );
 
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(hits.len(), 2, "empty preflight stream must try the fallback");
     assert_eq!(hits[0].path, "/v1/chat/completions");
     assert_eq!(hits[1].path, "/v1/responses");
@@ -1239,7 +1344,7 @@ fn chat_preflight_semantic_delta_does_not_replay_to_later_candidate() {
         false,
     );
 
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(hits.len(), 1, "semantic Chat output must prevent replay");
     assert_eq!(hits[0].path, "/v1/chat/completions");
 }
@@ -1262,7 +1367,7 @@ fn chat_nonstream_malformed_response_fails_over_to_later_candidate() {
         false,
     );
 
-    assert!(matches!(outcome, AggregateProxyOutcome::Handled));
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(hits.len(), 2, "malformed Chat response must try the fallback");
     assert_eq!(hits[0].path, "/v1/chat/completions");
     assert_eq!(hits[1].path, "/v1/responses");

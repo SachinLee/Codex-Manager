@@ -383,6 +383,8 @@ fn resolve_aggregate_candidates_for_route(
     protocol_type: &str,
     aggregate_api_id: Option<&str>,
     model_for_log: Option<&str>,
+    platform_key_hash: &str,
+    route_conversation_id: Option<&str>,
 ) -> Result<Vec<codexmanager_core::storage::AggregateApi>, String> {
     let explicit_candidate =
         resolve_active_explicit_aggregate_candidate(storage, aggregate_api_id)?;
@@ -400,7 +402,28 @@ fn resolve_aggregate_candidates_for_route(
         candidates.retain(|candidate| candidate.id != explicit_candidate.id);
         candidates.insert(0, explicit_candidate);
     }
-    apply_aggregate_model_filter(storage, candidates, model_for_log)
+    let candidates = apply_aggregate_model_filter(storage, candidates, model_for_log)?;
+    
+    // Apply affinity-based candidate reordering
+    if crate::gateway::aggregate_api_affinity::should_apply_aggregate_api_affinity(
+        storage,
+        aggregate_api_id,
+    ) {
+        if let Some(route_id) = route_conversation_id {
+            let affinity_hash = 
+                crate::gateway::aggregate_api_affinity::derive_affinity_route_hash(route_id);
+            return crate::gateway::aggregate_api_affinity::reorder_candidates_with_affinity(
+                storage,
+                platform_key_hash,
+                protocol_type,
+                model_for_log,
+                &affinity_hash,
+                candidates,
+            );
+        }
+    }
+    
+    Ok(candidates)
 }
 
 fn resolve_active_explicit_aggregate_candidate(
@@ -597,16 +620,17 @@ fn respond_aggregate_route_error(
         reasoning_for_log,
         None,
         Some(status_code),
-        super::super::request_log::RequestLogUsage::default(),
+        crate::gateway::request_log::RequestLogUsage::default(),
         Some(message.as_str()),
         Some(started_at.elapsed().as_millis()),
     );
+    let response_message = super::super::error_message_for_client(
+        super::super::prefers_raw_errors_for_tiny_http_request(&request),
+        message.as_str(),
+    );
     let response = super::super::error_response::terminal_text_response(
         status_code,
-        super::super::error_message_for_client(
-            super::super::prefers_raw_errors_for_tiny_http_request(&request),
-            message,
-        ),
+        response_message,
         Some(trace_id),
     );
     let _ = request.respond(response);
@@ -642,19 +666,31 @@ fn proxy_with_aggregate_candidates(
     request_deadline: Option<Instant>,
     started_at: Instant,
     allow_model_fallback: bool,
+    failure_policy: super::protocol::aggregate_api::AggregateFailurePolicy,
     aggregate_api_candidates: Vec<codexmanager_core::storage::AggregateApi>,
-) -> Result<super::protocol::aggregate_api::AggregateProxyOutcome, String> {
-    let mut aggregate_api_candidates = aggregate_api_candidates;
-    super::protocol::aggregate_api::apply_gateway_route_strategy_to_aggregate_candidates(
-        &mut aggregate_api_candidates,
-        key_id,
-        model_for_log,
+    platform_key_hash: &str,
+    protocol_type: &str,
+    route_conversation_id: Option<&str>,
+) -> Result<super::protocol::aggregate_api::AggregateAttemptOutcome, String> {
+
+    // Build affinity context if enabled and route ID available
+    let aggregate_api_affinity = if crate::gateway::aggregate_api_affinity::should_apply_aggregate_api_affinity(
+        storage,
         aggregate_api_id,
-    );
-    super::protocol::aggregate_api::prepare_first_aggregate_candidate_client(
-        aggregate_api_candidates.as_slice(),
-        trace_id,
-    );
+    ) {
+        route_conversation_id.map(|route_id| {
+            let affinity_hash = 
+                crate::gateway::aggregate_api_affinity::derive_affinity_route_hash(route_id);
+            super::protocol::aggregate_api::AggregateApiAffinityContext {
+                platform_key_hash: platform_key_hash.to_string(),
+                protocol_type: protocol_type.to_string(),
+                model: model_for_log.unwrap_or("").to_string(),
+                route_id_hash: affinity_hash,
+            }
+        })
+    } else {
+        None
+    };
 
     super::protocol::aggregate_api::proxy_aggregate_request(
         super::protocol::aggregate_api::AggregateProxyRequest {
@@ -688,8 +724,9 @@ fn proxy_with_aggregate_candidates(
             service_tier_source_for_log,
             session_id_for_log,
             conversation_anchor_for_log,
-            aggregate_api_candidates,
+            aggregate_api_affinity,
             allow_model_fallback,
+            aggregate_api_candidates,
             request_deadline,
             started_at,
             failure_policy,
@@ -710,6 +747,8 @@ fn resolve_hybrid_aggregate_candidates_for_prepare(
         protocol_type,
         aggregate_api_id,
         model_for_log,
+        key_id,
+        None,
     )?;
     let mut preview = candidates.clone();
     super::protocol::aggregate_api::preview_gateway_route_strategy_to_aggregate_candidates(
@@ -735,7 +774,7 @@ fn take_or_resolve_aggregate_candidates(
     if let Some(result) = prepared.take() {
         return result;
     }
-    resolve_aggregate_candidates_for_route(storage, protocol_type, aggregate_api_id, model_for_log)
+    resolve_aggregate_candidates_for_route(storage, protocol_type, aggregate_api_id, model_for_log, "", None)
 }
 
 /// 函数 `proxy_validated_request`
@@ -979,6 +1018,8 @@ pub(in super::super) fn proxy_validated_request(
                 protocol_type.as_str(),
                 aggregate_api_id.as_deref(),
                 model_for_log.as_deref(),
+                platform_key_hash.as_str(),
+                route_conversation_id.as_deref(),
             ) {
                 Ok(candidates) => candidates,
                 Err(message) if hop_index > 0 => {
@@ -1044,6 +1085,14 @@ pub(in super::super) fn proxy_validated_request(
                     );
                 }
             };
+            let failure_policy = if should_fallback_to_account_after_aggregate_exhaustion(
+                execution_plan,
+                configured_model.as_ref(),
+            ) {
+                super::protocol::aggregate_api::AggregateFailurePolicy::ReleaseRequest
+            } else {
+                super::protocol::aggregate_api::AggregateFailurePolicy::RespondError
+            };
             match proxy_with_aggregate_candidates(
                 request,
                 &storage,
@@ -1072,42 +1121,24 @@ pub(in super::super) fn proxy_validated_request(
                 request_deadline,
                 started_at,
                 fallback_available,
+                failure_policy,
                 aggregate_api_candidates,
+                platform_key_hash.as_str(),
+                protocol_type.as_str(),
+                route_conversation_id.as_deref(),
             )? {
-                super::protocol::aggregate_api::AggregateProxyOutcome::Handled => return Ok(()),
-                super::protocol::aggregate_api::AggregateProxyOutcome::Unavailable {
-                    request: returned,
-                    status_code,
-                    message,
+                super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => return Ok(()),
+                super::protocol::aggregate_api::AggregateAttemptOutcome::RequestReleased {
+                    request: released_request,
+                    error,
                 } => {
-                    request = returned;
-                    let (status_code, message) =
-                        record_unavailable_and_advance!(status_code, message);
-                    let status_code =
-                        route_exhaustion_terminal_status(status_code, message.as_str());
-                    return respond_aggregate_route_error(
-                        request,
-                        &storage,
-                        trace_id.as_str(),
-                        key_id.as_str(),
-                        original_path.as_str(),
-                        aggregate_path,
-                        request_method.as_str(),
-                        super::super::ResponseAdapter::Passthrough,
-                        service_tier_for_log.as_deref(),
-                        effective_service_tier_for_log.as_deref(),
-                        service_tier_source_for_log.as_deref(),
-                        gateway_mode_for_log.as_deref(),
-                        client_model_for_log.as_deref(),
-                        model_for_log.as_deref(),
-                        model_source_for_log.as_deref(),
-                        client_reasoning_for_log.as_deref(),
-                        reasoning_for_log.as_deref(),
-                        reasoning_source_for_log.as_deref(),
-                        started_at,
-                        status_code,
-                        message,
+                    // 聚合优先混合轮转：聚合候选全部失败，回落账号池。
+                    log::debug!(
+                        "event=gateway_hybrid_aggregate_first_fallback_to_account trace_id={} err={}",
+                        trace_id,
+                        error
                     );
+                    request = released_request;
                 }
             }
         }
@@ -1213,17 +1244,22 @@ pub(in super::super) fn proxy_validated_request(
                         request_deadline,
                         started_at,
                         fallback_available,
+                        super::protocol::aggregate_api::AggregateFailurePolicy::RespondError,
                         aggregate_api_candidates,
+                        platform_key_hash.as_str(),
+                        protocol_type.as_str(),
+                        route_conversation_id.as_deref(),
                     )? {
-                        super::protocol::aggregate_api::AggregateProxyOutcome::Handled => {
+                        super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => {
                             return Ok(())
                         }
-                        super::protocol::aggregate_api::AggregateProxyOutcome::Unavailable {
+                        super::protocol::aggregate_api::AggregateAttemptOutcome::RequestReleased {
                             request: returned,
-                            status_code,
-                            message,
+                            error,
                         } => {
                             request = returned;
+                            let status_code = 503;
+                            let message = format!("无可用账号(no available account): {}", error);
                             let (status_code, message) =
                                 record_unavailable_and_advance!(status_code, message);
                             let status_code =
@@ -1466,15 +1502,20 @@ pub(in super::super) fn proxy_validated_request(
                 request_deadline,
                 started_at,
                 fallback_available,
+                super::protocol::aggregate_api::AggregateFailurePolicy::RespondError,
                 aggregate_api_candidates,
+                platform_key_hash.as_str(),
+                protocol_type.as_str(),
+                route_conversation_id.as_deref(),
             )? {
-                super::protocol::aggregate_api::AggregateProxyOutcome::Handled => return Ok(()),
-                super::protocol::aggregate_api::AggregateProxyOutcome::Unavailable {
+                super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => return Ok(()),
+                super::protocol::aggregate_api::AggregateAttemptOutcome::RequestReleased {
                     request: returned,
-                    status_code,
-                    message,
+                    error,
                 } => {
                     request = returned;
+                    let status_code = 503;
+                    let message = format!("{}: {}", final_error, error);
                     let (status_code, message) =
                         record_unavailable_and_advance!(status_code, message);
                     let status_code =

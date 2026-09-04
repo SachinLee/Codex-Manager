@@ -1,9 +1,10 @@
 use bytes::Bytes;
 use codexmanager_core::storage::{
-    now_ts, AggregateApi, AggregateApiSpendReserveOutcome, GatewayReasoningGuardEvent,
-    GatewayUpstreamAttemptEvent, SPEND_ATTEMPT_KIND_CAPACITY_RETRY,
-    SPEND_ATTEMPT_KIND_CONTINUATION_RECOVERY, SPEND_ATTEMPT_KIND_GUARD_RETRY,
-    SPEND_ATTEMPT_KIND_INITIAL, SPEND_ATTEMPT_KIND_TRANSPORT_RETRY, Storage,
+    now_ts, AggregateApi, AggregateApiBinding, AggregateApiSpendReserveOutcome,
+    GatewayReasoningGuardEvent, GatewayUpstreamAttemptEvent,
+    SPEND_ATTEMPT_KIND_CAPACITY_RETRY, SPEND_ATTEMPT_KIND_CONTINUATION_RECOVERY,
+    SPEND_ATTEMPT_KIND_GUARD_RETRY, SPEND_ATTEMPT_KIND_INITIAL,
+    SPEND_ATTEMPT_KIND_TRANSPORT_RETRY, Storage,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
@@ -36,6 +37,9 @@ use crate::gateway::{
     REQUIRED_CAPABILITIES_HEADER,
 };
 use serde_json::Value;
+use super::super::support::upstream_failure::{
+    classify_upstream_failure, error_code_from_response_body, UpstreamFailureDecision,
+};
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
 const AGGREGATE_API_LARGE_REQUEST_BODY_BYTES: usize = 20 * 1024 * 1024;
@@ -1046,6 +1050,96 @@ fn request_requires_image_generation(request: &Request) -> Result<bool, String> 
     Ok(required)
 }
 
+fn classify_aggregate_api_failure(error_message: &str) -> &'static str {
+    let normalized = error_message.trim().to_ascii_lowercase();
+    if normalized.contains("rate_limit_exceeded")
+        || normalized.contains("rate limited")
+        || normalized.contains("rate-limited")
+        || normalized.contains("429")
+    {
+        "rate_limit_exceeded"
+    } else if normalized.contains("timeout") || normalized.contains("timed out") {
+        "timeout"
+    } else if normalized.contains("authentication")
+        || normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+        || normalized.contains("401")
+        || normalized.contains("403")
+    {
+        "authentication_error"
+    } else if normalized.contains("temporarily unavailable")
+        || normalized.contains("service unavailable")
+        || normalized.contains("502")
+        || normalized.contains("503")
+        || normalized.contains("504")
+    {
+        "upstream_unavailable"
+    } else if normalized.contains("transport error")
+        || normalized.contains("connection")
+        || normalized.contains("connect")
+        || normalized.contains("dns")
+    {
+        "transport_error"
+    } else {
+        "unknown_error"
+    }
+}
+
+fn update_aggregate_api_affinity_binding(
+    storage: &Storage,
+    trace_id: &str,
+    affinity: &AggregateApiAffinityContext,
+    aggregate_api_id: &str,
+) {
+    let current_binding = match storage.get_aggregate_api_binding(
+        affinity.platform_key_hash.as_str(),
+        affinity.protocol_type.as_str(),
+        affinity.model.as_str(),
+        affinity.route_id_hash.as_str(),
+    ) {
+        Ok(binding) => binding,
+        Err(err) => {
+            log::warn!(
+                "event=aggregate_api_affinity_binding_lookup_failed trace_id={} aggregate_api_id={} err={}",
+                trace_id,
+                aggregate_api_id,
+                err
+            );
+            return;
+        }
+    };
+
+    let reason = match current_binding {
+        Some(binding) if binding.bound_aggregate_api_id == aggregate_api_id => return,
+        Some(_) => "failover_convergence",
+        None => "initial_success",
+    };
+    let binding = AggregateApiBinding {
+        platform_key_hash: affinity.platform_key_hash.clone(),
+        protocol_type: affinity.protocol_type.clone(),
+        model: affinity.model.clone(),
+        cache_affinity_route_id_hash: affinity.route_id_hash.clone(),
+        bound_aggregate_api_id: aggregate_api_id.to_string(),
+        bound_at: now_ts(),
+        reason: Some(reason.to_string()),
+    };
+    if let Err(err) = storage.upsert_aggregate_api_binding(&binding) {
+        log::warn!(
+            "event=aggregate_api_affinity_binding_upsert_failed trace_id={} aggregate_api_id={} err={}",
+            trace_id,
+            aggregate_api_id,
+            err
+        );
+        return;
+    }
+    log::info!(
+        "event=aggregate_api_affinity_bound trace_id={} aggregate_api_id={} reason={}",
+        trace_id,
+        aggregate_api_id,
+        reason
+    );
+}
+
 fn aggregate_api_terminal_failure_status(status_code: u16, message: &str) -> Option<u16> {
     if status_code == 413 {
         return Some(413);
@@ -1666,10 +1760,35 @@ pub(in super::super) enum AggregateFailurePolicy {
     ReleaseRequest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum AttemptOutcome {
+    Success,
+    Failure,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in super::super) struct AggregateApiAttemptRecord {
+    pub(in super::super) api_id: String,
+    pub(in super::super) position: usize,
+    pub(in super::super) outcome: AttemptOutcome,
+    pub(in super::super) failure_category: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(in super::super) struct AggregateApiAffinityContext {
+    pub(in super::super) platform_key_hash: String,
+    pub(in super::super) protocol_type: String,
+    pub(in super::super) model: String,
+    pub(in super::super) route_id_hash: String,
+}
+
 /// 聚合代理一次调用的最终结果。
 pub(in super::super) enum AggregateAttemptOutcome {
     /// 请求已经响应完毕（成功桥接或已向客户端返回错误）。
-    Responded,
+    Responded {
+        attempt_records: Vec<AggregateApiAttemptRecord>,
+    },
     /// 请求未被消费且聚合路径失败（仅 `ReleaseRequest` 策略出现），
     /// 调用方可继续后续路由。
     RequestReleased { request: Request, error: String },
@@ -1702,6 +1821,7 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub service_tier_source_for_log: Option<&'a str>,
     pub session_id_for_log: Option<&'a str>,
     pub conversation_anchor_for_log: Option<&'a str>,
+    pub aggregate_api_affinity: Option<AggregateApiAffinityContext>,
     pub aggregate_api_candidates: Vec<AggregateApi>,
     pub allow_model_fallback: bool,
     pub request_deadline: Option<Instant>,
@@ -1709,14 +1829,6 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub failure_policy: AggregateFailurePolicy,
 }
 
-pub(in super::super) enum AggregateProxyOutcome {
-    Handled,
-    Unavailable {
-        request: Request,
-        status_code: u16,
-        message: String,
-    },
-}
 fn filter_zero_balance_blocked_candidates(
     candidates: Vec<AggregateApi>,
     blocked_ids: &HashSet<String>,
@@ -1741,7 +1853,7 @@ fn filter_zero_balance_blocked_candidates(
 
 pub(in super::super) fn proxy_aggregate_request(
     params: AggregateProxyRequest<'_>,
-) -> Result<AggregateProxyOutcome, String> {
+) -> Result<AggregateAttemptOutcome, String> {
     let AggregateProxyRequest {
         request,
         storage,
@@ -1769,12 +1881,14 @@ pub(in super::super) fn proxy_aggregate_request(
         service_tier_source_for_log,
         session_id_for_log,
         conversation_anchor_for_log,
+        aggregate_api_affinity,
         aggregate_api_candidates,
         allow_model_fallback,
         request_deadline,
         started_at,
         failure_policy,
     } = params;
+    let mut attempt_records = Vec::new();
     let estimated_input_tokens =
         super::super::super::request_log::estimate_input_tokens_from_body(body.as_ref());
     if aggregate_api_candidates.is_empty() {
@@ -1786,11 +1900,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 404,
                 message.as_str(),
             );
-            return Ok(AggregateProxyOutcome::Unavailable {
-                request,
-                status_code: 404,
-                message,
-            });
+            return Ok(AggregateAttemptOutcome::RequestReleased { request, error: message });
         }
         super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
         super::super::super::trace_log::log_request_final(
@@ -1803,9 +1913,14 @@ pub(in super::super) fn proxy_aggregate_request(
         );
         let request = request;
         respond_error(request, 502, message.as_str(), Some(trace_id));
-        return Ok(AggregateProxyOutcome::Handled);
+        return Ok(AggregateAttemptOutcome::Responded { attempt_records });
     }
 
+    let candidate_positions = aggregate_api_candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| (candidate.id.clone(), index + 1))
+        .collect::<HashMap<_, _>>();
     let mut cooling_down_candidate_ids = Vec::new();
     let aggregate_api_candidates = aggregate_api_candidates
         .into_iter()
@@ -1824,6 +1939,14 @@ pub(in super::super) fn proxy_aggregate_request(
                     upstream_model.unwrap_or("unspecified")
                 );
                 cooling_down_candidate_ids.push(candidate.id.clone());
+                attempt_records.push(AggregateApiAttemptRecord {
+                    api_id: candidate.id.clone(),
+                    position: *candidate_positions
+                        .get(candidate.id.as_str())
+                        .unwrap_or(&usize::MAX),
+                    outcome: AttemptOutcome::Skipped,
+                    failure_category: Some("cooldown".to_string()),
+                });
             }
             !is_cooling_down
         })
@@ -1837,11 +1960,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 503,
                 message.as_str(),
             );
-            return Ok(AggregateProxyOutcome::Unavailable {
-                request,
-                status_code: 503,
-                message,
-            });
+            return Ok(AggregateAttemptOutcome::RequestReleased { request, error: message });
         }
         super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
         super::super::super::write_request_log(
@@ -1871,13 +1990,25 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(started_at.elapsed().as_millis()),
         );
         respond_error(request, 502, message.as_str(), Some(trace_id));
-        return Ok(AggregateProxyOutcome::Handled);
+        return Ok(AggregateAttemptOutcome::Responded { attempt_records });
     }
     let zero_balance_blocked_ids = storage
         .list_zero_balance_blocked_aggregate_api_ids()
         .map_err(|err| format!("load zero balance route state failed: {err}"))?
         .into_iter()
         .collect::<HashSet<_>>();
+    for candidate in &aggregate_api_candidates {
+        if zero_balance_blocked_ids.contains(candidate.id.as_str()) {
+            attempt_records.push(AggregateApiAttemptRecord {
+                api_id: candidate.id.clone(),
+                position: *candidate_positions
+                    .get(candidate.id.as_str())
+                    .unwrap_or(&usize::MAX),
+                outcome: AttemptOutcome::Skipped,
+                failure_category: Some("zero_balance".to_string()),
+            });
+        }
+    }
     let aggregate_api_candidates = filter_zero_balance_blocked_candidates(
         aggregate_api_candidates,
         &zero_balance_blocked_ids,
@@ -1892,11 +2023,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 503,
                 message.as_str(),
             );
-            return Ok(AggregateProxyOutcome::Unavailable {
-                request,
-                status_code: 503,
-                message,
-            });
+            return Ok(AggregateAttemptOutcome::RequestReleased { request, error: message });
         }
         super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
         super::super::super::trace_log::log_request_final(
@@ -1933,7 +2060,7 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(started_at.elapsed().as_millis()),
         );
         respond_error(request, 502, message.as_str(), Some(trace_id));
-        return Ok(AggregateProxyOutcome::Handled);
+        return Ok(AggregateAttemptOutcome::Responded { attempt_records });
     }
 
     let (day_start, day_end) = crate::time_bounds::local_day_bounds_ts()?;
@@ -1949,7 +2076,7 @@ pub(in super::super) fn proxy_aggregate_request(
         Err(message) => {
             super::super::super::record_gateway_request_outcome(path, 400, Some("aggregate_api"));
             respond_error(request, 400, message.as_str(), Some(trace_id));
-            return Ok(AggregateProxyOutcome::Handled);
+            return Ok(AggregateAttemptOutcome::Responded { attempt_records });
         }
     };
     let capability_mode = current_capability_routing_mode();
@@ -2033,6 +2160,9 @@ pub(in super::super) fn proxy_aggregate_request(
         );
         attempted_aggregate_api_ids.push(candidate.id.clone());
         let candidate_id = candidate.id.clone();
+        let candidate_position = *candidate_positions
+            .get(candidate_id.as_str())
+            .unwrap_or(&usize::MAX);
         let candidate_upstream_model =
             aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();
@@ -2072,6 +2202,12 @@ pub(in super::super) fn proxy_aggregate_request(
             );
             last_attempt_error = Some("aggregate api capability incompatible".to_string());
             last_failure_status = 502;
+            attempt_records.push(AggregateApiAttemptRecord {
+                api_id: candidate_id,
+                position: candidate_position,
+                outcome: AttemptOutcome::Skipped,
+                failure_category: Some("capability_mismatch".to_string()),
+            });
             continue;
         }
         let Some(secret) = secrets_by_candidate_id.get(candidate.id.as_str()) else {
@@ -2079,6 +2215,12 @@ pub(in super::super) fn proxy_aggregate_request(
             last_attempt_supplier_name = candidate_supplier_name.clone();
             last_attempt_error = Some("aggregate api secret not found".to_string());
             last_failure_status = 403;
+            attempt_records.push(AggregateApiAttemptRecord {
+                api_id: candidate_id,
+                position: candidate_position,
+                outcome: AttemptOutcome::Failure,
+                failure_category: Some("authentication_error".to_string()),
+            });
             continue;
         };
 
@@ -2114,6 +2256,12 @@ pub(in super::super) fn proxy_aggregate_request(
                 last_attempt_supplier_name = candidate_supplier_name.clone();
                 last_attempt_error = Some(err);
                 last_failure_status = 502;
+                attempt_records.push(AggregateApiAttemptRecord {
+                    api_id: candidate_id,
+                    position: candidate_position,
+                    outcome: AttemptOutcome::Failure,
+                    failure_category: Some("unknown_error".to_string()),
+                });
                 continue;
             }
         };
@@ -2126,10 +2274,17 @@ pub(in super::super) fn proxy_aggregate_request(
                     last_attempt_supplier_name = candidate_supplier_name.clone();
                     last_attempt_error = Some("invalid aggregate api url".to_string());
                     last_failure_status = 502;
+                    attempt_records.push(AggregateApiAttemptRecord {
+                        api_id: candidate_id,
+                        position: candidate_position,
+                        outcome: AttemptOutcome::Failure,
+                        failure_category: Some("unknown_error".to_string()),
+                    });
                     continue;
                 }
             };
         let mut succeeded = false;
+        let mut affinity_binding_success = false;
         let mut cooldown_eligible_failure = false;
         // Daily-spend attempt lifecycle for this candidate. The reservation is
         // created right before each upstream dispatch and resolved on success,
@@ -2226,10 +2381,16 @@ pub(in super::super) fn proxy_aggregate_request(
                     Some(message.as_str()),
                     Some(started_at.elapsed().as_millis()),
                 );
+                attempt_records.push(AggregateApiAttemptRecord {
+                    api_id: candidate_id,
+                    position: candidate_position,
+                    outcome: AttemptOutcome::Failure,
+                    failure_category: Some("timeout".to_string()),
+                });
                 respond_error(request, 502, message.as_str(), Some(trace_id));
-                return Ok(AggregateProxyOutcome::Handled);
-            }
+                return Ok(AggregateAttemptOutcome::Responded { attempt_records });
 
+            }
             let mut url = base_upstream_url.clone();
 
             match &auth_config {
@@ -2586,8 +2747,15 @@ pub(in super::super) fn proxy_aggregate_request(
                         break;
                     }
                 }
-                last_attempt_error = Some(message);
+                last_attempt_error = Some(message.clone());
+                // 保持既有对外状态映射：通用上游失败统一收敛为 502；
+                // 决策分类使用真实上游状态码。
                 last_failure_status = 502;
+
+                // 提取错误码（响应体已在本分支读取，复用已缓冲字节）
+                let error_code = error_code_from_response_body(upstream_body.as_ref());
+
+                // 先检查容量错误（使用独立预算）
                 let capacity_error = crate::gateway::is_selected_model_capacity_error(
                     last_attempt_error.as_deref().unwrap_or_default(),
                 );
@@ -2608,7 +2776,10 @@ pub(in super::super) fn proxy_aggregate_request(
                         }
                         AggregateApiCapacityRetryAction::Exhausted => {
                             capacity_budget_exhausted = true;
-                            last_failure_status = 502;
+                            // 服务规范要求容量耗尽返回 503（见 logging-guidelines 容量恢复契约）
+                            last_failure_status = 503;
+                            last_attempt_error =
+                                Some("selected model capacity exhausted after retries".to_string());
                             terminal_failure = true;
                             break;
                         }
@@ -2623,13 +2794,52 @@ pub(in super::super) fn proxy_aggregate_request(
                         }
                     }
                 }
-                if transport_retry_budget_remaining > 0 {
-                    next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
-                    transport_retry_budget_remaining =
-                        transport_retry_budget_remaining.saturating_sub(1);
-                    continue;
+
+                // 非容量错误：类型化失败决策。此分支发生在 bridge 创建之前，
+                // 客户端必然尚未收到任何语义内容，也不存在推理守卫动作。
+                let decision = classify_upstream_failure(
+                    status_code,
+                    &message,
+                    error_code.as_deref(),
+                    false,
+                    false,
+                );
+
+                match decision {
+                    UpstreamFailureDecision::RequestTerminal => {
+                        // 请求级终止：400/422 等不可由重试或切换候选修复的错误
+                        terminal_failure = true;
+                        break;
+                    }
+                    UpstreamFailureDecision::CandidateFailover => {
+                        // 候选级 failover：401/403/404/405/429/501 或 rate_limit_exceeded
+                        // 退出当前候选尝试循环，由外层尝试下一个允许候选
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                    UpstreamFailureDecision::RetrySameCandidate => {
+                        // 同候选传输重试：5xx、连接错误等可能瞬时恢复的故障
+                        if transport_retry_budget_remaining > 0 {
+                            next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
+                            transport_retry_budget_remaining =
+                                transport_retry_budget_remaining.saturating_sub(1);
+                            continue;
+                        }
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                    UpstreamFailureDecision::CapacityRecovery => {
+                        unreachable!("capacity error should be handled above");
+                    }
+                    UpstreamFailureDecision::CapabilityRetry => {
+                        // 能力降级重试已在上方 capability 分支处理；此处视为候选级失败
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                    UpstreamFailureDecision::ReasoningGuardRetry => {
+                        continue;
+                    }
                 }
-                break;
             }
 
             let inflight_guard = super::super::super::acquire_account_inflight(key_id);
@@ -3097,6 +3307,13 @@ pub(in super::super) fn proxy_aggregate_request(
                 final_error.as_deref(),
                 Some(started_at.elapsed().as_millis()),
             );
+            affinity_binding_success = bridge_ok
+                && final_error.is_none()
+                && bridge.reasoning_guard_action.is_none();
+            if let Some(error) = final_error.as_deref() {
+                last_attempt_error = Some(error.to_string());
+                last_failure_status = status_code;
+            }
             succeeded = true;
             break;
         }
@@ -3114,8 +3331,52 @@ pub(in super::super) fn proxy_aggregate_request(
         }
 
         if succeeded {
-            return Ok(AggregateProxyOutcome::Handled);
+            if affinity_binding_success {
+                attempt_records.push(AggregateApiAttemptRecord {
+                    api_id: candidate_id.clone(),
+                    position: candidate_position,
+                    outcome: AttemptOutcome::Success,
+                    failure_category: None,
+                });
+                if let Some(affinity) = aggregate_api_affinity.as_ref() {
+                    update_aggregate_api_affinity_binding(
+                        storage,
+                        trace_id,
+                        affinity,
+                        candidate_id.as_str(),
+                    );
+                }
+            } else {
+                attempt_records.push(AggregateApiAttemptRecord {
+                    api_id: candidate_id.clone(),
+                    position: candidate_position,
+                    outcome: AttemptOutcome::Failure,
+                    failure_category: Some(
+                        classify_aggregate_api_failure(
+                            last_attempt_error
+                                .as_deref()
+                                .unwrap_or("aggregate api upstream response failed"),
+                        )
+                        .to_string(),
+                    ),
+                });
+            }
+            return Ok(AggregateAttemptOutcome::Responded { attempt_records });
         }
+
+        attempt_records.push(AggregateApiAttemptRecord {
+            api_id: candidate_id,
+            position: candidate_position,
+            outcome: AttemptOutcome::Failure,
+            failure_category: Some(
+                classify_aggregate_api_failure(
+                    last_attempt_error
+                        .as_deref()
+                        .unwrap_or("aggregate api upstream response failed"),
+                )
+                .to_string(),
+            ),
+        });
 
         if terminal_failure {
             break;
@@ -3136,7 +3397,7 @@ pub(in super::super) fn proxy_aggregate_request(
             // 否则账号兜底完成后会重复计数并覆盖同一 trace 的最终结果。
             return Ok(AggregateAttemptOutcome::RequestReleased {
                 request: released_request,
-                error: message,
+                error: message.to_string(),
             });
         }
     }
@@ -3153,10 +3414,9 @@ pub(in super::super) fn proxy_aggregate_request(
             status_code,
             message.as_str(),
         );
-        return Ok(AggregateProxyOutcome::Unavailable {
+        return Ok(AggregateAttemptOutcome::RequestReleased {
             request,
-            status_code,
-            message,
+            error: message,
         });
     }
     super::super::super::record_gateway_request_outcome(path, status_code, Some("aggregate_api"));
@@ -3213,7 +3473,7 @@ pub(in super::super) fn proxy_aggregate_request(
         Some(started_at.elapsed().as_millis()),
     );
     respond_error(request, status_code, message.as_str(), Some(trace_id));
-    Ok(AggregateProxyOutcome::Handled)
+    Ok(AggregateAttemptOutcome::Responded { attempt_records })
 }
 
 fn aggregate_api_secrets_by_candidate_id(

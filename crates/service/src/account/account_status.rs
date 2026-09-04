@@ -16,6 +16,7 @@ pub(crate) enum GatewayErrorKind {
     ReasoningGuard,
     Timeout,
     UsageLimit,
+    RateLimited,
     Other,
 }
 
@@ -270,6 +271,20 @@ pub(crate) fn reasoning_guard_reason_from_message(message: &str) -> Option<&'sta
     None
 }
 
+pub(crate) fn rate_limit_reason_from_message(message: &str) -> Option<&'static str> {
+    let normalized = message.trim().to_ascii_lowercase();
+    let has_rate_limit_code = normalized
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .any(|token| matches!(token, "rate_limit_exceeded" | "rate_limit_error"));
+    if has_rate_limit_code
+        || normalized.contains("upstream rate limit exceeded")
+        || normalized.contains("too many requests")
+    {
+        return Some("rate_limited");
+    }
+    None
+}
+
 pub(crate) fn analyze_gateway_error(err: &str, has_more_candidates: bool) -> GatewayErrorFollowUp {
     let kind = if deactivation_reason_from_message(err).is_some() {
         GatewayErrorKind::Deactivation
@@ -279,6 +294,8 @@ pub(crate) fn analyze_gateway_error(err: &str, has_more_candidates: bool) -> Gat
         GatewayErrorKind::Timeout
     } else if usage_limit_reason_from_message(err).is_some() {
         GatewayErrorKind::UsageLimit
+    } else if rate_limit_reason_from_message(err).is_some() {
+        GatewayErrorKind::RateLimited
     } else {
         GatewayErrorKind::Other
     };
@@ -801,6 +818,41 @@ mod tests {
         assert!(!request_too_large.should_mark_account_unavailable);
         assert!(!request_too_large.should_mark_network_cooldown);
         assert!(!request_too_large.should_mark_default_cooldown);
+    }
+
+    /// Regression: rate-limit error codes must fail over instead of falling
+    /// into `Other` (which returns the error to the client directly).
+    #[test]
+    fn gateway_rate_limit_error_fails_over_without_account_unavailable() {
+        let rate_limited = analyze_gateway_error(
+            "code=rate_limit_exceeded Upstream rate limit exceeded, please retry later",
+            true,
+        );
+        assert_eq!(rate_limited.kind, GatewayErrorKind::RateLimited);
+        assert!(rate_limited.should_failover);
+        assert!(!rate_limited.should_mark_account_unavailable);
+        assert!(!rate_limited.should_mark_network_cooldown);
+        assert!(!rate_limited.should_mark_default_cooldown);
+
+        let rate_limited_last = analyze_gateway_error(
+            "code=rate_limit_exceeded Upstream rate limit exceeded, please retry later",
+            false,
+        );
+        assert_eq!(rate_limited_last.kind, GatewayErrorKind::RateLimited);
+        assert!(!rate_limited_last.should_failover);
+
+        let too_many_requests =
+            analyze_gateway_error("upstream non-200 status=429 body=Too Many Requests", true);
+        assert_eq!(too_many_requests.kind, GatewayErrorKind::RateLimited);
+        assert!(too_many_requests.should_failover);
+
+        // Usage-limit text must keep the UsageLimit classification
+        // (account unavailable + default cooldown), not RateLimited.
+        let usage_limit_untouched = analyze_gateway_error(
+            "You've hit your usage limit. To get more access now, try again at 8:02 PM.",
+            true,
+        );
+        assert_eq!(usage_limit_untouched.kind, GatewayErrorKind::UsageLimit);
     }
 
     /// 函数 `gateway_usage_limit_error_marks_account_limited_immediately`

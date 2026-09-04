@@ -40,6 +40,7 @@ fn should_prefetch_actionable_error_body(status_code: u16) -> bool {
 fn is_actionable_gateway_error(message: &str) -> bool {
     crate::account_status::usage_limit_reason_from_message(message).is_some()
         || crate::account_status::deactivation_reason_from_message(message).is_some()
+        || crate::account_status::rate_limit_reason_from_message(message).is_some()
 }
 
 fn actionable_message_from_error_value(error: &Value) -> Option<String> {

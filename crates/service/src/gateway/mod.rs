@@ -109,6 +109,9 @@ pub(crate) fn is_selected_model_capacity_error(message: &str) -> bool {
 
 #[path = "routing/aggregate_api_cooldown.rs"]
 mod aggregate_api_cooldown;
+#[path = "routing/aggregate_api_affinity.rs"]
+mod aggregate_api_affinity;
+mod settings;
 mod anchor_fingerprint;
 mod capability;
 #[path = "observability/capability_attempt_events.rs"]

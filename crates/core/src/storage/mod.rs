@@ -22,6 +22,7 @@ mod api_key_quota_limits;
 mod api_keys;
 mod codex_skill_repositories;
 mod conversation_bindings;
+mod aggregate_api_bindings;
 mod events;
 mod gateway_capabilities;
 mod key_id_filters;
@@ -752,6 +753,17 @@ pub struct Event {
     pub event_type: String,
     pub message: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateApiBinding {
+    pub platform_key_hash: String,
+    pub protocol_type: String,
+    pub model: String,
+    pub cache_affinity_route_id_hash: String,
+    pub bound_aggregate_api_id: String,
+    pub bound_at: i64,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2700,6 +2712,14 @@ impl Storage {
             include_str!("../../migrations/137_aggregate_api_daily_spend.sql"),
         )?;
         self.apply_sql_migration(
+            "138_aggregate_api_bindings",
+            include_str!("../../migrations/138_aggregate_api_bindings.sql"),
+        )?;
+        self.apply_sql_migration(
+            "139_aggregate_api_session_affinity_setting",
+            include_str!("../../migrations/139_aggregate_api_session_affinity_setting.sql"),
+        )?;
+        self.apply_sql_migration(
             "128_login_sessions_group_name",
             include_str!("../../migrations/128_login_sessions_group_name.sql"),
         )?;
@@ -3316,6 +3336,10 @@ mod login_session_query_plan_tests {
 #[cfg(test)]
 #[path = "../../tests/storage/migration_tests.rs"]
 mod migration_tests;
+
+#[cfg(test)]
+#[path = "tests/aggregate_api_bindings_tests.rs"]
+mod aggregate_api_bindings_tests;
 
 /// 函数 `now_ts`
 ///
