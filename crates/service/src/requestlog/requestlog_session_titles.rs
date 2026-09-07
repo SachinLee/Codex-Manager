@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_SESSION_TITLE_LIMIT: usize = 2_000;
@@ -13,6 +13,7 @@ const MAX_SESSION_TITLE_LIMIT: usize = 2_000;
 const MAX_OMP_SESSION_FILES: usize = 4_000;
 const MAX_OMP_DIRECTORY_ENTRIES: usize = 16_000;
 const MAX_OMP_PROJECT_DIRECTORIES: usize = 512;
+const MAX_OMP_DERIVED_DIRECTORIES: usize = 512;
 const MAX_OMP_TITLE_SLOT_BYTES: usize = 1_024;
 const MAX_OMP_SESSION_HEADER_BYTES: usize = 3 * 1024;
 const MAX_PI_SESSION_HEADER_BYTES: usize = 4 * 1024;
@@ -38,12 +39,18 @@ pub(crate) struct RequestLogSessionTitle {
     pub(crate) title: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) source: RequestLogSessionSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) parent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) parent_title: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct ExternalSessionTitleCandidate {
     title: RequestLogSessionTitle,
     updated_at: i64,
+    cache_path: PathBuf,
+    parent_cache_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,8 +72,136 @@ static OMP_SESSION_TITLE_CACHE: LazyLock<Mutex<SessionTitleCache>> =
 static PI_SESSION_TITLE_CACHE: LazyLock<Mutex<SessionTitleCache>> =
     LazyLock::new(|| Mutex::new(SessionTitleCache::default()));
 
+struct SessionTitleSnapshotCache {
+    state: Mutex<SessionTitleSnapshotState>,
+    refresh_complete: Condvar,
+}
+
+struct SessionTitleSnapshotState {
+    published: Arc<[RequestLogSessionTitle]>,
+    refresh_in_flight: bool,
+    next_refresh_at: Option<Instant>,
+}
+
+impl Default for SessionTitleSnapshotState {
+    fn default() -> Self {
+        Self {
+            published: Arc::from([]),
+            refresh_in_flight: false,
+            next_refresh_at: None,
+        }
+    }
+}
+
+impl SessionTitleSnapshotCache {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(SessionTitleSnapshotState::default()),
+            refresh_complete: Condvar::new(),
+        }
+    }
+
+    fn snapshot_and_schedule<F>(
+        self: &Arc<Self>,
+        limit: usize,
+        refresh: F,
+    ) -> Vec<RequestLogSessionTitle>
+    where
+        F: FnOnce() -> Result<Vec<RequestLogSessionTitle>, String> + Send + 'static,
+    {
+        let (published, should_refresh) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let should_refresh = !state.refresh_in_flight
+                && state
+                    .next_refresh_at
+                    .map_or(true, |next_refresh_at| Instant::now() >= next_refresh_at);
+            if should_refresh {
+                state.refresh_in_flight = true;
+            }
+            (Arc::clone(&state.published), should_refresh)
+        };
+
+        if should_refresh {
+            let cache = Arc::clone(self);
+            if let Err(error) = std::thread::Builder::new()
+                .name("requestlog-session-title-refresh".to_string())
+                .spawn(move || cache.complete_refresh(refresh()))
+            {
+                self.complete_refresh(Err(format!("spawn session-title refresh: {error}")));
+            }
+        }
+
+        published.iter().take(limit).cloned().collect()
+    }
+
+    fn complete_refresh(&self, result: Result<Vec<RequestLogSessionTitle>, String>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Ok(snapshot) = result {
+            state.published = Arc::from(snapshot);
+        }
+        state.refresh_in_flight = false;
+        state.next_refresh_at = Some(Instant::now() + OMP_CACHE_REFRESH_INTERVAL);
+        self.refresh_complete.notify_all();
+    }
+
+    #[cfg(test)]
+    fn expire_for_tests(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.next_refresh_at = None;
+    }
+
+    #[cfg(test)]
+    fn refresh_in_flight_for_tests(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .refresh_in_flight
+    }
+
+    #[cfg(test)]
+    fn wait_for_refresh_for_tests(&self) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (state, timeout) = self
+            .refresh_complete
+            .wait_timeout_while(state, Duration::from_secs(1), |state| {
+                state.refresh_in_flight
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            !timeout.timed_out(),
+            "session-title refresh did not complete"
+        );
+        assert!(!state.refresh_in_flight);
+    }
+}
+
+static SESSION_TITLE_SNAPSHOT_CACHE: LazyLock<Arc<SessionTitleSnapshotCache>> =
+    LazyLock::new(|| Arc::new(SessionTitleSnapshotCache::new()));
+
 type SessionTitleReader =
     fn(&OmpSessionFile, Option<&Metadata>) -> Option<ExternalSessionTitleCandidate>;
+
+/// How known child sessions are laid out under a derived `<main-stem>/` directory.
+///
+/// OMP keeps direct `.jsonl` children; Pi keeps
+/// `<agent-id>/run-<decimal>/session.jsonl`. Unknown layouts are never guessed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChildLayout {
+    OmpDirect,
+    PiAgentRun,
+}
 
 #[derive(Clone)]
 struct OmpSessionDirectory {
@@ -79,7 +214,8 @@ struct OmpSessionFile {
     directory: OmpSessionDirectory,
     path: PathBuf,
     cache_path: PathBuf,
-    #[cfg(windows)]
+    parent_cache_path: Option<PathBuf>,
+    is_child: bool,
     name: std::ffi::OsString,
 }
 
@@ -87,14 +223,19 @@ pub(crate) fn list_request_log_session_titles(
     limit: Option<i64>,
 ) -> Result<Vec<RequestLogSessionTitle>, String> {
     let limit = normalize_session_title_limit(limit);
+    let cache = Arc::clone(&SESSION_TITLE_SNAPSHOT_CACHE);
+    Ok(cache.snapshot_and_schedule(limit, build_request_log_session_title_snapshot))
+}
+
+fn build_request_log_session_title_snapshot() -> Result<Vec<RequestLogSessionTitle>, String> {
     let codex_sessions = codex_session::list_sessions_with_options(
         &codex_session::default_codex_db_path(),
         &SessionListOptions {
-            limit: Some(limit as i64),
+            limit: Some(MAX_SESSION_TITLE_LIMIT as i64),
             ..Default::default()
         },
     )
-    .unwrap_or_default();
+    .map_err(|error| format!("read Codex session titles: {error}"))?;
     let codex_titles = codex_sessions
         .into_iter()
         .filter_map(|session| {
@@ -105,20 +246,23 @@ pub(crate) fn list_request_log_session_titles(
                     title: normalize_title(session.title.as_deref()),
                     cwd: normalize_cwd(session.cwd.as_deref()),
                     source: RequestLogSessionSource::Codex,
+                    parent_session_id: None,
+                    parent_title: None,
                 },
                 session.updated_at.unwrap_or_default(),
             ))
         })
         .collect();
-    let mut external_titles = list_pi_session_titles_cached(&resolve_pi_sessions_root(), limit);
+    let mut external_titles =
+        list_pi_session_titles_cached(&resolve_pi_sessions_root(), MAX_SESSION_TITLE_LIMIT);
     external_titles.extend(list_omp_session_titles_cached(
         &resolve_omp_sessions_root(),
-        limit,
+        MAX_SESSION_TITLE_LIMIT,
     ));
     Ok(merge_request_log_session_titles(
         codex_titles,
         external_titles,
-        limit,
+        MAX_SESSION_TITLE_LIMIT,
     ))
 }
 
@@ -133,9 +277,16 @@ fn merge_request_log_session_titles(
     }
     for candidate in external_titles {
         let session_id = candidate.title.session_id.clone();
-        titles
-            .entry(session_id)
-            .or_insert((candidate.title, candidate.updated_at, 0));
+        if let Some(existing) = titles.get_mut(&session_id) {
+            if existing.2 == 0
+                && existing.0.parent_session_id.is_some()
+                && candidate.title.parent_session_id.is_none()
+            {
+                *existing = (candidate.title, candidate.updated_at, 0);
+            }
+        } else {
+            titles.insert(session_id, (candidate.title, candidate.updated_at, 0));
+        }
     }
     let mut titles = titles.into_values().collect::<Vec<_>>();
     titles.sort_by(|left, right| {
@@ -153,28 +304,57 @@ pub(crate) fn list_omp_session_titles_from_root(
     root: &Path,
     limit: usize,
 ) -> Vec<RequestLogSessionTitle> {
-    list_session_titles_from_root(root, limit, read_omp_session_title)
+    list_session_titles_from_root(
+        root,
+        limit,
+        read_omp_session_title,
+        read_omp_child_session_title,
+        ChildLayout::OmpDirect,
+    )
 }
 
 pub(crate) fn list_pi_session_titles_from_root(
     root: &Path,
     limit: usize,
 ) -> Vec<RequestLogSessionTitle> {
-    list_session_titles_from_root(root, limit, read_pi_session_title)
+    list_session_titles_from_root(
+        root,
+        limit,
+        read_pi_session_title,
+        read_pi_child_session_title,
+        ChildLayout::PiAgentRun,
+    )
 }
 
 fn list_session_titles_from_root(
     root: &Path,
     limit: usize,
     read_title: SessionTitleReader,
+    read_child_title: SessionTitleReader,
+    child_layout: ChildLayout,
 ) -> Vec<RequestLogSessionTitle> {
     let Some(directory) = open_omp_session_directory(root) else {
         return Vec::new();
     };
-    let paths = collect_omp_session_paths(&directory);
-    let mut titles = paths
+    let paths = collect_omp_session_paths(&directory, child_layout);
+    let candidates = paths
         .into_iter()
-        .filter_map(|path| read_title(&path, None))
+        .filter_map(|path| {
+            let reader = if path.is_child {
+                read_child_title
+            } else {
+                read_title
+            };
+            reader(&path, None)
+        })
+        .collect::<Vec<_>>();
+    let by_path = candidates
+        .iter()
+        .map(|candidate| (candidate.cache_path.clone(), candidate.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut titles = candidates
+        .into_iter()
+        .filter_map(|candidate| project_external_session_title(candidate, &by_path))
         .collect::<Vec<_>>();
     titles.sort_by(|left, right| {
         right
@@ -195,11 +375,20 @@ fn list_omp_session_titles_cached(root: &Path, limit: usize) -> Vec<ExternalSess
         root,
         limit,
         read_omp_session_title,
+        read_omp_child_session_title,
+        ChildLayout::OmpDirect,
     )
 }
 
 fn list_pi_session_titles_cached(root: &Path, limit: usize) -> Vec<ExternalSessionTitleCandidate> {
-    list_session_titles_cached(&PI_SESSION_TITLE_CACHE, root, limit, read_pi_session_title)
+    list_session_titles_cached(
+        &PI_SESSION_TITLE_CACHE,
+        root,
+        limit,
+        read_pi_session_title,
+        read_pi_child_session_title,
+        ChildLayout::PiAgentRun,
+    )
 }
 
 fn list_session_titles_cached(
@@ -207,6 +396,8 @@ fn list_session_titles_cached(
     root: &Path,
     limit: usize,
     read_title: SessionTitleReader,
+    read_child_title: SessionTitleReader,
+    child_layout: ChildLayout,
 ) -> Vec<ExternalSessionTitleCandidate> {
     let prior_entries = {
         let cache_guard = cache
@@ -235,7 +426,7 @@ fn list_session_titles_cached(
         cache_guard.entries.clear();
         return Vec::new();
     };
-    let paths = collect_omp_session_paths(&directory);
+    let paths = collect_omp_session_paths(&directory, child_layout);
     let mut next_entries = HashMap::with_capacity(paths.len());
     for path in paths {
         let metadata = match read_omp_session_metadata(&path) {
@@ -249,10 +440,16 @@ fn list_session_titles_cached(
         {
             entry.candidate.clone()
         } else {
-            read_title(&path, Some(&metadata))
+            let reader = if path.is_child {
+                read_child_title
+            } else {
+                read_title
+            };
+            reader(&path, Some(&metadata))
         };
+        let cache_path = path.cache_path.clone();
         next_entries.insert(
-            path.cache_path,
+            cache_path,
             CachedSessionTitle {
                 modified_at,
                 size: metadata.len(),
@@ -274,9 +471,17 @@ fn cached_session_titles(
     entries: &HashMap<PathBuf, CachedSessionTitle>,
     limit: usize,
 ) -> Vec<ExternalSessionTitleCandidate> {
-    let mut titles = entries
+    let candidates = entries
         .values()
         .filter_map(|entry| entry.candidate.clone())
+        .collect::<Vec<_>>();
+    let by_path = candidates
+        .iter()
+        .map(|candidate| (candidate.cache_path.clone(), candidate.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut titles = candidates
+        .into_iter()
+        .filter_map(|candidate| project_external_session_title(candidate, &by_path))
         .collect::<Vec<_>>();
     titles.sort_by(|left, right| {
         right
@@ -286,6 +491,25 @@ fn cached_session_titles(
     });
     titles.truncate(limit.min(MAX_SESSION_TITLE_LIMIT));
     titles
+}
+
+fn project_external_session_title(
+    mut candidate: ExternalSessionTitleCandidate,
+    by_path: &HashMap<PathBuf, ExternalSessionTitleCandidate>,
+) -> Option<ExternalSessionTitleCandidate> {
+    let Some(parent_path) = candidate.parent_cache_path.as_ref() else {
+        return Some(candidate);
+    };
+    let parent = by_path.get(parent_path)?;
+    if parent.title.source != candidate.title.source
+        || parent.title.session_id == candidate.title.session_id
+        || parent.title.title.is_none()
+    {
+        return None;
+    }
+    candidate.title.parent_session_id = Some(parent.title.session_id.clone());
+    candidate.title.parent_title = parent.title.title.clone();
+    Some(candidate)
 }
 
 fn open_omp_session_directory(root: &Path) -> Option<OmpSessionDirectory> {
@@ -320,7 +544,7 @@ fn open_omp_session_child_directory(
         if !metadata.is_dir() || metadata_is_unsafe_link_or_reparse(&metadata) {
             return None;
         }
-        let handle = open_directory_no_follow(&path).ok()?;
+        let handle = open_unix_relative_directory_no_follow(&directory.handle, name).ok()?;
         let opened_metadata = handle.metadata().ok()?;
         if !opened_metadata.is_dir() || metadata_is_unsafe_link_or_reparse(&opened_metadata) {
             return None;
@@ -336,13 +560,9 @@ fn open_omp_session_child_directory(
         open_windows_relative_directory_no_follow(directory, name)
     }
 }
-
 #[cfg(not(windows))]
-fn stable_directory_path(_path: &Path, handle: &File) -> Option<PathBuf> {
-    use std::os::fd::AsRawFd;
-
-    let descriptor_path = PathBuf::from(format!("/proc/self/fd/{}", handle.as_raw_fd()));
-    fs::read_dir(&descriptor_path).ok().map(|_| descriptor_path)
+fn stable_directory_path(path: &Path, _handle: &File) -> Option<PathBuf> {
+    Some(path.to_path_buf())
 }
 
 #[cfg(windows)]
@@ -350,8 +570,28 @@ fn stable_directory_path(path: &Path, _handle: &File) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-fn collect_omp_session_paths(directory: &OmpSessionDirectory) -> Vec<OmpSessionFile> {
+fn main_session_stems_in_directory(
+    paths: &[OmpSessionFile],
+    directory: &OmpSessionDirectory,
+) -> HashMap<std::ffi::OsString, PathBuf> {
+    paths
+        .iter()
+        .filter(|path| !path.is_child && path.directory.cache_path == directory.cache_path)
+        .filter_map(|path| {
+            Some((
+                path.path.file_stem()?.to_os_string(),
+                path.cache_path.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn collect_omp_session_paths(
+    directory: &OmpSessionDirectory,
+    child_layout: ChildLayout,
+) -> Vec<OmpSessionFile> {
     let mut entries_seen = 0;
+    let mut derived_directories_seen = 0;
     let mut paths = Vec::new();
     let mut project_directories = Vec::new();
     collect_omp_session_paths_in_directory(
@@ -360,6 +600,9 @@ fn collect_omp_session_paths(directory: &OmpSessionDirectory) -> Vec<OmpSessionF
         &mut entries_seen,
         &mut paths,
         &mut project_directories,
+        &mut derived_directories_seen,
+        None,
+        child_layout,
     );
     for project_directory in project_directories {
         if entries_seen >= MAX_OMP_DIRECTORY_ENTRIES || paths.len() >= MAX_OMP_SESSION_FILES {
@@ -371,6 +614,9 @@ fn collect_omp_session_paths(directory: &OmpSessionDirectory) -> Vec<OmpSessionF
             &mut entries_seen,
             &mut paths,
             &mut Vec::new(),
+            &mut derived_directories_seen,
+            None,
+            child_layout,
         );
     }
     paths
@@ -382,17 +628,95 @@ fn collect_omp_session_paths_in_directory(
     entries_seen: &mut usize,
     paths: &mut Vec<OmpSessionFile>,
     project_directories: &mut Vec<OmpSessionDirectory>,
+    derived_directories_seen: &mut usize,
+    parent_cache_path: Option<&Path>,
+    child_layout: ChildLayout,
 ) {
-    #[cfg(windows)]
-    {
-        collect_windows_omp_session_paths(
-            directory,
-            collect_project_directories,
-            entries_seen,
-            paths,
-            project_directories,
-        );
+    let in_derived_directory = parent_cache_path.is_some();
+    // Main files live directly in root/project directories; OMP child sessions
+    // live directly in the derived directory. Pi agent runs never collect
+    // direct `.jsonl` files at the derived level.
+    let collect_direct_files = !in_derived_directory || child_layout == ChildLayout::OmpDirect;
+    let mut directory_names = Vec::new();
+    scan_omp_session_directory(
+        directory,
+        entries_seen,
+        paths,
+        &mut directory_names,
+        parent_cache_path,
+        collect_direct_files,
+        None,
+    );
+    if in_derived_directory {
+        if child_layout == ChildLayout::PiAgentRun {
+            let Some(parent_cache_path) = parent_cache_path else {
+                return;
+            };
+            collect_pi_agent_run_paths(
+                directory,
+                directory_names,
+                entries_seen,
+                paths,
+                derived_directories_seen,
+                parent_cache_path,
+            );
+        }
+        return;
     }
+    let main_stems = main_session_stems_in_directory(paths, directory);
+    for name in directory_names {
+        if *entries_seen >= MAX_OMP_DIRECTORY_ENTRIES || paths.len() >= MAX_OMP_SESSION_FILES {
+            break;
+        }
+        if let Some(parent_cache_path) = main_stems.get(name.as_os_str()) {
+            if *derived_directories_seen >= MAX_OMP_DERIVED_DIRECTORIES {
+                continue;
+            }
+            let Some(child_directory) = open_omp_session_child_directory(directory, &name) else {
+                continue;
+            };
+            *derived_directories_seen += 1;
+            // Opening a derived directory consumes the shared directory-entry budget.
+            *entries_seen += 1;
+            collect_omp_session_paths_in_directory(
+                &child_directory,
+                false,
+                entries_seen,
+                paths,
+                &mut Vec::new(),
+                derived_directories_seen,
+                Some(parent_cache_path.as_path()),
+                child_layout,
+            );
+        } else if collect_project_directories
+            && project_directories.len() < MAX_OMP_PROJECT_DIRECTORIES
+            && name != std::ffi::OsStr::new("subagent-artifacts")
+        {
+            if let Some(project_directory) = open_omp_session_child_directory(directory, &name) {
+                project_directories.push(project_directory);
+            }
+        }
+    }
+}
+
+/// Enumerates one already-open session directory through the platform-safe
+/// no-follow/reparse-aware path and appends discovered session files and
+/// directory names. Shared budgets (`entries_seen`, accumulated `paths.len()`)
+/// bound the scan; reaching either stops the scan for this directory.
+///
+/// `collect_files` controls whether `.jsonl` files are collected at all (Pi
+/// derived/agent levels never collect direct files); `only_file_name` narrows
+/// collection to an exact basename (Pi run directories only accept
+/// `session.jsonl`).
+fn scan_omp_session_directory(
+    directory: &OmpSessionDirectory,
+    entries_seen: &mut usize,
+    paths: &mut Vec<OmpSessionFile>,
+    dirs: &mut Vec<std::ffi::OsString>,
+    parent_cache_path: Option<&Path>,
+    collect_files: bool,
+    only_file_name: Option<&std::ffi::OsStr>,
+) {
     #[cfg(not(windows))]
     {
         if *entries_seen >= MAX_OMP_DIRECTORY_ENTRIES || paths.len() >= MAX_OMP_SESSION_FILES {
@@ -403,7 +727,7 @@ fn collect_omp_session_paths_in_directory(
         };
         for entry in entries.flatten() {
             if *entries_seen >= MAX_OMP_DIRECTORY_ENTRIES || paths.len() >= MAX_OMP_SESSION_FILES {
-                return;
+                break;
             }
             *entries_seen += 1;
             let name = entry.file_name();
@@ -411,30 +735,117 @@ fn collect_omp_session_paths_in_directory(
             let Ok(metadata) = fs::symlink_metadata(&path) else {
                 continue;
             };
-            if metadata.is_file()
-                && !metadata_is_unsafe_link_or_reparse(&metadata)
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
-            {
-                paths.push(OmpSessionFile {
-                    directory: directory.clone(),
-                    path,
-                    cache_path: directory.cache_path.join(&name),
-                });
-            } else if collect_project_directories
-                && project_directories.len() < MAX_OMP_PROJECT_DIRECTORIES
-                && metadata.is_dir()
-                && !metadata_is_unsafe_link_or_reparse(&metadata)
-            {
-                if let Some(project_directory) = open_omp_session_child_directory(directory, &name)
-                {
-                    project_directories.push(project_directory);
+            if metadata.is_file() && !metadata_is_unsafe_link_or_reparse(&metadata) {
+                let is_target = if let Some(only_file_name) = only_file_name {
+                    name == only_file_name
+                } else {
+                    path.extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+                };
+                if collect_files && is_target {
+                    paths.push(OmpSessionFile {
+                        directory: directory.clone(),
+                        path,
+                        cache_path: directory.cache_path.join(&name),
+                        parent_cache_path: parent_cache_path.map(Path::to_path_buf),
+                        is_child: parent_cache_path.is_some(),
+                        name,
+                    });
                 }
+            } else if metadata.is_dir() && !metadata_is_unsafe_link_or_reparse(&metadata) {
+                dirs.push(name);
             }
         }
     }
+    #[cfg(windows)]
+    {
+        scan_windows_omp_session_directory(
+            directory,
+            entries_seen,
+            paths,
+            dirs,
+            parent_cache_path,
+            collect_files,
+            only_file_name,
+        );
+    }
+}
+
+/// Traverses the fixed Pi agent-run layout
+/// `<main-stem>/<agent-id>/run-<decimal>/session.jsonl`. Only single-component
+/// agent directories and `run-<decimal>` subdirectories are opened; any other
+/// shape or file name is skipped without falling back to a recursive walk.
+fn collect_pi_agent_run_paths(
+    derived_directory: &OmpSessionDirectory,
+    agent_names: Vec<std::ffi::OsString>,
+    entries_seen: &mut usize,
+    paths: &mut Vec<OmpSessionFile>,
+    derived_directories_seen: &mut usize,
+    parent_cache_path: &Path,
+) {
+    for agent_name in agent_names {
+        if *entries_seen >= MAX_OMP_DIRECTORY_ENTRIES
+            || paths.len() >= MAX_OMP_SESSION_FILES
+            || *derived_directories_seen >= MAX_OMP_DERIVED_DIRECTORIES
+        {
+            break;
+        }
+        let Some(agent_directory) =
+            open_omp_session_child_directory(derived_directory, &agent_name)
+        else {
+            continue;
+        };
+        *derived_directories_seen += 1;
+        // Opening a descendant directory consumes the shared entry budget.
+        *entries_seen += 1;
+        let mut run_names = Vec::new();
+        scan_omp_session_directory(
+            &agent_directory,
+            entries_seen,
+            paths,
+            &mut run_names,
+            Some(parent_cache_path),
+            false,
+            None,
+        );
+        for run_name in run_names {
+            if !is_pi_run_directory_name(&run_name) {
+                continue;
+            }
+            if *entries_seen >= MAX_OMP_DIRECTORY_ENTRIES
+                || paths.len() >= MAX_OMP_SESSION_FILES
+                || *derived_directories_seen >= MAX_OMP_DERIVED_DIRECTORIES
+            {
+                break;
+            }
+            let Some(run_directory) = open_omp_session_child_directory(&agent_directory, &run_name)
+            else {
+                continue;
+            };
+            *derived_directories_seen += 1;
+            *entries_seen += 1;
+            scan_omp_session_directory(
+                &run_directory,
+                entries_seen,
+                paths,
+                &mut Vec::new(),
+                Some(parent_cache_path),
+                true,
+                Some(std::ffi::OsStr::new("session.jsonl")),
+            );
+        }
+    }
+}
+
+fn is_pi_run_directory_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(decimal) = name.strip_prefix("run-") else {
+        return false;
+    };
+    !decimal.is_empty() && decimal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn read_omp_session_metadata(path: &OmpSessionFile) -> Option<Metadata> {
@@ -473,8 +884,49 @@ fn read_omp_session_title(
             title,
             cwd,
             source: RequestLogSessionSource::Omp,
+            parent_session_id: None,
+            parent_title: None,
         },
         updated_at: system_time_to_seconds(opened_metadata.modified().ok()),
+        cache_path: path.cache_path.clone(),
+        parent_cache_path: path.parent_cache_path.clone(),
+    })
+}
+
+fn read_omp_child_session_title(
+    path: &OmpSessionFile,
+    expected_metadata: Option<&Metadata>,
+) -> Option<ExternalSessionTitleCandidate> {
+    let mut file = open_omp_session_file(path).ok()?;
+    let opened_metadata = file.metadata().ok()?;
+    if !opened_metadata.is_file()
+        || metadata_is_unsafe_link_or_reparse(&opened_metadata)
+        || expected_metadata.is_some_and(|expected| !metadata_matches(expected, &opened_metadata))
+    {
+        return None;
+    }
+    let title_slot = parse_json_object(&read_jsonl_line(&mut file, MAX_OMP_TITLE_SLOT_BYTES)?)?;
+    let session_header =
+        parse_json_object(&read_jsonl_line(&mut file, MAX_OMP_SESSION_HEADER_BYTES)?)?;
+    if title_slot.get("type").and_then(Value::as_str) != Some("title")
+        || session_header.get("type").and_then(Value::as_str) != Some("session")
+    {
+        return None;
+    }
+    let session_id = normalize_omp_session_id(session_header.get("id").and_then(Value::as_str))?;
+    let cwd = normalize_cwd(session_header.get("cwd").and_then(Value::as_str));
+    Some(ExternalSessionTitleCandidate {
+        title: RequestLogSessionTitle {
+            session_id,
+            title: None,
+            cwd,
+            source: RequestLogSessionSource::Omp,
+            parent_session_id: None,
+            parent_title: None,
+        },
+        updated_at: system_time_to_seconds(opened_metadata.modified().ok()),
+        cache_path: path.cache_path.clone(),
+        parent_cache_path: path.parent_cache_path.clone(),
     })
 }
 
@@ -525,8 +977,46 @@ fn read_pi_session_title(
             title: explicit_name.or(first_user_title),
             cwd,
             source: RequestLogSessionSource::Pi,
+            parent_session_id: None,
+            parent_title: None,
         },
         updated_at: system_time_to_seconds(opened_metadata.modified().ok()),
+        cache_path: path.cache_path.clone(),
+        parent_cache_path: path.parent_cache_path.clone(),
+    })
+}
+
+fn read_pi_child_session_title(
+    path: &OmpSessionFile,
+    expected_metadata: Option<&Metadata>,
+) -> Option<ExternalSessionTitleCandidate> {
+    let mut file = open_omp_session_file(path).ok()?;
+    let opened_metadata = file.metadata().ok()?;
+    if !opened_metadata.is_file()
+        || metadata_is_unsafe_link_or_reparse(&opened_metadata)
+        || expected_metadata.is_some_and(|expected| !metadata_matches(expected, &opened_metadata))
+    {
+        return None;
+    }
+    let session_header =
+        parse_json_object(&read_jsonl_line(&mut file, MAX_PI_SESSION_HEADER_BYTES)?)?;
+    if session_header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    let session_id = normalize_omp_session_id(session_header.get("id").and_then(Value::as_str))?;
+    let cwd = normalize_cwd(session_header.get("cwd").and_then(Value::as_str));
+    Some(ExternalSessionTitleCandidate {
+        title: RequestLogSessionTitle {
+            session_id,
+            title: None,
+            cwd,
+            source: RequestLogSessionSource::Pi,
+            parent_session_id: None,
+            parent_title: None,
+        },
+        updated_at: system_time_to_seconds(opened_metadata.modified().ok()),
+        cache_path: path.cache_path.clone(),
+        parent_cache_path: path.parent_cache_path.clone(),
     })
 }
 
@@ -565,7 +1055,7 @@ fn normalize_pi_prompt_title(value: &str) -> Option<String> {
 
 #[cfg(not(windows))]
 fn open_omp_session_file(path: &OmpSessionFile) -> std::io::Result<File> {
-    open_read_only_no_follow(&path.path)
+    open_unix_relative_no_follow(&path.directory.handle, &path.name, libc::O_RDONLY)
 }
 
 #[cfg(windows)]
@@ -621,6 +1111,44 @@ fn metadata_matches(left: &Metadata, right: &Metadata) -> bool {
     left.len() == right.len() && left.modified().ok() == right.modified().ok()
 }
 
+#[cfg(unix)]
+fn open_unix_relative_no_follow(
+    directory: &File,
+    name: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> std::io::Result<File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = CString::new(name.as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "session path contains NUL",
+        )
+    })?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(not(windows))]
+fn open_unix_relative_directory_no_follow(
+    directory: &File,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<File> {
+    open_unix_relative_no_follow(directory, name, libc::O_RDONLY | libc::O_DIRECTORY)
+}
+
 fn open_read_only_no_follow(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -664,12 +1192,14 @@ fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(windows)]
-fn collect_windows_omp_session_paths(
+fn scan_windows_omp_session_directory(
     directory: &OmpSessionDirectory,
-    collect_project_directories: bool,
     entries_seen: &mut usize,
     paths: &mut Vec<OmpSessionFile>,
-    project_directories: &mut Vec<OmpSessionDirectory>,
+    dirs: &mut Vec<std::ffi::OsString>,
+    parent_cache_path: Option<&Path>,
+    collect_files: bool,
+    only_file_name: Option<&std::ffi::OsStr>,
 ) {
     use std::mem::size_of;
     use std::os::windows::ffi::OsStringExt;
@@ -707,7 +1237,7 @@ fn collect_windows_omp_session_paths(
         };
         restart_scan = 0;
         if status == STATUS_NO_MORE_FILES {
-            return;
+            break;
         }
         if status < 0 || io_status.information == 0 || io_status.information > buffer_len {
             return;
@@ -752,26 +1282,26 @@ fn collect_windows_omp_session_paths(
                 let name = std::ffi::OsString::from_wide(&chars);
                 if is_single_normal_path_component(&name) {
                     if header.file_attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-                        if collect_project_directories
-                            && project_directories.len() < MAX_OMP_PROJECT_DIRECTORIES
-                        {
-                            if let Some(project_directory) =
-                                open_omp_session_child_directory(directory, &name)
-                            {
-                                project_directories.push(project_directory);
-                            }
+                        dirs.push(name);
+                    } else {
+                        let is_target = if let Some(only_file_name) = only_file_name {
+                            name == only_file_name
+                        } else {
+                            Path::new(&name)
+                                .extension()
+                                .and_then(|extension| extension.to_str())
+                                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+                        };
+                        if collect_files && is_target {
+                            paths.push(OmpSessionFile {
+                                directory: directory.clone(),
+                                path: directory.path.join(&name),
+                                cache_path: directory.cache_path.join(&name),
+                                parent_cache_path: parent_cache_path.map(Path::to_path_buf),
+                                is_child: parent_cache_path.is_some(),
+                                name,
+                            });
                         }
-                    } else if Path::new(&name)
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
-                    {
-                        paths.push(OmpSessionFile {
-                            directory: directory.clone(),
-                            path: directory.path.join(&name),
-                            cache_path: directory.cache_path.join(&name),
-                            name,
-                        });
                     }
                 }
             }

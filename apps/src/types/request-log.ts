@@ -116,6 +116,8 @@ export interface RequestLogSessionTitle {
   title: string | null;
   cwd: string | null;
   source: RequestLogSessionSource;
+  parentSessionId: string | null;
+  parentTitle: string | null;
 }
 
 export interface RequestLogListResult {

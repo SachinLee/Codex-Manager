@@ -2,12 +2,17 @@ use super::{
     expire_omp_session_title_cache_for_tests, list_omp_session_titles_cached,
     list_omp_session_titles_from_root, list_pi_session_titles_from_root,
     merge_request_log_session_titles, ExternalSessionTitleCandidate, RequestLogSessionSource,
-    RequestLogSessionTitle, MAX_PI_SESSION_ENTRY_BYTES,
+    RequestLogSessionTitle, SessionTitleSnapshotCache, MAX_PI_SESSION_ENTRY_BYTES,
+    MAX_SESSION_TITLE_LIMIT,
 };
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc, Arc, Barrier,
+};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn unique_temp_dir(name: &str) -> std::path::PathBuf {
     let nonce = SystemTime::now()
@@ -361,6 +366,261 @@ fn omp_title_cache_discovers_project_directory_added_after_initial_scan() {
     let _ = fs::remove_dir_all(root);
 }
 #[test]
+fn omp_subagent_session_uses_parent_title_and_child_id() {
+    let root = unique_temp_dir("omp-subagent-parent-title");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
+    let child_id = "019fca51-ab55-7000-beca-006a4140fdfa";
+    write_omp_session(&root, parent_id, "主线程标题", "ignored");
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    write_omp_session(&parent_stem, child_id, "", "secret child transcript");
+
+    let sessions = list_omp_session_titles_from_root(&root, 20);
+    let child = sessions
+        .iter()
+        .find(|session| session.session_id == child_id)
+        .expect("child session");
+
+    assert_eq!(child.title, None);
+    assert_eq!(child.parent_session_id.as_deref(), Some(parent_id));
+    assert_eq!(child.parent_title.as_deref(), Some("主线程标题"));
+    assert_eq!(child.cwd.as_deref(), Some("D:/work/example"));
+    assert_eq!(child.source, RequestLogSessionSource::Omp);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pi_agent_run_subagent_uses_parent_title_without_reading_child_transcript() {
+    let root = unique_temp_dir("pi-agent-run-parent-title");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994e7";
+    let child_id = "019fca51-ab55-7000-beca-006a4140fdfb";
+    write_pi_session(&root, parent_id, "Parent fallback", Some("Pi 主线程"));
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    let child_root = parent_stem.join("agent-1").join("run-0");
+    write_pi_session(
+        &child_root,
+        child_id,
+        "secret child prompt",
+        Some("不应展示"),
+    );
+    fs::rename(
+        child_root.join(format!("2026-07-30T00-00-00-000Z_{child_id}.jsonl")),
+        child_root.join("session.jsonl"),
+    )
+    .expect("rename Pi child session");
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+    let child = sessions
+        .iter()
+        .find(|session| session.session_id == child_id)
+        .expect("child session");
+
+    assert_eq!(child.title, None);
+    assert_eq!(child.parent_session_id.as_deref(), Some(parent_id));
+    assert_eq!(child.parent_title.as_deref(), Some("Pi 主线程"));
+    assert_eq!(child.source, RequestLogSessionSource::Pi);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pi_project_subagent_artifacts_are_not_assigned_to_a_parent() {
+    let root = unique_temp_dir("pi-project-artifacts");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994e8";
+    write_pi_session(&root, parent_id, "Parent fallback", Some("Pi 主线程"));
+    let artifacts = root.join("subagent-artifacts");
+    write_pi_session(
+        &artifacts,
+        "019fca51-ab55-7000-beca-006a4140fdfc",
+        "artifact",
+        Some("不应索引"),
+    );
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, parent_id);
+    assert_eq!(sessions[0].parent_session_id, None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn omp_subagent_parent_title_refreshes_and_prunes_with_cache() {
+    let root = unique_temp_dir("omp-subagent-parent-cache");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994e9";
+    let child_id = "019fca51-ab55-7000-beca-006a4140fdfd";
+    write_omp_session(&root, parent_id, "初始主标题", "ignored");
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    let child_path = parent_stem.join(format!("2026-07-30T00-00-00-000Z_{child_id}.jsonl"));
+    write_omp_session(&parent_stem, child_id, "", "ignored");
+
+    let first = list_omp_session_titles_cached(&root, 20);
+    let first_child = first
+        .iter()
+        .find(|candidate| candidate.title.session_id == child_id)
+        .expect("cached child");
+    assert_eq!(
+        first_child.title.parent_title.as_deref(),
+        Some("初始主标题")
+    );
+
+    write_omp_session(&root, parent_id, "更新后的主标题", "ignored");
+    expire_omp_session_title_cache_for_tests();
+    let refreshed = list_omp_session_titles_cached(&root, 20);
+    let refreshed_child = refreshed
+        .iter()
+        .find(|candidate| candidate.title.session_id == child_id)
+        .expect("refreshed child");
+    assert_eq!(
+        refreshed_child.title.parent_title.as_deref(),
+        Some("更新后的主标题")
+    );
+
+    fs::remove_file(child_path).expect("remove child session");
+    expire_omp_session_title_cache_for_tests();
+    assert!(list_omp_session_titles_cached(&root, 20)
+        .iter()
+        .all(|candidate| candidate.title.session_id != child_id));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn omp_subagent_skips_broken_child_files_locally() {
+    let root = unique_temp_dir("omp-subagent-broken-child");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994ea";
+    let child_id = "019fca51-ab55-7000-beca-006a4140fdfe";
+    write_omp_session(&root, parent_id, "主线程标题", "ignored");
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    write_omp_session(&parent_stem, child_id, "", "ignored");
+    fs::write(parent_stem.join("broken.jsonl"), "not json\n").expect("write broken child");
+
+    let sessions = list_omp_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 2);
+    let parent = sessions
+        .iter()
+        .find(|session| session.session_id == parent_id)
+        .expect("parent session");
+    assert_eq!(parent.parent_session_id, None);
+    let child = sessions
+        .iter()
+        .find(|session| session.session_id == child_id)
+        .expect("valid child session");
+    assert_eq!(child.parent_session_id.as_deref(), Some(parent_id));
+    assert_eq!(child.parent_title.as_deref(), Some("主线程标题"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn omp_subagent_grandchild_layout_is_not_scanned() {
+    let root = unique_temp_dir("omp-subagent-grandchild-depth");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994eb";
+    let grandchild_id = "019fca51-ab55-7000-beca-006a4140fdff";
+    write_omp_session(&root, parent_id, "主线程标题", "ignored");
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    write_omp_session(&parent_stem.join("nested"), grandchild_id, "", "ignored");
+
+    let sessions = list_omp_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, parent_id);
+    assert!(!sessions
+        .iter()
+        .any(|session| session.session_id == grandchild_id));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn omp_subagent_with_empty_parent_title_is_omitted() {
+    let root = unique_temp_dir("omp-subagent-empty-parent-title");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994ec";
+    let child_id = "019fca51-ab55-7000-beca-006a4140fe00";
+    write_omp_session(&root, parent_id, "", "ignored");
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    write_omp_session(&parent_stem, child_id, "", "ignored");
+
+    let sessions = list_omp_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, parent_id);
+    assert_eq!(sessions[0].title, None);
+    assert!(!sessions
+        .iter()
+        .any(|session| session.session_id == child_id));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pi_agent_run_requires_session_header_and_decimal_run_directory() {
+    let root = unique_temp_dir("pi-agent-run-header-and-decimal");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994ed";
+    write_pi_session(&root, parent_id, "Parent fallback", Some("Pi 主线程"));
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    let non_decimal = parent_stem.join("agent-1").join("run-abc");
+    fs::create_dir_all(&non_decimal).expect("create run-abc directory");
+    fs::write(
+        non_decimal.join("session.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "session",
+                "version": 3,
+                "id": "019fca51-ab55-7000-beca-006a4140fe01",
+                "timestamp": "2026-07-30T00:00:00.000Z",
+                "cwd": "D:/work/pi-example"
+            })
+        ),
+    )
+    .expect("write non-decimal run");
+    let non_header = parent_stem.join("agent-2").join("run-1");
+    fs::create_dir_all(&non_header).expect("create run-1 directory");
+    fs::write(
+        non_header.join("session.jsonl"),
+        "{\"type\":\"message\",\"id\":\"11111111\"}\n",
+    )
+    .expect("write non-header run");
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, parent_id);
+    assert_eq!(sessions[0].parent_session_id, None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pi_agent_run_direct_jsonl_in_derived_directory_is_not_indexed() {
+    let root = unique_temp_dir("pi-derived-direct-jsonl");
+    let parent_id = "019fb0d2-4d04-7000-90dd-9c6255e994ee";
+    let direct_id = "019fca51-ab55-7000-beca-006a4140fe02";
+    write_pi_session(&root, parent_id, "Parent fallback", Some("Pi 主线程"));
+    let parent_stem = root.join(format!("2026-07-30T00-00-00-000Z_{parent_id}"));
+    write_pi_session(
+        &parent_stem,
+        direct_id,
+        "direct child prompt",
+        Some("不应索引"),
+    );
+
+    let sessions = list_pi_session_titles_from_root(&root, 20);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, parent_id);
+    assert_eq!(sessions[0].parent_session_id, None);
+    assert!(!sessions
+        .iter()
+        .any(|session| session.session_id == direct_id));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
     let shared_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4".to_string();
     let codex = RequestLogSessionTitle {
@@ -368,6 +628,8 @@ fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
         title: Some("Codex 标题".to_string()),
         cwd: None,
         source: RequestLogSessionSource::Codex,
+        parent_session_id: None,
+        parent_title: None,
     };
     let omp_collision = ExternalSessionTitleCandidate {
         title: RequestLogSessionTitle {
@@ -375,8 +637,12 @@ fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
             title: Some("OMP 标题".to_string()),
             cwd: None,
             source: RequestLogSessionSource::Omp,
+            parent_session_id: None,
+            parent_title: None,
         },
         updated_at: 99,
+        cache_path: std::path::PathBuf::from("omp-collision"),
+        parent_cache_path: None,
     };
     let omp_newer = ExternalSessionTitleCandidate {
         title: RequestLogSessionTitle {
@@ -384,8 +650,12 @@ fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
             title: Some("最新 OMP 标题".to_string()),
             cwd: None,
             source: RequestLogSessionSource::Omp,
+            parent_session_id: None,
+            parent_title: None,
         },
         updated_at: 20,
+        cache_path: std::path::PathBuf::from("omp-newer"),
+        parent_cache_path: None,
     };
 
     let merged =
@@ -396,4 +666,154 @@ fn session_title_merge_prefers_codex_on_id_collision_and_enforces_limit() {
     assert_eq!(merged[1].session_id, shared_id);
     assert_eq!(merged[1].title.as_deref(), Some("Codex 标题"));
     assert_eq!(merged[1].source, RequestLogSessionSource::Codex);
+}
+
+fn snapshot_title(session_id: &str, title: &str) -> RequestLogSessionTitle {
+    RequestLogSessionTitle {
+        session_id: session_id.to_string(),
+        title: Some(title.to_string()),
+        cwd: None,
+        source: RequestLogSessionSource::Omp,
+        parent_session_id: None,
+        parent_title: None,
+    }
+}
+
+fn refresh_snapshot(cache: &Arc<SessionTitleSnapshotCache>, titles: Vec<RequestLogSessionTitle>) {
+    assert!(cache
+        .snapshot_and_schedule(MAX_SESSION_TITLE_LIMIT, move || Ok(titles))
+        .is_empty());
+    cache.wait_for_refresh_for_tests();
+}
+
+#[test]
+fn session_title_snapshot_cold_call_returns_before_blocked_refresh() {
+    let cache = Arc::new(SessionTitleSnapshotCache::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let release = Arc::new(Barrier::new(2));
+    let worker_release = Arc::clone(&release);
+
+    let returned = cache.snapshot_and_schedule(MAX_SESSION_TITLE_LIMIT, move || {
+        started_tx.send(()).expect("signal refresh start");
+        worker_release.wait();
+        Ok(vec![snapshot_title(
+            "019fb0d2-4d04-7000-90dd-9c6255e994e4",
+            "已发布标题",
+        )])
+    });
+
+    assert!(returned.is_empty());
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("refresh starts after caller returns");
+    assert!(cache.refresh_in_flight_for_tests());
+
+    release.wait();
+    cache.wait_for_refresh_for_tests();
+    assert_eq!(
+        cache.snapshot_and_schedule(MAX_SESSION_TITLE_LIMIT, || panic!(
+            "fresh snapshot schedules"
+        )),
+        vec![snapshot_title(
+            "019fb0d2-4d04-7000-90dd-9c6255e994e4",
+            "已发布标题"
+        )]
+    );
+}
+
+#[test]
+fn session_title_snapshot_stale_call_keeps_child_projection_during_refresh() {
+    let cache = Arc::new(SessionTitleSnapshotCache::new());
+    let child = RequestLogSessionTitle {
+        session_id: "019fca51-ab55-7000-beca-006a4140fdfa".to_string(),
+        title: None,
+        cwd: Some("D:/work/example".to_string()),
+        source: RequestLogSessionSource::Omp,
+        parent_session_id: Some("019fb0d2-4d04-7000-90dd-9c6255e994e4".to_string()),
+        parent_title: Some("主线程标题".to_string()),
+    };
+    refresh_snapshot(&cache, vec![child.clone()]);
+    cache.expire_for_tests();
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let release = Arc::new(Barrier::new(2));
+    let worker_release = Arc::clone(&release);
+    let stale = cache.snapshot_and_schedule(MAX_SESSION_TITLE_LIMIT, move || {
+        started_tx.send(()).expect("signal refresh start");
+        worker_release.wait();
+        Ok(vec![snapshot_title(
+            "019fb0d2-4d04-7000-90dd-9c6255e994e5",
+            "新标题",
+        )])
+    });
+
+    assert_eq!(stale, vec![child]);
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("refresh starts after stale snapshot returns");
+    release.wait();
+    cache.wait_for_refresh_for_tests();
+}
+
+#[test]
+fn session_title_snapshot_concurrent_callers_start_one_refresh() {
+    let cache = Arc::new(SessionTitleSnapshotCache::new());
+    let callers = 5;
+    let start = Arc::new(Barrier::new(callers + 1));
+    let release = Arc::new(Barrier::new(2));
+    let (started_tx, started_rx) = mpsc::channel();
+    let refresh_count = Arc::new(AtomicUsize::new(0));
+    let mut joins = Vec::new();
+
+    for _ in 0..callers {
+        let cache = Arc::clone(&cache);
+        let start = Arc::clone(&start);
+        let release = Arc::clone(&release);
+        let started_tx = started_tx.clone();
+        let refresh_count = Arc::clone(&refresh_count);
+        joins.push(std::thread::spawn(move || {
+            start.wait();
+            cache.snapshot_and_schedule(MAX_SESSION_TITLE_LIMIT, move || {
+                refresh_count.fetch_add(1, Ordering::SeqCst);
+                started_tx.send(()).expect("signal refresh start");
+                release.wait();
+                Ok(Vec::new())
+            })
+        }));
+    }
+
+    start.wait();
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("one refresh starts");
+    for join in joins {
+        assert!(join.join().expect("caller thread").is_empty());
+    }
+    assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+
+    release.wait();
+    cache.wait_for_refresh_for_tests();
+}
+
+#[test]
+fn session_title_snapshot_error_preserves_previous_generation_and_limit() {
+    let cache = Arc::new(SessionTitleSnapshotCache::new());
+    let first = snapshot_title("019fb0d2-4d04-7000-90dd-9c6255e994e4", "第一个标题");
+    let second = snapshot_title("019fb0d2-4d04-7000-90dd-9c6255e994e5", "第二个标题");
+    refresh_snapshot(&cache, vec![first.clone(), second]);
+    cache.expire_for_tests();
+
+    assert_eq!(
+        cache.snapshot_and_schedule(MAX_SESSION_TITLE_LIMIT, || Err("scan failed".to_string())),
+        vec![
+            first.clone(),
+            snapshot_title("019fb0d2-4d04-7000-90dd-9c6255e994e5", "第二个标题")
+        ]
+    );
+    cache.wait_for_refresh_for_tests();
+
+    assert_eq!(
+        cache.snapshot_and_schedule(1, || panic!("failed refresh schedules too early")),
+        vec![first]
+    );
 }
