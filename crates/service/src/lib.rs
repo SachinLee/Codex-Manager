@@ -54,8 +54,9 @@ pub(crate) use account::test as account_test;
 pub(crate) use account::update as account_update;
 pub(crate) use account::warmup as account_warmup;
 pub(crate) use aggregate_api::{
-    create_aggregate_api, delete_aggregate_api, diagnose_aggregate_api_capabilities,
-    discover_aggregate_api_models, list_aggregate_api_runtime_statuses,
+    associate_aggregate_api_models, create_aggregate_api, delete_aggregate_api,
+    diagnose_aggregate_api_capabilities, discover_aggregate_api_models,
+    fetch_aggregate_api_models, list_aggregate_api_runtime_statuses,
     list_aggregate_api_zero_balance_statuses, list_aggregate_apis, read_aggregate_api_secret,
     refresh_aggregate_api_balance, reset_aggregate_api_runtime_status,
     reset_aggregate_api_zero_balance_status, test_aggregate_api_connection, update_aggregate_api,
@@ -159,6 +160,7 @@ pub use app_settings::{
     set_ui_low_transparency_enabled, set_ui_theme, set_update_auto_check_enabled,
     sync_runtime_settings_from_storage, BackgroundTasksInput, APP_SETTING_AUTO_START_ENABLED_KEY,
     APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_DISTRIBUTION_ENABLED_KEY,
+    APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
     APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
     APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,

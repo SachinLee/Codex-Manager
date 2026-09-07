@@ -174,6 +174,28 @@ export function GatewayTabContent({
         <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
+              <Workflow className="h-4 w-4 text-primary" />
+              <Label>{t("聚合 API 会话亲和")}</Label>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {t(
+                "开启后，同一会话（缓存亲和键）的后续请求会优先复用上一次成功的聚合 API 来源，减少切换上游导致的提示缓存失效；默认关闭。"
+              )}
+            </p>
+          </div>
+          <Switch
+            checked={snapshot.aggregateApiSessionAffinityEnabled}
+            onCheckedChange={(checked) =>
+              updateSettings.mutate({
+                aggregateApiSessionAffinityEnabled: checked,
+              })
+            }
+          />
+        </div>
+
+        <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
               <Label>{t("长上下文阶梯计费")}</Label>
             </div>
             <p className="text-[10px] text-muted-foreground">

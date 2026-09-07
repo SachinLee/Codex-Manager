@@ -52,11 +52,14 @@ export function SessionInfoCell({
   }
 
   const title = String(session?.title || "").trim();
+  const parentSessionId = String(session?.parentSessionId || "").trim();
+  const parentTitle = String(session?.parentTitle || "").trim();
+  const isSubagent = Boolean(parentSessionId && parentTitle);
+  const displayTitle = normalizedSessionId
+    ? parentTitle || title || (session ? t("无标题会话") : t("未匹配会话"))
+    : t("未记录会话 ID");
   const cwd = String(session?.cwd || "").trim();
   const source = session?.source === "omp" ? "OMP" : session?.source === "pi" ? "Pi" : "Codex";
-  const displayTitle = normalizedSessionId
-    ? title || (session ? t("无标题会话") : t("未匹配会话"))
-    : t("未记录会话 ID");
   const shortSessionId = normalizedSessionId
     ? formatSessionIdForTable(normalizedSessionId)
     : "-";
@@ -65,14 +68,21 @@ export function SessionInfoCell({
     <Tooltip>
       <TooltipTrigger render={<div />} className="block min-w-0 text-left">
         <div className="flex min-w-0 max-w-[220px] flex-col gap-0.5">
-          <div
-            className={
-              title
-                ? "min-w-0 truncate text-xs leading-4 font-medium text-foreground"
-                : "min-w-0 truncate text-xs leading-4 font-medium text-muted-foreground italic"
-            }
-          >
-            {displayTitle}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div
+              className={
+                displayTitle && (title || parentTitle)
+                  ? "min-w-0 truncate text-xs leading-4 font-medium text-foreground"
+                  : "min-w-0 truncate text-xs leading-4 font-medium text-muted-foreground italic"
+              }
+            >
+              {displayTitle}
+            </div>
+            {isSubagent ? (
+        <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px] leading-3">
+                {t("子线程")}
+              </Badge>
+            ) : null}
           </div>
           <div className="min-w-0 truncate font-mono text-[10px] leading-3 text-muted-foreground/80">
             session: {shortSessionId}
@@ -85,18 +95,28 @@ export function SessionInfoCell({
             <div className="text-[10px] text-background/70">{t("会话标题")}</div>
             <div className="break-all text-[11px]">{displayTitle}</div>
           </div>
-          <div className="space-y-0.5">
-            <div className="text-[10px] text-background/70">{t("会话 ID")}</div>
-            <div className="break-all font-mono text-[11px]">
-              {normalizedSessionId || "-"}
+          {isSubagent ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">{t("执行层级")}</div>
+              <div className="text-[11px]">{t("子线程")}</div>
             </div>
+          ) : null}
+          <div className="space-y-0.5">
+            <div className="text-[10px] text-background/70">
+              {isSubagent ? t("子线程 ID") : t("会话 ID")}
+            </div>
+            <div className="break-all font-mono text-[11px]">{normalizedSessionId || "-"}</div>
           </div>
+          {isSubagent ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">{t("主线程 ID")}</div>
+              <div className="break-all font-mono text-[11px]">{parentSessionId}</div>
+            </div>
+          ) : null}
           {normalizedConversationAnchor ? (
             <div className="space-y-0.5">
               <div className="text-[10px] text-background/70">{t("路由锚点")}</div>
-              <div className="break-all font-mono text-[11px]">
-                {normalizedConversationAnchor}
-              </div>
+              <div className="break-all font-mono text-[11px]">{normalizedConversationAnchor}</div>
             </div>
           ) : null}
           {session ? (

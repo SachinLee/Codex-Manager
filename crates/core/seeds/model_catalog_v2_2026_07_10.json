@@ -1,5 +1,5 @@
 {
-  "revision": 8,
+  "revision": 9,
   "source_sha256": "bd20b8f4dca9c2408ad3b1f41723689d03e98d450beef29549d08a550512e64a",
   "models": [
     {
@@ -165,6 +165,23 @@
       "price_status": "missing",
       "price_source": null,
       "price_tiers": []
+    },
+    {
+      "slug": "gpt-6-astra",
+      "display_name": "GPT-6 Astra",
+      "description": "Frontier agentic coding model with a 1,050,000-token context window.",
+      "visibility": "list",
+      "priority": 0,
+      "default_reasoning_effort": "medium",
+      "context_window": 1050000,
+      "max_context_window": 1050000,
+      "capabilities": {"max_output_tokens":128000,"reasoning_efforts":["low","medium","high","xhigh","max"],"service_tiers":[],"additional_speed_tiers":[],"input_modalities":["text","image"],"output_modalities":["text"],"prefer_websockets":true,"supports_parallel_tool_calls":true,"supports_reasoning_summaries":true,"default_reasoning_summary":"auto","reasoning_summary_format":"experimental","supports_verbosity":true,"default_verbosity":"low","supports_image_detail_original":true,"supports_search_tool":true,"apply_patch_tool_type":"freeform","web_search_tool_type":"text_and_image","shell_type":"shell_command","truncation_mode":"tokens","truncation_limit":10000,"experimental_supported_tools":[],"effective_context_window_percent":95,"minimal_client_version":"0.0.1","default_service_tier":null,"auto_compact_token_limit":null,"auto_review_model_override":null,"comp_hash":null,"tool_mode":null,"multi_agent_version":null,"use_responses_lite":false,"include_skills_usage_instructions":false},
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "price_tiers": [
+        {"min_input_tokens":0,"input_microusd_per_1m":10000000,"cached_input_microusd_per_1m":1000000,"cache_write_microusd_per_1m":12500000,"output_microusd_per_1m":50000000},
+        {"min_input_tokens":272001,"input_microusd_per_1m":20000000,"cached_input_microusd_per_1m":2000000,"cache_write_microusd_per_1m":25000000,"output_microusd_per_1m":75000000}
+      ]
     }
   ]
 }

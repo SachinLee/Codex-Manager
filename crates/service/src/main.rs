@@ -12,6 +12,8 @@
 fn main() {
     codexmanager_service::portable::bootstrap_current_process();
     codexmanager_service::init_logging();
+    // Ensure database path is set before starting server
+    codexmanager_service::process_env::ensure_default_db_path();
     let configured_addr = std::env::var("CODEXMANAGER_SERVICE_ADDR")
         .unwrap_or_else(|_| codexmanager_service::default_listener_bind_addr());
     let addr = codexmanager_service::listener_bind_addr(&configured_addr);

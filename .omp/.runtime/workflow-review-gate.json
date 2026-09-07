@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "entries": {
+    "`.trellis/tasks/08-21-request-log-subagent-session-title`\u0000final\u00003bdeddfafca57318eb82356256f0c7accd7eaa2b2e19708f68211838e98c78a4": {
+      "taskPath": "`.trellis/tasks/08-21-request-log-subagent-session-title`",
+      "profile": "final",
+      "diffHash": "3bdeddfafca57318eb82356256f0c7accd7eaa2b2e19708f68211838e98c78a4",
+      "status": "complete",
+      "attempts": 1,
+      "updatedAt": "2026-08-21T09:40:40.153Z",
+      "result": "complete"
+    }
+  }
+}

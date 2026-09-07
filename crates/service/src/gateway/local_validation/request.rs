@@ -2044,6 +2044,7 @@ pub(super) fn build_local_validation_result(
         let incoming_headers = incoming_headers
             .with_conversation_id_override(initial_local_conversation_id.as_deref());
         let request_log_session_id = resolve_request_log_session_id(
+            logical_path.as_str(),
             &incoming_headers,
             [initial_request_meta.session_id_candidate.as_deref()],
         );
@@ -2453,6 +2454,7 @@ pub(super) fn build_local_validation_result(
     let has_prompt_cache_key = request_meta.has_prompt_cache_key;
     let request_shape = client_request_meta.request_shape;
     let request_log_session_id = resolve_request_log_session_id(
+        logical_path.as_str(),
         &incoming_headers,
         [
             client_request_meta.session_id_candidate.as_deref(),
@@ -2506,10 +2508,11 @@ pub(super) fn build_local_validation_result(
 }
 
 fn resolve_request_log_session_id<'a>(
+    request_path: &str,
     incoming_headers: &super::super::IncomingHeaderSnapshot,
     metadata_candidates: impl IntoIterator<Item = Option<&'a str>>,
 ) -> Option<String> {
-    incoming_headers
+    let result = incoming_headers
         .session_id()
         .or(incoming_headers.parent_thread_id())
         .map(str::to_string)
@@ -2520,6 +2523,49 @@ fn resolve_request_log_session_id<'a>(
                 .map(str::to_string)
                 .next()
         })
+        .or_else(|| strict_omp_client_request_session_id(request_path, incoming_headers));
+    
+    // 临时调试：记录 OMP 请求的 header 和 fallback 结果
+    if request_path == "/v1/responses" {
+        log::warn!(
+            "[OMP_DEBUG] client_req_id={:?} originator={:?} ua={:?} session_id_result={:?}",
+            incoming_headers.client_request_id(),
+            incoming_headers.originator(),
+            incoming_headers.user_agent(),
+            result
+        );
+    }
+    
+    result
+}
+
+fn strict_omp_client_request_session_id(
+    request_path: &str,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+) -> Option<String> {
+    let client_request_id = incoming_headers.client_request_id()?;
+    (request_path == "/v1/responses"
+        && incoming_headers.originator() == Some("pi")
+        && incoming_headers
+            .user_agent()
+            .and_then(|value| value.strip_prefix("omp/"))
+            .is_some_and(|version| !version.trim().is_empty())
+        && is_canonical_uuid_v7(client_request_id))
+    .then(|| client_request_id.to_string())
+}
+
+fn is_canonical_uuid_v7(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_digit() || matches!(*byte, b'a'..=b'f')
+            }
+        })
+        && bytes[14] == b'7'
+        && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
 }
 
 #[cfg(test)]

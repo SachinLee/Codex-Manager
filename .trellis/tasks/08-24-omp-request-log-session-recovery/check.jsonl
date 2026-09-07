@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review gateway-to-RPC-to-UI data flow without duplicate decoding or join-key changes."}
+{"file": ".trellis/tasks/08-21-request-log-subagent-session-title/research/subagent-session-title-feasibility.md", "reason": "Review scanner safety, child ID preservation, and parent-title projection."}

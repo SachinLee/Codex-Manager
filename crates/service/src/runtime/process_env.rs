@@ -185,7 +185,7 @@ fn resolve_path_with_base(raw: &str, base_dir: &Path) -> PathBuf {
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) fn ensure_default_db_path() -> PathBuf {
+pub fn ensure_default_db_path() -> PathBuf {
     let dir = exe_dir();
     let resolved = match std::env::var(ENV_DB_PATH) {
         Ok(raw) if !raw.trim().is_empty() => resolve_path_with_base(&raw, &dir),

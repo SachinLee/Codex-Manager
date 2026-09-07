@@ -583,11 +583,15 @@ fn insert_seed(
     )?;
     let has_cache_write_price =
         connection_has_column(conn, "model_prices", "cache_write_microusd_per_1m")?;
-    if inserted_price > 0 && has_cache_write_price {
-        conn.execute(
-            "UPDATE model_prices SET cache_write_microusd_per_1m=?2 WHERE model_id=?1",
-            params![id, base.and_then(|tier| tier.cache_write_microusd_per_1m)],
-        )?;
+    if has_cache_write_price {
+        if let Some(base_tier) = base {
+            if base_tier.cache_write_microusd_per_1m.is_some() {
+                conn.execute(
+                    "UPDATE model_prices SET cache_write_microusd_per_1m=?2 WHERE model_id=?1",
+                    params![id, base_tier.cache_write_microusd_per_1m],
+                )?;
+            }
+        }
     }
     for tier in &seed.price_tiers {
         let inserted_tier = conn.execute(
@@ -603,7 +607,7 @@ fn insert_seed(
                 tier.output_microusd_per_1m
             ],
         )?;
-        if inserted_tier > 0 && has_cache_write_price {
+        if has_cache_write_price && tier.cache_write_microusd_per_1m.is_some() {
             conn.execute(
                 "UPDATE model_price_tiers SET cache_write_microusd_per_1m=?3
                  WHERE model_id=?1 AND min_input_tokens=?2",
@@ -2361,8 +2365,8 @@ mod tests {
     fn fixture_contains_no_prompt_fields() {
         let raw = include_str!("../../seeds/model_catalog_v2_2026_07_10.json");
         let value: Value = serde_json::from_str(raw).expect("parse fixture");
-        assert_eq!(value["models"].as_array().map(Vec::len), Some(10));
-        assert_eq!(value["revision"].as_i64(), Some(8));
+        assert_eq!(value["models"].as_array().map(Vec::len), Some(11));
+        assert_eq!(value["revision"].as_i64(), Some(9));
         assert!(!raw.contains("base_instructions"));
         assert!(!raw.contains("instructions_template"));
         assert!(!raw.contains("instructions_text"));
@@ -2425,8 +2429,8 @@ mod tests {
         let storage = storage();
         let all = storage.list_managed_models_v2(true).expect("list all");
         let visible = storage.list_api_models_v2().expect("list visible");
-        assert_eq!(all.len(), 10);
-        assert_eq!(visible.len(), 9);
+        assert_eq!(all.len(), 11);
+        assert_eq!(visible.len(), 10);
         assert_eq!(
             all.iter()
                 .filter(|model| model.price.price_status == "missing")
@@ -2508,7 +2512,7 @@ mod tests {
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(8));
+        assert_eq!(sol.builtin_revision, Some(9));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["tool_mode"], "code_mode_only");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
@@ -2518,7 +2522,7 @@ mod tests {
             .find(|model| model.slug == "gpt-image-2")
             .unwrap();
         assert_eq!(image.display_name, "GPT Image 2");
-        assert_eq!(image.builtin_revision, Some(8));
+        assert_eq!(image.builtin_revision, Some(9));
         assert_eq!(image.context_window, None);
         assert_eq!(image.max_context_window, None);
         assert_eq!(image.default_reasoning_effort, None);
@@ -2541,7 +2545,7 @@ mod tests {
 
         let grok = all.iter().find(|model| model.slug == "grok-4.5").unwrap();
         assert_eq!(grok.display_name, "Grok 4.5");
-        assert_eq!(grok.builtin_revision, Some(8));
+        assert_eq!(grok.builtin_revision, Some(9));
         assert_eq!(grok.default_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             grok.capabilities["reasoning_efforts"],
@@ -2564,6 +2568,54 @@ mod tests {
         assert_eq!(grok.routes[0].source_kind, "account_pool");
         assert_eq!(grok.routes[0].source_id, "default");
         assert_eq!(grok.routes[0].upstream_model, "grok-4.5");
+        let astra = all.iter().find(|model| model.slug == "gpt-6-astra").unwrap();
+        assert_eq!(astra.display_name, "GPT-6 Astra");
+        assert_eq!(astra.sort_order, 0);
+        assert!(astra.enabled && astra.supported_in_api && astra.visibility == "list");
+        assert_eq!(astra.context_window, Some(1_050_000));
+        assert_eq!(astra.max_context_window, Some(1_050_000));
+        assert_eq!(astra.builtin_revision, Some(9));
+        assert_eq!(astra.capabilities["max_output_tokens"], 128_000);
+        assert_eq!(astra.price.price_status, "official");
+        assert_eq!(
+            astra.price.price_source.as_deref(),
+            Some("https://developers.openai.com/api/docs/models/gpt-6-astra")
+        );
+        assert_eq!(astra.price.input_microusd_per_1m, Some(10_000_000));
+        assert_eq!(astra.price.cached_input_microusd_per_1m, Some(1_000_000));
+        assert_eq!(
+            astra.price.cache_write_microusd_per_1m,
+            Some(12_500_000)
+        );
+        assert_eq!(astra.price.output_microusd_per_1m, Some(50_000_000));
+        assert_eq!(astra.price_tiers.len(), 2);
+        assert_eq!(astra.price_tiers[0].min_input_tokens, 0);
+        assert_eq!(astra.price_tiers[0].input_microusd_per_1m, 10_000_000);
+        assert_eq!(
+            astra.price_tiers[0].cached_input_microusd_per_1m,
+            1_000_000
+        );
+        assert_eq!(
+            astra.price_tiers[0].cache_write_microusd_per_1m,
+            Some(12_500_000)
+        );
+        assert_eq!(astra.price_tiers[0].output_microusd_per_1m, 50_000_000);
+        assert_eq!(astra.price_tiers[1].min_input_tokens, 272_001);
+        assert_eq!(astra.price_tiers[1].input_microusd_per_1m, 20_000_000);
+        assert_eq!(
+            astra.price_tiers[1].cached_input_microusd_per_1m,
+            2_000_000
+        );
+        assert_eq!(
+            astra.price_tiers[1].cache_write_microusd_per_1m,
+            Some(25_000_000)
+        );
+        assert_eq!(astra.price_tiers[1].output_microusd_per_1m, 75_000_000);
+        assert_eq!(astra.routes.len(), 1);
+        assert_eq!(astra.routes[0].source_kind, "account_pool");
+        assert_eq!(astra.routes[0].source_id, "default");
+        assert_eq!(astra.routes[0].upstream_model, "gpt-6-astra");
+
         assert!(all
             .iter()
             .all(|model| model.instructions_mode == "passthrough"
@@ -2571,6 +2623,29 @@ mod tests {
         assert!(all
             .iter()
             .all(|model| model.fast_policy == ModelFastPolicyV2::Passthrough));
+    }
+
+    #[test]
+    fn astra_price_tier_selects_official_long_context_boundary() {
+        let storage = storage();
+        let (_, exact) = storage
+            .select_model_price_tier_v2("gpt-6-astra", 272_000)
+            .unwrap()
+            .unwrap();
+        let (_, long) = storage
+            .select_model_price_tier_v2("gpt-6-astra", 272_001)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.min_input_tokens, 0);
+        assert_eq!(exact.input_microusd_per_1m, 10_000_000);
+        assert_eq!(exact.cached_input_microusd_per_1m, 1_000_000);
+        assert_eq!(exact.cache_write_microusd_per_1m, Some(12_500_000));
+        assert_eq!(exact.output_microusd_per_1m, 50_000_000);
+        assert_eq!(long.min_input_tokens, 272_001);
+        assert_eq!(long.input_microusd_per_1m, 20_000_000);
+        assert_eq!(long.cached_input_microusd_per_1m, 2_000_000);
+        assert_eq!(long.cache_write_microusd_per_1m, Some(25_000_000));
+        assert_eq!(long.output_microusd_per_1m, 75_000_000);
     }
 
     #[test]
@@ -2717,7 +2792,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(image.origin, "builtin");
-        assert_eq!(image.builtin_revision, Some(8));
+        assert_eq!(image.builtin_revision, Some(9));
         assert_eq!(image.routes.len(), 1);
         assert_eq!(image.routes[0].upstream_model, "gpt-image-2");
         let sol = storage
@@ -2733,7 +2808,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(revision, "8");
+        assert_eq!(revision, "9");
     }
 
     #[test]
@@ -2792,7 +2867,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored.origin, "builtin");
-        assert_eq!(restored.builtin_revision, Some(8));
+        assert_eq!(restored.builtin_revision, Some(9));
         assert_eq!(restored.routes[0].upstream_model, "gpt-image-2");
     }
 
@@ -2848,7 +2923,7 @@ mod tests {
         assert_eq!(sol.price.cached_input_microusd_per_1m, Some(5_000_000));
         assert_eq!(sol.price.output_microusd_per_1m, Some(30_000_000));
         assert_eq!(sol.price_tiers.len(), 1);
-        assert_eq!(sol.builtin_revision, Some(8));
+        assert_eq!(sol.builtin_revision, Some(9));
 
         let terra = storage
             .get_managed_model_v2("gpt-5.6-terra")
@@ -3217,7 +3292,7 @@ mod tests {
             .get_managed_model_v2("gpt-5.6-sol")
             .unwrap()
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(8));
+        assert_eq!(sol.builtin_revision, Some(9));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
 
@@ -3513,7 +3588,7 @@ mod tests {
                 .list_managed_models_v2(true)
                 .expect("list migrated models")
                 .len(),
-            10
+            11
         );
     }
 

@@ -1,12 +1,14 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
-    AggregateApiModelDiscoveryItem, AggregateApiModelDiscoveryResult, AggregateApiRuntimeStatus,
-    AggregateApiSecretResult, AggregateApiSummary, AggregateApiTestResult,
-    AggregateApiZeroBalanceStatus,
+    AggregateApiAssociateModelsResult, AggregateApiBalanceRefreshResult,
+    AggregateApiBalanceSnapshot, AggregateApiCreateResult, AggregateApiFetchedModel,
+    AggregateApiFetchModelsResult, AggregateApiModelDiscoveryItem,
+    AggregateApiModelDiscoveryResult, AggregateApiRuntimeStatus, AggregateApiSecretResult,
+    AggregateApiSummary, AggregateApiTestResult, AggregateApiZeroBalanceStatus,
 };
 use codexmanager_core::storage::{
     now_ts, AggregateApi, AggregateApiZeroBalanceState, AggregateApiZeroBalanceStateKind,
-    GatewayCapabilityObservationRecord, GatewayCapabilityScope,
+    GatewayCapabilityObservationRecord, GatewayCapabilityScope, ManagedModelV2,
+    ManagedModelV2Upsert, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 
 use reqwest::header::{HeaderName, HeaderValue};

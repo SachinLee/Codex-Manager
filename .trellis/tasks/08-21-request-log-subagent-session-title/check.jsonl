@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check the Rust-to-RPC-to-normalizer-to-log-cell contract without duplicate payload decoding."}
+{"file": ".trellis/tasks/08-21-request-log-subagent-session-title/research/subagent-session-title-feasibility.md", "reason": "Check known-layout limits, child-ID preservation, privacy boundary, and UI parent-title projection."}

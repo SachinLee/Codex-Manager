@@ -2,7 +2,8 @@ use super::{
     fetch_codex_latest_version_from_url, sync_gateway_user_agent_version_from_codex_latest_url,
 };
 use crate::{
-    app_settings_get, app_settings_set, APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
+    app_settings_get, app_settings_set, APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
+    APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
     APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
 };
 use codexmanager_core::storage::Storage;
@@ -141,5 +142,43 @@ fn app_settings_rpc_persists_long_context_billing_switch() {
             .get_app_setting(APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY)
             .expect("read persisted setting"),
         Some("0".to_string())
+    );
+}
+
+#[test]
+fn app_settings_rpc_persists_aggregate_api_affinity_switch() {
+    let _guard = crate::test_env_guard();
+    let db_path = unique_temp_db_path();
+    Storage::open(&db_path)
+        .expect("open storage")
+        .init()
+        .expect("init storage");
+    let _db_env = EnvGuard::set("CODEXMANAGER_DB_PATH", Some(&db_path.to_string_lossy()));
+
+    let initial = app_settings_get().expect("get app settings");
+    assert_eq!(
+        initial
+            .get("aggregateApiSessionAffinityEnabled")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+
+    let updated = app_settings_set(Some(&serde_json::json!({
+        "aggregateApiSessionAffinityEnabled": true
+    })))
+    .expect("set app settings");
+    assert_eq!(
+        updated
+            .get("aggregateApiSessionAffinityEnabled")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let storage = Storage::open(&db_path).expect("open storage");
+    assert_eq!(
+        storage
+            .get_app_setting(APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY)
+            .expect("read persisted setting"),
+        Some("1".to_string())
     );
 }

@@ -82,6 +82,7 @@ export interface AppSettings extends GatewayTransportValues {
   compactModelForwardRules: string;
   accountMaxInflight: number;
   threadAwareAccountDistributionEnabled: boolean;
+  aggregateApiSessionAffinityEnabled: boolean;
   aggregateApiProbeUserAgentMode: string;
   aggregateApiProbeUserAgent: string;
   quotaGuard: QuotaGuardSettings;

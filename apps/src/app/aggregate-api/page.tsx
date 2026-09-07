@@ -79,7 +79,6 @@ import { accountClient } from "@/lib/api/account-client";
 import { appClient } from "@/lib/api/app-client";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
-import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
 import {
@@ -220,6 +219,14 @@ export default function AggregateApiPage() {
     useState<AggregateApiCapabilityDiagnosticsResult | null>(null);
   const [resetCooldownApi, setResetCooldownApi] = useState<AggregateApi | null>(null);
   const [resetZeroBalanceApi, setResetZeroBalanceApi] = useState<AggregateApi | null>(null);
+  const [fetchingModelsApiId, setFetchingModelsApiId] = useState<string | null>(null);
+  const [associationApiId, setAssociationApiId] = useState<string | null>(null);
+  const [associationItems, setAssociationItems] = useState<AggregateApiFetchedModel[]>([]);
+  const [associatingModels, setAssociatingModels] = useState(false);
+  const [probeSettingsOpen, setProbeSettingsOpen] = useState(false);
+  const [probeUserAgentMode, setProbeUserAgentMode] = useState<string>("codex");
+  const [probeUserAgent, setProbeUserAgent] = useState<string>("");
+
 
   const [modelDiscoveryOpen, setModelDiscoveryOpen] = useState(false);
   const [quickAddSelection, setQuickAddSelection] = useState<{

@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/codexmanager-service/backend/logging-guidelines.md", "reason": "Load request-log identity, finalizer, and privacy constraints before implementation."}
+{"file": ".trellis/tasks/07-30-omp-session-title/research/session-title-feasibility.md", "reason": "Load verified OMP session/header and title-index evidence."}
+{"file": ".trellis/tasks/08-21-request-log-subagent-session-title/research/subagent-session-title-feasibility.md", "reason": "Preserve verified child-layout, parent projection, and privacy boundaries."}

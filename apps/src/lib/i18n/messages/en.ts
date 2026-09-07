@@ -176,8 +176,11 @@ export const EN_MESSAGES: MessageCatalog = {
   "7天优先账号": "7-day priority account",
   "当前没有可推荐的可用账号。": "No recommended available accounts right now.",
   线程感知账号分配: "Thread-aware account distribution",
+  "聚合 API 会话亲和": "Aggregate API session affinity",
   "开启后未绑定的新线程会优先选择当前承载线程更少的可用账号，已有线程仍保持账号粘性。":
     "When enabled, unbound new threads prefer available accounts with fewer assigned threads while existing threads stay sticky.",
+  "开启后，同一会话（缓存亲和键）的后续请求会优先复用上一次成功的聚合 API 来源，减少切换上游导致的提示缓存失效；默认关闭。":
+    "When enabled, follow-up requests with the same cache affinity key prefer the last successful aggregate API source, reducing prompt cache invalidation caused by upstream switching. Disabled by default.",
   "Free 账号模型上限": "Free account model ceiling",
   "选择 Free 账号模型上限": "Select the Free account model ceiling",
   "设为“不限制”时，Free 账号可参与所有模型请求；选择具体模型后，目录中排在该模型之上的请求会跳过 Free 账号，但不会改写请求模型。混合模式会继续尝试其他账号，账号候选耗尽后仍按现有策略转聚合 API。":
@@ -668,6 +671,10 @@ export const EN_MESSAGES: MessageCatalog = {
   模型使用统计: "Model usage stats",
   全部字段: "All fields",
   会话标题: "Session title",
+  执行层级: "Execution level",
+  子线程: "Subagent",
+  "子线程 ID": "Subagent ID",
+  "主线程 ID": "Main session ID",
   "搜索模型名称，例如 gpt-5.6...": "Search model name, e.g. gpt-5.6...",
   "搜索会话标题或会话 ID...": "Search session title or session ID...",
   "搜索路径、账号、密钥、模型或会话...": "Search path, account, key, model, or session...",

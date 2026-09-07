@@ -128,52 +128,69 @@ fn aggregate_api_test_connection_accepts_id_and_api_id() {
     .expect("response");
     assert_ne!(error_message(&with_api_id), "aggregate api id required");
 }
-
 #[test]
 fn zero_balance_status_reset_requires_an_aggregate_api_id() {
-    let response = try_handle(&rpc_request(
-        "aggregateApi/zeroBalanceStatus/reset",
-        serde_json::json!({}),
-    ))
+    std::env::set_var("CODEXMANAGER_STORAGE_PATH", ":memory:");
+    let actor = RpcActor::system_admin();
+    let response = try_handle(
+        &rpc_request("aggregateApi/zeroBalanceStatus/reset", serde_json::json!({})),
+        &actor,
+    )
     .expect("zero-balance reset response");
 
     assert_eq!(error_message(&response), "aggregate api id required");
 
-    let with_id = try_handle(&rpc_request(
-        "aggregateApi/zeroBalanceStatus/reset",
-        serde_json::json!({ "id": "ag_test" }),
-    ))
+    let with_id = try_handle(
+        &rpc_request(
+            "aggregateApi/zeroBalanceStatus/reset",
+            serde_json::json!({ "id": "ag_test" }),
+        ),
+        &actor,
+    )
     .expect("zero-balance reset response");
     assert_ne!(error_message(&with_id), "aggregate api id required");
 
-    let with_api_id = try_handle(&rpc_request(
-        "aggregateApi/zeroBalanceStatus/reset",
-        serde_json::json!({ "apiId": "ag_test" }),
-    ))
+    let with_api_id = try_handle(
+        &rpc_request(
+            "aggregateApi/zeroBalanceStatus/reset",
+            serde_json::json!({ "apiId": "ag_test" }),
+        ),
+        &actor,
+    )
     .expect("zero-balance reset response");
     assert_ne!(error_message(&with_api_id), "aggregate api id required");
 }
 
 #[test]
 fn models_discover_accepts_id_and_api_id() {
-    let missing = try_handle(&rpc_request(
-        "aggregateApi/models/discover",
-        serde_json::json!({}),
-    ))
+    let actor = RpcActor::system_admin();
+    let missing = try_handle(
+        &rpc_request(
+            "aggregateApi/models/discover",
+            serde_json::json!({}),
+        ),
+        &actor,
+    )
     .expect("discover response");
     assert_eq!(error_message(&missing), "aggregate api id required");
 
-    let with_id = try_handle(&rpc_request(
-        "aggregateApi/models/discover",
-        serde_json::json!({ "id": "ag_test" }),
-    ))
+    let with_id = try_handle(
+        &rpc_request(
+            "aggregateApi/models/discover",
+            serde_json::json!({ "id": "ag_test" }),
+        ),
+        &actor,
+    )
     .expect("discover response");
     assert_ne!(error_message(&with_id), "aggregate api id required");
 
-    let with_api_id = try_handle(&rpc_request(
-        "aggregateApi/models/discover",
-        serde_json::json!({ "apiId": "ag_test" }),
-    ))
+    let with_api_id = try_handle(
+        &rpc_request(
+            "aggregateApi/models/discover",
+            serde_json::json!({ "apiId": "ag_test" }),
+        ),
+        &actor,
+    )
     .expect("discover response");
     assert_ne!(error_message(&with_api_id), "aggregate api id required");
 }

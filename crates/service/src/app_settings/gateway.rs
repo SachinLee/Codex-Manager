@@ -27,6 +27,7 @@ struct CodexNpmLatestResponse {
 use super::{
     get_persisted_app_setting, normalize_optional_text, parse_bool_with_default,
     save_persisted_app_setting, save_persisted_bool_setting,
+    APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CAPABILITY_ROUTING_MODE_KEY,
     APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
@@ -52,6 +53,20 @@ pub fn current_gateway_long_context_billing_enabled() -> bool {
 pub fn set_gateway_long_context_billing_enabled(enabled: bool) -> Result<bool, String> {
     save_persisted_bool_setting(
         APP_SETTING_GATEWAY_LONG_CONTEXT_BILLING_ENABLED_KEY,
+        enabled,
+    )?;
+    Ok(enabled)
+}
+
+pub fn current_gateway_aggregate_api_session_affinity_enabled() -> bool {
+    get_persisted_app_setting(APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY)
+        .map(|value| parse_bool_with_default(&value, false))
+        .unwrap_or(false)
+}
+
+pub fn set_gateway_aggregate_api_session_affinity_enabled(enabled: bool) -> Result<bool, String> {
+    save_persisted_bool_setting(
+        APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
         enabled,
     )?;
     Ok(enabled)

@@ -19,7 +19,7 @@ fn prices() -> (Storage, Vec<CatalogModelPrice>) {
 #[test]
 fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     let (_storage, prices) = prices();
-    assert_eq!(prices.len(), 9);
+    assert_eq!(prices.len(), 11);
     let mini = resolve_model_price_from_catalog(&prices, "gpt-5.4-mini", 0).expect("mini");
     assert_eq!(mini.provider, "openai");
     assert_close(mini.input_price_per_1m, 0.75);
@@ -45,6 +45,25 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(image.input_price_per_1m, 8.0);
     assert_close(image.cached_input_price_per_1m, 2.0);
     assert_close(image.output_price_per_1m, 30.0);
+    let astra = resolve_model_price_from_catalog(&prices, "gpt-6-astra", 0).expect("astra");
+    assert_eq!(astra.provider, "openai");
+    assert_close(astra.input_price_per_1m, 10.0);
+    assert_close(astra.cached_input_price_per_1m, 1.0);
+    assert_close(astra.cache_write_price_per_1m, 12.5);
+    assert_close(astra.output_price_per_1m, 50.0);
+    let astra_long = resolve_model_price_from_catalog_with_long_context_billing(
+        &prices, "gpt-6-astra", 272_001, true,
+    )
+    .expect("astra long tier");
+    assert_close(astra_long.input_price_per_1m, 20.0);
+    assert_close(astra_long.cached_input_price_per_1m, 2.0);
+    assert_close(astra_long.cache_write_price_per_1m, 25.0);
+    assert_close(astra_long.output_price_per_1m, 75.0);
+    let astra_exact = resolve_model_price_from_catalog_with_long_context_billing(
+        &prices, "gpt-6-astra", 272_000, true,
+    )
+    .expect("astra exact threshold stays on base tier");
+    assert_close(astra_exact.input_price_per_1m, 10.0);
     assert!(resolve_model_price_from_catalog(&prices, "codex-auto-review", 0).is_none());
     assert!(resolve_model_price_from_catalog(&prices, "unknown-provider-model", 0).is_none());
 }

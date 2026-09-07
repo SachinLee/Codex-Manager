@@ -1,3 +1,7 @@
+use crate::app_settings::{
+    parse_bool_with_default, APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
+};
+
 /// 函数 `aggregate_api_session_affinity_enabled`
 ///
 /// 作者: AI Assistant
@@ -13,10 +17,9 @@ pub(crate) fn aggregate_api_session_affinity_enabled(
     storage: &codexmanager_core::storage::Storage,
 ) -> bool {
     storage
-        .get_app_setting("aggregate_api_session_affinity_enabled")
+        .get_app_setting(APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY)
         .ok()
         .flatten()
-        .and_then(|v| v.parse::<i32>().ok())
-        .map(|v| v != 0)
+        .map(|value| parse_bool_with_default(&value, false))
         .unwrap_or(false)
 }

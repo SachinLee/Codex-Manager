@@ -4,17 +4,18 @@ use codexmanager_core::rpc::types::{
 };
 
 use crate::{
-    clear_aggregate_api_capability_observation, create_aggregate_api, delete_aggregate_api,
-    diagnose_aggregate_api_capabilities, discover_aggregate_api_models,
-    get_aggregate_api_capabilities, get_aggregate_api_health, list_aggregate_api_health,
-    list_aggregate_api_probe_costs, list_aggregate_api_runtime_statuses,
-    list_aggregate_api_zero_balance_statuses, list_aggregate_apis,
-    list_recent_aggregate_api_capability_attempts, probe_aggregate_api_health,
-    read_aggregate_api_secret, refresh_aggregate_api_balance,
+    aggregate_api::*, clear_aggregate_api_capability_observation, create_aggregate_api,
+    delete_aggregate_api, diagnose_aggregate_api_capabilities,
+    discover_aggregate_api_models, get_aggregate_api_capabilities, get_aggregate_api_health,
+    list_aggregate_api_health, list_aggregate_api_probe_costs,
+    list_aggregate_api_runtime_statuses, list_aggregate_api_zero_balance_statuses,
+    list_aggregate_apis, list_recent_aggregate_api_capability_attempts,
+    probe_aggregate_api_health, read_aggregate_api_secret, refresh_aggregate_api_balance,
     reset_aggregate_api_capability_override, reset_aggregate_api_health,
     reset_aggregate_api_runtime_status, reset_aggregate_api_zero_balance_status,
     set_aggregate_api_capability_override, set_aggregate_api_capability_routing_mode,
     test_aggregate_api_connection, update_aggregate_api, update_aggregate_api_health_config,
+    RpcActor,
 };
 
 /// 函数 `api_id_param`

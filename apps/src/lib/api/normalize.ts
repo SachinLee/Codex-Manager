@@ -10,6 +10,8 @@ import {
   AggregateApi,
   AggregateApiBalanceRefreshResult,
   AggregateApiBalanceSnapshot,
+  AggregateApiFetchedModel,
+  AggregateApiFetchModelsResult,
   AggregateApiAssociateModelsResult,
   AggregateApiCreateResult,
   AggregateApiCapabilityDiagnosticsResult,
@@ -1863,11 +1865,18 @@ export function normalizeRequestLogSessionTitles(payload: unknown): RequestLogSe
       ) {
         return null;
       }
+      const parentSessionId = asString(source.parentSessionId ?? source.parent_session_id);
+      const parentTitle = asString(source.parentTitle ?? source.parent_title);
+      const validParent =
+        (sessionSource === "omp" || sessionSource === "pi") &&
+        Boolean(parentSessionId && parentTitle && parentSessionId !== sessionId);
       return {
         sessionId,
         title: asString(source.title) || null,
         cwd: asString(source.cwd) || null,
         source: sessionSource,
+        parentSessionId: validParent ? parentSessionId : null,
+        parentTitle: validParent ? parentTitle : null,
       };
     })
     .filter((item): item is RequestLogSessionTitle => item != null);
@@ -2495,6 +2504,10 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     threadAwareAccountDistributionEnabled: asBoolean(
       source.threadAwareAccountDistributionEnabled,
       true
+    ),
+    aggregateApiSessionAffinityEnabled: asBoolean(
+      source.aggregateApiSessionAffinityEnabled,
+      false
     ),
     aggregateApiProbeUserAgentMode:
       asString(source.aggregateApiProbeUserAgentMode) || "codex",

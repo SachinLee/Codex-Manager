@@ -45,6 +45,8 @@ pub const APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY: &str = "gateway.background_t
 pub const APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_MODE_KEY: &str =
     "aggregate_api.probe_user_agent_mode";
 pub const APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_KEY: &str = "aggregate_api.probe_user_agent";
+pub const APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY: &str =
+    "aggregate_api_session_affinity_enabled";
 pub const APP_SETTING_PLUGIN_MARKET_MODE_KEY: &str = "plugin.market_mode";
 pub const APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY: &str = "plugin.market_source_url";
 pub const APP_SETTING_ENV_OVERRIDES_KEY: &str = "app.env_overrides";

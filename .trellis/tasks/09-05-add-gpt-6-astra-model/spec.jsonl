@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/codexmanager-core/backend/database-guidelines.md", "reason": "SQLite model catalog seed and pricing persistence conventions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace fixture to SQLite, service, and model-list consumers"}

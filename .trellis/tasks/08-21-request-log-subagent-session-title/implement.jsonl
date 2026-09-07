@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/codexmanager-service/backend/logging-guidelines.md", "reason": "Load request-log session identity and safe metadata-reading constraints before implementation."}
+{"file": ".trellis/tasks/08-21-request-log-subagent-session-title/research/subagent-session-title-feasibility.md", "reason": "Load verified OMP/Pi layouts, unsupported artifact boundary, and resolver alternatives before implementation."}

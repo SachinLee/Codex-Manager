@@ -136,4 +136,41 @@ impl Storage {
         self.conn
             .execute(delete_stale_aggregate_api_bindings_sql(), [before_timestamp])
     }
+
+    /// 函数 `delete_aggregate_api_binding`
+    ///
+    /// 作者: AI Assistant
+    ///
+    /// 时间: 2026-09-07
+    ///
+    /// # 参数
+    /// - self: Storage instance
+    /// - platform_key_hash: Platform key hash for partition
+    /// - protocol_type: Protocol type (e.g., "openai_compat")
+    /// - model: Model identifier
+    /// - cache_affinity_route_id_hash: Hashed cache affinity route ID
+    ///
+    /// # 返回
+    /// Number of deleted rows
+    pub fn delete_aggregate_api_binding(
+        &self,
+        platform_key_hash: &str,
+        protocol_type: &str,
+        model: &str,
+        cache_affinity_route_id_hash: &str,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "DELETE FROM aggregate_api_bindings
+             WHERE platform_key_hash = ?1
+               AND protocol_type = ?2
+               AND model = ?3
+               AND cache_affinity_route_id_hash = ?4",
+            params![
+                platform_key_hash,
+                protocol_type,
+                model,
+                cache_affinity_route_id_hash,
+            ],
+        )
+    }
 }

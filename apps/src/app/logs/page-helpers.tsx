@@ -22,7 +22,11 @@ const MAX_SESSION_TITLE_MATCHES = 200;
 export function buildRequestLogSearchQuery(
   field: SearchField,
   raw: string,
-  sessions: Array<{ sessionId?: string | null; title?: string | null }>,
+  sessions: Array<{
+    sessionId?: string | null;
+    title?: string | null;
+    parentTitle?: string | null;
+  }>,
 ): string {
   const value = String(raw || "").trim();
   if (!value) {
@@ -40,7 +44,6 @@ export function buildRequestLogSearchQuery(
     return `model:${value}`;
   }
 
-  // session_title: resolve local Codex session titles -> session_id list
   if (/^(session|session_id|session_in|sessions)\s*:/i.test(value)) {
     return value;
   }
@@ -50,12 +53,14 @@ export function buildRequestLogSearchQuery(
     .map((session) => ({
       id: String(session.sessionId || "").trim(),
       title: String(session.title || "").trim(),
+      parentTitle: String(session.parentTitle || "").trim(),
     }))
     .filter(
       (session) =>
         session.id &&
         !session.id.includes(",") &&
         (session.title.toLowerCase().includes(needle) ||
+          session.parentTitle.toLowerCase().includes(needle) ||
           session.id.toLowerCase().includes(needle)),
     )
     .map((session) => session.id);

@@ -14,11 +14,11 @@ use super::author_links::{
 };
 use super::{
     current_background_tasks_snapshot_value, current_env_overrides,
-    current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
-    current_gateway_free_account_max_model, current_gateway_long_context_billing_enabled,
-    current_gateway_model_forward_rules, current_gateway_originator, current_gateway_quota_guard,
-    current_gateway_residency_requirement, current_gateway_sse_keepalive_enabled,
-    current_gateway_sse_keepalive_interval_ms,
+    current_gateway_account_max_inflight, current_gateway_aggregate_api_session_affinity_enabled,
+    current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
+    current_gateway_long_context_billing_enabled, current_gateway_model_forward_rules,
+    current_gateway_originator, current_gateway_quota_guard, current_gateway_residency_requirement,
+    current_gateway_sse_keepalive_enabled, current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
     current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
@@ -28,6 +28,7 @@ use super::{
     normalize_ui_locale, normalize_ui_theme, normalize_ui_zoom_factor, parse_bool_with_default,
     residency_requirement_options, save_env_overrides_value, save_persisted_app_setting,
     save_persisted_bool_setting, sync_runtime_settings_from_storage,
+    APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
     APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
     APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
     APP_SETTING_ENV_OVERRIDES_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
@@ -228,6 +229,11 @@ fn current_app_settings_value_inner(
     let account_max_inflight = current_gateway_account_max_inflight();
     let thread_aware_account_distribution_enabled =
         current_gateway_thread_aware_account_distribution_enabled();
+    let aggregate_api_session_affinity_enabled = setting_bool(
+        &settings,
+        APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
+        current_gateway_aggregate_api_session_affinity_enabled(),
+    );
     let aggregate_api_probe_user_agent_mode = current_aggregate_api_probe_user_agent_mode();
     let aggregate_api_probe_user_agent = current_aggregate_api_probe_user_agent();
     let quota_guard = current_gateway_quota_guard();
@@ -428,6 +434,10 @@ fn current_app_settings_value_inner(
         object.insert(
             "threadAwareAccountDistributionEnabled".to_string(),
             thread_aware_account_distribution_enabled.into(),
+        );
+        object.insert(
+            "aggregateApiSessionAffinityEnabled".to_string(),
+            aggregate_api_session_affinity_enabled.into(),
         );
         object.insert(
             "upstreamProxyBypassHosts".to_string(),

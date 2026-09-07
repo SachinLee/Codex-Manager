@@ -310,4 +310,51 @@ mod aggregate_api_bindings_tests {
 
         assert!(retrieved.is_none());
     }
+
+    #[test]
+    fn delete_removes_matching_binding_only() {
+        let storage = create_test_storage();
+        let binding = create_test_binding("1");
+        let other = create_test_binding("2");
+
+        storage
+            .upsert_aggregate_api_binding(&binding)
+            .expect("upsert failed");
+        storage
+            .upsert_aggregate_api_binding(&other)
+            .expect("upsert failed");
+
+        let deleted = storage
+            .delete_aggregate_api_binding(
+                &binding.platform_key_hash,
+                &binding.protocol_type,
+                &binding.model,
+                &binding.cache_affinity_route_id_hash,
+            )
+            .expect("delete failed");
+        assert_eq!(deleted, 1);
+
+        assert!(
+            storage
+                .get_aggregate_api_binding(
+                    &binding.platform_key_hash,
+                    &binding.protocol_type,
+                    &binding.model,
+                    &binding.cache_affinity_route_id_hash,
+                )
+                .expect("get failed")
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_aggregate_api_binding(
+                    &other.platform_key_hash,
+                    &other.protocol_type,
+                    &other.model,
+                    &other.cache_affinity_route_id_hash,
+                )
+                .expect("get failed")
+                .is_some()
+        );
+    }
 }

@@ -48,10 +48,11 @@ fn latest_status_reason(storage: &Storage, account_id: &str) -> Option<String> {
         .and_then(|mut reasons| reasons.remove(account_id))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AccountStatusContext {
     pub status: String,
     pub reason: Option<String>,
+    pub updated_at: Option<i64>,
 }
 
 pub(crate) fn load_account_status_context(
@@ -66,7 +67,7 @@ pub(crate) fn load_account_status_context(
             .flatten()
             .unwrap_or_else(|| "active".to_string()),
         reason: latest_status_reason(storage, account_id),
-        updated_at: account.map(|account| account.updated_at),
+        updated_at: account.and_then(|a| Some(a.updated_at)),
     }
 }
 
@@ -620,12 +621,7 @@ fn set_account_status_after_test_if_context_matches(
     if matches!(normalized.as_str(), "disabled" | "inactive" | "banned") {
         return false;
     }
-    if load_account_status_context(storage, account_id) != *context {
-        return false;
-    }
-    let Some(expected_updated_at) = context.updated_at else {
-        return false;
-    };
+    let expected_updated_at = context.updated_at.unwrap_or(0);
     let changed = storage
         .update_account_status_if_context_matches(
             account_id,
@@ -633,7 +629,7 @@ fn set_account_status_after_test_if_context_matches(
             expected_updated_at,
             status,
         )
-        .unwrap_or(false);
+        .is_ok();
     if !changed {
         return false;
     }

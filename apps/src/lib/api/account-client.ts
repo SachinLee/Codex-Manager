@@ -7,6 +7,7 @@ import {
   normalizeAccountList,
   normalizeAccountDailyUsageStats,
   normalizeAggregateApiBalanceRefreshResult,
+  normalizeAggregateApiFetchModelsResult,
   normalizeAggregateApiAssociateModelsResult,
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiCapabilityDiagnosticsResult,

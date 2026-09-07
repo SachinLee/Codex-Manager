@@ -435,7 +435,8 @@ fn request_log_session_id_prefers_trusted_header_over_body_candidate() {
         None,
     );
 
-    let actual = resolve_request_log_session_id(&headers, [Some("body-thread-id")]);
+    let actual =
+        resolve_request_log_session_id("/v1/responses", &headers, [Some("body-thread-id")]);
 
     assert_eq!(actual.as_deref(), Some("header-session-id"));
 }
@@ -449,8 +450,11 @@ fn request_log_session_id_uses_client_metadata_thread_id_for_responses_log() {
     });
     let metadata = crate::gateway::parse_request_metadata_from_value(&body);
     let headers = sample_incoming_headers(None, None, None, None, None);
-    let session_id =
-        resolve_request_log_session_id(&headers, [metadata.session_id_candidate.as_deref()]);
+    let session_id = resolve_request_log_session_id(
+        "/v1/responses",
+        &headers,
+        [metadata.session_id_candidate.as_deref()],
+    );
 
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
@@ -485,6 +489,117 @@ fn request_log_session_id_uses_client_metadata_thread_id_for_responses_log() {
         logs[0].session_id.as_deref(),
         Some("019e6d9b-c5a1-72d2-a13d-e189680767e0")
     );
+}
+
+fn strict_omp_client_request_headers(
+    client_request_id: &str,
+) -> super::super::super::IncomingHeaderSnapshot {
+    let mut headers = HeaderMap::new();
+    headers.insert("originator", HeaderValue::from_static("pi"));
+    headers.insert("user-agent", HeaderValue::from_static("omp/18.0.4"));
+    headers.insert(
+        "x-client-request-id",
+        HeaderValue::from_str(client_request_id).expect("client request id header"),
+    );
+    super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers)
+}
+
+#[test]
+fn request_log_session_id_uses_strict_omp_client_request_fallback() {
+    let session_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
+    let headers = strict_omp_client_request_headers(session_id);
+
+    let actual = resolve_request_log_session_id("/v1/responses", &headers, [None]);
+
+    assert_eq!(actual.as_deref(), Some(session_id));
+}
+
+#[test]
+fn strict_omp_client_request_fallback_rejects_invalid_or_unrelated_requests() {
+    let session_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
+    let headers = strict_omp_client_request_headers(session_id);
+    assert_eq!(
+        resolve_request_log_session_id("/v1/chat/completions", &headers, [None]),
+        None
+    );
+
+    for candidate in [
+        "019fb0d2-4d04-4000-90dd-9c6255e994e4",
+        "019FB0D2-4D04-7000-90DD-9C6255E994E4",
+        "019fb0d2-4d04-7000-70dd-9c6255e994e4",
+        "ordinary-request-id",
+    ] {
+        let headers = strict_omp_client_request_headers(candidate);
+        assert_eq!(
+            resolve_request_log_session_id("/v1/responses", &headers, [None]),
+            None,
+            "candidate {candidate} must not become a session ID"
+        );
+    }
+
+    let mut unrelated_headers = HeaderMap::new();
+    unrelated_headers.insert("originator", HeaderValue::from_static("other"));
+    unrelated_headers.insert("user-agent", HeaderValue::from_static("omp/18.0.4"));
+    unrelated_headers.insert("x-client-request-id", HeaderValue::from_static(session_id));
+    let unrelated =
+        super::super::super::IncomingHeaderSnapshot::from_http_headers(&unrelated_headers);
+    assert_eq!(
+        resolve_request_log_session_id("/v1/responses", &unrelated, [None]),
+        None
+    );
+}
+
+#[test]
+fn strict_omp_client_request_fallback_does_not_override_existing_identity() {
+    let session_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
+    let mut headers = HeaderMap::new();
+    headers.insert("originator", HeaderValue::from_static("pi"));
+    headers.insert("user-agent", HeaderValue::from_static("omp/18.0.4"));
+    headers.insert("x-client-request-id", HeaderValue::from_static(session_id));
+    headers.insert("session_id", HeaderValue::from_static("header-session-id"));
+    let headers = super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers);
+
+    assert_eq!(
+        resolve_request_log_session_id("/v1/responses", &headers, [Some("body-session-id")]),
+        Some("header-session-id".to_string())
+    );
+}
+
+#[test]
+fn strict_omp_client_request_fallback_persists_responses_log_session_id() {
+    let session_id = "019fb0d2-4d04-7000-90dd-9c6255e994e4";
+    let headers = strict_omp_client_request_headers(session_id);
+    let resolved = resolve_request_log_session_id("/v1/responses", &headers, [None]);
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+
+    crate::gateway::write_request_log(
+        &storage,
+        crate::gateway::RequestLogTraceContext {
+            trace_id: Some("omp-client-request-id"),
+            session_id: resolved.as_deref(),
+            original_path: Some("/v1/responses"),
+            adapted_path: Some("/v1/responses"),
+            request_type: Some("http"),
+            ..Default::default()
+        },
+        None,
+        None,
+        "/v1/responses",
+        "POST",
+        None,
+        None,
+        None,
+        Some(200),
+        crate::gateway::RequestLogUsage::default(),
+        None,
+        Some(1),
+    );
+
+    let logs = storage
+        .list_request_logs(None, 10)
+        .expect("read request logs");
+    assert_eq!(logs[0].session_id.as_deref(), Some(session_id));
 }
 
 #[test]

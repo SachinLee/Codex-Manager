@@ -27,16 +27,18 @@ pub(crate) use gateway::sync_gateway_user_agent_version_from_codex_latest;
 pub(crate) use gateway::QuotaGuardInput;
 #[allow(unused_imports)]
 pub use gateway::{
-    current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
-    current_gateway_free_account_max_model, current_gateway_long_context_billing_enabled,
-    current_gateway_model_forward_rules, current_gateway_originator,
-    current_gateway_request_compression_enabled, current_gateway_residency_requirement,
-    current_gateway_sse_keepalive_enabled, current_gateway_sse_keepalive_interval_ms,
+    current_gateway_account_max_inflight, current_gateway_aggregate_api_session_affinity_enabled,
+    current_gateway_compact_model_forward_rules, current_gateway_free_account_max_model,
+    current_gateway_long_context_billing_enabled, current_gateway_model_forward_rules,
+    current_gateway_originator, current_gateway_request_compression_enabled,
+    current_gateway_residency_requirement, current_gateway_sse_keepalive_enabled,
+    current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
     current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
     default_gateway_originator, default_gateway_user_agent_version, fetch_codex_latest_version,
-    residency_requirement_options, set_gateway_account_max_inflight, set_gateway_background_tasks,
+    residency_requirement_options, set_gateway_account_max_inflight,
+    set_gateway_aggregate_api_session_affinity_enabled, set_gateway_background_tasks,
     set_gateway_capability_routing_mode, set_gateway_compact_model_forward_rules,
     set_gateway_free_account_max_model, set_gateway_long_context_billing_enabled,
     set_gateway_model_forward_rules, set_gateway_originator,
@@ -59,6 +61,7 @@ pub(crate) use shared::{normalize_optional_text, parse_bool_with_default};
 pub use shared::{
     APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_KEY,
     APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_MODE_KEY,
+    APP_SETTING_AGGREGATE_API_SESSION_AFFINITY_ENABLED_KEY,
     APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
     APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
     APP_SETTING_DISTRIBUTION_ENABLED_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
