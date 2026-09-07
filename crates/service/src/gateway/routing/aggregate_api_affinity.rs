@@ -84,6 +84,49 @@ pub(crate) fn reorder_candidates_with_affinity(
     Ok(candidates)
 }
 
+/// FR5: 清除聚合 API 会话亲和绑定
+///
+/// 作者: AI Assistant
+///
+/// 时间: 2026-09-07
+///
+/// # 参数
+/// - storage: Storage instance
+/// - trace_id: Trace ID for logging
+/// - platform_key_hash: Platform key hash for partition
+/// - protocol_type: Protocol type (e.g., "openai_compat")
+/// - model: Model identifier
+/// - cache_affinity_route_id_hash: Hashed cache affinity route ID
+pub(crate) fn clear_aggregate_api_affinity_binding(
+    storage: &Storage,
+    trace_id: &str,
+    platform_key_hash: &str,
+    protocol_type: &str,
+    model: &str,
+    cache_affinity_route_id_hash: &str,
+) {
+    if let Err(err) = storage.delete_aggregate_api_binding(
+        platform_key_hash,
+        protocol_type,
+        model,
+        cache_affinity_route_id_hash,
+    ) {
+        log::warn!(
+            "event=aggregate_api_affinity_clear_failed trace_id={} route_hash={} err={}",
+            trace_id,
+            cache_affinity_route_id_hash,
+            err
+        );
+        return;
+    }
+
+    log::info!(
+        "event=aggregate_api_affinity_cleared trace_id={} route_hash={}",
+        trace_id, cache_affinity_route_id_hash
+    );
+}
+
+
 #[cfg(test)]
 #[path = "tests/aggregate_api_affinity_tests.rs"]
 mod aggregate_api_affinity_tests;

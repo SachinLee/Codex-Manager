@@ -1962,7 +1962,8 @@ pub(in super::super) fn proxy_aggregate_request(
             );
             return Ok(AggregateAttemptOutcome::RequestReleased { request, error: message });
         }
-        super::super::super::record_gateway_request_outcome(path, 502, Some("aggregate_api"));
+        // FR4: 全冷却返回 503 + Retry-After
+        super::super::super::record_gateway_request_outcome(path, 503, Some("aggregate_api"));
         super::super::super::write_request_log(
             storage,
             super::super::super::request_log::RequestLogTraceContext {
@@ -1981,7 +1982,7 @@ pub(in super::super) fn proxy_aggregate_request(
             model_for_log,
             reasoning_for_log,
             None,
-            Some(502),
+            Some(503),
             RequestLogUsage {
                 estimated_input_tokens: Some(estimated_input_tokens),
                 ..Default::default()
@@ -1989,7 +1990,24 @@ pub(in super::super) fn proxy_aggregate_request(
             Some(message.as_str()),
             Some(started_at.elapsed().as_millis()),
         );
-        respond_error(request, 502, message.as_str(), Some(trace_id));
+        
+        let mut response = tiny_http::Response::from_string(serde_json::json!({
+            "error": {
+                "message": message,
+                "type": "service_unavailable",
+                "code": "all_cooling"
+            }
+        }).to_string())
+        .with_status_code(503);
+        
+        response.add_header(
+            tiny_http::Header::from_bytes(&b"Retry-After"[..], &b"300"[..]).unwrap()
+        );
+        response.add_header(
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()
+        );
+        
+        let _ = request.respond(response);
         return Ok(AggregateAttemptOutcome::Responded { attempt_records });
     }
     let zero_balance_blocked_ids = storage
@@ -2308,7 +2326,11 @@ pub(in super::super) fn proxy_aggregate_request(
             + capacity_retry_budget_remaining
             + reasoning_guard_retry_budget_remaining;
         for attempt_idx in 0..=max_attempts_per_channel {
-            if super::super::support::deadline::is_expired(request_deadline) {
+            // FR2: 每候选首次尝试保底 - 首次 attempt 即使 deadline 过期也继续
+            let should_check_deadline = attempt_idx > 0 
+                || !crate::gateway::runtime_config::aggregate_api_guarantee_first_attempt_enabled();
+            
+            if should_check_deadline && super::super::support::deadline::is_expired(request_deadline) {
                 let message = "aggregate api request timeout".to_string();
                 // 网关本地超时（客户端收到 504）同样按 502 记作上游失败，计入连续失败冻结；
                 // 仅在本候选尚未记录冷却失败时补记，避免与传输超时路径重复计数。
@@ -2615,6 +2637,14 @@ pub(in super::super) fn proxy_aggregate_request(
                     last_failure_status = 502;
                     cooldown_eligible_failure = true;
                     if transport_retry_budget_remaining > 0 {
+                        // FR3: 传输重试加退避
+                        let retry_attempt = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL - transport_retry_budget_remaining;
+                        let backoff_ms = 50u64 * 2u64.pow(retry_attempt as u32);
+                        log::debug!(
+                            "event=aggregate_api_retry_backoff candidate_id={} retry_attempt={} backoff_ms={}",
+                            candidate_id, retry_attempt, backoff_ms
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                         next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
                         transport_retry_budget_remaining =
                             transport_retry_budget_remaining.saturating_sub(1);
@@ -2820,6 +2850,16 @@ pub(in super::super) fn proxy_aggregate_request(
                     UpstreamFailureDecision::RetrySameCandidate => {
                         // 同候选传输重试：5xx、连接错误等可能瞬时恢复的故障
                         if transport_retry_budget_remaining > 0 {
+                            // FR3: 传输重试加退避
+                            let retry_attempt =
+                                AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL
+                                    - transport_retry_budget_remaining;
+                            let backoff_ms = 50u64 * 2u64.pow(retry_attempt as u32);
+                            log::debug!(
+                                "event=aggregate_api_retry_backoff candidate_id={} retry_attempt={} backoff_ms={}",
+                                candidate_id, retry_attempt, backoff_ms
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                             next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
                             transport_retry_budget_remaining =
                                 transport_retry_budget_remaining.saturating_sub(1);
@@ -3347,6 +3387,24 @@ pub(in super::super) fn proxy_aggregate_request(
                     );
                 }
             } else {
+                // FR5: 失败 → 清除绑定（即使 succeeded=true，但 affinity_binding_success=false）
+                if aggregate_api_affinity.is_some() {
+                    log::info!(
+                        "event=aggregate_api_affinity_clear_on_failure trace_id={} candidate_id={}",
+                        trace_id,
+                        candidate_id
+                    );
+                    if let Some(affinity) = aggregate_api_affinity.as_ref() {
+                        crate::gateway::aggregate_api_affinity::clear_aggregate_api_affinity_binding(
+                            storage,
+                            trace_id,
+                            affinity.platform_key_hash.as_str(),
+                            affinity.protocol_type.as_str(),
+                            affinity.model.as_str(),
+                            affinity.route_id_hash.as_str(),
+                        );
+                    }
+                }
                 attempt_records.push(AggregateApiAttemptRecord {
                     api_id: candidate_id.clone(),
                     position: candidate_position,

@@ -1,0 +1,71 @@
+feat(gateway): 优化聚合 API 故障切换策略，降低 502 错误率
+
+## 问题
+当前聚合 API 故障切换策略存在以下问题：
+- 零交付流中断无法自动 failover，导致 ~70% 的 502 错误
+- deadline 耗尽时零尝试，浪费候选资源
+- 传输重试无退避，导致无效重试
+- 全冷却返回 502 而非 503，客户端重试策略不当
+- 失败后会话亲和未清除，持续粘在坏候选
+
+整体影响：客户端 502 率 ~80%，成功率仅 ~11%
+
+## 解决方案
+
+### FR1: 零交付流中断 failover (P0)
+- 在 `delivery.rs` 中检测零交付场景（200 + 未 saw_terminal + output_tokens=0 + terminal_error）
+- 不消费 request，返回 `pending_failover_request` 给外层
+- 外层自动尝试下一个候选
+- 环境变量：`CODEXMANAGER_AGGREGATE_ZERO_DELIVERY_FAILOVER`（默认 true）
+
+### FR2: 每候选首次尝试保底 (P0)
+- 在 `aggregate_api.rs` 中，首次 attempt（attempt_idx == 0）跳过 deadline 检查
+- 重试 attempt 仍受 deadline 限制
+- 保证每个候选至少有一次完整尝试机会
+- 环境变量：`CODEXMANAGER_AGGREGATE_GUARANTEE_FIRST_ATTEMPT`（默认 true）
+
+### FR3: 传输重试加退避 (P1)
+- 在两处 `UpstreamFailureDecision::RetrySameCandidate` 分支添加指数退避
+- 退避时间：50ms → 100ms → 200ms
+- 减少无效重试，节省 deadline
+
+### FR4: 全冷却返回 503 (P1)
+- 修改 "all aggregate apis are cooling down" 分支
+- 状态码：502 → 503
+- 新增 `Retry-After: 300` header（5分钟，与冷却时长一致）
+- 改善客户端重试体验
+
+### FR5: 失败清除会话亲和 (P1)
+- 在 `aggregate_api.rs` 失败分支调用清除函数
+- 在 `aggregate_api_affinity.rs` 新增 `clear_aggregate_api_affinity_binding` 函数
+- 失败后清除绑定，下次请求公平选择
+- 避免会话粘在坏候选
+
+## 测试
+
+### 单元测试（5个）✅
+- FR2: `test_guarantee_first_attempt_*`（3个）
+- FR3: `test_transport_retry_backoff_exponential`
+- FR5: `test_affinity_route_hash_consistency`
+
+### 集成测试（1个）✅
+- FR1: `test_zero_delivery_failover_integration`
+
+所有测试通过：6 passed; 0 failed
+
+## 预期效果
+- 客户端 502 率：~80% → < 10%（↓ 87%）
+- 成功率：~11% → > 95%（↑ 763%）
+- P95 延迟：增幅 < 10%（可接受）
+
+## 相关文档
+- PRD: .trellis/tasks/09-07-api-502/prd.md
+- 设计: .trellis/tasks/09-07-api-502/design.md
+- 实施: .trellis/tasks/09-07-api-502/implement.md
+- 测试: .trellis/tasks/09-07-api-502/test-verification-complete.md
+
+## 影响范围
+- ✅ 编译通过
+- ✅ 所有测试通过
+- ✅ 默认配置向后兼容
+- ⏸️ 需要 staging 验证

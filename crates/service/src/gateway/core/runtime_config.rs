@@ -3538,6 +3538,31 @@ fn stable_account_hash(account_id: &str) -> u64 {
     hash
 }
 
+/// 聚合 API 零交付流中断 failover 开关
+pub(crate) fn aggregate_api_zero_delivery_failover_enabled() -> bool {
+    std::env::var("CODEXMANAGER_AGGREGATE_ZERO_DELIVERY_FAILOVER")
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true) // 默认开启
+}
+
+/// 聚合 API 每候选首次尝试保底开关
+pub(crate) fn aggregate_api_guarantee_first_attempt_enabled() -> bool {
+    std::env::var("CODEXMANAGER_AGGREGATE_GUARANTEE_FIRST_ATTEMPT")
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true) // 默认开启
+}
+
+/// 聚合 API 传输重试预算（默认 1 次）
+pub(crate) fn aggregate_api_transport_retry_attempts() -> usize {
+    std::env::var("CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1) // 默认降为 1（首次 + 1 次重试）
+}
+
+
 #[cfg(test)]
 #[path = "tests/runtime_config_tests.rs"]
 mod tests;

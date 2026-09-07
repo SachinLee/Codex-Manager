@@ -405,12 +405,31 @@ fn respond_passthrough_collector_stream_strict_guard(
         }
     }
 
-    let delivery_error = if read_error.is_none() {
-        respond_streaming_chunked(request, status, headers, std::io::Cursor::new(body))
+
+    // FR1: 在消费 request 之前检查是否满足零交付 failover 条件
+    let should_allow_failover = read_error.is_some()
+        && crate::gateway::runtime_config::aggregate_api_zero_delivery_failover_enabled()
+        && status.0 == 200
+        && !collector.saw_terminal
+        && collector.usage.output_tokens.unwrap_or(0) == 0;
+
+    let (delivery_error, pending_request) = if should_allow_failover {
+        log::info!(
+            "event=aggregate_api_zero_delivery_failover_guard status={} saw_terminal={} output_tokens={} read_error={:?}",
+            status.0,
+            collector.saw_terminal,
+            collector.usage.output_tokens.unwrap_or(0),
+            read_error
+        );
+        // 满足 failover 条件，不消费 request
+        (read_error, Some(request))
+    } else if read_error.is_none() {
+        let err = respond_streaming_chunked(request, status, headers, std::io::Cursor::new(body))
             .err()
-            .map(|err| err.to_string())
+            .map(|err| err.to_string());
+        (err, None)
     } else {
-        read_error
+        (read_error, None)
     };
     with_bridge_debug_meta(
         UpstreamResponseBridgeResult {
@@ -426,7 +445,7 @@ fn respond_passthrough_collector_stream_strict_guard(
             upstream_identity_error_code: None,
             upstream_content_type: None,
             last_sse_event_type: collector.last_event_type.clone(),
-            pending_failover_request: None,
+            pending_failover_request: pending_request,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
         },
@@ -447,9 +466,34 @@ fn respond_passthrough_collector_stream(
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> UpstreamResponseBridgeResult {
-    let delivery_error = respond_streaming_chunked(request, status, headers, response_body)
-        .err()
-        .map(|err| err.to_string());
+    // FR1: 在消费 request 之前检查是否满足零交付 failover 条件
+    let should_allow_failover = {
+        let collector = usage_collector.lock().unwrap();
+        collector.terminal_error.is_some()
+            && crate::gateway::runtime_config::aggregate_api_zero_delivery_failover_enabled()
+            && status.0 == 200
+            && !collector.saw_terminal
+            && collector.usage.output_tokens.unwrap_or(0) == 0
+    };
+    
+    let (delivery_error, pending_request) = if should_allow_failover {
+        let collector = usage_collector.lock().unwrap();
+        log::info!(
+            "event=aggregate_api_zero_delivery_failover status={} saw_terminal={} output_tokens={} terminal_error={:?}",
+            status.0,
+            collector.saw_terminal,
+            collector.usage.output_tokens.unwrap_or(0),
+            collector.terminal_error
+        );
+        // 满足 failover 条件，不消费 request
+        (collector.terminal_error.clone(), Some(request))
+    } else {
+        let err = respond_streaming_chunked(request, status, headers, response_body)
+            .err()
+            .map(|err| err.to_string());
+        (err, None)
+    };
+    
     let collector = usage_collector
         .lock()
         .map(|guard| guard.clone())
@@ -468,7 +512,7 @@ fn respond_passthrough_collector_stream(
             upstream_identity_error_code: None,
             upstream_content_type: None,
             last_sse_event_type: collector.last_event_type,
-            pending_failover_request: None,
+            pending_failover_request: pending_request,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
         },
