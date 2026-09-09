@@ -1,0 +1,53 @@
+--- a/crates/service/src/gateway/upstream/protocol/aggregate_api.rs
++++ b/crates/service/src/gateway/upstream/protocol/aggregate_api.rs
+@@ -2959,7 +2959,48 @@ pub(in super::super) fn proxy_aggregate_request(
+                         break;
+                     }
+                 }
+-            } else {
++            } else if upstream_protocol == crate::gateway::UpstreamProtocol::Responses
++                && is_stream
++            {
++                log::info!(
++                    "event=aggregate_responses_sse_preflight trace_id={} candidate_id={} candidate_idx={} total_candidates={} upstream_protocol={:?}",
++                    trace_id, candidate_id, candidate_idx, total_candidates, upstream_protocol
++                );
++                use super::super::proxy_pipeline::stream_preflight::{
++                    preflight_stream_response, StreamPreflightOutcome,
++                };
++                match preflight_stream_response(
++                    GatewayUpstreamResponse::Blocking(upstream),
++                    path,
++                    true,
++                    candidate_idx + 1 < total_candidates,
++                ) {
++                    StreamPreflightOutcome::Ready(upstream) => {
++                        log::info!(
++                            "event=aggregate_responses_sse_preflight_ready trace_id={} candidate_id={}",
++                            trace_id, candidate_id
++                        );
++                        upstream
++                    }
++                    StreamPreflightOutcome::Failover(message)
++                    | StreamPreflightOutcome::StatusFailover { message, .. }
++                    | StreamPreflightOutcome::RetryUsageNotice(message)
++                    | StreamPreflightOutcome::TransportFailover(message) => {
++                        log::info!(
++                            "event=aggregate_responses_sse_preflight_failover trace_id={} candidate_id={} message={}",
++                            trace_id, candidate_id, message
++                        );
++                        last_attempt_url = Some(base_upstream_url.to_string());
++                        last_attempt_supplier_name = candidate_supplier_name.clone();
++                        last_attempt_error = Some(message);
++                        last_failure_status = 502;
++                        cooldown_eligible_failure = true;
++                        break;
++                    }
++                }
++            } else {
++                log::debug!(
++                    "event=aggregate_no_preflight trace_id={} candidate_id={} upstream_protocol={:?} is_stream={}",
++                    trace_id, candidate_id, upstream_protocol, is_stream
++                );
+                 GatewayUpstreamResponse::Blocking(upstream)
+             };

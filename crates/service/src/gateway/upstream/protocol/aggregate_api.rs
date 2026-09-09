@@ -2960,7 +2960,50 @@ pub(in super::super) fn proxy_aggregate_request(
                         break;
                     }
                 }
+            } else if upstream_protocol == crate::gateway::UpstreamProtocol::Responses
+                && is_stream
+            {
+                log::info!(
+                    "event=aggregate_responses_sse_preflight trace_id={} candidate_id={} candidate_idx={} total_candidates={} upstream_protocol={:?}",
+                    trace_id, candidate_id, candidate_idx, total_candidates, upstream_protocol
+                );
+                use super::super::proxy_pipeline::stream_preflight::{
+                    preflight_stream_response, StreamPreflightOutcome,
+                };
+                match preflight_stream_response(
+                    GatewayUpstreamResponse::Blocking(upstream),
+                    path,
+                    true,
+                    candidate_idx + 1 < total_candidates,
+                ) {
+                    StreamPreflightOutcome::Ready(upstream) => {
+                        log::info!(
+                            "event=aggregate_responses_sse_preflight_ready trace_id={} candidate_id={}",
+                            trace_id, candidate_id
+                        );
+                        upstream
+                    }
+                    StreamPreflightOutcome::Failover(message)
+                    | StreamPreflightOutcome::StatusFailover { message, .. }
+                    | StreamPreflightOutcome::RetryUsageNotice(message)
+                    | StreamPreflightOutcome::TransportFailover(message) => {
+                        log::info!(
+                            "event=aggregate_responses_sse_preflight_failover trace_id={} candidate_id={} message={}",
+                            trace_id, candidate_id, message
+                        );
+                        last_attempt_url = Some(base_upstream_url.to_string());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error = Some(message);
+                        last_failure_status = 502;
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                }
             } else {
+                log::debug!(
+                    "event=aggregate_no_preflight trace_id={} candidate_id={} upstream_protocol={:?} is_stream={}",
+                    trace_id, candidate_id, upstream_protocol, is_stream
+                );
                 GatewayUpstreamResponse::Blocking(upstream)
             };
             let passthrough_sse_protocol =
@@ -3206,6 +3249,68 @@ pub(in super::super) fn proxy_aggregate_request(
                     }
                 }
             }
+
+            // NEW: SSE 终态错误的候选决策
+            // 仅当请求可归还（零交付）且 bridge 失败时，分类错误并决策候选切换
+            if !bridge_ok && bridge.pending_failover_request.is_some() {
+                let error_message = final_error.as_deref().unwrap_or("upstream response incomplete");
+                let error_code = super::super::support::upstream_failure::extract_error_code_from_terminal(final_error.as_deref());
+                let decision = super::super::support::upstream_failure::classify_upstream_failure(
+                    502,  // SSE 终态统一视为 502 客户端错误
+                    error_message,
+                    error_code.as_deref(),
+                    false,  // pending_failover_request 保证未交付
+                    false,  // 非推理守卫路径
+                );
+                
+                match decision {
+                    super::super::support::upstream_failure::UpstreamFailureDecision::CandidateFailover => {
+                        // rate_limit_exceeded 等候选级错误：切到下一候选
+                        request = bridge.pending_failover_request.take();
+                        last_attempt_error = Some(error_message.to_string());
+                        last_failure_status = 502;
+                        cooldown_eligible_failure = true;
+                        // 释放已预留的 spend attempt
+                        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
+                        break;  // 外层候选循环继续
+                    }
+                    super::super::support::upstream_failure::UpstreamFailureDecision::RetrySameCandidate => {
+                        // 普通 5xx 类错误：同候选重试
+                        if transport_retry_budget_remaining > 0 {
+                            transport_retry_budget_remaining -= 1;
+                            next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
+                            // 释放已预留的 spend attempt
+                            release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
+                            request = bridge.pending_failover_request.take();
+                            continue;  // 内层重试循环
+                        }
+                        // 预算耗尽：候选失败，外层继续
+                        request = bridge.pending_failover_request.take();
+                        last_attempt_error = Some(error_message.to_string());
+                        last_failure_status = 502;
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                    super::super::support::upstream_failure::UpstreamFailureDecision::RequestTerminal => {
+                        // 400/422 等请求级错误：直接终止
+                        terminal_failure = true;
+                        last_attempt_error = Some(error_message.to_string());
+                        last_failure_status = 502;
+                        break;
+                    }
+                    _ => {
+                        // CapacityRecovery/CapabilityRetry/ReasoningGuardRetry 已在前方处理
+                        // 不应在 SSE 终态路径出现；保守 fallthrough
+                        request = bridge.pending_failover_request.take();
+                        last_attempt_error = Some(error_message.to_string());
+                        last_failure_status = 502;
+                        cooldown_eligible_failure = true;
+                        break;
+                    }
+                }
+            }
+            
+            // 已交付或无请求可归还：继续原路径
             let status_code =
                 bridge
                     .delivered_status_code

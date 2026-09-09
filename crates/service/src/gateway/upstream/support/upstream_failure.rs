@@ -99,6 +99,33 @@ pub(in crate::gateway) fn error_code_from_response_body(body: &[u8]) -> Option<S
         .map(|s| s.to_string())
 }
 
+/// 从 SSE 终态错误消息中提取 error.code（若有）。
+///
+/// SSE 终态错误可能是：
+/// 1. JSON 格式：`{"error": {"code": "rate_limit_exceeded", "message": "..."}}`
+/// 2. 前缀格式：`code=rate_limit_exceeded ...` (来自 extract_message_from_error_map)
+/// 3. 纯文本：无法提取 code
+///
+/// 复用 error_code_from_response_body 的解析逻辑。
+pub(in crate::gateway) fn extract_error_code_from_terminal(terminal_error: Option<&str>) -> Option<String> {
+    let message = terminal_error?;
+    
+    // 1. 尝试 JSON 解析
+    if let Ok(_) = serde_json::from_str::<Value>(message) {
+        return error_code_from_response_body(message.as_bytes());
+    }
+    
+    // 2. 前缀匹配：`code=rate_limit_exceeded ...`
+    let normalized = message.trim();
+    if let Some(rest) = normalized.strip_prefix("code=") {
+        if let Some(code) = rest.split_whitespace().next() {
+            return Some(code.to_string());
+        }
+    }
+    
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
