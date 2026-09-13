@@ -16,6 +16,7 @@ const ENV_TRACE_QUEUE_CAPACITY: &str = "CODEXMANAGER_TRACE_QUEUE_CAPACITY";
 const ENV_GEMINI_TRACE_DIAGNOSTICS: &str = "CODEXMANAGER_GEMINI_TRACE_DIAGNOSTICS";
 const ENV_GATEWAY_TRACE_STDOUT: &str = "CODEXMANAGER_GATEWAY_TRACE_STDOUT";
 const ENV_GATEWAY_TRACE_STDOUT_SLOW_MS: &str = "CODEXMANAGER_GATEWAY_TRACE_STDOUT_SLOW_MS";
+const ENV_GATEWAY_TRACE_SUCCESS: &str = "CODEXMANAGER_GATEWAY_TRACE_SUCCESS";
 const TRACE_PENDING_LINE_LIMIT: usize = 32;
 
 static TRACE_WRITER: OnceLock<TraceAsyncWriter> = OnceLock::new();
@@ -476,7 +477,23 @@ fn gateway_trace_stdout_slow_ms() -> Option<u128> {
         .filter(|value| *value > 0)
 }
 
+/// 函数 `gateway_trace_success_enabled`
+///
+/// # 参数
+/// 无
+///
+/// # 返回
+/// 是否把成功请求的 buffered trace 也落盘
+fn gateway_trace_success_enabled() -> bool {
+    env_flag_enabled(ENV_GATEWAY_TRACE_SUCCESS)
+}
+
 fn should_flush_success_trace(elapsed_ms: u128) -> bool {
+    // 默认只有失败请求会落 trace，成功路径上的候选/亲和事件全部被 clear_trace_state 丢弃；
+    // 排查 prompt cache 与路由亲和时必须能显式保留成功请求的 buffered lines。
+    if gateway_trace_success_enabled() {
+        return true;
+    }
     gateway_trace_stdout_enabled()
         && gateway_trace_stdout_slow_ms().is_some_and(|threshold| elapsed_ms >= threshold)
 }
@@ -1349,6 +1366,62 @@ pub(crate) fn log_attempt_profile(params: AttemptProfileLog<'_>) {
         sanitize_text(request_shape.unwrap_or("-")),
         body_len,
         sanitize_text(body_model.unwrap_or("-")),
+    );
+    buffer_trace_line(trace_id, line);
+}
+/// 函数 `log_request_affinity_profile`
+///
+/// 记录单个请求的缓存亲和输入：route conversation 的 cache-affinity 形态、prompt_cache_key 指纹、
+/// 请求形状，以及客户端 session / turn-state / conversation 头是否存在。
+/// 只写指纹与布尔值；绝不写请求体、头值或原始 cache key。
+///
+/// # 参数
+/// - params: 亲和画像字段
+///
+/// # 返回
+/// 无
+pub(crate) struct RequestAffinityProfileLog<'a> {
+    pub trace_id: &'a str,
+    pub key_hash: &'a str,
+    pub protocol_type: &'a str,
+    pub path: &'a str,
+    pub anchor_mode: &'a str,
+    pub prompt_cache_key: Option<&'a str>,
+    pub has_incoming_session: bool,
+    pub has_incoming_turn_state: bool,
+    pub has_incoming_conversation: bool,
+    pub request_shape: Option<&'a str>,
+}
+
+pub(crate) fn log_request_affinity_profile(params: RequestAffinityProfileLog<'_>) {
+    let RequestAffinityProfileLog {
+        trace_id,
+        key_hash,
+        protocol_type,
+        path,
+        anchor_mode,
+        prompt_cache_key,
+        has_incoming_session,
+        has_incoming_turn_state,
+        has_incoming_conversation,
+        request_shape,
+    } = params;
+    let prompt_cache_key_fp = prompt_cache_key
+        .map(short_fingerprint)
+        .unwrap_or_else(|| "-".to_string());
+    let line = format!(
+        "ts={} event=REQUEST_AFFINITY_PROFILE trace_id={} key_hash={} protocol={} path={} anchor_mode={} prompt_cache_key_fp={} incoming_session={} incoming_turn_state={} incoming_conversation={} request_shape={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(key_hash),
+        sanitize_text(protocol_type),
+        sanitize_text(path),
+        sanitize_text(anchor_mode),
+        sanitize_text(prompt_cache_key_fp.as_str()),
+        if has_incoming_session { "true" } else { "false" } ,
+        if has_incoming_turn_state { "true" } else { "false" } ,
+        if has_incoming_conversation { "true" } else { "false" } ,
+        sanitize_text(request_shape.unwrap_or("-")),
     );
     buffer_trace_line(trace_id, line);
 }

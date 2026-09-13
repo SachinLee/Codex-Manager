@@ -2315,6 +2315,31 @@ pub(super) fn build_local_validation_result(
         &client_request_meta,
         route_conversation_source,
     );
+    // 每个请求都记录一条缓存亲和画像（只含指纹/形状/布尔），这样成功路径也能回答：
+    // 客户端是否带了 prompt_cache_key、route 是否进入了 cache-affinity 绑定。
+    super::super::trace_log::log_request_affinity_profile(
+        super::super::trace_log::RequestAffinityProfileLog {
+            trace_id: trace_id.as_str(),
+            key_hash: api_key.key_hash.as_str(),
+            protocol_type: effective_protocol_type,
+            path: logical_path.as_str(),
+            anchor_mode: if route_conversation_source
+                .is_some_and(|source| source.is_cache_affinity())
+            {
+                "cache_affinity"
+            } else {
+                "none"
+            },
+            prompt_cache_key: normalized_prompt_cache_key_for_route(
+                &initial_request_meta,
+                &client_request_meta,
+            ),
+            has_incoming_session: header_value_present(incoming_headers.session_id()),
+            has_incoming_turn_state: header_value_present(incoming_headers.turn_state()),
+            has_incoming_conversation: header_value_present(incoming_headers.conversation_id()),
+            request_shape: initial_request_meta.request_shape.as_deref(),
+        },
+    );
     let conversation_binding = super::super::conversation_binding::load_conversation_binding(
         &storage,
         api_key.key_hash.as_str(),

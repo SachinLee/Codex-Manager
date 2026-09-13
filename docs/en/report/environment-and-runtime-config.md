@@ -100,6 +100,7 @@
 - `CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS`
 - `CODEXMANAGER_PROXY_LIST`
 - `CODEXMANAGER_ROUTE_STRATEGY`
+- `CODEXMANAGER_GATEWAY_TRACE_SUCCESS`: also persists buffered gateway trace lines for **successful** upstream requests. Default `0`, which keeps the historical behavior of writing trace output only for failed requests (success-path lines are dropped by `clear_trace_state`). Set `1` to capture `REQUEST_AFFINITY_PROFILE`, `CANDIDATE_*`, and `ATTEMPT_PROFILE` lines for cache-affinity and prompt-cache diagnosis. It flushes to `gateway-trace.log` only; the separate `CODEXMANAGER_GATEWAY_TRACE_STDOUT` plus `CODEXMANAGER_GATEWAY_TRACE_STDOUT_SLOW_MS` pair additionally mirrors slow traces into the application log. A flush holds at most `32` lines per request, so enable this only while diagnosing and restart the service afterwards, because a busy gateway grows `gateway-trace.log` quickly. Trace lines carry fingerprints and shape summaries only; request bodies, headers, and raw `prompt_cache_key` values are never written.
 
 ### Codex image generation
 
