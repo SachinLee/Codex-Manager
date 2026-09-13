@@ -122,10 +122,10 @@ pub(crate) fn clear_aggregate_api_affinity_binding(
 
     log::info!(
         "event=aggregate_api_affinity_cleared trace_id={} route_hash={}",
-        trace_id, cache_affinity_route_id_hash
+        trace_id,
+        cache_affinity_route_id_hash
     );
 }
-
 
 #[cfg(test)]
 #[path = "tests/aggregate_api_affinity_tests.rs"]

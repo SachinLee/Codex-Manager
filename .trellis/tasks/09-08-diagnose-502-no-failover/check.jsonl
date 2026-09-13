@@ -1,3 +1,6 @@
 {"file":".trellis/spec/codexmanager-service/backend/index.md","reason":"Backend quality conventions applicable to gateway error and spend-accounting behavior."}
 {"file":".trellis/tasks/09-08-diagnose-502-no-failover/prd.md","reason":"Production diagnosis and acceptance requirements for final verification."}
-{"file":".trellis/tasks/09-08-diagnose-502-no-failover/design.md","reason":"Approved repair policy; its post-bridge seam is superseded by the pre-delivery correction stated in the implementation assignment."}
+{"file":".trellis/tasks/09-08-diagnose-502-no-failover/design.md","reason":"Revised pre-delivery failure contract, retry policy, model-hop ordering, and critical acceptance criteria for final review."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Review reuse and avoid duplicate policy paths"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review boundary ownership and no-replay invariants"}
+{"file": ".trellis/tasks/09-08-diagnose-502-no-failover/implement.md", "reason": "Review critical slices and required checks"}

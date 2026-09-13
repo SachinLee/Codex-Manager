@@ -74,10 +74,7 @@ mod aggregate_api_bindings_tests {
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.bound_aggregate_api_id, "agg-api-updated");
         assert_eq!(retrieved.bound_at, 1725360000);
-        assert_eq!(
-            retrieved.reason,
-            Some("failover_convergence".to_string())
-        );
+        assert_eq!(retrieved.reason, Some("failover_convergence".to_string()));
     }
 
     #[test]
@@ -334,27 +331,23 @@ mod aggregate_api_bindings_tests {
             .expect("delete failed");
         assert_eq!(deleted, 1);
 
-        assert!(
-            storage
-                .get_aggregate_api_binding(
-                    &binding.platform_key_hash,
-                    &binding.protocol_type,
-                    &binding.model,
-                    &binding.cache_affinity_route_id_hash,
-                )
-                .expect("get failed")
-                .is_none()
-        );
-        assert!(
-            storage
-                .get_aggregate_api_binding(
-                    &other.platform_key_hash,
-                    &other.protocol_type,
-                    &other.model,
-                    &other.cache_affinity_route_id_hash,
-                )
-                .expect("get failed")
-                .is_some()
-        );
+        assert!(storage
+            .get_aggregate_api_binding(
+                &binding.platform_key_hash,
+                &binding.protocol_type,
+                &binding.model,
+                &binding.cache_affinity_route_id_hash,
+            )
+            .expect("get failed")
+            .is_none());
+        assert!(storage
+            .get_aggregate_api_binding(
+                &other.platform_key_hash,
+                &other.protocol_type,
+                &other.model,
+                &other.cache_affinity_route_id_hash,
+            )
+            .expect("get failed")
+            .is_some());
     }
 }

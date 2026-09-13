@@ -133,8 +133,10 @@ impl Storage {
         &self,
         before_timestamp: i64,
     ) -> rusqlite::Result<usize> {
-        self.conn
-            .execute(delete_stale_aggregate_api_bindings_sql(), [before_timestamp])
+        self.conn.execute(
+            delete_stale_aggregate_api_bindings_sql(),
+            [before_timestamp],
+        )
     }
 
     /// 函数 `delete_aggregate_api_binding`

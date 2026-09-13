@@ -403,14 +403,14 @@ fn resolve_aggregate_candidates_for_route(
         candidates.insert(0, explicit_candidate);
     }
     let candidates = apply_aggregate_model_filter(storage, candidates, model_for_log)?;
-    
+
     // Apply affinity-based candidate reordering
     if crate::gateway::aggregate_api_affinity::should_apply_aggregate_api_affinity(
         storage,
         aggregate_api_id,
     ) {
         if let Some(route_id) = route_conversation_id {
-            let affinity_hash = 
+            let affinity_hash =
                 crate::gateway::aggregate_api_affinity::derive_affinity_route_hash(route_id);
             return crate::gateway::aggregate_api_affinity::reorder_candidates_with_affinity(
                 storage,
@@ -422,7 +422,7 @@ fn resolve_aggregate_candidates_for_route(
             );
         }
     }
-    
+
     Ok(candidates)
 }
 
@@ -672,25 +672,25 @@ fn proxy_with_aggregate_candidates(
     protocol_type: &str,
     route_conversation_id: Option<&str>,
 ) -> Result<super::protocol::aggregate_api::AggregateAttemptOutcome, String> {
-
     // Build affinity context if enabled and route ID available
-    let aggregate_api_affinity = if crate::gateway::aggregate_api_affinity::should_apply_aggregate_api_affinity(
-        storage,
-        aggregate_api_id,
-    ) {
-        route_conversation_id.map(|route_id| {
-            let affinity_hash = 
-                crate::gateway::aggregate_api_affinity::derive_affinity_route_hash(route_id);
-            super::protocol::aggregate_api::AggregateApiAffinityContext {
-                platform_key_hash: platform_key_hash.to_string(),
-                protocol_type: protocol_type.to_string(),
-                model: model_for_log.unwrap_or("").to_string(),
-                route_id_hash: affinity_hash,
-            }
-        })
-    } else {
-        None
-    };
+    let aggregate_api_affinity =
+        if crate::gateway::aggregate_api_affinity::should_apply_aggregate_api_affinity(
+            storage,
+            aggregate_api_id,
+        ) {
+            route_conversation_id.map(|route_id| {
+                let affinity_hash =
+                    crate::gateway::aggregate_api_affinity::derive_affinity_route_hash(route_id);
+                super::protocol::aggregate_api::AggregateApiAffinityContext {
+                    platform_key_hash: platform_key_hash.to_string(),
+                    protocol_type: protocol_type.to_string(),
+                    model: model_for_log.unwrap_or("").to_string(),
+                    route_id_hash: affinity_hash,
+                }
+            })
+        } else {
+            None
+        };
 
     super::protocol::aggregate_api::proxy_aggregate_request(
         super::protocol::aggregate_api::AggregateProxyRequest {
@@ -774,7 +774,14 @@ fn take_or_resolve_aggregate_candidates(
     if let Some(result) = prepared.take() {
         return result;
     }
-    resolve_aggregate_candidates_for_route(storage, protocol_type, aggregate_api_id, model_for_log, "", None)
+    resolve_aggregate_candidates_for_route(
+        storage,
+        protocol_type,
+        aggregate_api_id,
+        model_for_log,
+        "",
+        None,
+    )
 }
 
 /// 函数 `proxy_validated_request`
@@ -1127,7 +1134,9 @@ pub(in super::super) fn proxy_validated_request(
                 protocol_type.as_str(),
                 route_conversation_id.as_deref(),
             )? {
-                super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => return Ok(()),
+                super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => {
+                    return Ok(())
+                }
                 super::protocol::aggregate_api::AggregateAttemptOutcome::RequestReleased {
                     request: released_request,
                     error,
@@ -1508,7 +1517,9 @@ pub(in super::super) fn proxy_validated_request(
                 protocol_type.as_str(),
                 route_conversation_id.as_deref(),
             )? {
-                super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => return Ok(()),
+                super::protocol::aggregate_api::AggregateAttemptOutcome::Responded { .. } => {
+                    return Ok(())
+                }
                 super::protocol::aggregate_api::AggregateAttemptOutcome::RequestReleased {
                     request: returned,
                     error,

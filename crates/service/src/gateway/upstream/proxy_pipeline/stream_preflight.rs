@@ -22,12 +22,14 @@ enum PrefixDecision {
     NeedMore,
     Deliver,
     Failover(String),
+    TerminalFailure(super::super::support::upstream_failure::UpstreamFailureInfo),
     RetryUsageNotice(String),
 }
 
 pub(in super::super) enum StreamPreflightOutcome {
     Ready(GatewayUpstreamResponse),
     Failover(String),
+    TerminalFailure(super::super::support::upstream_failure::UpstreamFailureInfo),
     StatusFailover { status_code: u16, message: String },
     RetryUsageNotice(String),
     TransportFailover(String),
@@ -205,13 +207,12 @@ fn is_usage_notice_terminal_event(event_type: &str) -> bool {
 }
 
 fn is_sse_stream_response(response: &GatewayUpstreamResponse) -> bool {
-    matches!(response, GatewayUpstreamResponse::Stream(_))
-        && response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
 }
 
 fn classify_prefix(prefix: &[u8], include_incomplete_frame: bool) -> PrefixDecision {
@@ -255,22 +256,42 @@ fn classify_prefix(prefix: &[u8], include_incomplete_frame: bool) -> PrefixDecis
             .map(str::to_string);
         let event_type = payload_event_type.clone().or(declared_event_type.clone());
 
-        if let Some(message) = parsed
-            .as_ref()
-            .and_then(actionable_message_from_explicit_error)
-        {
-            return PrefixDecision::Failover(message);
-        }
-
         let has_error_event = declared_event_type.as_deref().is_some_and(is_error_event)
             || payload_event_type.as_deref().is_some_and(is_error_event);
         if has_error_event {
-            let message = match parsed.as_ref() {
-                Some(value) => actionable_message_from_error_event(value),
-                None => is_actionable_gateway_error(data.as_str()).then(|| data.clone()),
-            };
-            if let Some(message) = message {
-                return PrefixDecision::Failover(message);
+            if let Some(message) = pending_usage_notice {
+                return PrefixDecision::RetryUsageNotice(message);
+            }
+            if let Some(failure) = parsed
+                .as_ref()
+                .and_then(super::super::support::upstream_failure::failure_info_from_value)
+            {
+                if matches!(
+                    failure.code.as_deref(),
+                    Some(
+                        "rate_limit_exceeded"
+                            | "authentication_error"
+                            | "model_not_found"
+                            | "model_not_supported"
+                            | "invalid_request_error"
+                            | "invalid_request"
+                            | "server_error"
+                            | "upstream_error"
+                    )
+                ) {
+                    return PrefixDecision::TerminalFailure(failure);
+                }
+                if is_actionable_gateway_error(failure.message.as_str()) {
+                    return PrefixDecision::Failover(failure.message);
+                }
+                return PrefixDecision::TerminalFailure(failure);
+            }
+            if parsed.is_none() {
+                if let Some(message) =
+                    is_actionable_gateway_error(data.as_str()).then(|| data.clone())
+                {
+                    return PrefixDecision::Failover(message);
+                }
             }
         }
 
@@ -387,7 +408,6 @@ fn preflight_stream_response_with_timeouts(
     }
 
     if !upstream_is_stream
-        || !has_more_candidates
         || !request_path.starts_with("/v1/responses")
         || status_code >= 400
         || !is_sse_stream_response(&response)
@@ -409,6 +429,9 @@ fn preflight_stream_response_with_timeouts(
     );
     match classify_prefix(prefix.as_ref(), include_incomplete_frame) {
         PrefixDecision::Failover(message) => StreamPreflightOutcome::Failover(message),
+        PrefixDecision::TerminalFailure(failure) => {
+            StreamPreflightOutcome::TerminalFailure(failure)
+        }
         PrefixDecision::RetryUsageNotice(message) => {
             StreamPreflightOutcome::RetryUsageNotice(message)
         }

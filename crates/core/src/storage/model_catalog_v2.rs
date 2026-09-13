@@ -2568,7 +2568,10 @@ mod tests {
         assert_eq!(grok.routes[0].source_kind, "account_pool");
         assert_eq!(grok.routes[0].source_id, "default");
         assert_eq!(grok.routes[0].upstream_model, "grok-4.5");
-        let astra = all.iter().find(|model| model.slug == "gpt-6-astra").unwrap();
+        let astra = all
+            .iter()
+            .find(|model| model.slug == "gpt-6-astra")
+            .unwrap();
         assert_eq!(astra.display_name, "GPT-6 Astra");
         assert_eq!(astra.sort_order, 0);
         assert!(astra.enabled && astra.supported_in_api && astra.visibility == "list");
@@ -2583,18 +2586,12 @@ mod tests {
         );
         assert_eq!(astra.price.input_microusd_per_1m, Some(10_000_000));
         assert_eq!(astra.price.cached_input_microusd_per_1m, Some(1_000_000));
-        assert_eq!(
-            astra.price.cache_write_microusd_per_1m,
-            Some(12_500_000)
-        );
+        assert_eq!(astra.price.cache_write_microusd_per_1m, Some(12_500_000));
         assert_eq!(astra.price.output_microusd_per_1m, Some(50_000_000));
         assert_eq!(astra.price_tiers.len(), 2);
         assert_eq!(astra.price_tiers[0].min_input_tokens, 0);
         assert_eq!(astra.price_tiers[0].input_microusd_per_1m, 10_000_000);
-        assert_eq!(
-            astra.price_tiers[0].cached_input_microusd_per_1m,
-            1_000_000
-        );
+        assert_eq!(astra.price_tiers[0].cached_input_microusd_per_1m, 1_000_000);
         assert_eq!(
             astra.price_tiers[0].cache_write_microusd_per_1m,
             Some(12_500_000)
@@ -2602,10 +2599,7 @@ mod tests {
         assert_eq!(astra.price_tiers[0].output_microusd_per_1m, 50_000_000);
         assert_eq!(astra.price_tiers[1].min_input_tokens, 272_001);
         assert_eq!(astra.price_tiers[1].input_microusd_per_1m, 20_000_000);
-        assert_eq!(
-            astra.price_tiers[1].cached_input_microusd_per_1m,
-            2_000_000
-        );
+        assert_eq!(astra.price_tiers[1].cached_input_microusd_per_1m, 2_000_000);
         assert_eq!(
             astra.price_tiers[1].cache_write_microusd_per_1m,
             Some(25_000_000)

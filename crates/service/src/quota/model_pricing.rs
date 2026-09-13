@@ -328,9 +328,9 @@ pub(crate) fn quote_aggregate_api_attempt_spend(
             microusd: 0,
         };
     };
-    let raw_usd =
-        (input as f64 * price.input_price_per_1m + output as f64 * price.output_price_per_1m)
-            / 1_000_000.0;
+    let raw_usd = (input as f64 * price.input_price_per_1m
+        + output as f64 * price.output_price_per_1m)
+        / 1_000_000.0;
     let multiplier = (rate_multiplier_millis.max(0) as f64) / 1_000.0;
     let usd = raw_usd * multiplier;
     let microusd = if usd.is_finite() && usd > 0.0 {
@@ -427,13 +427,8 @@ mod spend_quote_tests {
     #[test]
     fn quote_marks_unbounded_output_and_unpriced_model() {
         let storage = open_storage();
-        let unbounded = quote_aggregate_api_attempt_spend(
-            &storage,
-            Some("gpt-5.4"),
-            100_000,
-            None,
-            1_000,
-        );
+        let unbounded =
+            quote_aggregate_api_attempt_spend(&storage, Some("gpt-5.4"), 100_000, None, 1_000);
         assert_eq!(
             unbounded.pricing_state,
             AggregateApiSpendPricingState::UnboundedOutput

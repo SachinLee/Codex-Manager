@@ -600,6 +600,36 @@ pub(in super::super) fn execute_candidate_sequence(
                                 Some(attempted_account_ids.as_slice()),
                             );
                         }
+                        StreamPreflightOutcome::TerminalFailure(failure) => {
+                            let message = failure.message;
+                            if should_failover_terminal_gateway_error(
+                                context,
+                                &account.id,
+                                context.has_more_candidates(idx),
+                                message.as_str(),
+                                &mut attempt_trace,
+                                &mut last_attempt_url,
+                                &mut last_attempt_error,
+                            ) {
+                                continue 'candidates;
+                            }
+                            let request = request.take().ok_or_else(|| {
+                                "request already consumed before stream preflight error response"
+                                    .to_string()
+                            })?;
+                            return respond_terminal_attempt(
+                                request,
+                                context,
+                                &account.id,
+                                attempt_trace.last_attempt_url.as_deref(),
+                                502,
+                                message,
+                                trace_id,
+                                started_at,
+                                attempt_model_for_log,
+                                Some(attempted_account_ids.as_slice()),
+                            );
+                        }
                         StreamPreflightOutcome::StatusFailover {
                             status_code,
                             message,

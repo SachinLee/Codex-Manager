@@ -666,7 +666,8 @@ fn run_aggregate_capacity_scenario(
     let started_at = Instant::now();
     // 相对 deadline 在发起代理调用前一刻计算，避免测试套件并行负载下
     // 的 setUp 耗时把绝对 deadline 提前耗尽（flaky）。
-    let request_deadline = deadline_after_secs.map(|secs| Instant::now() + Duration::from_secs(secs));
+    let request_deadline =
+        deadline_after_secs.map(|secs| Instant::now() + Duration::from_secs(secs));
     let outcome = proxy_aggregate_request(AggregateProxyRequest {
         request,
         storage: &storage,
@@ -900,16 +901,14 @@ fn aggregate_502_rate_limit_exceeded_code_fails_over_to_next_candidate() {
     );
 }
 
-/// 普通 5xx：保留既有同候选传输重试预算（初始请求 + 最多 3 次重放）。
+/// 普通 5xx：默认 transport budget 是首次请求后一次重放。
 #[test]
-fn aggregate_500_keeps_existing_same_candidate_transport_budget() {
+fn aggregate_500_uses_configured_same_candidate_transport_budget() {
     const SERVER_ERROR_JSON: &str =
         r#"{"error":{"code":"internal_error","message":"upstream exploded"}}"#;
     let (storage, outcome, request_count) = run_aggregate_capacity_scenario(
         "agg-500-budget",
         vec![
-            (500, SERVER_ERROR_JSON, None),
-            (500, SERVER_ERROR_JSON, None),
             (500, SERVER_ERROR_JSON, None),
             (500, SERVER_ERROR_JSON, None),
         ],
@@ -918,8 +917,8 @@ fn aggregate_500_keeps_existing_same_candidate_transport_budget() {
         None,
     );
     assert_eq!(
-        request_count, 4,
-        "5xx keeps the initial request plus the 3-attempt transport budget"
+        request_count, 2,
+        "default transport budget permits one retry after the initial request"
     );
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
     assert_eq!(
@@ -943,7 +942,7 @@ fn aggregate_api_empty_candidates_terminate_502_without_upstream_traffic() {
 fn aggregate_sse_rate_limit_fails_over_to_next_candidate() {
     const SSE_RATE_LIMIT: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit exceeded\"}}\n\n";
     const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
-    
+
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
         "agg-sse-rate-limit",
         vec![
@@ -953,10 +952,10 @@ fn aggregate_sse_rate_limit_fails_over_to_next_candidate() {
         vec![(200, SSE_RATE_LIMIT), (200, SSE_OK)],
         br#"{"model":"gpt-5.4","input":"hello","stream":true}"#,
         false,
-        true, // is_stream
+        true,  // is_stream
         false, // capture_body
     );
-    
+
     assert_eq!(
         hits.len(),
         2,
@@ -965,38 +964,43 @@ fn aggregate_sse_rate_limit_fails_over_to_next_candidate() {
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
 
-/// 所有候选都返回 SSE 终态错误：应有界终止，返回一次最终错误。
+/// 所有候选都返回 SSE 终态错误：每个候选只使用其有界重试预算后终止。
 #[test]
 fn aggregate_sse_all_candidates_fail_returns_terminal_error() {
     const SSE_SERVER_ERROR: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Internal error\"}}\n\n";
-    
+
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
         "agg-sse-all-fail",
         vec![
             test_candidate_with_url("agg-sse-fail-1", "/v1/responses"),
             test_candidate_with_url("agg-sse-fail-2", "/v1/responses"),
         ],
-        vec![(200, SSE_SERVER_ERROR), (200, SSE_SERVER_ERROR)],
+        vec![
+            (200, SSE_SERVER_ERROR),
+            (200, SSE_SERVER_ERROR),
+            (200, SSE_SERVER_ERROR),
+            (200, SSE_SERVER_ERROR),
+        ],
         br#"{"model":"gpt-5.4","input":"hello","stream":true}"#,
         false,
-        true, // is_stream
-        false, // capture_body
+        true,
+        false,
     );
-    
+
     assert_eq!(
         hits.len(),
-        2,
-        "should try both candidates exactly once"
+        4,
+        "each candidate receives initial plus one retry"
     );
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
 
-/// SSE 终态 server_error：应同候选重试，预算耗尽后切换到下一候选。
+/// SSE 终态 server_error：同候选重试一次，随后切换到下一候选。
 #[test]
-fn aggregate_sse_server_error_retries_same_candidate() {
+fn aggregate_sse_server_error_retries_same_candidate_once() {
     const SSE_SERVER_ERROR: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Internal error\"}}\n\n";
     const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
-    
+
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
         "agg-sse-server-error-retry",
         vec![
@@ -1006,20 +1010,41 @@ fn aggregate_sse_server_error_retries_same_candidate() {
         vec![
             (200, SSE_SERVER_ERROR),
             (200, SSE_SERVER_ERROR),
-            (200, SSE_SERVER_ERROR),
-            (200, SSE_SERVER_ERROR), // 同候选 4 次（1 初始 + 3 传输重试）
-            (200, SSE_OK), // 预算耗尽后切换到第二候选
+            (200, SSE_OK),
         ],
         br#"{"model":"gpt-5.4","input":"hello","stream":true}"#,
         false,
         true,
         false,
     );
-    
+
+    assert_eq!(hits.len(), 3, "candidate A retries once before candidate B");
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+}
+
+/// RED coverage: Blocking SSE capacity errors currently bypass the
+/// `TerminalFailure(CapacityRecovery)` aggregate action arm.
+#[test]
+#[ignore = "known gap: Blocking SSE capacity does not reach aggregate CapacityRecovery"]
+fn aggregate_sse_capacity_error_retries_same_candidate_independently() {
+    const SSE_CAPACITY: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}\n\n";
+    const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
+    let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
+        "agg-sse-capacity-retry",
+        vec![
+            test_candidate_with_url("agg-sse-capacity", "/v1/responses"),
+            test_candidate_with_url("agg-sse-capacity-fallback", "/v1/responses"),
+        ],
+        vec![(200, SSE_CAPACITY), (200, SSE_CAPACITY), (200, SSE_OK)],
+        br#"{"model":"gpt-5.4","input":"hello","stream":true}"#,
+        false,
+        true,
+        false,
+    );
     assert_eq!(
         hits.len(),
-        5,
-        "SSE server_error must retry same candidate up to 4 times, then failover"
+        3,
+        "capacity uses its independent two-replay budget on one candidate"
     );
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
@@ -1027,8 +1052,8 @@ fn aggregate_sse_server_error_retries_same_candidate() {
 /// SSE 终态 invalid_request：应立即终止，不切换候选。
 #[test]
 fn aggregate_sse_invalid_request_terminates_immediately() {
-    const SSE_INVALID: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid input\"}}\n\n";
-    
+    const SSE_INVALID: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"invalid_request_error\",\"message\":\"Invalid input\"}}\n\n";
+
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
         "agg-sse-invalid-terminal",
         vec![
@@ -1041,7 +1066,7 @@ fn aggregate_sse_invalid_request_terminates_immediately() {
         true,
         false,
     );
-    
+
     assert_eq!(
         hits.len(),
         1,
@@ -1055,7 +1080,7 @@ fn aggregate_sse_invalid_request_terminates_immediately() {
 fn aggregate_sse_prefix_format_rate_limit_fails_over() {
     const SSE_PREFIX_RATE_LIMIT: &str = "data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"code=rate_limit_exceeded Rate limit exceeded\"}}\n\n";
     const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
-    
+
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
         "agg-sse-prefix-rate-limit",
         vec![
@@ -1068,7 +1093,7 @@ fn aggregate_sse_prefix_format_rate_limit_fails_over() {
         true,
         false,
     );
-    
+
     assert_eq!(
         hits.len(),
         2,
@@ -1084,7 +1109,7 @@ fn aggregate_sse_with_delivered_content_does_not_replay() {
         "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hello\"}}\n\n",
         "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit\"}}\n\n"
     );
-    
+
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
         "agg-sse-delivered-no-replay",
         vec![
@@ -1097,7 +1122,7 @@ fn aggregate_sse_with_delivered_content_does_not_replay() {
         true,
         false,
     );
-    
+
     assert_eq!(
         hits.len(),
         1,
@@ -1139,8 +1164,6 @@ fn test_candidate_with_url(id: &str, url: &str) -> AggregateApi {
         upstream_protocol: None,
     }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Phase 2/3 集成：chat_completions 上游走真实 mock 服务器。
@@ -1243,10 +1266,13 @@ fn run_upstream_scenario_with_stream(
             } else {
                 String::new()
             };
-            hits_thread.lock().expect("hits lock").push(MockUpstreamHit {
-                path: request.url().to_string(),
-                body: body_text,
-            });
+            hits_thread
+                .lock()
+                .expect("hits lock")
+                .push(MockUpstreamHit {
+                    path: request.url().to_string(),
+                    body: body_text,
+                });
             let mut response =
                 Response::from_string(body.to_string()).with_status_code(StatusCode(status));
             if is_stream {
@@ -1357,7 +1383,10 @@ fn chat_upstream_default_action_path_serves_responses_request() {
     );
     let chat_body: Value = serde_json::from_str(&hits[0].body).expect("chat body json");
     assert_eq!(chat_body["model"], "gpt-5.4");
-    assert!(chat_body.get("messages").is_some(), "input mapped to messages");
+    assert!(
+        chat_body.get("messages").is_some(),
+        "input mapped to messages"
+    );
     assert!(chat_body.get("input").is_none(), "no raw responses input");
     assert_eq!(chat_body["stream"], false);
 
@@ -1397,15 +1426,11 @@ fn chat_upstream_custom_action_path_is_used() {
 fn chat_upstream_incompatible_skips_to_responses_candidate() {
     let (storage, outcome, hits) = run_upstream_scenario(
         "chat-incompatible-skip",
-        vec![
-            chat_test_candidate("agg-chat-incompatible", ""),
-            {
-                let mut candidate =
-                    aggregate_capacity_test_candidate("agg-responses", "");
-                candidate.upstream_protocol = Some("responses".to_string());
-                candidate
-            },
-        ],
+        vec![chat_test_candidate("agg-chat-incompatible", ""), {
+            let mut candidate = aggregate_capacity_test_candidate("agg-responses", "");
+            candidate.upstream_protocol = Some("responses".to_string());
+            candidate
+        }],
         vec![(200, CAPACITY_OK_JSON)],
         br#"{"model":"gpt-5.4","input":"hello","store":true,"stream":false}"#,
         false,
@@ -1437,11 +1462,12 @@ fn chat_upstream_all_incompatible_returns_unavailable_for_fallback() {
         br#"{"model":"gpt-5.4","input":"hello","store":true,"stream":false}"#,
         true,
     );
-    assert!(hits.is_empty(), "no upstream traffic on local incompatibility");
+    assert!(
+        hits.is_empty(),
+        "no upstream traffic on local incompatibility"
+    );
     match outcome {
-        AggregateAttemptOutcome::RequestReleased {
-            error, ..
-        } => {
+        AggregateAttemptOutcome::RequestReleased { error, .. } => {
             assert!(
                 error.contains("502") || error.contains("incompatible"),
                 "error message indicates >= 500 status or incompatibility for fallback signal: {error}"
@@ -1462,7 +1488,10 @@ fn chat_upstream_terminal_failure_logs_protocol() {
         false,
     );
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
-    assert!(hits.is_empty(), "local incompatibility must not reach upstream");
+    assert!(
+        hits.is_empty(),
+        "local incompatibility must not reach upstream"
+    );
     let log = request_log_for(&storage, "trc-chat-terminal-protocol");
     assert_eq!(log.status_code, Some(502));
     assert_eq!(log.upstream_protocol.as_deref(), Some("chat_completions"));
@@ -1489,10 +1518,7 @@ fn claude_bridge_legacy_null_protocol_logs_anthropic_messages() {
     );
     let log = request_log_for(&storage, "trc-claude-bridge");
     assert_eq!(log.status_code, Some(200));
-    assert_eq!(
-        log.upstream_protocol.as_deref(),
-        Some("anthropic_messages")
-    );
+    assert_eq!(log.upstream_protocol.as_deref(), Some("anthropic_messages"));
     assert_eq!(log.input_tokens, Some(5));
     assert_eq!(log.output_tokens, Some(2));
 }
@@ -1516,7 +1542,11 @@ fn chat_preflight_empty_stream_fails_over_to_later_candidate() {
     );
 
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
-    assert_eq!(hits.len(), 2, "empty preflight stream must try the fallback");
+    assert_eq!(
+        hits.len(),
+        2,
+        "empty preflight stream must try the fallback"
+    );
     assert_eq!(hits[0].path, "/v1/chat/completions");
     assert_eq!(hits[1].path, "/v1/responses");
     let log = request_log_for(&storage, "trc-chat-empty-stream-failover");
@@ -1572,7 +1602,11 @@ fn chat_nonstream_malformed_response_fails_over_to_later_candidate() {
     );
 
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
-    assert_eq!(hits.len(), 2, "malformed Chat response must try the fallback");
+    assert_eq!(
+        hits.len(),
+        2,
+        "malformed Chat response must try the fallback"
+    );
     assert_eq!(hits[0].path, "/v1/chat/completions");
     assert_eq!(hits[1].path, "/v1/responses");
     let log = request_log_for(&storage, "trc-chat-malformed-response-failover");
@@ -1629,7 +1663,9 @@ fn chat_preflight_needs_more_on_metadata_and_truncated_frames() {
         ChatPrefixDecision::NeedMore
     ));
     assert!(matches!(
-        classify_chat_preflight_prefix(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":null}]}\n\n"),
+        classify_chat_preflight_prefix(
+            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":null}]}\n\n"
+        ),
         ChatPrefixDecision::NeedMore
     ));
     assert!(matches!(
@@ -1642,11 +1678,15 @@ fn chat_preflight_needs_more_on_metadata_and_truncated_frames() {
 fn test_retry_attempts_always_check_deadline() {
     // 重试 attempt（attempt_idx > 0）应该总是检查 deadline
     let guarantee_enabled = true; // 即使启用保底
-    
+
     for attempt_idx in 1..=3 {
         let should_check_deadline = attempt_idx > 0 || !guarantee_enabled;
-        
-        assert!(should_check_deadline, "重试 attempt {} 应该检查 deadline", attempt_idx);
+
+        assert!(
+            should_check_deadline,
+            "重试 attempt {} 应该检查 deadline",
+            attempt_idx
+        );
     }
 }
 
@@ -1658,16 +1698,17 @@ fn test_retry_attempts_always_check_deadline() {
 fn test_transport_retry_backoff_exponential() {
     // 验证退避时间呈指数增长：50ms, 100ms, 200ms
     const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
-    
+
     let expected_backoffs = vec![50u64, 100u64, 200u64];
-    
+
     for retry_attempt in 0..3 {
-        let transport_retry_budget_remaining = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL - retry_attempt;
+        let transport_retry_budget_remaining =
+            AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL - retry_attempt;
         let retry_idx = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL - transport_retry_budget_remaining;
         let backoff_ms = 50u64 * 2u64.pow(retry_idx as u32);
-        
+
         assert_eq!(
-            backoff_ms, 
+            backoff_ms,
             expected_backoffs[retry_attempt],
             "第 {} 次重试的退避时间应为 {}ms",
             retry_attempt + 1,
@@ -1680,7 +1721,6 @@ fn test_transport_retry_backoff_exponential() {
 // FR5: 失败清除会话亲和测试
 // ============================================================================
 
-
 // ============================================================================
 // FR2: 每候选首次尝试保底测试
 // ============================================================================
@@ -1689,63 +1729,64 @@ fn test_transport_retry_backoff_exponential() {
 fn test_guarantee_first_attempt_enabled_skips_deadline_check() {
     // 模拟场景：deadline 已过期，但首次 attempt 应该继续
     // 这个测试验证 FR2 的核心逻辑：attempt_idx == 0 时跳过 deadline 检查
-    
+
     let attempt_idx = 0;
     let guarantee_enabled = true; // 模拟启用状态（默认）
     let should_check_deadline = attempt_idx > 0 || !guarantee_enabled;
-    
+
     // 首次 attempt 不应该检查 deadline
-    assert!(!should_check_deadline, "首次 attempt 应该跳过 deadline 检查");
+    assert!(
+        !should_check_deadline,
+        "首次 attempt 应该跳过 deadline 检查"
+    );
 }
 
 #[test]
 fn test_guarantee_first_attempt_disabled_checks_deadline() {
     // 设置环境变量禁用保底
     std::env::set_var("CODEXMANAGER_AGGREGATE_GUARANTEE_FIRST_ATTEMPT", "false");
-    
+
     // 注意：运行时配置可能已被初始化，环境变量不会立即生效
     // 这个测试主要验证逻辑，而不是环境变量解析
-    
+
     // 模拟 attempt_idx = 0 的情况，假设保底被禁用
     let attempt_idx = 0;
     let guarantee_enabled = false; // 模拟禁用状态
-    let should_check_deadline = attempt_idx > 0 
-        || !guarantee_enabled;
-    
+    let should_check_deadline = attempt_idx > 0 || !guarantee_enabled;
+
     // 禁用时，即使首次 attempt 也应该检查 deadline
     assert!(should_check_deadline, "禁用保底时应该检查 deadline");
-    
+
     // 清理环境变量
     std::env::remove_var("CODEXMANAGER_AGGREGATE_GUARANTEE_FIRST_ATTEMPT");
 }
 fn test_affinity_route_hash_consistency() {
     // 这个测试验证亲和路由哈希计算的一致性
     // 暂时跳过 clear_aggregate_api_affinity_binding 的测试，因为需要复杂的 Storage mock
-    
+
     use sha2::{Digest, Sha256};
-    
+
     // 模拟 derive_affinity_route_hash 的逻辑
     let route_id = "test_route_123";
-    
+
     let mut hasher1 = Sha256::new();
     hasher1.update(route_id.as_bytes());
     let hash1 = format!("{:x}", hasher1.finalize());
-    
+
     let mut hasher2 = Sha256::new();
     hasher2.update(route_id.as_bytes());
     let hash2 = format!("{:x}", hasher2.finalize());
-    
+
     // 相同输入应该产生相同哈希
     assert_eq!(hash1, hash2, "相同 route_id 应该产生相同哈希");
-    
+
     // 不同输入应该产生不同哈希
     let mut hasher3 = Sha256::new();
     hasher3.update("different_route".as_bytes());
     let hash3 = format!("{:x}", hasher3.finalize());
-    
+
     assert_ne!(hash1, hash3, "不同 route_id 应该产生不同哈希");
 }
-
 
 // ============================================================================
 // 集成测试：FR1 零交付流中断 failover
@@ -1755,16 +1796,16 @@ fn test_affinity_route_hash_consistency() {
 fn test_zero_delivery_failover_integration() {
     // 场景：候选 A 返回 200 但立即断流（零交付）→ 自动切换到候选 B
     // 验证：A 的 pending_failover_request 不为空，B 成功交付
-    
+
     // 候选 A：chat 协议，会断流
     let mut candidate_a = chat_test_candidate("agg-a-broken", "");
     candidate_a.sort = -1; // 优先级最高
-    
+
     // 候选 B：responses 协议，正常工作
     let mut candidate_b = aggregate_capacity_test_candidate("agg-b-ok", "");
     candidate_b.upstream_protocol = Some("responses".to_string());
     candidate_b.sort = 0;
-    
+
     let (storage, outcome, hits) = run_upstream_scenario_with_stream(
         "zero-delivery-failover",
         vec![candidate_a, candidate_b],
@@ -1774,14 +1815,16 @@ fn test_zero_delivery_failover_integration() {
         true,
         false,
     );
-    
+
     // 验证：应该尝试了两个候选
     assert_eq!(hits.len(), 2, "应该尝试 A（失败）和 B（成功）");
-    
+
     // 验证：最终成功响应
-    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }), 
-            "最终应该成功响应");
-    
+    assert!(
+        matches!(outcome, AggregateAttemptOutcome::Responded { .. }),
+        "最终应该成功响应"
+    );
+
     // 验证：最终成功（或至少尝试了两个候选）
     // 这是一个集成测试，主要验证 failover 逻辑能够执行
     // 详细的验证可以通过 trace log 在真实环境中进行

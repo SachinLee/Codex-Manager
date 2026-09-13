@@ -2524,7 +2524,7 @@ fn resolve_request_log_session_id<'a>(
                 .next()
         })
         .or_else(|| strict_omp_client_request_session_id(request_path, incoming_headers));
-    
+
     // 临时调试：记录 OMP 请求的 header 和 fallback 结果
     if request_path == "/v1/responses" {
         log::warn!(
@@ -2535,7 +2535,7 @@ fn resolve_request_log_session_id<'a>(
             result
         );
     }
-    
+
     result
 }
 

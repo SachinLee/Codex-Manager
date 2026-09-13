@@ -52,7 +52,10 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(astra.cache_write_price_per_1m, 12.5);
     assert_close(astra.output_price_per_1m, 50.0);
     let astra_long = resolve_model_price_from_catalog_with_long_context_billing(
-        &prices, "gpt-6-astra", 272_001, true,
+        &prices,
+        "gpt-6-astra",
+        272_001,
+        true,
     )
     .expect("astra long tier");
     assert_close(astra_long.input_price_per_1m, 20.0);
@@ -60,7 +63,10 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(astra_long.cache_write_price_per_1m, 25.0);
     assert_close(astra_long.output_price_per_1m, 75.0);
     let astra_exact = resolve_model_price_from_catalog_with_long_context_billing(
-        &prices, "gpt-6-astra", 272_000, true,
+        &prices,
+        "gpt-6-astra",
+        272_000,
+        true,
     )
     .expect("astra exact threshold stays on base tier");
     assert_close(astra_exact.input_price_per_1m, 10.0);

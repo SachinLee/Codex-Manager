@@ -120,3 +120,46 @@
 - 生产 trace：`C:/Users/shuan/AppData/Roaming/com.codexmanager.desktop/gateway-trace.log`。
 - 已运行的数据库查询证明三条截图请求各只有一次 Aggregate attempt；另一个全冷却请求有零 upstream attempt events。
 - 未修改产品代码，未运行测试套件。
+
+## 2026-09-09 回归验证与 OMP 分层
+
+- 已运行 `cargo test -p codexmanager-service aggregate_sse --lib`：6 个测试中 4 个失败。SSE `response.failed/error` 的 `rate_limit_exceeded`、`server_error`、全部候选失败和前缀错误码场景均只到达一个候选，未满足候选轮转断言。
+- 当前候选切换补丁不可达：`aggregate_api.rs` 向 `preflight_stream_response()` 传入 `GatewayUpstreamResponse::Blocking`，但 `stream_preflight.rs` 的 SSE 判定仅接受 `GatewayUpstreamResponse::Stream`；preflight 因而直接返回 Ready。
+- 后续 bridge 路径把终态错误同时标为 `terminal_error` 和 `saw_terminal=true`，但零交付归还条件要求 `terminal_error.is_some() && !saw_terminal`。请求不会归还，`aggregate_api.rs` 的 `pending_failover_request` 分类分支不会执行，随后仍以 `succeeded=true` 返回单候选 502。
+- 普通 5xx 的同候选预算当前为硬编码常量 3（首次加 3 次重放）；`runtime_config.rs` 已有默认 1 的 `CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS` 读取函数，但没有调用方，环境配置目前不生效。
+- `models.yml` 仅定义 CodexManager provider/Responses 协议和模型覆盖；OMP 客户端重试与模型降级实际来自 `C:/Users/shuan/.omp/agent/config.yml`。该配置启用 3 次 OMP 层重试和模型降级；`advisor`、`task` 等角色各有独立降级链，`default` 没有显式链。CodexManager 数据库中 `gpt-5.6-terra` 的 `fallback_model_slugs_json` 为空。
+
+## 推荐策略
+
+1. 先修复 SSE 零语义交付切换的可达性：preflight 必须识别 Blocking SSE，且应把已解析的终态错误交由现有分类器决定“下一候选”或“同候选重试”；绝不在输出文本或工具语义出现后重放。
+2. 将每候选的普通 5xx 重试预算接到已存在的运行时配置，默认采用 1 次重试（首次加 1 次），随后继续同模型候选；`rate_limit_exceeded`、鉴权和模型不支持仍立即切候选。
+3. 若需要模型降级，把 `gpt-5.6-terra` 的降级链配置在 CodexManager 模型目录中，使其只在该模型的全部候选/账号路径耗尽后执行；OMP 链仅保留跨提供商的最后兜底，并将客户端重试降为 0 或 1 次，避免重复整轮候选扫描。
+4. 回归覆盖必须断言：零输出 SSE 限流立即到候选 B；普通 SSE 5xx 在受控同候选预算后到 B；全部候选耗尽后才模型降级；出现输出或工具语义后只返回一次终态、绝不重放。
+
+## 修订实施规划范围
+
+本次只产出并评审实施方案；未经本方案后的明确批准，不修改产品代码、模型目录或本机 OMP 配置。
+
+### 需求
+
+- **R-001**：对尚未交付语义内容的 Aggregate Responses SSE 终态错误，CodexManager 必须先完成同模型候选策略，再把请求交给模型降级。
+- **R-002**：普通零交付 `5xx` 每候选最多首次加一次重试；结构化限流、鉴权和模型不支持错误直接进入下一候选；请求级错误立即终止。
+
+结构化终态的分类键优先取 `error.code`，缺失时取 `error.type`。本任务的最小已验证候选级键为 `rate_limit_exceeded`、`authentication_error` 和 `model_not_found`；`invalid_request_error` 仍是请求级终态。不得用开放式错误文本猜测覆盖这些分类。
+- **R-003**：`gpt-5.6-terra` 的 CodexManager 模型降级目标为 `gpt-5.6-sol`，只在 Terra 的全部候选和账号路径耗尽后执行。
+- **R-004**：OMP 外层最多重试一次；现有跨 Provider 降级链只作为 CodexManager 完整终态后的最终兜底。
+
+### 验收标准
+
+- **AC-001**：`HTTP 200` 的零输出 SSE `rate_limit_exceeded` 请求候选 A 后直接成功切到 B。
+- **AC-002**：零输出 SSE 普通 `server_error` 在候选 A 首次加一次重试后，成功继续候选 B。
+- **AC-003**：输出文本、工具语义或其他可见语义事件出现后，后续 SSE 失败只返回一次终态，绝不重放到候选或降级模型。
+- **AC-004**：Terra 全部候选及账号路径耗尽时，服务在同一网关请求中以 Sol 重新路由；没有配置 Sol 路由时返回有界终态。
+- **AC-005**：传输重试预算来自 `CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS`，默认值为 1，文档说明 0、1 和无效值的语义。
+- **AC-006**：OMP `config.yml` 的 `retry.maxRetries` 为 1；不修改 `models.yml` 的 provider/secret 定义，也不删除现有跨 Provider fallback chain。
+
+### 明确不在范围
+
+- 不改变 Aggregate API 的健康阈值、冷却时长、计费/日限额公式或数据库模式。
+- 不新增 RPC、Tauri 命令、前端表单或环境变量。
+- 不把已交付流的错误伪装为可重放失败。

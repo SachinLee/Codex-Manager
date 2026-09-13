@@ -9,24 +9,21 @@ use serde_json::json;
 
 fn convert(body: &Value) -> Result<Value, ChatConversionFailure> {
     let bytes = serde_json::to_vec(body).expect("serialize fixture");
-    convert_responses_request_to_chat_completions(&bytes, None, None).map(|out| {
-        serde_json::from_slice(&out).expect("converted output must re-parse as JSON")
-    })
+    convert_responses_request_to_chat_completions(&bytes, None, None)
+        .map(|out| serde_json::from_slice(&out).expect("converted output must re-parse as JSON"))
 }
 
 fn convert_with_model(body: &Value, model: &str) -> Result<Value, ChatConversionFailure> {
     let bytes = serde_json::to_vec(body).expect("serialize fixture");
-    convert_responses_request_to_chat_completions(&bytes, Some(model), None).map(|out| {
-        serde_json::from_slice(&out).expect("converted output must re-parse as JSON")
-    })
+    convert_responses_request_to_chat_completions(&bytes, Some(model), None)
+        .map(|out| serde_json::from_slice(&out).expect("converted output must re-parse as JSON"))
 }
 
 /// 带历史 assistant 消息（`previous_messages`）与 `previous_response_id` 的转换。
 fn convert_with_previous(body: &Value, history: &[Value]) -> Result<Value, ChatConversionFailure> {
     let bytes = serde_json::to_vec(body).expect("serialize fixture");
-    convert_responses_request_to_chat_completions(&bytes, None, Some(history)).map(|out| {
-        serde_json::from_slice(&out).expect("converted output must re-parse as JSON")
-    })
+    convert_responses_request_to_chat_completions(&bytes, None, Some(history))
+        .map(|out| serde_json::from_slice(&out).expect("converted output must re-parse as JSON"))
 }
 
 #[test]
@@ -134,8 +131,8 @@ fn rejects_non_function_tools() {
 
 #[test]
 fn rejects_tool_without_type() {
-    let err = convert(&json!({ "tools": [{ "name": "x" }] }))
-        .expect_err("must reject typeless tool");
+    let err =
+        convert(&json!({ "tools": [{ "name": "x" }] })).expect_err("must reject typeless tool");
     assert!(matches!(
         err,
         ChatConversionFailure::Incompatible(reason) if reason.contains("without type")
@@ -243,15 +240,14 @@ fn no_stream_options_when_not_streaming() {
 
 #[test]
 fn applies_model_override() {
-    let out = convert_with_model(&json!({ "model": "original" }), "  fallback-model  ")
-        .expect("convert");
+    let out =
+        convert_with_model(&json!({ "model": "original" }), "  fallback-model  ").expect("convert");
     assert_eq!(out["model"], "fallback-model");
 }
 
 #[test]
 fn rejects_audio_modality() {
-    let err = convert(&json!({ "audio": { "input": "x" } }))
-        .expect_err("must reject audio");
+    let err = convert(&json!({ "audio": { "input": "x" } })).expect_err("must reject audio");
     assert!(matches!(
         err,
         ChatConversionFailure::Incompatible(reason) if reason.contains("audio")
@@ -332,8 +328,8 @@ fn self_contained_history_can_continue_without_cache() {
 
 #[test]
 fn rejects_unknown_tool_choice_string() {
-    let err = convert(&json!({ "tool_choice": "always" }))
-        .expect_err("must reject unknown tool_choice");
+    let err =
+        convert(&json!({ "tool_choice": "always" })).expect_err("must reject unknown tool_choice");
     assert!(matches!(
         err,
         ChatConversionFailure::Incompatible(reason) if reason.contains("tool_choice")
@@ -346,8 +342,8 @@ fn passes_through_representable_tool_choices() {
         let out = convert(&json!({ "tool_choice": kind })).expect("convert");
         assert_eq!(out["tool_choice"], kind);
     }
-    let out = convert(&json!({ "tool_choice": { "type": "function", "name": "f1" } }))
-        .expect("convert");
+    let out =
+        convert(&json!({ "tool_choice": { "type": "function", "name": "f1" } })).expect("convert");
     assert_eq!(out["tool_choice"]["type"], "function");
     assert_eq!(out["tool_choice"]["function"]["name"], "f1");
 }

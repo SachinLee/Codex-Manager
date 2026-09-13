@@ -189,13 +189,19 @@ fn maps_length_finish_to_incomplete() {
         .find(|(name, _)| name == "response.incomplete")
         .expect("incomplete event");
     assert_eq!(incomplete.1["response"]["status"], "incomplete");
-    assert_eq!(incomplete.1["incomplete_details"]["reason"], "max_output_tokens");
+    assert_eq!(
+        incomplete.1["incomplete_details"]["reason"],
+        "max_output_tokens"
+    );
     assert!(!events.iter().any(|(name, _)| name == "response.completed"));
 }
 
 #[test]
 fn content_filter_is_terminal_error_event() {
-    let (output, _) = run_reader(&[&chunk("chatcmpl-4", "gpt-4o", "", Some("content_filter")), "[DONE]"]);
+    let (output, _) = run_reader(&[
+        &chunk("chatcmpl-4", "gpt-4o", "", Some("content_filter")),
+        "[DONE]",
+    ]);
     let events = parse_events(&output);
     let error_event = events
         .iter()
@@ -283,7 +289,10 @@ fn eof_without_done_is_incomplete_error() {
         .iter()
         .find(|(name, _)| name == "error")
         .expect("error event");
-    assert_eq!(error_event.1["error"]["code"], "upstream_chat_stream_incomplete");
+    assert_eq!(
+        error_event.1["error"]["code"],
+        "upstream_chat_stream_incomplete"
+    );
     assert!(!events.iter().any(|(name, _)| name == "response.completed"));
 }
 
@@ -299,7 +308,10 @@ fn malformed_frame_is_skipped_not_fatal() {
         .iter()
         .find(|(name, _)| name == "response.completed")
         .expect("completed");
-    assert_eq!(completed.1["response"]["output"][0]["content"][0]["text"], "ok");
+    assert_eq!(
+        completed.1["response"]["output"][0]["content"][0]["text"],
+        "ok"
+    );
 }
 
 #[test]
@@ -333,7 +345,10 @@ fn empty_done_emits_completed_with_empty_output() {
         .find(|(name, _)| name == "response.completed")
         .expect("completed");
     assert_eq!(completed.1["response"]["status"], "completed");
-    assert_eq!(completed.1["response"]["output"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        completed.1["response"]["output"].as_array().unwrap().len(),
+        0
+    );
 }
 
 #[test]
@@ -370,7 +385,10 @@ fn completed_stream_caches_assistant_context() {
 fn incomplete_stream_does_not_cache_context() {
     let usage_collector = Arc::new(StdMutex::new(UpstreamResponseUsage::default()));
     let context_store = Arc::new(ChatCompletionsContextStore::new());
-    let input = format!("data: {}\n\n", chunk("chatcmpl_incomplete", "gpt-4o", "partial", None));
+    let input = format!(
+        "data: {}\n\n",
+        chunk("chatcmpl_incomplete", "gpt-4o", "partial", None)
+    );
     let mut reader = ResponsesFromChatCompletionsSseReader::from_reader(
         Cursor::new(input.into_bytes()),
         usage_collector,

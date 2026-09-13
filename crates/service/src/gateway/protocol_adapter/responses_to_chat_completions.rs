@@ -64,11 +64,12 @@ pub(crate) fn convert_responses_request_to_chat_completions(
     model_override: Option<&str>,
     previous_messages: Option<&[Value]>,
 ) -> Result<Vec<u8>, ChatConversionFailure> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|_| ChatConversionFailure::Invalid("invalid responses request json".to_string()))?;
-    let obj = value
-        .as_object()
-        .ok_or_else(|| ChatConversionFailure::Invalid("responses request must be an object".to_string()))?;
+    let value: Value = serde_json::from_slice(body).map_err(|_| {
+        ChatConversionFailure::Invalid("invalid responses request json".to_string())
+    })?;
+    let obj = value.as_object().ok_or_else(|| {
+        ChatConversionFailure::Invalid("responses request must be an object".to_string())
+    })?;
 
     reject_unsupported_semantics(obj)?;
 
@@ -186,18 +187,17 @@ pub(crate) fn convert_responses_request_to_chat_completions(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        chat.insert("reasoning_effort".to_string(), Value::String(effort.to_string()));
+        chat.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort.to_string()),
+        );
     }
 
     if let Some(format) = responses_text_format_to_chat(obj.get("text")) {
         chat.insert("response_format".to_string(), format);
     }
 
-    if chat
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if chat.get("stream").and_then(Value::as_bool).unwrap_or(false) {
         let stream_options = chat
             .entry("stream_options".to_string())
             .or_insert_with(|| Value::Object(Map::new()));
@@ -414,10 +414,8 @@ fn flatten_responses_message_content(content: &Value) -> Option<Value> {
             }
             if !multimodal_parts.is_empty() {
                 if !text_parts.is_empty() {
-                    multimodal_parts.insert(
-                        0,
-                        json!({ "type": "text", "text": text_parts.join("\n") }),
-                    );
+                    multimodal_parts
+                        .insert(0, json!({ "type": "text", "text": text_parts.join("\n") }));
                 }
                 return Some(Value::Array(multimodal_parts));
             }

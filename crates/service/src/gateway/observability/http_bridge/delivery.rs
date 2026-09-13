@@ -405,7 +405,6 @@ fn respond_passthrough_collector_stream_strict_guard(
         }
     }
 
-
     // FR1: 在消费 request 之前检查是否满足零交付 failover 条件
     let should_allow_failover = read_error.is_some()
         && crate::gateway::runtime_config::aggregate_api_zero_delivery_failover_enabled()
@@ -475,7 +474,7 @@ fn respond_passthrough_collector_stream(
             && !collector.saw_terminal
             && collector.usage.output_tokens.unwrap_or(0) == 0
     };
-    
+
     let (delivery_error, pending_request) = if should_allow_failover {
         let collector = usage_collector.lock().unwrap();
         log::info!(
@@ -493,7 +492,7 @@ fn respond_passthrough_collector_stream(
             .map(|err| err.to_string());
         (err, None)
     };
-    
+
     let collector = usage_collector
         .lock()
         .map(|guard| guard.clone())

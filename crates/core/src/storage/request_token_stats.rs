@@ -4,8 +4,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use super::key_id_filters::{PairedKeyIdSqlFilter, TempKeyIdFilter};
 use super::reasoning_guard_events::GUARD_RETRY_ACTION_SQL;
 use super::{
-    now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary,
-    ApiKeyModelTokenUsageSummary,
+    now_ts, AccountDailyUsageSummary, AggregateApiDailyUsageSummary, ApiKeyModelTokenUsageSummary,
     ApiKeyTokenUsageSummary, DailyTokenUsageRollup, MemberDashboardUsageBreakdownSnapshot,
     ModelDailyUsageSummary, ModelTokenUsageRollup, RequestLogQuerySummary, RequestLogTodaySummary,
     RequestTokenStat, SourceTokenUsageRollup, Storage, TokenUsageRollup, TokenUsageSummary,
@@ -2413,8 +2412,8 @@ impl Storage {
             item.budget_spent_usd = Some(spent_microusd as f64 / 1_000_000.0);
             item.budget_reserved_usd = Some(reserved_microusd as f64 / 1_000_000.0);
             item.budget_held_usd = Some(held_microusd as f64 / 1_000_000.0);
-            item.budget_remaining_usd = all_remaining_known
-                .then_some(remaining_microusd as f64 / 1_000_000.0);
+            item.budget_remaining_usd =
+                all_remaining_known.then_some(remaining_microusd as f64 / 1_000_000.0);
             item.budget_over_limit = over_limit;
         };
         for item in items.iter_mut() {

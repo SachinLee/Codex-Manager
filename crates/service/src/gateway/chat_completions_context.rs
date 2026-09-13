@@ -46,10 +46,7 @@ impl ChatCompletionsContextStore {
     pub(crate) fn insert(&self, scope: Option<&str>, response_id: &str, messages: Vec<Value>) {
         let trimmed = response_id.trim();
         let key = scoped_key(scope, trimmed);
-        if trimmed.is_empty()
-            || trimmed == FALLBACK_RESPONSE_ID
-            || messages.is_empty()
-        {
+        if trimmed.is_empty() || trimmed == FALLBACK_RESPONSE_ID || messages.is_empty() {
             return;
         }
         let mut inner = match self.inner.lock() {

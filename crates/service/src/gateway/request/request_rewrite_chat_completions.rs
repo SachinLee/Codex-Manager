@@ -46,14 +46,14 @@ pub(super) fn normalize_responses_payload(
         return false;
     }
     let before = serde_json::to_vec(&Value::Object(obj.clone())).unwrap_or_default();
-    let converted = match super::super::protocol_adapter::convert_responses_request_to_chat_completions(
-        &before,
-        None,
-        None, // 客户端 Chat 兼容路径不承接 previous_response_id 历史上下文
-    ) {
-        Ok(body) => body,
-        Err(_) => return false,
-    };
+    let converted =
+        match super::super::protocol_adapter::convert_responses_request_to_chat_completions(
+            &before, None,
+            None, // 客户端 Chat 兼容路径不承接 previous_response_id 历史上下文
+        ) {
+            Ok(body) => body,
+            Err(_) => return false,
+        };
     let Ok(converted_value) = serde_json::from_slice::<Value>(&converted) else {
         return false;
     };

@@ -1,597 +1,93 @@
-# 实现计划：Aggregate API SSE 终态错误分类与候选轮转
-
-## 注意
-**本任务为诊断与规划任务，不包含产品代码实现。**
-
-本文档描述假设的实现切片，供后续实现任务参考。实际实现需要独立的 `in_progress` 任务和完整的测试验证。
-
----
-
-## Slice 1: 添加 SSE 终态错误码提取辅助函数
-
-### AC-001: 从 SSE 终态错误消息中提取 error.code
-
-**行为**：新增 `extract_error_code_from_terminal()` 函数，从 SSE `stream_terminal_error` 字符串中提取结构化 `error.code`。
-
-**代码边界**：
-- 文件：`crates/service/src/gateway/upstream/support/upstream_failure.rs`
-- 位置：`error_code_from_response_body()` 函数后（约 line 100）
-
-**测试边界**：
-- 文件：`crates/service/src/gateway/upstream/support/upstream_failure.rs` 内联测试
-- 公共接口：`pub(in crate::gateway) fn extract_error_code_from_terminal(message: Option<&str>) -> Option<String>`
-
-**RED**：
-```rust
-#[test]
-fn extract_error_code_from_sse_terminal_parses_json() {
-    let json_error = r#"{"error":{"code":"rate_limit_exceeded","message":"Too many requests"}}"#;
-    assert_eq!(
-        extract_error_code_from_terminal(Some(json_error)),
-        Some("rate_limit_exceeded".to_string())
-    );
-}
-
-#[test]
-fn extract_error_code_from_sse_terminal_parses_prefixed_message() {
-    // extract_message_from_error_map 生成的格式
-    let prefixed = "code=upstream_error type=server_error upstream exploded";
-    assert_eq!(
-        extract_error_code_from_terminal(Some(prefixed)),
-        Some("upstream_error".to_string())
-    );
-}
-
-#[test]
-fn extract_error_code_from_sse_terminal_returns_none_for_plain_text() {
-    assert_eq!(
-        extract_error_code_from_terminal(Some("connection refused")),
-        None
-    );
-}
-
-#[test]
-fn extract_error_code_from_sse_terminal_handles_empty() {
-    assert_eq!(extract_error_code_from_terminal(None), None);
-    assert_eq!(extract_error_code_from_terminal(Some("")), None);
-}
-```
-
-**实现**：
-```rust
-/// 从 SSE 终态错误消息中提取 error.code（若有）。
-///
-/// # 参数
-/// - `message`: SSE `stream_terminal_error` 字符串
-///
-/// # 返回
-/// 若消息包含结构化 `error.code`，返回 Some(code)；否则 None
-pub(in crate::gateway) fn extract_error_code_from_terminal(message: Option<&str>) -> Option<String> {
-    let message = message?.trim();
-    if message.is_empty() {
-        return None;
-    }
-
-    // 1. 尝试 JSON 解析：复用 error_code_from_response_body
-    if let Ok(value) = serde_json::from_str::<Value>(message) {
-        return error_code_from_response_body(message.as_bytes());
-    }
-
-    // 2. 前缀匹配：`code=rate_limit_exceeded ...`
-    //    这是 extract_message_from_error_map 的输出格式（output_text.rs:768）
-    if let Some(rest) = message.strip_prefix("code=") {
-        if let Some(code) = rest.split_whitespace().next() {
-            return Some(code.to_string());
-        }
-    }
-
-    None
-}
-```
-
-**GREEN**：
-```bash
-cargo test --package codexmanager-service --lib gateway::upstream::support::upstream_failure::tests::extract_error_code_from_sse_terminal
-```
-
-**验证**：
-- 4 个单元测试全部通过
-- 函数复用现有 `error_code_from_response_body()` 逻辑，不重复实现 JSON 解析
-
----
-
-## Slice 2: SSE 终态分类核心逻辑 - CandidateFailover 路径
-
-### AC-002: HTTP 200 + SSE rate_limit_exceeded 切换到下一候选
-
-**行为**：当 Aggregate API 返回 `HTTP 200 + {"type":"response.failed","error":{"code":"rate_limit_exceeded"}}`，且零交付时，应调用 `classify_upstream_failure()` 并执行候选 failover。
-
-**代码边界**：
-- 文件：`crates/service/src/gateway/upstream/protocol/aggregate_api.rs`
-- 插入位置：line 3208（capacity recovery 逻辑之后、`succeeded=true` 赋值之前）
-
-**测试边界**：
-- 文件：`crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs`
-- 新增测试：`sse_rate_limit_fails_over_to_next_candidate()`
-
-**RED**：
-```rust
-#[test]
-fn sse_rate_limit_fails_over_to_next_candidate() {
-    // 模拟 Aggregate Responses SSE 终态错误：
-    // HTTP 200 + text/event-stream，但立即发送 response.failed 终态事件
-    const RATE_LIMIT_SSE: &str = concat!(
-        "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Upstream rate limit\"}}\n",
-        "\n"
-    );
-    
-    let (storage, outcome, request_count) = run_aggregate_sse_scenario(
-        "sse-rate-limit-failover",
-        vec![
-            (200, "text/event-stream", RATE_LIMIT_SSE),
-            (200, "application/json", CAPACITY_OK_JSON),
-        ],
-        vec![
-            aggregate_capacity_test_candidate("agg-sse-first", ""),
-            aggregate_capacity_test_candidate("agg-sse-second", ""),
-        ],
-        true,  // is_stream=true
-        None,
-    );
-    
-    assert_eq!(
-        request_count, 2,
-        "SSE rate_limit_exceeded with zero delivery must fail over to next candidate"
-    );
-    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
-    assert_eq!(
-        terminal_request_log_status(&storage, "trc-sse-rate-limit-failover"),
-        Some(200)
-    );
-}
-```
-
-**实现**：
-```rust
-// aggregate_api.rs:3208 插入
-
-// SSE 终态错误的候选决策（零交付场景）
-if !bridge_ok && bridge.pending_failover_request.is_some() {
-    // 请求可归还：bridge delivery 层确认零交付，无语义内容已发送给客户端
-    let error_message = final_error
-        .as_deref()
-        .unwrap_or("aggregate api upstream response incomplete");
-    
-    // 从 SSE 终态错误中提取 error.code（若有）
-    let error_code = super::super::support::upstream_failure::extract_error_code_from_terminal(
-        bridge.stream_terminal_error.as_deref()
-    );
-    
-    // 统一分类决策
-    let decision = super::super::support::upstream_failure::classify_upstream_failure(
-        502,  // SSE 终态统一视为 502 客户端错误
-        error_message,
-        error_code.as_deref(),
-        false,  // pending_failover_request 保证未交付
-        false,  // 非推理守卫路径
-    );
-    
-    match decision {
-        super::super::support::upstream_failure::UpstreamFailureDecision::CandidateFailover => {
-            // rate_limit_exceeded 等候选级错误：切到下一候选
-            request = bridge.pending_failover_request.take();
-            last_attempt_error = Some(error_message.to_string());
-            last_failure_status = 502;
-            cooldown_eligible_failure = true;
-            // 零交付失败：释放预留的 spend attempt
-            release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
-            break;  // 退出内层候选尝试循环，外层继续下一候选
-        }
-        _ => {
-            // 其他决策分支稍后实现
-        }
-    }
-}
-```
-
-**GREEN**：
-```bash
-cargo test --package codexmanager-service --lib gateway::upstream::protocol::aggregate_api_tests::sse_rate_limit_fails_over_to_next_candidate
-```
-
-**验证**：
-- 新测试通过
-- 现有 HTTP 502 JSON failover 测试（`aggregate_502_rate_limit_exceeded_code_fails_over_to_next_candidate`）保持通过
-- `request_count=2` 证明两个候选都被尝试
-- 终态 status=200 证明第二候选成功
-
----
-
-## Slice 3: 同候选重试路径
-
-### AC-003: HTTP 200 + SSE server_error 使用同候选重试预算
-
-**行为**：当 SSE 终态错误不是 `rate_limit_exceeded`，应归类为 `RetrySameCandidate`，消耗同候选传输重试预算（最多 3 次）。
-
-**代码边界**：
-- 文件：`crates/service/src/gateway/upstream/protocol/aggregate_api.rs`
-- 位置：Slice 2 的 `match decision` 添加 `RetrySameCandidate` 分支
-
-**测试边界**：
-- 文件：`crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs`
-- 新增测试：`sse_server_error_keeps_same_candidate_transport_budget()`
-
-**RED**：
-```rust
-#[test]
-fn sse_server_error_keeps_same_candidate_transport_budget() {
-    const SERVER_ERROR_SSE: &str = concat!(
-        "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Internal error\"}}\n",
-        "\n"
-    );
-    
-    let (storage, outcome, request_count) = run_aggregate_sse_scenario(
-        "sse-server-error-budget",
-        vec![
-            (200, "text/event-stream", SERVER_ERROR_SSE),
-            (200, "text/event-stream", SERVER_ERROR_SSE),
-            (200, "text/event-stream", SERVER_ERROR_SSE),
-            (200, "text/event-stream", SERVER_ERROR_SSE),
-        ],
-        vec![aggregate_capacity_test_candidate("agg-sse-retry", "")],
-        true,
-        None,
-    );
-    
-    assert_eq!(
-        request_count, 4,
-        "SSE server_error keeps the initial request plus 3-attempt transport budget"
-    );
-    assert!(matches!(outcome, AggregateAttemptOutcome::AllFailed { .. }));
-}
-```
-
-**实现**：
-```rust
-match decision {
-    super::super::support::upstream_failure::UpstreamFailureDecision::CandidateFailover => {
-        // ... (已实现)
-    }
-    super::super::support::upstream_failure::UpstreamFailureDecision::RetrySameCandidate => {
-        // 同候选传输重试：5xx、连接错误等可能瞬时恢复的故障
-        if transport_retry_budget_remaining > 0 {
-            request = bridge.pending_failover_request.take();
-            transport_retry_budget_remaining = transport_retry_budget_remaining.saturating_sub(1);
-            next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
-            // 零交付失败：释放当前 spend attempt
-            release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
-            // 添加退避（与 HTTP 非成功分支一致）
-            let retry_attempt = AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL - transport_retry_budget_remaining;
-            let backoff_ms = 50u64 * 2u64.pow(retry_attempt as u32);
-            log::debug!(
-                "event=aggregate_api_sse_retry_backoff candidate_id={} retry_attempt={} backoff_ms={}",
-                candidate_id, retry_attempt, backoff_ms
-            );
-            std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
-            continue;  // 内层循环继续同候选重试
-        }
-        // 预算耗尽：候选失败，外层继续下一候选
-        request = bridge.pending_failover_request.take();
-        last_attempt_error = Some(error_message.to_string());
-        last_failure_status = 502;
-        cooldown_eligible_failure = true;
-        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
-        break;
-    }
-    _ => {
-        // RequestTerminal 等其他分支稍后实现
-    }
-}
-```
-
-**GREEN**：
-```bash
-cargo test --package codexmanager-service --lib gateway::upstream::protocol::aggregate_api_tests::sse_server_error_keeps_same_candidate_transport_budget
-```
-
-**验证**：
-- 测试通过，`request_count=4`（1 初始 + 3 重试）
-- 现有 HTTP 500 传输重试测试（`aggregate_500_keeps_existing_same_candidate_transport_budget`）保持通过
-
----
-
-## Slice 4: 请求级终止路径
-
-### AC-004: HTTP 200 + SSE invalid_request 立即终止
-
-**行为**：当 SSE 终态为请求级错误（400/422 类），应归类为 `RequestTerminal`，设置 `terminal_failure=true`，不尝试后续候选或重试。
-
-**代码边界**：
-- 文件：`crates/service/src/gateway/upstream/protocol/aggregate_api.rs`
-- 位置：`match decision` 添加 `RequestTerminal` 和默认分支
-
-**测试边界**：
-- 新增测试：`sse_invalid_request_terminates_immediately()`
-
-**RED**：
-```rust
-#[test]
-fn sse_invalid_request_terminates_immediately() {
-    const INVALID_REQUEST_SSE: &str = concat!(
-        "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"invalid_request\",\"message\":\"Bad prompt\"}}\n",
-        "\n"
-    );
-    
-    let (storage, outcome, request_count) = run_aggregate_sse_scenario(
-        "sse-invalid-request-terminal",
-        vec![(200, "text/event-stream", INVALID_REQUEST_SSE)],
-        vec![
-            aggregate_capacity_test_candidate("agg-sse-a", ""),
-            aggregate_capacity_test_candidate("agg-sse-b", ""),
-        ],
-        true,
-        None,
-    );
-    
-    assert_eq!(
-        request_count, 1,
-        "SSE invalid_request must terminate without trying next candidate"
-    );
-    assert!(matches!(outcome, AggregateAttemptOutcome::AllFailed { .. }));
-}
-```
-
-**实现**：
-```rust
-match decision {
-    super::super::support::upstream_failure::UpstreamFailureDecision::CandidateFailover => {
-        // ... (已实现)
-    }
-    super::super::support::upstream_failure::UpstreamFailureDecision::RetrySameCandidate => {
-        // ... (已实现)
-    }
-    super::super::support::upstream_failure::UpstreamFailureDecision::RequestTerminal => {
-        // 请求级终止：400/422 等不可由重试或切换候选修复的错误
-        last_attempt_error = Some(error_message.to_string());
-        last_failure_status = 502;
-        terminal_failure = true;
-        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
-        break;
-    }
-    super::super::support::upstream_failure::UpstreamFailureDecision::CapacityRecovery
-    | super::super::support::upstream_failure::UpstreamFailureDecision::CapabilityRetry
-    | super::super::support::upstream_failure::UpstreamFailureDecision::ReasoningGuardRetry => {
-        // 这些决策已在前方独立处理（capacity: 3146-3207; reasoning: 3028-3136）
-        // 不应在 SSE 终态路径出现；保守视为候选失败
-        log::warn!(
-            "event=aggregate_api_sse_unexpected_decision trace_id={} decision={:?}",
-            trace_id, decision
-        );
-        request = bridge.pending_failover_request.take();
-        last_attempt_error = Some(error_message.to_string());
-        last_failure_status = 502;
-        cooldown_eligible_failure = true;
-        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
-        break;
-    }
-}
-```
-
-**GREEN**：
-```bash
-cargo test --package codexmanager-service --lib gateway::upstream::protocol::aggregate_api_tests::sse_invalid_request_terminates_immediately
-```
-
-**验证**：
-- 测试通过，`request_count=1`
-- `terminal_failure=true` 阻止外层候选循环继续
-
----
-
-## Slice 5: 已交付场景的不变性验证
-
-### AC-005: 已交付的 SSE 终态错误不重放
-
-**行为**：当客户端已收到部分 SSE 输出后出现 `response.failed`，`pending_failover_request=None`，应跳过分类逻辑，维持 `succeeded=true`。
-
-**代码边界**：
-- 验证：现有逻辑（`if !bridge_ok && bridge.pending_failover_request.is_some()`）已自然排除
-- 无需新增代码，仅需回归测试
-
-**测试边界**：
-- 新增测试：`sse_error_after_delivery_does_not_retry()`
-
-**RED**：
-```rust
-#[test]
-fn sse_error_after_delivery_does_not_retry() {
-    // 模拟已交付 output token 后的终态错误
-    const PARTIAL_THEN_ERROR_SSE: &str = concat!(
-        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n",
-        "\n",
-        "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"upstream_error\",\"message\":\"Lost connection\"}}\n",
-        "\n"
-    );
-    
-    let (storage, outcome, request_count) = run_aggregate_sse_scenario(
-        "sse-error-after-delivery",
-        vec![(200, "text/event-stream", PARTIAL_THEN_ERROR_SSE)],
-        vec![
-            aggregate_capacity_test_candidate("agg-partial-a", ""),
-            aggregate_capacity_test_candidate("agg-partial-b", ""),
-        ],
-        true,
-        None,
-    );
-    
-    assert_eq!(
-        request_count, 1,
-        "SSE error after delivery must not retry or failover"
-    );
-    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
-    
-    // 验证记录为失败（affinity_binding_success=false）
-    let log = terminal_request_log(&storage, "trc-sse-error-after-delivery");
-    assert!(log.error_message.is_some());
-    assert_eq!(log.output_tokens.unwrap_or(0) > 0, true, "output tokens delivered");
-}
-```
-
-**实现**：
-无需修改。现有条件 `bridge.pending_failover_request.is_some()` 已排除此场景。
-
-**GREEN**：
-```bash
-cargo test --package codexmanager-service --lib gateway::upstream::protocol::aggregate_api_tests::sse_error_after_delivery_does_not_retry
-```
-
-**验证**：
-- 测试通过
-- `pending_failover_request=None` → 不进入分类逻辑
-- `succeeded=true` → 记录 attempt 为 `Responded`，但 `affinity_binding_success=false`
-
----
-
-## Slice 6: 回归与集成验证
-
-### AC-006: 现有测试保持通过
-
-**验证清单**：
-1. **HTTP 非成功 JSON 路径**：
-   - `aggregate_502_rate_limit_exceeded_code_fails_over_to_next_candidate` ✓
-   - `aggregate_500_keeps_existing_same_candidate_transport_budget` ✓
-
-2. **Chat preflight 路径**：
-   - 所有 `preflight_chat_stream` 相关测试 ✓
-
-3. **容量恢复路径**：
-   - `aggregate_capacity_error_retries_with_backoff` ✓
-   - `aggregate_capacity_retry_respects_deadline` ✓
-
-4. **推理守卫路径**：
-   - `reasoning_guard_internal_retry_*` 系列测试 ✓
-
-5. **零候选/全冷却路径**：
-   - 验证 `upstream_url=NULL` 的 503 终态不受影响
-
-**GREEN**：
-```bash
-cargo test --package codexmanager-service --lib gateway::upstream::protocol::aggregate_api_tests
-```
-
-**验证**：
-- 所有现有测试通过
-- 无意外行为回归
-
----
-
-## Slice 7: 文档与日志
-
-### AC-007: 添加关键路径日志
-
-**行为**：在分类决策点添加 trace 日志，便于生产诊断。
-
-**实现**：
-```rust
-if !bridge_ok && bridge.pending_failover_request.is_some() {
-    let error_message = final_error.as_deref().unwrap_or("aggregate api upstream response incomplete");
-    let error_code = super::super::support::upstream_failure::extract_error_code_from_terminal(
-        bridge.stream_terminal_error.as_deref()
-    );
-    let decision = super::super::support::upstream_failure::classify_upstream_failure(
-        502, error_message, error_code.as_deref(), false, false,
-    );
-    
-    log::info!(
-        "event=aggregate_api_sse_terminal_classification trace_id={} candidate_id={} error_code={} decision={:?}",
-        trace_id,
-        candidate_id,
-        error_code.as_deref().unwrap_or("-"),
-        decision
-    );
-    
-    match decision {
-        // ... (分支实现)
-    }
-}
-```
-
-**验证**：
-- 手动运行测试，检查日志输出
-- 确认 `error_code` 和 `decision` 正确记录
-
----
-
-## 依赖关系
-
-```
-Slice 1 (辅助函数)
-  ↓
-Slice 2 (CandidateFailover)
-  ↓
-Slice 3 (RetrySameCandidate) + Slice 4 (RequestTerminal)
-  ↓
-Slice 5 (已交付不变性) + Slice 6 (回归)
-  ↓
-Slice 7 (日志)
-```
-
-每个 Slice 独立可验证，按顺序实施可保持代码始终可运行。
-
----
-
-## 回滚计划
-
-若发现未预期的回归或生产问题：
-
-1. **环境变量控制**：
-   - 添加 `CODEXMANAGER_AGGREGATE_SSE_FAILOVER_ENABLED` 开关
-   - 默认 `true`；紧急情况设为 `false` 恢复旧行为
-
-2. **代码回滚点**：
-   - Slice 2-4 的 `if !bridge_ok && bridge.pending_failover_request.is_some()` 块
-   - 整个块可安全删除，回到 `succeeded=true` 原路径
-
-3. **监控指标**：
-   - `GATEWAY_FAILOVER_ATTEMPTS` 增量（预期上升）
-   - `GATEWAY_UPSTREAM_CAPACITY_ERRORS` 无变化
-   - 请求日志中 `attempted_aggregate_api_ids_json` 长度分布
-
----
-
-## 未涵盖场景（明确排除）
-
-1. **非流式 Responses 路径**：
-   - 行为：非流式已在 `aggregate_api.rs:2890-2939` 预转换为 Responses 形状
-   - 影响：非流式错误在 HTTP 状态码层面处理，不走 SSE 终态路径
-   - 结论：现有 HTTP 非成功分支已覆盖
-
-2. **Anthropic Native SSE 协议**：
-   - 行为：Anthropic `message_stop` 事件已在 `sse_frame.rs:109-110` 分类
-   - 影响：`stream_terminal_error` 逻辑与 Anthropic 兼容
-   - 结论：无需特殊处理
-
-3. **Gemini SSE 协议**：
-   - 行为：Gemini 使用 `candidates[].finishReason`，由 `responses_from_anthropic.rs` 转换
-   - 影响：转换后统一为 Responses SSE 格式
-   - 结论：无需特殊处理
-
----
-
-## 测试辅助函数（假设）
-
-```rust
-/// 运行 Aggregate API SSE 场景测试
-fn run_aggregate_sse_scenario(
-    trace_id_suffix: &str,
-    responses: Vec<(u16, &str, &str)>,  // (status, content-type, body)
-    candidates: Vec<AggregateApiForTest>,
-    is_stream: bool,
-    affinity: Option<AggregateApiAffinity>,
-) -> (Storage, AggregateAttemptOutcome, usize) {
-    // 模拟 SSE 响应的测试工具
-    // 返回：storage, outcome, 实际发出的 HTTP 请求数
-}
-```
-
-此函数需在实际实现时根据现有测试框架（如 `run_aggregate_capacity_scenario`）编写。
+# 实施计划：Aggregate Responses SSE 候选优先与模型降级
+
+## 前提
+
+- 适用质量等级：**critical**。
+- 实现授权已因本方案修订而失效；完成本文件和用户的后续明确批准前，禁止编辑产品代码或本机 OMP 配置。
+- 所有 Rust 行为改动遵循 RED → GREEN → REFACTOR。测试继续使用现有 service 内联测试结构，不新建未经证实的 `crates/service/tests/gateway/` 测试框架。
+
+## Slice 1：AC-001 的 blocking SSE preflight seam
+
+- **行为**：`GatewayUpstreamResponse::Blocking` 的 `HTTP 200 + text/event-stream + response.failed` 可在交付前进入 preflight，并得到安全的结构化终态事实。
+- **代码边界**：`stream_preflight.rs` 仅根据 `response.headers()` 判定 SSE，新增 `TerminalFailure` outcome；`support/upstream_failure.rs` 提供 `error.code` 优先、`error.type` 回退的受限分类键投影，供 HTTP JSON 与 SSE 嵌套 error object 复用。
+- **消费者同步**：更新 `aggregate_api.rs` 与 `proxy_pipeline/candidate_executor.rs` 的 exhaustive match；后者将新 outcome 交给现有账号池终态策略，不使用 Aggregate transport budget。
+- **RED**：在 `stream_preflight_tests.rs` 增加 blocking Responses SSE `response.failed` fixture，断言 `rate_limit_exceeded`、`authentication_error`、`model_not_found` 与 `invalid_request_error` 的分类键均被保留；再加普通 `server_error` fixture。
+- **GREEN**：实现 header-based SSE 判定和前缀终态投影；确认正常 SSE 前缀仍无字节丢失，且没有日志/返回值包含原始 SSE body。
+- **验证**：`cargo test -p codexmanager-service stream_preflight --lib` 与 `cargo test -p codexmanager-service upstream_failure --lib`。
+- **回滚**：回退本 slice 后只恢复旧 preflight 可达性；不会改变持久化数据。
+
+## Slice 2：AC-001 的立即同模型候选切换
+
+- **行为**：零输出 `rate_limit_exceeded`、`authentication_error` 或 `model_not_found` 从 Terra 候选 A 直接前进至候选 B；客户端只收到 B 的成功结果。`invalid_request_error` 仅返回一次终态。
+- **代码边界**：`aggregate_api.rs` 将 preflight 与 bridge 的 `pending_failover_request` 错误归一为一个零交付 failure/action match；`upstream_failure.rs` 扩展并测试显式分类键 allow-list。不得保留两个独立的 SSE action match。
+- **测试 seam**：现有 `aggregate_api_tests.rs` 的 `run_upstream_scenario_with_stream()`；该 helper 已复现 Blocking 上游响应，正是回归 seam。
+- **RED**：修复已有 `aggregate_sse_rate_limit_fails_over_to_next_candidate` 与 prefix-format rate-limit 测试；添加 auth、model-not-found 和 invalid-request fixtures，分别断言候选数为 2、2、1。
+- **GREEN**：`TerminalFailure` 仅填充统一的零交付 failure；共享 `CandidateFailover` action 释放 reservation、保留 request、跳出候选内层循环，且不得创建 bridge 或写客户端终态。
+- **验证**：`cargo test -p codexmanager-service aggregate_sse --lib`。
+- **回滚**：回退该 action match；HTTP 非 2xx 路径不受影响。
+
+## Slice 3：AC-002 与 AC-005 的一轮同候选重试
+
+- **行为**：普通零输出 SSE `server_error` 或 preflight transport failure 在 A 上总共两次，然后到 B；`invalid_request_error` 不重试也不轮转。
+- **代码边界**：`aggregate_api.rs` 以 `aggregate_api_transport_retry_attempts()` 初始化 immutable budget 和 mutable remaining counter，更新最大内层尝试数和 backoff ordinal；共享零交付 action 处理 `RetrySameCandidate` 与 `TransportFailover`。`gateway/core/runtime_config.rs` 的 reader 保持默认值，但补测试其缺失、无效、0 和 1 的语义。
+- **RED**：
+  - 更新 `aggregate_sse_server_error_retries_same_candidate`：A 两次、B 一次成功，共 3 hits。
+  - 添加 transport exhaustion 与 partial-output fixtures；partial output 始终 1 hit。
+  - 为 runtime config reader 添加默认 1、0 禁用同候选重试、无效回退 1 的测试。
+- **GREEN**：所有重试在 request deadline 和现有 capacity/capability/reasoning budgets 下运行；容量和 capability 分支不降级为普通 transport retry。
+- **验证**：`cargo test -p codexmanager-service aggregate_sse --lib` 与 `cargo test -p codexmanager-service runtime_config --lib`。
+- **回滚**：设环境变量为 `3` 可临时恢复旧重试次数；完全回退时恢复常量使用。
+
+## Slice 4：AC-003 的语义交付安全
+
+- **行为**：一旦 prefix 已遇到文本、工具调用或其他非元数据语义事件，preflight 返回 `Ready`；后续终态错误只走现有 bridge 终态，不会发送第二个上游请求。
+- **代码边界**：`stream_preflight.rs` 与 `stream_preflight_tests.rs`；不放宽 `delivery.rs` 的 `pending_failover_request` 条件。
+- **RED**：保留并强化 `aggregate_sse_with_delivered_content_does_not_replay`，添加工具语义前缀（非文本）后 `response.failed` 的单命中断言。
+- **GREEN**：终态投影仅在 `PrefixDecision::Deliver` 之前发生；不读取或记录原始 SSE payload。
+- **验证**：`cargo test -p codexmanager-service aggregate_sse_with_delivered_content_does_not_replay --lib` 与 `cargo test -p codexmanager-service stream_preflight --lib`。
+- **回滚**：不需要数据回滚；此 slice 只保护既有 no-replay invariant。
+
+## Slice 5：AC-004 的网关模型降级
+
+- **行为**：当 Terra 的 Aggregate 候选和账号路径全部耗尽且该模型有 fallback，outer proxy 在同一网关请求中改写为 Sol，并为 Sol 重新解析候选；没有 Sol 路由时返回一次有界终态。
+- **代码边界**：保留 `proxy.rs` 的 `fallback_model_slugs` / `RequestReleased` model-hop loop。先在 `aggregate_api_tests.rs` 证明 `fallback_available=true` 时全部 Terra 候选耗尽会归还 request；在 `proxy_tests.rs` 以真实 `proxy_validated_request()` 请求/响应 harness 验证归还 request 后选择 Sol、重建 Sol 候选集并写回一次成功响应。只有该 RED 测试揭示缺口时才改 `proxy.rs`。
+- **RED**：构造 Terra fallback list `["gpt-5.6-sol"]`、Terra 的 scripted SSE failures、Sol 的 scripted success；断言上游记录先后只见 Terra、Sol，响应一次成功，且候选不会跨模型复用。
+- **GREEN**：若现有 `RequestReleased` 已完成链路，只保留测试；不得新增模型 fallback shim 或第二套候选选择器。
+- **验证**：`cargo test -p codexmanager-service proxy --lib` 与相关 Aggregate 测试。
+- **回滚**：从模型目录移除 Terra fallback list；源代码不需要回滚，除非测试揭示了 proxy 缺口并实际修改。
+
+## Slice 6：AC-005 与 AC-006 的文档和部署配置
+
+- **行为**：环境变量和 OMP 外层策略可由操作员准确配置，且不触及 secrets。
+- **代码边界**：`docs/en/report/environment-and-runtime-config.md` 补充 `CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS`：默认 1、0、无效值、仅 Aggregate 零交付 transport/SSE server-error 路径和 restart/reload 语义。
+- **非仓库操作（在所有代码验证通过后）**：
+  1. 用 CodexManager 模型目录 UI 设置 Terra fallback model list 为 Sol；不直接编辑 SQLite。
+  2. 将 `C:/Users/shuan/.omp/agent/config.yml` 的 `retry.maxRetries` 改为 `1`。
+  3. 不修改 `models.yml` 或现有 `fallbackChains`；重启受影响的 CodexManager/OMP 进程。
+- **验证**：用无敏感内容的测试请求观察一个 trace 的 candidate IDs、model fallback hop 和最终模型；确认 OMP 没有在单个网关请求尚未结束时切换模型。
+- **回滚**：把 OMP 值还原为 3、从模型目录删除 Sol fallback，并重启对应进程。
+
+## Slice 7：critical 质量门禁
+
+1. 运行所有受影响的 focused RED/GREEN tests。
+2. 运行 `cargo fmt --check`。
+3. 运行 `cargo test -p codexmanager-service`；这是 service 范围内完整回归。
+4. 运行 Trellis `trellis-check`；修复发现后重新运行相关 tests。
+5. 对稳定快照运行一次独立 `workflow-reviewer`，重点检查：请求 ownership、零交付安全、reservation release/hold、跨模型候选隔离、日志脱敏和回滚。
+6. 通过后记录实际执行命令和结果到 task outcome；不把计划中的命令说成已执行。
+
+## 变更文件清单
+
+| 文件 | 预期变更 |
+| --- | --- |
+| `crates/service/src/gateway/upstream/proxy_pipeline/stream_preflight.rs` | Blocking SSE 识别与结构化终态事实 outcome |
+| `crates/service/src/gateway/upstream/support/upstream_failure.rs` | HTTP/SSE 共用分类键投影和候选/请求级 allow-list |
+| `crates/service/src/gateway/upstream/protocol/aggregate_api.rs` | 统一的零交付失败 action、动态 transport budget、候选动作 |
+| `crates/service/src/gateway/upstream/proxy_pipeline/candidate_executor.rs` | 新 outcome 的穷尽处理，保持账号池既有策略 |
+| `crates/service/src/gateway/upstream/proxy_pipeline/stream_preflight_tests.rs` | blocking SSE 和结构化终态测试 |
+| `crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs` | 候选顺序、retry budget、no-replay、RequestReleased 测试 |
+| `crates/service/src/gateway/core/tests/runtime_config_tests.rs` | transport budget 配置语义测试 |
+| `crates/service/src/gateway/upstream/proxy_tests.rs` | Terra 到 Sol 的真实 proxy model-hop 路由测试 |
+| `docs/en/report/environment-and-runtime-config.md` | 已有环境变量文档 |
+
+不新增 migration、RPC、前端 UI、模型 secret 或持久化结构。

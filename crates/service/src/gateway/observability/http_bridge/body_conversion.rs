@@ -641,10 +641,7 @@ fn convert_chat_completions_body_to_responses_inner(body: &[u8]) -> Option<Vec<u
         .and_then(Value::as_str)
         .unwrap_or("resp_codexmanager");
     let model = value.get("model").and_then(Value::as_str).unwrap_or("");
-    let created_at = value
-        .get("created")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let created_at = value.get("created").and_then(Value::as_i64).unwrap_or(0);
     let mut output = Vec::new();
     let mut output_text = String::new();
     let choices = value.get("choices").and_then(Value::as_array);

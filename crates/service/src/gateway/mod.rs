@@ -107,11 +107,10 @@ pub(crate) fn is_selected_model_capacity_error(message: &str) -> bool {
         .eq_ignore_ascii_case("selected model is at capacity. please try a different model")
 }
 
-#[path = "routing/aggregate_api_cooldown.rs"]
-mod aggregate_api_cooldown;
 #[path = "routing/aggregate_api_affinity.rs"]
 mod aggregate_api_affinity;
-mod settings;
+#[path = "routing/aggregate_api_cooldown.rs"]
+mod aggregate_api_cooldown;
 mod anchor_fingerprint;
 mod capability;
 #[path = "observability/capability_attempt_events.rs"]
@@ -168,6 +167,7 @@ mod runtime_config;
 mod selection;
 #[path = "request/session_affinity.rs"]
 mod session_affinity;
+mod settings;
 #[path = "request/thread_anchor.rs"]
 mod thread_anchor;
 #[path = "auth/token_exchange.rs"]
@@ -184,7 +184,9 @@ pub(crate) use capability::{
     IMAGE_GENERATION_CAPABILITY, REQUIRED_CAPABILITIES_HEADER,
 };
 pub(crate) use capability_attempt_events::record_gateway_capability_attempt_event;
-pub(crate) use chat_completions_context::{global_chat_completions_context, ChatCompletionsContextStore};
+pub(crate) use chat_completions_context::{
+    global_chat_completions_context, ChatCompletionsContextStore,
+};
 pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
@@ -313,11 +315,11 @@ pub(super) use failover::should_failover_after_refresh;
 use failover::{
     should_failover_from_cached_snapshot_value, should_failover_from_low_quota_snapshot_value,
 };
+pub(crate) use http_bridge::convert_chat_completions_body_to_responses;
 use http_bridge::respond_with_upstream;
 pub(crate) use http_bridge::summarize_upstream_error_hint_from_body;
 pub(crate) use http_bridge::PassthroughSseProtocol;
 pub(crate) use http_bridge::ReasoningGuardBridgeAction;
-pub(crate) use http_bridge::convert_chat_completions_body_to_responses;
 /// 函数 `extract_identity_error_code_from_headers`
 ///
 /// 作者: gaohongshun

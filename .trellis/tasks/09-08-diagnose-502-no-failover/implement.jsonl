@@ -1,3 +1,7 @@
 {"file":".trellis/spec/codexmanager-service/backend/index.md","reason":"Service backend rules for the Aggregate API gateway change."}
 {"file":".trellis/tasks/09-03-gateway-failover-policy-optimization/prd.md","reason":"Existing bounded candidate failover and HTTP 502 policy requirements that this repair must preserve."}
 {"file":".trellis/tasks/09-08-diagnose-502-no-failover/prd.md","reason":"Production evidence, user-approved scope, and observable acceptance requirements for the SSE terminal repair."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse error projection and classifier helpers"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Preserve preflight-to-gateway error contracts"}
+{"file": ".trellis/tasks/09-08-diagnose-502-no-failover/design.md", "reason": "Approved pre-delivery terminal-error architecture"}
+{"file": ".trellis/tasks/09-08-diagnose-502-no-failover/implement.md", "reason": "Approved critical TDD slices and validation gates"}

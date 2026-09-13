@@ -11,8 +11,8 @@ use super::{
     Cursor, Map, Mutex, Read, SseKeepAliveFrame, UpstreamResponseUsage, UpstreamSseFramePump,
     UpstreamSseFramePumpItem, Value,
 };
-use std::time::Instant;
 use crate::gateway::ChatCompletionsContextStore;
+use std::time::Instant;
 
 const MAX_CHAT_SSE_CHUNKS: usize = 4096;
 const MAX_CHAT_TOOL_CALLS: usize = 32;
@@ -342,7 +342,11 @@ impl ResponsesFromChatCompletionsSseReader {
             self.ensure_response_started(out);
             if !pending_started {
                 let item_id = self.tool_item_id(index);
-                let name = if pending_name.is_empty() { "tool" } else { &pending_name };
+                let name = if pending_name.is_empty() {
+                    "tool"
+                } else {
+                    &pending_name
+                };
                 self.emit(
                     out,
                     "response.output_item.added",
@@ -546,7 +550,8 @@ impl ResponsesFromChatCompletionsSseReader {
                 continue;
             }
             let item_id = self.tool_item_id(index);
-            let arguments = normalize_json_fragment(self.state.tool_calls[index].arguments.as_str());
+            let arguments =
+                normalize_json_fragment(self.state.tool_calls[index].arguments.as_str());
             let name = {
                 let pending = &self.state.tool_calls[index];
                 if pending.name.is_empty() {
@@ -712,7 +717,11 @@ impl ResponsesFromChatCompletionsSseReader {
             has_context = true;
         }
         if has_context {
-            store.insert(None, self.response_id().as_str(), vec![Value::Object(assistant)]);
+            store.insert(
+                None,
+                self.response_id().as_str(),
+                vec![Value::Object(assistant)],
+            );
         }
     }
 
@@ -791,15 +800,12 @@ impl ResponsesFromChatCompletionsSseReader {
             "output_tokens": self.state.output_tokens.unwrap_or(0),
         });
         let total = self.state.total_tokens.or_else(|| {
-            Some(
-                self.state.input_tokens.unwrap_or(0) + self.state.output_tokens.unwrap_or(0),
-            )
+            Some(self.state.input_tokens.unwrap_or(0) + self.state.output_tokens.unwrap_or(0))
         });
         if let Some(total) = total {
             payload["total_tokens"] = Value::Number(total.into());
         }
-        if self.state.cached_input_tokens.is_some()
-            || self.state.reasoning_output_tokens.is_some()
+        if self.state.cached_input_tokens.is_some() || self.state.reasoning_output_tokens.is_some()
         {
             let mut input_details = serde_json::Map::new();
             if let Some(cached) = self.state.cached_input_tokens {

@@ -106,6 +106,27 @@ fn prefix_retries_usage_notice_confirmed_by_incomplete_terminal() {
 }
 
 #[test]
+fn prefix_classifies_selected_model_capacity_as_terminal_failure() {
+    let prefix = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}\n\n";
+    let PrefixDecision::TerminalFailure(failure) = classify_prefix(prefix.as_bytes(), false) else {
+        panic!("capacity response.failed must be classified before delivery");
+    };
+    assert_eq!(failure.code.as_deref(), Some("server_error"));
+    assert!(failure.message.contains("Selected model is at capacity"));
+}
+
+#[test]
+fn preflight_classifies_selected_model_capacity_before_delivery() {
+    let body = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}\n\n";
+    let outcome = preflight_stream_response(stream_response(body), "/v1/responses", true, true);
+    assert!(matches!(
+        outcome,
+        StreamPreflightOutcome::TerminalFailure(failure)
+            if failure.code.as_deref() == Some("server_error")
+    ));
+}
+
+#[test]
 fn prefix_retries_usage_notice_confirmed_by_bare_terminal_events() {
     for terminal_event in ["response.incomplete", "response.failed"] {
         let prefix = format!(
@@ -152,6 +173,20 @@ fn prefix_detects_deactivation_in_explicit_error_event() {
         classify_prefix(prefix.as_bytes(), false),
         PrefixDecision::Failover("workspace_deactivated".to_string())
     );
+}
+
+#[test]
+fn prefix_projects_structured_terminal_failure_before_semantic_output() {
+    let prefix = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"busy\"}}}\n\n"
+    );
+    assert!(matches!(
+        classify_prefix(prefix.as_bytes(), false),
+        PrefixDecision::TerminalFailure(failure)
+            if failure.code.as_deref() == Some("rate_limit_exceeded")
+                && failure.message == "busy"
+    ));
 }
 
 #[test]

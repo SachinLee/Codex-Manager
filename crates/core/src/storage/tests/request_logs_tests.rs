@@ -1409,10 +1409,15 @@ fn upgraded_db_without_upstream_protocol_column_is_repaired_on_init() {
         .expect("insert after repair");
     assert!(inserted > 0);
 
-    let rows = storage.list_request_logs(None, 10).expect("list after repair");
+    let rows = storage
+        .list_request_logs(None, 10)
+        .expect("list after repair");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].trace_id.as_deref(), Some("trc-upgrade-repair"));
-    assert_eq!(rows[0].upstream_protocol.as_deref(), Some("chat_completions"));
+    assert_eq!(
+        rows[0].upstream_protocol.as_deref(),
+        Some("chat_completions")
+    );
 
     let _ = std::fs::remove_file(&path);
 }

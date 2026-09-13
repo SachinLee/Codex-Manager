@@ -1,278 +1,168 @@
-# 设计：Aggregate API SSE 终态错误分类与候选轮转
+# 设计：Aggregate Responses SSE 候选优先与模型降级
 
-## 背景与当前行为
+## 状态与质量等级
 
-### 问题根因
-生产证据显示三个 `gpt-5.6-terra/xhigh` 请求各只尝试了 `esfaery` 一次，尽管还有其他 active 候选（`wegoo-codex`、`timcc-0.2`、`wegoo-codex-0.2`）。
+本文件取代此前依赖 bridge 后 `pending_failover_request` 的方案。该方案已由 `cargo test -p codexmanager-service aggregate_sse --lib` 证伪：4 个 SSE 候选切换断言只发出一次上游请求。
 
-**根本原因**：`aggregate_api.rs:3357-3422` 在收到 SSE `response.failed`/`error` 终态时，无条件设置 `succeeded=true` 并立即返回 `AggregateAttemptOutcome::Responded`，跳过候选循环，**从未调用** `classify_upstream_failure()`。
+**质量等级：critical。** 改动面向公开网关路由，重试会影响上游调用次数、每日预算预留和最终模型计费。实现须满足 `R-001` 至 `R-004` 与 `AC-001` 至 `AC-006`，并走 critical 的验证与独立审查门禁。
 
-现有分类器 `upstream_failure.rs:34-76` 只被 HTTP 非成功响应分支（`aggregate_api.rs:2828-2882`）调用，该分支发生在 bridge 创建之前。HTTP 200 + SSE 终态错误路径完全绕过了它。
+本设计只规定实现；不授权修改产品代码、本地模型目录或 OMP 配置。
 
-### 现有成功路径对比
-1. **HTTP 非 2xx JSON 错误**（`aggregate_api.rs:2657-2882`）：
-   - 提取 `error_code_from_response_body()`（`upstream_failure.rs:89-100`）
-   - 调用 `classify_upstream_failure(status_code, message, error_code, has_delivered=false, ...)`
-   - `rate_limit_exceeded` → `CandidateFailover`，切到下一候选
-   - 已验证：`aggregate_api_tests.rs:880-900`
+## 已确认的当前链路
 
-2. **Chat 前置检查**（`aggregate_api.rs:887-989`）：
-   - `preflight_chat_stream()` 在交付前检查 SSE 前缀
-   - 遇到 `{"error": ...}` 或 `content_filter` → 返回 `ChatPreflightOutcome::Failover(message)`
-   - 外层 `2946-2960` 收到 failover 后设置 `cooldown_eligible_failure=true; break`，由候选循环处理
-   - 限制：只覆盖流式 Chat 协议（`UpstreamProtocol::ChatCompletions`），不覆盖 Responses
-
-3. **账号池前置检查**（`stream_preflight.rs:1-460`）：
-   - 对账号池路径，在交付前有完整的 SSE 错误/usage-limit 检测
-   - Aggregate API 路径未复用
-
-### 现有零交付保护
-`delivery.rs:409-448` 和 `469-515` 已实现有限的零交付 failover guard：
-- 条件：`terminal_error.is_some() && status==200 && !saw_terminal && output_tokens==0`
-- 若满足：返回 `pending_failover_request = Some(request)`
-- 由 `CODEXMANAGER_AGGREGATE_ZERO_DELIVERY_FAILOVER` 环境变量控制（默认 disabled）
-
-**问题**：此保护仅对传输级错误（连接断开、EOF）有效，不处理语义级 SSE `response.failed`/`error` 终态。后者设置 `saw_terminal=true`，不满足 `!saw_terminal` 条件。
-
-## 解决方案设计
-
-### 策略表：上游错误决策矩阵
-
-| 错误来源 | HTTP 状态 | SSE 事件 | `error.code` | 零交付？ | 决策 | 健康记录 |
-|---------|----------|----------|-------------|---------|------|---------|
-| **HTTP 非 2xx JSON** | 502 | — | `rate_limit_exceeded` | ✓ | `CandidateFailover` | cooldown |
-| **HTTP 非 2xx JSON** | 502 | — | 其他/null | ✓ | `RetrySameCandidate` | cooldown (预算耗尽后) |
-| **HTTP 非 2xx JSON** | 401/403/404/405/429/501 | — | 任意 | ✓ | `CandidateFailover` | cooldown |
-| **HTTP 非 2xx JSON** | 400/422/413 | — | 任意 | ✓ | `RequestTerminal` | 无 |
-| **SSE 终态** | 200 | `response.failed`/`error` | `rate_limit_exceeded` | ✓ | `CandidateFailover` | cooldown |
-| **SSE 终态** | 200 | `response.failed`/`error` | 其他/null | ✓ | `RetrySameCandidate` | cooldown (预算耗尽后) |
-| **SSE 终态** | 200 | `response.failed`/`error` | 任意 | ✗（已交付） | `RequestTerminal` | 无 |
-| **Chat 前置检查** | 200 | `{"error": ...}` 在首帧 | 任意 | ✓ | `CandidateFailover` | cooldown |
-| **传输断流** | 200 | EOF/idle timeout | — | ✓（零 token） | failover (当前可选) | cooldown |
-| **容量错误** | 任意 | 任意 | — | ✓ | `CapacityRecovery` | 无 (health-neutral) |
-
-**关键决策**：
-1. **零交付判定**：现有 `pending_failover_request.is_some()` 已是最小准确信号
-2. **错误码提取**：复用 `error_code_from_response_body()` 的 JSON 解析逻辑，从 SSE `stream_terminal_error` 字符串中提取
-3. **分类器统一**：所有上游错误都经过 `classify_upstream_failure()`，消除路径分歧
-
-### 最小修改边界
-
-**核心变更点**：`aggregate_api.rs:3138-3422` 段落
-
-#### 当前流程（有缺陷）
-```rust
-3138: let bridge_ok = bridge.is_ok(is_stream);
-3139: let mut final_error = bridge.upstream_error_hint.clone();
-3140: if final_error.is_none() && !bridge_ok {
-3141:     final_error = Some(bridge.error_message(is_stream).unwrap_or(...));
-3145: }
-// ... capacity recovery logic 3146-3207 ...
-3357: succeeded = true;
-3358: break;  // 无条件跳出，返回 Responded
+```text
+OMP role/model
+  -> POST CodexManager /v1/responses (gpt-5.6-terra)
+  -> Aggregate candidate loop
+  -> HTTP 200 + text/event-stream
+  -> Responses SSE preflight
+  -> bridge / client delivery
+  -> all source routes exhausted: proxy model-fallback loop
+  -> final HTTP response to OMP
+  -> OMP outer retry / cross-provider fallback
 ```
 
-#### 修复后流程
-```rust
-3138: let bridge_ok = bridge.is_ok(is_stream);
-3139: let mut final_error = bridge.upstream_error_hint.clone();
-3140: if final_error.is_none() && !bridge_ok {
-3141:     final_error = Some(bridge.error_message(is_stream).unwrap_or(...));
-3145: }
+当前 Aggregate 分支把 blocking `reqwest::blocking::Response` 包成 `GatewayUpstreamResponse::Blocking` 后传入 `preflight_stream_response()` (`aggregate_api.rs:2963-3000`)。该 preflight 仅把 `GatewayUpstreamResponse::Stream` 视为 SSE (`stream_preflight.rs:207-215`)，因而不会读取该响应的 SSE 前缀。
 
-// NEW: SSE 终态错误的候选决策
-3208: if !bridge_ok && bridge.pending_failover_request.is_some() {
-3209:     // 零交付：请求可归还，分类后决策候选/同候选重试/终止
-3210:     let error_message = final_error.as_deref().unwrap_or("upstream response incomplete");
-3211:     let error_code = extract_error_code_from_terminal(final_error.as_deref());
-3212:     let decision = classify_upstream_failure(
-3213:         502,  // SSE 终态统一视为 502 客户端错误
-3214:         error_message,
-3215:         error_code.as_deref(),
-3216:         false,  // pending_failover_request 保证未交付
-3217:         false,  // 非推理守卫路径
-3218:     );
-3219:     match decision {
-3220:         UpstreamFailureDecision::CandidateFailover => {
-3221:             // rate_limit_exceeded 等候选级错误：切到下一候选
-3222:             request = bridge.pending_failover_request.take();
-3223:             last_attempt_error = Some(error_message.to_string());
-3224:             last_failure_status = 502;
-3225:             cooldown_eligible_failure = true;
-3226:             break;  // 外层候选循环继续
-3227:         }
-3228:         UpstreamFailureDecision::RetrySameCandidate => {
-3229:             // 普通 5xx 类错误：同候选重试
-3230:             if transport_retry_budget_remaining > 0 {
-3231:                 request = bridge.pending_failover_request.take();
-3232:                 transport_retry_budget_remaining -= 1;
-3233:                 next_attempt_kind = SPEND_ATTEMPT_KIND_TRANSPORT_RETRY;
-3234:                 continue;  // 内层重试循环
-3235:             }
-3236:             // 预算耗尽：候选失败，外层继续
-3237:             request = bridge.pending_failover_request.take();
-3238:             last_attempt_error = Some(error_message.to_string());
-3239:             last_failure_status = 502;
-3240:             cooldown_eligible_failure = true;
-3241:             break;
-3242:         }
-3243:         UpstreamFailureDecision::RequestTerminal => {
-3244:             // 400/422 等请求级错误：直接终止
-3245:             terminal_failure = true;
-3246:             last_attempt_error = Some(error_message.to_string());
-3247:             last_failure_status = 502;
-3248:             break;
-3249:         }
-3250:         _ => {
-3251:             // CapacityRecovery/CapabilityRetry 已在前方处理
-3252:             // 不应在 SSE 终态路径出现；保守 fallthrough
-3253:             request = bridge.pending_failover_request.take();
-3254:             last_attempt_error = Some(error_message.to_string());
-3255:             last_failure_status = 502;
-3256:             cooldown_eligible_failure = true;
-3257:             break;
-3258:         }
-3259:     }
-3260: }
-3261:
-3262: // 已交付或无请求可归还：原路径
-3357: succeeded = true;
-3358: break;
-```
+随后 bridge 读取 `response.failed` 时会同时设置 `terminal_error` 和 `saw_terminal=true`。bridge 的可归还条件仍要求 `!saw_terminal` (`delivery.rs:409-448`、`469-515`)，所以该后置路径不能承担 SSE 终态候选切换。这个条件不能放宽：它不是可靠的“未交付语义”证明。
 
-**辅助函数**（新增）：
+## 设计决策
+
+### 1. Preflight 是零语义 SSE 终态的唯一重放 seam
+
+`stream_preflight.rs` 负责在任何语义事件到达 delivery 前读取并重放有限前缀；`aggregate_api.rs` 负责候选、重试预算、预算预留和健康决策。`delivery.rs` 只保留现有读错误/已交付处理，不承担候选策略。
+
+**不变量：** 一旦 prefix 分类为 `Deliver`，该流只能交给 bridge；无论最终是否报错，均不可重新发送原请求。
+
+### 2. Stream preflight 返回事实，不返回 Aggregate 策略
+
+在 `proxy_pipeline/stream_preflight.rs` 增加内部结构化终态结果：
+
 ```rust
-/// 从 SSE 终态错误消息中提取 error.code（若有）。
-/// 复用 error_code_from_response_body 的解析逻辑。
-fn extract_error_code_from_terminal(terminal_error: Option<&str>) -> Option<String> {
-    let message = terminal_error?;
-    // 1. 尝试 JSON 解析：{"error": {"code": "...", "message": "..."}}
-    if let Ok(value) = serde_json::from_str::<Value>(message) {
-        return error_code_from_response_body(message.as_bytes());
-    }
-    // 2. 前缀匹配：`code=rate_limit_exceeded ...`
-    //    这是 extract_message_from_error_map 的输出格式
-    let normalized = message.trim();
-    if let Some(rest) = normalized.strip_prefix("code=") {
-        if let Some(code) = rest.split_whitespace().next() {
-            return Some(code.to_string());
-        }
-    }
-    None
+StreamTerminalFailure {
+    message: String,
+    error_code: Option<String>, // error.code；缺失时 error.type
 }
 ```
 
-### 不变量与边界条件
+并增加 `StreamPreflightOutcome::TerminalFailure(StreamTerminalFailure)`。
 
-#### 零交付保证
-- **检查点**：`bridge.pending_failover_request.is_some()`
-- **含义**：delivery 层确认请求未被消费、无 semantic 输出已写入客户端
-- **来源**：`delivery.rs:410-414` / `470-476`
-- **条件**：`terminal_error.is_some() && status==200 && !saw_terminal && output_tokens==0`
-- **已交付情况**：`pending_failover_request=None`，跳过分类，维持 `succeeded=true` 原路径
+- SSE 判定基于 `response.headers()` 的 `Content-Type: text/event-stream`，而不依赖 `GatewayUpstreamResponse` variant；`headers()` 已同时覆盖 `Blocking` 与 `Stream`。
+- 对 `error`、`response.failed`、`response.incomplete`，只有在此前未分类为 `Deliver` 时，提取结构化终态事实。message 采用现有受限错误 hint；分类键优先 `error.code`、回退 `error.type`，而不是保留原始 SSE frame。
+- 在 `support/upstream_failure.rs` 复用同一 error-code/type 投影，使 HTTP JSON 和 SSE 嵌套 error object 不各自维护解析规则。该文件同时是分类键的唯一 allow-list 所在处。
+- `Failover`、`StatusFailover`、`RetryUsageNotice`、`TransportFailover` 保留其已有语义。`RetryUsageNotice` 不是普通 5xx，继续遵循现有独立配额提示策略。
 
-#### 候选轮转边界
-1. **单次遍历**：外层 `for (candidate_idx, ...) in planned_candidates` 只走一遍（`aggregate_api.rs:2173`）
-2. **同候选预算**：每候选初始 1 次 + `transport_retry_budget=3`（`aggregate_api.rs:2317-2328`）
-3. **候选耗尽终态**：外层循环结束后 `3448-3534` 向客户端写一次最终错误
-4. **模型降级有界**：若走模型 fallback，`proxy.rs:22` 限制 `MAX_MODEL_FALLBACK_HOPS=3`
+这使 `preflight_stream_response()` 成为深模块：调用方获得“可交付流 / 终态失败事实 / 传输失败 / 既有配额提示”的小接口，不需要理解 SSE 帧、前缀回放或 body ownership。
 
-#### 健康与冷却
-- **Cooldown 触发**：`cooldown_eligible_failure=true` 后 `3365-3370` 调用 `gateway_record_aggregate_api_failure()`
-- **不触发冷却的情况**：
-  - Reasoning Guard 内部重试（`3031: cooldown_eligible_failure=false`）
-  - 已交付的容量错误（`3154: cooldown_eligible_failure=false`）
-  - 请求级终态错误（400/422，不应冷却健康候选）
-- **会话亲和性清除**：失败时清除绑定（`3390-3406`），成功时更新绑定（`3381-3388`）
+### 3. Aggregate 分支按唯一的零交付决策点执行策略
 
-#### Spend 账户
-- **预留**：每次 attempt 前 `reserve_daily_spend_attempt()`
-- **结算**：成功时 `settle_daily_spend_from_usage()`
-- **持有**：失败/ambiguous 时 `hold_daily_spend_attempt()`
-- **释放**：零交付的容量重试前 `release_daily_spend_attempt()`
-- **零交付失败的 SSE 终态**：请求未消费 → 应 release，同账号池 `response_finalize.rs:489-490`
+`aggregate_api.rs` 将新的 preflight `TerminalFailure` 与既有 bridge `pending_failover_request` 终态都归一为候选循环内的 `PreDeliveryFailure { message, error_code }`。两种来源共享**同一个** `classify_upstream_failure(502, message, error_code, false, false)` action match：preflight 来源保留原 request；bridge 来源先从 `pending_failover_request` 恢复 request。
 
-#### 与现有 Preflight 的关系
-- **Chat preflight**（`aggregate_api.rs:2940-2962`）：在 bridge 前检查，只覆盖流式 Chat
-- **SSE 终态分类**（本方案）：在 bridge 后检查，覆盖所有 Responses SSE
-- **互补关系**：preflight 捕获 Chat 首帧错误，bridge 后捕获 Responses 和 Chat 非流式的终态
-- **不冲突**：preflight 返回 failover 时不会创建 bridge；SSE 终态分类只在 bridge 已创建、请求可归还时生效
+这会替代而非复制当前 `aggregate_api.rs:3253-3310` 的 SSE 候选决策。preflight 分支不得直接 `break` 成为第二套策略；它只提供 failure fact，避免 ordinary SSE 5xx 意外跳过同候选重试。
 
-### 风险与权衡
+分类器补齐 SSE 的显式键，并为 HTTP JSON 与 SSE 共用：
 
-#### 已排除的替代方案
-1. **修改零交付条件 `!saw_terminal`**：
-   - 错误：`saw_terminal=true` 是正确行为，表示收到了 SSE 终态事件
-   - 风险：改为允许 `saw_terminal=true` 后重放，可能在已交付场景错误重试
-   - 正确做法：保持 `saw_terminal` 语义，依赖 `pending_failover_request` 判定可归还性
+| 分类键 | 决策 |
+| --- | --- |
+| `rate_limit_exceeded`、`authentication_error`、`model_not_found` | `CandidateFailover`：当前上游/路由不适用，直接候选 B |
+| `invalid_request_error` | `RequestTerminal`：请求不可重放 |
+| 未知 `server_error`、传输错误 | `RetrySameCandidate`：消耗本候选 transport budget |
 
-2. **在 delivery 层直接分类**：
-   - 缺点：delivery 层不应了解 Aggregate 候选决策、重试预算、cooldown 逻辑
-   - 职责：delivery 负责 SSE 解析和零交付判定；候选决策属于 aggregate_api 外层循环
+只有上述显式键改变分类器；保留原有容量、Chat capability、reasoning-guard 的优先级和分支。
 
-3. **泛化为"所有 502 都 failover"**：
-   - 错误：HTTP 502 JSON 已有正确分类（同候选重试 vs 候选 failover）
-   - 风险：忽略 `error.code`，将普通传输错误也强制切候选，破坏重试预算语义
+| 分类结果 | 行为 | 健康与预算 |
+| --- | --- | --- |
+| `CandidateFailover` | 不发送给客户端；结束当前候选内层循环，外层继续 B | 释放本次未交付的 spend reservation；记录候选失败/冷却资格 |
+| `RetrySameCandidate` | 使用 transport budget 重试 A；预算耗尽后外层继续 B | 每次零交付重放前释放 reservation；仅预算耗尽后标记候选失败 |
+| `RequestTerminal` | 停止候选和模型 hop；返回一次终态 | 不冷却；按现有终态路径结算/持有 |
+| `CapacityRecovery` / `CapabilityRetry` | 复用已有容量/能力分支与独立预算，不能降级成普通重试 | 保持既有 health-neutral 和 immutable-body 不变量 |
+| `ReasoningGuardRetry` | 不应由 preflight 产生；保守终态并保留诊断 | 不新增重试 |
 
-#### 残留限制
-1. **已交付后的终态错误**：
-   - 场景：客户端已收到部分 SSE delta，后续出现 `response.failed`
-   - 行为：不重试，维持 `succeeded=true`，记录 `attempt_records` 为失败
-   - 理由：已交付内容不可撤回，重放会导致重复输出或工具调用
-   - 观测：`affinity_binding_success=false`，亲和性清除
+`TransportFailover` 同样使用本候选 transport budget：首次后最多一次同候选重试，预算耗尽才切 B。保留原有指数退避计算，但以实际配置的初始预算计算 retry ordinal。
 
-2. **Gateway 生成的 502 vs 上游原始 502**：
-   - Gateway 归一化：SSE 终态转换为 502 客户端响应，`error_code=NULL`
-   - 原始上游 502 JSON：HTTP 非成功分支，`error_code` 可提取
-   - 区分：已在策略表中明确；本方案不改变 HTTP 非成功分支行为
+`Failover` / `StatusFailover` 在 Aggregate 原始非 2xx 分支已先处理；若仍从 preflight 抵达，维持当前安全的候选推进，不绕开已有 status 分类。候选循环的 request、reservation、deadline 和 retry counters 保持在原处；只归一失败事实与策略 match，不抽取接收大量可变参数的浅 helper。
 
-3. **缓存率相关性非因果性**：
-   - 观测：单候选路径 83.57% cache，多候选路径 68.26% cache
-   - 解释：多候选路径通常是首候选失败后的 fallback，请求往往无缓存
-   - 不作为设计约束：修复后仍允许候选轮转，缓存率下降是正确 failover 的副作用，而非目标
+### 4. Transport budget 的唯一来源
 
-## 实现顺序
+移除 `AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL` 对 transport retry 的硬编码使用。候选开始时读取：
 
-### 前置检查
-- [x] 确认 `pending_failover_request` 语义正确
-- [x] 确认 `classify_upstream_failure()` 已覆盖所有决策类型
-- [x] 确认 SSE `stream_terminal_error` 包含完整错误消息（含 `error.code` 若有）
+```text
+aggregate_api_transport_retry_attempts()
+```
 
-### Slice 划分
-1. **添加 `extract_error_code_from_terminal()` 辅助函数**
-   - 单元测试：JSON 解析、前缀匹配、无 code 场景
-   
-2. **在 bridge 后插入 SSE 终态分类逻辑**
-   - 位置：`aggregate_api.rs:3208` (capacity recovery 后、succeeded 赋值前)
-   - 条件：`!bridge_ok && bridge.pending_failover_request.is_some()`
-   
-3. **实现候选 failover 分支**
-   - 测试：HTTP 200 + SSE `{"error": {"code": "rate_limit_exceeded"}}` → 两次 upstream attempt
-   
-4. **实现同候选重试分支**
-   - 测试：HTTP 200 + SSE `{"error": {"code": "server_error"}}` → 最多 4 次同候选 attempt
-   
-5. **实现请求级终止分支**
-   - 测试：HTTP 200 + SSE `{"error": {"code": "invalid_request"}}` → 单次 attempt，terminal_failure=true
-   
-6. **验证 spend 结算**
-   - 零交付失败 → `release_daily_spend_attempt()`
-   - 已交付失败 → `hold_daily_spend_attempt()`
+其默认值已经是 `1`，含义为“首次之后再重试一次”。该初始值同时控制：
 
-### 回归验证
-- 现有 `aggregate_api_tests.rs:880-900` (HTTP 502 JSON) 保持通过
-- 现有 Chat preflight 行为不变
-- 零候选/全冷却场景的 `upstream_url=NULL` 路径不受影响
+- mutable remaining budget；
+- 内层循环的最大尝试数；
+- 指数退避的 attempt ordinal。
 
-## 开放问题
-无。用户已确认：
-- 要求区分真实上游错误与 gateway 生成的终态
-- 要求保留有界候选轮转和重试预算
-- 要求不在已交付后重放
+`0` 表示不进行同候选重试；无效或缺失值回退 `1`。能力、容量和 reasoning-guard 的独立预算不改变。
 
-## 参考文件
-- `crates/service/src/gateway/upstream/protocol/aggregate_api.rs`
-- `crates/service/src/gateway/upstream/support/upstream_failure.rs`
-- `crates/service/src/gateway/observability/http_bridge/delivery.rs`
-- `crates/service/src/gateway/observability/http_bridge/aggregate/output_text.rs`
-- `crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs`
+将该现有环境变量写入 `docs/en/report/environment-and-runtime-config.md`：范围仅 Aggregate API 的零交付 transport/SSE server-error 重试，不控制候选总数、模型 hop、健康阈值或 OMP 重试。
+
+### 5. 模型降级与 OMP 的职责分层
+
+`proxy.rs` 已从 `ManagedModelV2.fallback_model_slugs` 读取第一条可用 fallback，并限制为最多三个 model hops。无需新增路由代码。
+
+部署配置在已有模型目录 UI 中将：
+
+```text
+gpt-5.6-terra -> gpt-5.6-sol
+```
+
+保存为 Terra 的 fallback model list。此列表在 Aggregate 和账号路径都返回 `RequestReleased` 后才被 proxy loop 消费；Sol 使用自己的候选集合。没有 Sol 路由时，该 hop 返回有界错误，不再无限尝试。
+
+OMP 的 `C:/Users/shuan/.omp/agent/config.yml` 只改：
+
+```yaml
+retry:
+  maxRetries: 1
+```
+
+不修改 `models.yml`，不写入或暴露 provider secrets，不删除现有角色的跨 Provider `fallbackChains`。OMP 在 CodexManager 返回最终响应后才可执行外层策略，不能干预单个网关请求中的候选循环。
+
+## 状态转移
+
+```text
+Responses SSE before semantic event
+  -> TerminalFailure(rate_limit/auth/model unsupported)
+  -> next same-model candidate
+
+Responses SSE before semantic event
+  -> TerminalFailure(generic server/upstream 5xx) or TransportFailover
+  -> retry same candidate once
+  -> next same-model candidate
+
+Responses SSE after semantic event
+  -> Deliver to bridge
+  -> any later error is final; no replay
+
+All Terra candidates and account paths exhausted
+  -> RequestReleased
+  -> proxy selects Terra fallback Sol
+  -> Sol resolves its own routes
+  -> outer OMP retry/fallback only after the final gateway result
+```
+
+## Observability and privacy
+
+No migration or request-log schema changes. Preserve `gateway_upstream_attempt_events`, `attempted_aggregate_api_ids_json`, `model_source=model_fallback`, daily-spend attempt lifecycle and existing sanitized URL handling.
+
+Structured logs added or extended at the Aggregate preflight action point must include trace id, candidate id, candidate position, action (`candidate_failover`, `retry_same_candidate`, `terminal`), bounded error code, retry ordinal and status. They must not include prompt/body, raw SSE frame, authorization data, tool arguments or secrets.
+
+## Compatibility, rollout and rollback
+
+- HTTP non-2xx classification, Chat preflight, all-cooldown, zero-balance, capability routing and reasoning guard retain their existing paths.
+- The default retry change is intentionally latency-affecting: normal 5xx goes from first + 3 retries to first + 1 retry. Operators may set the documented value to `0` or a larger bounded `usize` only when they accept the resulting trade-off.
+- Rollback source by reverting the two gateway files; restore the prior OMP retry value and remove Terra's catalog fallback list if needed. No migration or persisted code setting must be rolled back.
+
+## Alternatives rejected
+
+1. **Only change `delivery.rs` to accept `saw_terminal=true`** — unsafe: it lacks a proof that no semantic event was already delivered.
+2. **Make every 502 advance immediately** — loses transient recovery and bypasses the shared classifier.
+3. **Let OMP choose the next candidate** — impossible: OMP only receives CodexManager's final HTTP result and has no candidate health, route or spend context.
+4. **Add a new public settings/RPC surface for retry budget** — unnecessary; an existing environment setting and runtime reader already define the control plane.
+
+## Open risks
+
+No product decision is unresolved. Implementation must verify the new structured preflight outcome exhaustively at both consumers (`aggregate_api.rs` and `candidate_executor.rs`), because the latter keeps account-pool policy and must not inherit Aggregate retry budgets accidentally.

@@ -1721,3 +1721,21 @@ fn terminal_user_agent_sanitizes_header_like_official_codex() {
         "Weird_Terminal__/1.2_beta"
     );
 }
+
+#[test]
+fn aggregate_transport_retry_budget_defaults_to_one_and_honors_zero() {
+    let _guard = crate::test_env_guard();
+    let _unset = EnvGuard::clear("CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS");
+    assert_eq!(aggregate_api_transport_retry_attempts(), 1);
+
+    let _zero = EnvGuard::set("CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS", "0");
+    assert_eq!(aggregate_api_transport_retry_attempts(), 0);
+    drop(_zero);
+
+    let _invalid = EnvGuard::set("CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS", "invalid");
+    assert_eq!(aggregate_api_transport_retry_attempts(), 1);
+    drop(_invalid);
+
+    let _one = EnvGuard::set("CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS", "1");
+    assert_eq!(aggregate_api_transport_retry_attempts(), 1);
+}

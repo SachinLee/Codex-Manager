@@ -3562,7 +3562,6 @@ pub(crate) fn aggregate_api_transport_retry_attempts() -> usize {
         .unwrap_or(1) // 默认降为 1（首次 + 1 次重试）
 }
 
-
 #[cfg(test)]
 #[path = "tests/runtime_config_tests.rs"]
 mod tests;
