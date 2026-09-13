@@ -3,6 +3,18 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
+  "额度重置自动唤醒": "Auto wake on quota reset",
+  "自动唤醒：开": "Auto wake: on",
+  "自动唤醒：关": "Auto wake: off",
+  "开启额度重置自动唤醒": "Enable auto wake on quota reset",
+  "关闭额度重置自动唤醒": "Disable auto wake on quota reset",
+  "批量开启自动唤醒": "Enable auto wake for selected accounts",
+  "批量关闭自动唤醒": "Disable auto wake for selected accounts",
+  "已为 {count} 个账号开启额度重置自动唤醒": "Enabled auto wake on quota reset for {count} accounts",
+  "已为 {count} 个账号关闭额度重置自动唤醒": "Disabled auto wake on quota reset for {count} accounts",
+  "更新额度重置自动唤醒失败: {error}": "Failed to update auto wake on quota reset: {error}",
+  "5 小时额度用尽后，在重置时间到达时自动发送一条预热消息，提前启动下一轮额度周期。默认开启，可单独或批量关闭。":
+    "After the 5-hour quota is exhausted, send a warmup message when the reset time arrives to start the next quota cycle sooner. Enabled by default; disable it per account or in bulk.",
   "边缘中继": "Edge relay",
   "代理设置": "Proxy settings",
   "分": "min",
@@ -234,6 +246,14 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
   "额度容量必须是大于 0 的数字，留空表示未覆盖":
     "Quota capacity must be a number greater than 0. Leave blank for no override.",
   "额度已耗尽": "Quota exhausted",
+  "强制开启": "Force enabled",
+  "取消强制开启": "Disable force enabled",
+  "仅 Luna Reserve": "Luna Reserve only",
+  "Luna Reserve 额度": "Luna Reserve quota",
+  "额度耗尽后仍使用账号": "Keep using account after quota exhaustion",
+  "开启后忽略 5h/7d 耗尽状态，继续把该账号加入网关候选；默认关闭。":
+    "When enabled, ignore exhausted 5h/7d windows and keep this account in the gateway pool; off by default.",
+  "手动强制开启": "Manually force enabled",
   "额度已重置，但最新用量同步失败，请稍后手动刷新":
     "Quota was reset, but the latest usage could not be synced. Refresh it manually later.",
   "重置 5h + 7d": "Reset 5h + 7d",
@@ -309,4 +329,10 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
   "开始测试": "Start test",
   "启动测试失败": "Failed to start test",
   "预计删除": "Estimated delete",
+  "获取账号模型": "Fetch account models",
+  "账号展示方式": "Account view",
+  "列表视图": "List view",
+  "宫格视图": "Grid view",
+  "选择账号": "Select account",
+  "账号模型": "Account models",
 };

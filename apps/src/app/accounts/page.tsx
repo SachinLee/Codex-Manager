@@ -1,8 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAccounts } from "@/hooks/useAccounts";
+import { useAccountResetWarmup } from "@/hooks/useAccountResetWarmup";
 import {
   isAdminRole,
   resolveSessionRole,
@@ -17,6 +19,7 @@ import {
   type AccountProxySource,
 } from "@/lib/api/account-client";
 import { useI18n } from "@/lib/i18n/provider";
+import { useAppStore } from "@/lib/store/useAppStore";
 import {
   buildAccountsByMovedOrder,
   buildAccountsBySizeOrder,
@@ -31,8 +34,11 @@ import {
   type StatusFilter,
 } from "@/app/accounts/accounts-page-helpers";
 import { AccountsPageView } from "@/app/accounts/accounts-page-view";
+import { AggregateApiModelAssociationModal } from "@/components/modals/aggregate-api-model-association-modal";
 import { isBannedAccount, isLimitedAccount } from "@/lib/utils/usage";
-import type { Account, ProxyProfile } from "@/types";
+import { accountClient } from "@/lib/api/account-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
+import type { Account, AccountFetchedModel, ProxyProfile } from "@/types";
 
 type CleanupStatus =
   | "unavailable"
@@ -66,14 +72,25 @@ function canBulkDisableAccount(account: Account): boolean {
   return getAccountStatusActionType(account) === "disable";
 }
 
+interface AccountsPageContentProps {
+  serviceAddr: string;
+}
+
 export default function AccountsPage() {
+  const serviceAddr = useAppStore((state) => state.serviceStatus.addr);
+  return <AccountsPageContent key={serviceAddr || "default"} serviceAddr={serviceAddr} />;
+}
+
+function AccountsPageContent({ serviceAddr }: AccountsPageContentProps) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const { isDesktopRuntime, canUseBrowserDownloadExport } =
     useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
   const canTestAccounts =
     isDesktopRuntime || (!isSessionLoading && isAdminRole(role));
+  const canManageAccountModels = canTestAccounts;
   const {
     accounts,
     accountDailyUsageById,
@@ -120,6 +137,8 @@ export default function AccountsPage() {
     isUpdatingStatusAccountId,
     isUpdatingManyStatuses,
   } = useAccounts();
+  const { isUpdatingResetWarmup, setAccountResetWarmupEnabled } =
+    useAccountResetWarmup(serviceAddr, isServiceReady);
   const isPageActive = useDesktopPageActive("/accounts/");
   usePageTransitionReady("/accounts/", !isServiceReady || !isLoading);
 
@@ -141,6 +160,7 @@ export default function AccountsPage() {
   const [tagsDraft, setTagsDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [sortDraft, setSortDraft] = useState("");
+  const [forceEnabledDraft, setForceEnabledDraft] = useState(false);
   const [quotaPrimaryDraft, setQuotaPrimaryDraft] = useState("");
   const [quotaSecondaryDraft, setQuotaSecondaryDraft] = useState("");
   const [proxyDialogAccount, setProxyDialogAccount] = useState<Account | null>(null);
@@ -157,6 +177,15 @@ export default function AccountsPage() {
   );
   const [accountTestAccountSnapshot, setAccountTestAccountSnapshot] =
     useState<Account | null>(null);
+  const [modelAssociationAccount, setModelAssociationAccount] =
+    useState<Account | null>(null);
+  const [modelAssociationItems, setModelAssociationItems] = useState<
+    AccountFetchedModel[]
+  >([]);
+  const [fetchingModelsAccountId, setFetchingModelsAccountId] = useState<
+    string | null
+  >(null);
+  const [isAssociatingModels, setIsAssociatingModels] = useState(false);
   // 从最新账号列表派生弹窗里的账号，测试结束后状态徽章可自动刷新；
   // 列表短暂重取时回退到快照，避免弹窗闪烁关闭。
   const accountTestAccount = useMemo(
@@ -399,6 +428,66 @@ export default function AccountsPage() {
   const openUsage = (account: Account) => {
     setSelectedAccountId(account.id);
     setUsageModalOpen(true);
+  };
+
+  const openModelAssociation = async (account: Account) => {
+    setFetchingModelsAccountId(account.id);
+    try {
+      const result = await accountClient.fetchAccountModels(account.id, serviceAddr);
+      setModelAssociationAccount(account);
+      setModelAssociationItems(result.items);
+    } catch (error) {
+      toast.error(`${t("拉取模型失败")}: ${getAppErrorMessage(error)}`);
+    } finally {
+      setFetchingModelsAccountId(null);
+    }
+  };
+
+  const handleModelAssociationOpenChange = (open: boolean) => {
+    if (!open && !isAssociatingModels) {
+      setModelAssociationAccount(null);
+      setModelAssociationItems([]);
+    }
+  };
+
+  const associateAccountModels = async (upstreamModels: string[]) => {
+    if (!modelAssociationAccount) return;
+    setIsAssociatingModels(true);
+    try {
+      const selected = new Set(upstreamModels);
+      const displayNames = Object.fromEntries(
+        modelAssociationItems
+          .filter((item) => selected.has(item.upstreamModel) && item.displayName)
+          .map((item) => [item.upstreamModel, item.displayName as string]),
+      );
+      const result = await accountClient.associateAccountModels(
+        modelAssociationAccount.id,
+        upstreamModels,
+        displayNames,
+        serviceAddr,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
+        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
+      ]);
+      toast.success(
+        t(
+          "关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}",
+          {
+            created: result.createdModels.length,
+            added: result.addedRoutes.length,
+            unchanged: result.unchangedRoutes.length,
+          },
+        ),
+      );
+      setModelAssociationAccount(null);
+      setModelAssociationItems([]);
+    } catch (error) {
+      toast.error(`${t("关联模型失败")}: ${getAppErrorMessage(error)}`);
+    } finally {
+      setIsAssociatingModels(false);
+    }
   };
 
   const handleUsageModalOpenChange = (open: boolean) => {
@@ -685,6 +774,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       currentTags: account.tags.join(", "),
       currentNote: account.note || "",
       currentSort: account.priority,
+      currentForceEnabled: account.status.trim().toLowerCase() === "force_enabled",
       currentQuotaPrimaryWindowTokens: account.quotaCapacityPrimaryWindowTokens,
       currentQuotaSecondaryWindowTokens: account.quotaCapacitySecondaryWindowTokens,
     });
@@ -693,6 +783,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
     setTagsDraft(account.tags.join(", "));
     setNoteDraft(account.note || "");
     setSortDraft(String(account.priority));
+    setForceEnabledDraft(account.status.trim().toLowerCase() === "force_enabled");
     setQuotaPrimaryDraft(
       account.quotaCapacityPrimaryWindowTokens == null
         ? ""
@@ -703,6 +794,20 @@ const toggleCleanupStatus = (rawStatus: string) => {
         ? ""
         : String(account.quotaCapacitySecondaryWindowTokens),
     );
+  };
+
+  const handleToggleForceEnabled = async (account: Account) => {
+    const normalizedStatus = account.status.trim().toLowerCase();
+    if (["disabled", "inactive", "unavailable", "banned"].includes(normalizedStatus)) {
+      return;
+    }
+    try {
+      await updateAccountProfile(account.id, {
+        status: normalizedStatus === "force_enabled" ? "active" : "force_enabled",
+      });
+    } catch {
+      // mutation 已统一处理 toast，这里保持菜单状态不变
+    }
   };
 
   // 顶部/底部按全量列表定位，上移/下移仍按当前筛选结果取相邻账号。
@@ -849,6 +954,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       nextTagsText === accountEditorState.currentTags &&
       nextNote === accountEditorState.currentNote &&
       nextSort === accountEditorState.currentSort &&
+      forceEnabledDraft === accountEditorState.currentForceEnabled &&
       nextPrimaryCapacity === accountEditorState.currentQuotaPrimaryWindowTokens &&
       nextSecondaryCapacity === accountEditorState.currentQuotaSecondaryWindowTokens
     ) {
@@ -863,6 +969,12 @@ const toggleCleanupStatus = (rawStatus: string) => {
         note: nextNote || null,
         tags: nextTags,
         sort: nextSort,
+        status:
+          forceEnabledDraft === accountEditorState.currentForceEnabled
+            ? undefined
+            : forceEnabledDraft
+              ? "force_enabled"
+              : "active",
         quotaCapacityPrimaryWindowTokens: nextPrimaryCapacity ?? 0,
         quotaCapacitySecondaryWindowTokens: nextSecondaryCapacity ?? 0,
       });
@@ -885,6 +997,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
   };
 
   return (
+    <>
     <AccountsPageView
       accounts={accounts}
       accountDailyUsageById={accountDailyUsageById}
@@ -920,6 +1033,9 @@ const toggleCleanupStatus = (rawStatus: string) => {
       proxySettings={proxySettings}
       proxyProfiles={proxyProfiles}
       canTestAccounts={canTestAccounts}
+      canManageAccountModels={canManageAccountModels}
+      fetchingModelsAccountId={fetchingModelsAccountId}
+      openModelAssociation={openModelAssociation}
       accountTestAccount={accountTestAccount}
       isProxySettingsLoading={isProxySettingsLoading}
       proxyEnabledDraft={proxyEnabledDraft}
@@ -932,6 +1048,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       tagsDraft={tagsDraft}
       noteDraft={noteDraft}
       sortDraft={sortDraft}
+      forceEnabledDraft={forceEnabledDraft}
       quotaPrimaryDraft={quotaPrimaryDraft}
       quotaSecondaryDraft={quotaSecondaryDraft}
       isRefreshingAllAccounts={isRefreshingAllAccounts}
@@ -950,6 +1067,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
       isUpdatingProfileAccountId={isUpdatingProfileAccountId}
       isUpdatingStatusAccountId={isUpdatingStatusAccountId}
       isUpdatingManyStatuses={isUpdatingManyStatuses}
+      isUpdatingResetWarmup={isUpdatingResetWarmup}
+      setAccountResetWarmupEnabled={setAccountResetWarmupEnabled}
       statusFilterOptions={statusFilterOptions}
       importFileActionLabel={importFileActionLabel}
       importDirectoryActionLabel={importDirectoryActionLabel}
@@ -970,6 +1089,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       setTagsDraft={setTagsDraft}
       setNoteDraft={setNoteDraft}
       setSortDraft={setSortDraft}
+      setForceEnabledDraft={setForceEnabledDraft}
       setQuotaPrimaryDraft={setQuotaPrimaryDraft}
       setQuotaSecondaryDraft={setQuotaSecondaryDraft}
       setPage={setPage}
@@ -1013,7 +1133,17 @@ const toggleCleanupStatus = (rawStatus: string) => {
       refreshAccount={refreshAccount}
       clearPreferredAccount={clearPreferredAccount}
       setPreferredAccount={setPreferredAccount}
+      toggleForceEnabled={handleToggleForceEnabled}
       toggleAccountStatus={toggleAccountStatus}
     />
+      <AggregateApiModelAssociationModal
+        open={isPageActive && Boolean(modelAssociationAccount)}
+        onOpenChange={handleModelAssociationOpenChange}
+        sourceName={modelAssociationAccount?.name || t("账号模型")}
+        items={modelAssociationItems}
+        isSaving={isAssociatingModels}
+        onAssociate={associateAccountModels}
+      />
+    </>
   );
 }

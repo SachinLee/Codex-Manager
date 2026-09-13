@@ -87,6 +87,12 @@ async function loadTransportWebCommandsModule() {
 const transportWebCommands = await loadTransportWebCommandsModule();
 const commandMap = transportWebCommands.createWebCommandMap(async () => ({}));
 
+test("quota reset warmup uses a dedicated batch setting RPC", () => {
+  assert.deepEqual(commandMap.service_account_reset_warmup_update, {
+    rpcMethod: "account/resetWarmup/update",
+  });
+});
+
 test("createWebCommandMap keeps app and gateway transport settings payloads aligned", () => {
   const appSettingsSet = commandMap.app_settings_set;
   assert.equal(appSettingsSet.rpcMethod, "appSettings/set");
@@ -192,6 +198,15 @@ test("createWebCommandMap 为账号预热命令提供 Web RPC 映射", () => {
 test("createWebCommandMap 为批量账号排序提供 Web RPC 映射", () => {
   assert.deepEqual(commandMap.service_account_update_sorts, {
     rpcMethod: "account/updateSorts",
+  });
+});
+
+test("createWebCommandMap 为账号模型拉取与关联提供 Web RPC 映射", () => {
+  assert.deepEqual(commandMap.service_account_fetch_models, {
+    rpcMethod: "account/fetchModels",
+  });
+  assert.deepEqual(commandMap.service_account_associate_models, {
+    rpcMethod: "account/associateModels",
   });
 });
 

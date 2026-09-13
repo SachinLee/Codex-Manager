@@ -6,8 +6,8 @@ import {
 import {
   normalizeAccountList,
   normalizeAccountDailyUsageStats,
+  normalizeAccountFetchModelsResult,
   normalizeAggregateApiBalanceRefreshResult,
-  normalizeAggregateApiFetchModelsResult,
   normalizeAggregateApiAssociateModelsResult,
   normalizeAggregateApiCreateResult,
   normalizeAggregateApiCapabilityDiagnosticsResult,
@@ -81,7 +81,7 @@ import { unwrapUsageSnapshotPayload } from "./usage-response";
 import {
   AccountListResult,
   AccountDailyUsageStat,
-  AccountUsage,
+  AccountFetchModelsResult,
   AggregateApi,
   AggregateApiAssociateModelsResult,
   AggregateApiBalanceRefreshResult,
@@ -460,6 +460,33 @@ export const accountClient = {
   async list(): Promise<AccountListResult> {
     const result = await invoke<unknown>("service_account_list", withAddr());
     return normalizeAccountList(result);
+  },
+  async fetchAccountModels(
+    accountId: string,
+    addr?: string | null,
+  ): Promise<AccountFetchModelsResult> {
+    const result = await invoke<unknown>(
+      "service_account_fetch_models",
+      withAddr({ accountId, ...(addr === undefined ? {} : { addr: addr || null }) }),
+    );
+    return normalizeAccountFetchModelsResult(result);
+  },
+  async associateAccountModels(
+    accountId: string,
+    upstreamModels: string[],
+    displayNames?: Record<string, string>,
+    addr?: string | null,
+  ): Promise<AggregateApiAssociateModelsResult> {
+    const result = await invoke<unknown>(
+      "service_account_associate_models",
+      withAddr({
+        accountId,
+        upstreamModels,
+        displayNames: displayNames || null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
+    return normalizeAggregateApiAssociateModelsResult(result);
   },
   delete: (accountId: string) =>
     invoke("service_account_delete", withAddr({ accountId })),
@@ -1227,8 +1254,11 @@ export const accountClient = {
     );
     return normalizeApiKeyCreateResult(result);
   },
-  async listApiKeyUsageStats(): Promise<ApiKeyUsageStat[]> {
-    const result = await invoke<unknown>("service_apikey_usage_stats", withAddr());
+  async listApiKeyUsageStats(addr?: string | null): Promise<ApiKeyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_apikey_usage_stats",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeApiKeyUsageStats(result);
   },
   deleteApiKey: (keyId: string) =>

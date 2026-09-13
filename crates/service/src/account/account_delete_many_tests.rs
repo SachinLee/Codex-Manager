@@ -68,6 +68,10 @@ fn delete_accounts_dedupes_ids_and_reports_missing_accounts() {
         .insert_account(&account("acc-keep", 2))
         .expect("insert keep target");
 
+    // Publish only the fully initialized fixture: existing background workers
+    // may open the process-wide database path as soon as it changes.
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
     let result = delete_accounts(vec![
         " acc-delete ".to_string(),
         "".to_string(),

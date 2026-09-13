@@ -186,6 +186,7 @@ fn to_account_summary_with_reason(
         label: parts.label,
         group_name: parts.group_name,
         preferred,
+        reset_warmup_enabled: true,
         sort: parts.sort,
         status: parts.status,
         status_reason,
@@ -274,7 +275,15 @@ where
         .map(|account| account.account_id().to_string())
         .collect::<Vec<_>>();
     let setup = load_account_summary_setup(storage, &account_ids, options)?;
-    let items = build_account_summary_items(accounts, &setup);
+    let mut items = build_account_summary_items(accounts, &setup);
+    let reset_warmup_settings = storage
+        .list_account_reset_warmup_settings_for_accounts(&account_ids)
+        .map_err(|err| format!("load account reset warmup settings failed: {err}"))?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    for item in &mut items {
+        item.reset_warmup_enabled = reset_warmup_settings.get(&item.id).copied().unwrap_or(true);
+    }
     Ok(AccountSummaryContext {
         items,
         usage_snapshots: setup.usage_snapshots,

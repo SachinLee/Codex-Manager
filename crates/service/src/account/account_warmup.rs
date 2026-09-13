@@ -4,7 +4,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::account_status::mark_account_unavailable_for_auth_error;
 use crate::storage_helpers::open_storage;
@@ -15,6 +15,7 @@ const DEFAULT_WARMUP_MESSAGE: &str = "hi";
 const FALLBACK_WARMUP_MESSAGE: &str = "你好";
 pub(crate) const WARMUP_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_WARMUP_MODEL: &str = "gpt-5.3-codex";
+const RESET_WARMUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const X_OPENAI_FEDRAMP_HEADER_NAME: &str = "x-openai-fedramp";
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +95,7 @@ pub(crate) fn warmup_accounts(
             target,
             warmup_model.as_str(),
             warmup_message.as_str(),
+            true,
         );
         if item.ok {
             succeeded += 1;
@@ -124,6 +126,43 @@ fn resolve_target_accounts(
         .list_gateway_candidates_for_accounts(account_ids)
         .map_err(|err| err.to_string())
         .map(gateway_candidate_warmup_targets)
+}
+
+/// Reset warmups must bypass the stale exhausted-quota gateway filter. The
+/// scheduler has already atomically claimed a due, enabled cycle; account state
+/// is checked again here before reusing the normal proxy/auth/logging pipeline.
+pub(crate) fn warmup_account_after_reset(
+    storage: &Storage,
+    account_id: &str,
+) -> Result<AccountWarmupItemResult, String> {
+    let target = resolve_reset_warmup_target(storage, account_id)?;
+    let client = build_warmup_client_for_account(account_id)?;
+    let model = resolve_warmup_model_slug(storage);
+    Ok(warmup_single_account(
+        storage,
+        &client,
+        target,
+        &model,
+        DEFAULT_WARMUP_MESSAGE,
+        false,
+    ))
+}
+
+fn resolve_reset_warmup_target(
+    storage: &Storage,
+    account_id: &str,
+) -> Result<AccountWarmupTarget, String> {
+    let (account, token) = storage
+        .find_account_with_token_by_id(account_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "reset warmup account or token missing".to_string())?;
+    if matches!(
+        account.status.trim().to_ascii_lowercase().as_str(),
+        "inactive" | "disabled" | "unavailable" | "banned"
+    ) {
+        return Err("account unavailable for reset warmup".to_string());
+    }
+    Ok(AccountWarmupTarget { account, token })
 }
 
 fn gateway_candidate_warmup_targets(candidates: Vec<(Account, Token)>) -> Vec<AccountWarmupTarget> {
@@ -157,9 +196,9 @@ fn warmup_single_account(
     target: AccountWarmupTarget,
     model_slug: &str,
     message: &str,
+    allow_message_fallback: bool,
 ) -> AccountWarmupItemResult {
     let AccountWarmupTarget { account, mut token } = target;
-    let account_name = account.label.clone();
     let started_at = Instant::now();
     let authorization = resolve_warmup_authorization(storage, client, &account, &token);
     let uses_agent_identity = authorization
@@ -171,7 +210,14 @@ fn warmup_single_account(
         .ok()
         .and_then(|authorization| authorization.task_id.clone());
     let mut outcome = authorization.and_then(|authorization| {
-        send_warmup_request_with_fallback(client, &account, &authorization, model_slug, message)
+        send_warmup_request_with_fallback(
+            client,
+            &account,
+            &authorization,
+            model_slug,
+            message,
+            allow_message_fallback,
+        )
     });
 
     if let Err(err) = outcome.as_ref() {
@@ -184,6 +230,7 @@ fn warmup_single_account(
                 model_slug,
                 message,
                 failed_agent_task_id.as_deref(),
+                (!allow_message_fallback).then_some(RESET_WARMUP_REQUEST_TIMEOUT),
             );
         } else if !uses_agent_identity && should_retry_warmup_with_refresh(&token, err) {
             let issuer = std::env::var("CODEXMANAGER_ISSUER")
@@ -205,11 +252,34 @@ fn warmup_single_account(
                     &authorization,
                     model_slug,
                     message,
+                    allow_message_fallback,
                 )
             });
         }
     }
 
+    finish_warmup_attempt(
+        storage,
+        account,
+        model_slug,
+        started_at.elapsed().as_millis() as i64,
+        outcome,
+        crate::usage_refresh::enqueue_usage_refresh_for_account,
+    )
+}
+
+fn finish_warmup_attempt<F>(
+    storage: &Storage,
+    account: Account,
+    model_slug: &str,
+    duration_ms: i64,
+    outcome: Result<String, String>,
+    refresh_usage: F,
+) -> AccountWarmupItemResult
+where
+    F: FnOnce(&str) -> bool,
+{
+    let account_name = account.label.clone();
     match outcome {
         Ok(ok_message) => {
             persist_warmup_observability(
@@ -218,10 +288,10 @@ fn warmup_single_account(
                 200,
                 None,
                 model_slug,
-                started_at.elapsed().as_millis() as i64,
+                duration_ms,
                 ok_message.as_str(),
             );
-            let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(&account.id);
+            let _ = refresh_usage(&account.id);
             AccountWarmupItemResult {
                 account_id: account.id,
                 account_name,
@@ -238,7 +308,7 @@ fn warmup_single_account(
                 status_code,
                 Some(err.as_str()),
                 model_slug,
-                started_at.elapsed().as_millis() as i64,
+                duration_ms,
                 "预热失败",
             );
             AccountWarmupItemResult {
@@ -375,6 +445,7 @@ fn recover_warmup_agent_identity_task(
     model_slug: &str,
     message: &str,
     failed_task_id: Option<&str>,
+    request_timeout: Option<Duration>,
 ) -> Result<String, String> {
     let failed_task_id = failed_task_id
         .map(str::trim)
@@ -395,8 +466,15 @@ fn recover_warmup_agent_identity_task(
         uses_agent_identity: true,
         account_scope_id: authorization.account_scope_id,
     };
-    send_warmup_request(client, account, &authorization, model_slug, message)
-        .map(|_| "已发送预热消息".to_string())
+    send_warmup_request(
+        client,
+        account,
+        &authorization,
+        model_slug,
+        message,
+        request_timeout,
+    )
+    .map(|_| "已发送预热消息".to_string())
 }
 
 fn send_warmup_request_with_fallback(
@@ -405,23 +483,39 @@ fn send_warmup_request_with_fallback(
     authorization: &WarmupAuthorization,
     model_slug: &str,
     message: &str,
+    allow_message_fallback: bool,
 ) -> Result<String, String> {
-    let primary = send_warmup_request(client, account, authorization, model_slug, message);
+    warmup_request_with_message_fallback(message, allow_message_fallback, |text| {
+        send_warmup_request(
+            client,
+            account,
+            authorization,
+            model_slug,
+            text,
+            (!allow_message_fallback).then_some(RESET_WARMUP_REQUEST_TIMEOUT),
+        )
+    })
+}
+
+fn warmup_request_with_message_fallback<F>(
+    message: &str,
+    allow_message_fallback: bool,
+    mut send: F,
+) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let primary = send(message);
     match primary {
         Ok(()) => Ok("已发送预热消息".to_string()),
         Err(primary_err)
-            if message == DEFAULT_WARMUP_MESSAGE
+            if allow_message_fallback
+                && message == DEFAULT_WARMUP_MESSAGE
                 && !crate::agent_identity::is_agent_identity_task_invalid_error(&primary_err) =>
         {
-            send_warmup_request(
-                client,
-                account,
-                authorization,
-                model_slug,
-                FALLBACK_WARMUP_MESSAGE,
-            )
-            .map(|_| "已发送预热消息".to_string())
-            .map_err(|fallback_err| format!("{primary_err}; fallback={fallback_err}"))
+            send(FALLBACK_WARMUP_MESSAGE)
+                .map(|_| "已发送预热消息".to_string())
+                .map_err(|fallback_err| format!("{primary_err}; fallback={fallback_err}"))
         }
         Err(err) => Err(err),
     }
@@ -445,6 +539,7 @@ fn send_warmup_request(
     authorization: &WarmupAuthorization,
     model_slug: &str,
     message: &str,
+    request_timeout: Option<Duration>,
 ) -> Result<(), String> {
     let body = json!({
         "model": model_slug,
@@ -462,10 +557,15 @@ fn send_warmup_request(
     });
 
     let headers = build_warmup_headers(account, authorization)?;
-    let response = client
+    let request = client
         .post(WARMUP_UPSTREAM_URL)
         .headers(headers)
-        .json(&body)
+        .json(&body);
+    let request = match request_timeout {
+        Some(timeout) => request.timeout(timeout),
+        None => request,
+    };
+    let response = request
         .send()
         .map_err(|err| format!("warmup request failed: {err}"))?;
 
@@ -627,7 +727,7 @@ pub(crate) fn build_warmup_headers(
     );
     headers.insert(
         reqwest::header::USER_AGENT,
-        header_value(&crate::gateway::current_codex_user_agent())?,
+        header_value(&crate::gateway::current_gateway_user_agent())?,
     );
     headers.insert(
         HeaderName::from_static("originator"),

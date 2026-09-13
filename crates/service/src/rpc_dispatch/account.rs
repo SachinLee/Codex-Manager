@@ -3,8 +3,8 @@ use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 use crate::RpcActor;
 use crate::{
     account_cleanup, account_delete, account_delete_many, account_export, account_import,
-    account_list, account_proxy, account_test, account_update, account_warmup, auth_account,
-    auth_login, auth_tokens,
+    account_list, account_models, account_proxy, account_test, account_update, account_warmup,
+    auth_account, auth_login, auth_tokens,
 };
 
 /// 函数 `try_handle`
@@ -99,6 +99,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
         "account/updateSorts" => super::value_or_error(
             account_sort_updates_param(req).and_then(account_update::update_account_sorts),
         ),
+        "account/resetWarmup/update" => super::value_or_error(
+            serde_json::from_value::<crate::account::reset_warmup_settings::ResetWarmupUpdate>(
+                req.params.clone().unwrap_or(serde_json::Value::Null),
+            )
+            .map_err(|err| format!("invalid reset warmup settings: {err}"))
+            .and_then(crate::account::reset_warmup_settings::update),
+        ),
         "account/warmup" => {
             let account_ids = req
                 .params
@@ -119,6 +126,47 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 .unwrap_or_default();
             let message = first_string_param(req, &["message"]).unwrap_or_default();
             super::value_or_error(account_warmup::warmup_accounts(account_ids, &message))
+        }
+        "account/fetchModels" => {
+            if !actor.is_admin() {
+                super::value_or_error::<()>(Err(super::permission_denied("account/fetchModels")))
+            } else {
+                let account_id = first_str_param(req, &["accountId", "account_id"]).unwrap_or("");
+                super::value_or_error(account_models::fetch_account_models(account_id))
+            }
+        }
+        "account/associateModels" => {
+            if !actor.is_admin() {
+                super::value_or_error::<()>(Err(super::permission_denied(
+                    "account/associateModels",
+                )))
+            } else {
+                let account_id = first_str_param(req, &["accountId", "account_id"]).unwrap_or("");
+                let upstream_models = req
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("upstreamModels"))
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let display_names = req
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("displayNames"))
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                super::value_or_error(account_models::associate_account_models(
+                    account_id,
+                    upstream_models,
+                    display_names,
+                ))
+            }
         }
         "account/test" => {
             if !actor.is_admin() {
@@ -597,6 +645,22 @@ mod tests {
                     method,
                     serde_json::json!({ "accountId": "acc-a", "testId": "test-a" }),
                 ),
+                &actor,
+            )
+            .expect("response");
+            assert_eq!(
+                error_message(&response),
+                format!("permission_denied: {method}")
+            );
+        }
+    }
+
+    #[test]
+    fn member_cannot_fetch_or_associate_account_models() {
+        let actor = RpcActor::from_parts(Some(crate::ROLE_MEMBER), Some("member-a"));
+        for method in ["account/fetchModels", "account/associateModels"] {
+            let response = try_handle(
+                &rpc_request(method, serde_json::json!({ "accountId": "acc-a" })),
                 &actor,
             )
             .expect("response");

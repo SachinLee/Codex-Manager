@@ -1,76 +1,70 @@
-<p align="center">
-  <img src="assets/logo/logo.png" alt="CodexManager Logo" width="220" />
-</p>
-
-<h1 align="center">CodexManager</h1>
-
-<p align="center">本地桌面端 + 服务进程的 Codex 账号管理器+网关转发</p>
-
-<p align="center">
-  <a href="docs/en/README.md">English</a>
-  ·
-  <a href="docs/ru/README.md">Русский</a>
-  ·
-  <a href="docs/ko/README.md">한국어</a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/qxcnm/Codex-Manager">
-    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
-  </a>
-  <a href="https://atomgit.com/qxnm/Codex-Manager">
-    <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
-  </a>
-  <a href="https://gitee.com/hongshungao/Codex-Manager">
-    <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://qxnm.top">官网</a>
-  ·
-  <a href="#赞助商">赞助商</a>
-</p>
-
-<p align="center"><strong>本地桌面端 + 服务进程的 Codex 账号池管理器</strong></p>
-<p align="center">统一管理账号、用量与平台 Key，并提供本地网关能力。</p>
-
-## 认可社区
-<p align="left">
-  <a href="https://linux.do/t/topic/1688401" title="LINUX DO">
-    <img
-      src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png"
-      alt="LINUX DO"
-      height="52"
-    />
-  </a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="旋武社区">
-    <img
-      src="https://xuanwu.openatom.org/logo.png"
-      alt="旋武社区"
-      height="52"
-    />
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center" valign="middle" width="44%">
+      <img src="assets/logo/readme-header.png" alt="CodexManager — 本地桌面端与服务进程的 Codex 账号池管理器" width="460" />
+      <br />
+      <sub>
+        <a href="https://qxnm.top/">官网</a> ·
+        <a href="#赞助商">赞助商</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="13%">
+      <sub>
+        <strong>中文</strong>
+        <br />
+        <a href="docs/en/README.md">English</a>
+        <br />
+        <a href="docs/ru/README.md">Русский</a>
+        <br />
+        <a href="docs/ko/README.md">한국어</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="23%">
+      <a href="https://github.com/qxcnm/Codex-Manager">
+        <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
+      </a>
+      <br />
+      <a href="https://atomgit.com/qxnm/Codex-Manager">
+        <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
+      </a>
+      <br />
+      <a href="https://gitee.com/hongshungao/Codex-Manager">
+        <img alt="Gitee Stars" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2Fhongshungao%2FCodex-Manager&amp;query=%24.stargazers_count&amp;suffix=%20Stars&amp;label=Gitee&amp;logo=gitee&amp;color=C71D23" height="20" />
+      </a>
+    </td>
+    <td align="center" valign="middle" width="20%">
+      <sub><strong>认可社区</strong></sub>&nbsp;
+      <a href="https://linux.do/t/topic/1688401" title="LINUX DO">
+        <img src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png" alt="LINUX DO" height="30" />
+      </a>
+      &nbsp;
+      <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="旋武社区">
+        <img src="https://xuanwu.openatom.org/logo.png" alt="旋武社区" height="30" />
+      </a>
+    </td>
+  </tr>
+</table>
 
 **CodexManager 已加入 [旋武社区](https://xuanwu.openatom.org/articles/project/codex-manager/)**，这是由开放原子开源基金会孵化运营的 Rust 技术社区。
 
-## 源码说明：
-> 本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。
-> 其次是本人没有足够的环境来验证每个包都有没有问题，本人也要上班(我只是个穷逼买不起mac之类的)，本人只保证win的桌面端的可用性，如果其他端有问题，请在充分测试后提交 Issues，有时间我自会处理
-> 最后感谢各位使用者反馈的各个平台问题和参与的部分测试。
-
-
-## 免责声明
-
-- 本项目仅用于学习与开发目的。
-
-- 使用者必须遵守相关平台的服务条款（例如 OpenAI、Anthropic）。
-
-- 作者不提供或分发任何账号、API Key 或代理服务，也不对本软件的具体使用方式负责。
-
-- 请勿使用本项目绕过速率限制或服务限制。
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <strong>源码说明</strong>
+      <br />
+      <sub>
+        本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。其次是本人没有足够的环境来验证每个包都有没有问题，本人也要上班(我只是个穷逼买不起mac之类的)，本人只保证win的桌面端的可用性，如果其他端有问题，请在充分测试后提交 Issues，有时间我自会处理。最后感谢各位使用者反馈的各个平台问题和参与的部分测试。
+      </sub>
+    </td>
+    <td valign="top" width="50%">
+      <strong>免责声明</strong>
+      <br />
+      <sub>
+        本项目仅用于学习与开发目的；使用者必须遵守相关平台的服务条款（例如 OpenAI、Anthropic）；作者不提供或分发任何账号、API Key 或代理服务，也不对本软件的具体使用方式负责；请勿使用本项目绕过速率限制或服务限制。
+      </sub>
+    </td>
+  </tr>
+</table>
 
 ## 赞助商
 
@@ -79,6 +73,16 @@
 ** 合作洽谈：** 可通过微信、Telegram 或邮箱 `18272669457@163.com` 联系，添加好友时请备注“赞助合作”。
 
 感谢以下朋友与伙伴对 CodexManager 的支持。
+
+[![PatewayAI 官方高质量模型 API 中继服务](assets/images/sponsors/patewayai-banner-cn-4k.png)](https://pateway.ai/?ch=kimnmd)
+
+感谢 <strong>PatewayAI</strong> 对本项目的赞助！
+
+PatewayAI 专注于官方高质量模型 API 中继，完整支持 Claude、Codex 系列，并提供透明计费与企业级服务。
+
+经济模式低至 0.5 折！通过<a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">此链接</a>注册可获试用额度，还可参与不定时活动领取免费额度，双向推荐奖励最高达 150 美元。
+
+---
 
 <table>
   <tr>
@@ -201,8 +205,9 @@
 - 账号池管理：分组、标签、排序、备注、封禁识别与封禁筛选
 - 批量导入 / 导出：支持多文件导入、桌面端文件夹递归导入 JSON、按账号导出单文件
 - 用量展示：支持标准 5 小时 + 7 日窗口、仅 7 日单窗口账号，以及 Code Review / Spark 等官方附加额度窗口；刷新后会统一展示各额度的剩余百分比与重置时间
+- [额度重置自动唤醒](docs/zh-CN/额度重置自动唤醒.md)：默认在已耗尽的 5 小时额度到达重置时间后发送简短预热消息，支持按账号或批量开启、关闭，减少等待下一轮额度刷新的时间。
 - 授权登录：支持 `chatgpt.com` 浏览器授权与 Device Code 登录；浏览器授权仍可手动粘贴回调地址完成解析
-- 平台 Key：随机生成或自定义固定 Key、禁用、删除、模型绑定、推理等级、服务等级（跟随请求 / Fast / Flex）；可绑定自定义账号分组，并与账号计划筛选取交集后仅在授权池内轮转
+- 平台 Key：随机生成或自定义固定 Key、禁用、删除、模型绑定、推理等级、服务等级（跟随请求 / Standard / Fast / Ultrafast / Flex）；可绑定自定义账号分组，并与账号计划筛选取交集后仅在授权池内轮转
 - 模型管理：模型目录 V2 是唯一运行时真相源；支持 builtin/custom、整数三价与长上下文阶梯价、账号池/聚合 API route、instructions policy、本地 JSON preview/commit，以及桌面/Web 主动导出 Codex 缓存
 - 聚合 API：管理第三方最小转发上游，支持创建、编辑、余额和基于已配置 V2 route 的连通性测试；可只读发现上游 `/models`，管理员确认后将发现模型创建或复用为本地模型，并添加或更新该 API 的显式路由；发现结果不持久化，也不会推断价格、能力或计费权限
 - 插件中心：路由为 `/plugins/`，支持内置精选、企业私有、自定义源三种市场模式，并提供插件清单、任务、日志与 Rhai 对接接口
@@ -215,13 +220,24 @@
 - 图片生成：默认按官方 Codex 行为为 `/v1/responses` 自动注入 `image_generation` tool，并支持显式 tool 透传、`/v1/images/generations` 与 `/v1/images/edits` 兼容入口，默认图片工具模型为 `gpt-image-2`
 
 ## 截图
-![仪表盘](assets/images/dashboard.png)
-![账号管理](assets/images/accounts.png)
-![平台 Key](assets/images/platform-key.png)
-![聚合 API](assets/images/aggregate-api.png)
+
+![仪表盘](assets/images/dashboard%20.png)
+
+![OpenAI 账号池（列表视图）](assets/images/accounts.png)
+
+![OpenAI 账号池（卡片视图）](assets/images/accounts2.png)
+
+![聚合 API](assets/images/aggregate-api%20.png)
+
+![平台密钥](assets/images/platform-key%20.png)
+
+![模型与路由](assets/images/models.png)
+
+![请求日志](assets/images/log.png)
+
+![系统设置](assets/images/setting.png)
+
 ![插件中心](assets/images/plug.png)
-![日志视图](assets/images/log.png)
-![设置页](assets/images/themes.png)
 
 ## 快速开始
 1. 启动桌面端，点击“启动服务”。

@@ -54,10 +54,7 @@ fn account_update_payload(
         params.insert("label".to_string(), serde_json::json!(value));
     }
     if let Some(value) = group_name {
-        params.insert(
-            "groupName".to_string(),
-            serde_json::json!(value.trim()),
-        );
+        params.insert("groupName".to_string(), serde_json::json!(value.trim()));
     }
     if let Some(value) = note {
         params.insert("note".to_string(), serde_json::json!(value));
@@ -250,6 +247,17 @@ pub async fn service_account_update_sorts(
     rpc_call_in_background("account/updateSorts", addr, Some(params)).await
 }
 
+/// Update the automatic quota-reset warmup switch for the selected accounts.
+#[tauri::command]
+pub async fn service_account_reset_warmup_update(
+    addr: Option<String>,
+    account_ids: Vec<String>,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "accountIds": account_ids, "enabled": enabled });
+    rpc_call_in_background("account/resetWarmup/update", addr, Some(params)).await
+}
+
 /// 函数 `service_account_warmup`
 ///
 /// 作者: gaohongshun
@@ -274,6 +282,30 @@ pub async fn service_account_warmup(
         "message": message.unwrap_or_default(),
     });
     rpc_call_in_background("account/warmup", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_account_fetch_models(
+    addr: Option<String>,
+    account_id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "accountId": account_id });
+    rpc_call_in_background("account/fetchModels", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_account_associate_models(
+    addr: Option<String>,
+    account_id: String,
+    upstream_models: Vec<String>,
+    display_names: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "accountId": account_id,
+        "upstreamModels": upstream_models,
+        "displayNames": display_names,
+    });
+    rpc_call_in_background("account/associateModels", addr, Some(params)).await
 }
 
 /// 函数 `service_account_test_start`
@@ -434,7 +466,6 @@ pub async fn service_account_proxy_cloudflare_speed_test(
     rpc_call_in_background("account/proxy/cloudflare-speed-test", addr, Some(params)).await
 }
 
-
 #[tauri::command]
 pub async fn service_account_proxy_test_job(
     addr: Option<String>,
@@ -499,7 +530,6 @@ pub async fn service_account_proxy_diagnostics_history(
     });
     rpc_call_in_background("account/proxy/diagnostics-history", addr, Some(params)).await
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -655,6 +685,9 @@ mod tests {
             None,
         )
         .expect("cleared payload");
-        assert_eq!(cleared.get("groupName").and_then(|value| value.as_str()), Some(""));
+        assert_eq!(
+            cleared.get("groupName").and_then(|value| value.as_str()),
+            Some("")
+        );
     }
 }

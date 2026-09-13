@@ -1,12 +1,137 @@
 use super::{
-    build_warmup_headers, consume_warmup_stream, resolve_target_accounts,
-    resolve_warmup_model_slug, should_retry_warmup_with_refresh, summarize_warmup_error,
-    WarmupAuthorization, DEFAULT_WARMUP_MODEL,
+    build_warmup_headers, consume_warmup_stream, finish_warmup_attempt,
+    resolve_reset_warmup_target, resolve_target_accounts, resolve_warmup_model_slug,
+    should_retry_warmup_with_refresh, summarize_warmup_error, WarmupAuthorization,
+    DEFAULT_WARMUP_MODEL,
 };
 use codexmanager_core::storage::{
     now_ts, Account, ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, Storage, Token,
+    UsageSnapshotRecord,
 };
 use std::io::Cursor;
+
+#[test]
+fn reset_warmup_does_not_resend_after_uncertain_transport_failure() {
+    let mut messages = Vec::new();
+    let result = super::warmup_request_with_message_fallback("hi", false, |message| {
+        messages.push(message.to_string());
+        Err("request timed out".to_string())
+    });
+    assert_eq!(messages, ["hi"]);
+    assert_eq!(result.unwrap_err(), "request timed out");
+}
+
+#[test]
+fn manual_warmup_retains_existing_message_fallback() {
+    let mut messages = Vec::new();
+    let result = super::warmup_request_with_message_fallback("hi", true, |message| {
+        messages.push(message.to_string());
+        if messages.len() == 1 {
+            Err("initial message rejected".to_string())
+        } else {
+            Ok(())
+        }
+    });
+    assert!(result.is_ok());
+    assert_eq!(messages, ["hi", "你好"]);
+}
+
+fn reset_warmup_fixture() -> (Storage, Account) {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("initialize storage");
+    let account = Account {
+        id: "reset-account".to_string(),
+        label: "Reset account".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: None,
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: now_ts(),
+        updated_at: now_ts(),
+    };
+    storage.insert_account(&account).unwrap();
+    storage
+        .insert_token(&Token {
+            account_id: account.id.clone(),
+            id_token: String::new(),
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            api_key_access_token: None,
+            last_refresh: now_ts(),
+        })
+        .unwrap();
+    (storage, account)
+}
+
+#[test]
+fn reset_warmup_target_bypasses_stale_exhausted_quota_but_rechecks_status() {
+    let (storage, mut account) = reset_warmup_fixture();
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account.id.clone(),
+            used_percent: Some(100.0),
+            window_minutes: Some(300),
+            resets_at: Some(now_ts() - 10),
+            secondary_used_percent: Some(25.0),
+            secondary_window_minutes: Some(10080),
+            secondary_resets_at: Some(now_ts() + 86400),
+            credits_json: None,
+            captured_at: now_ts() - 60,
+        })
+        .unwrap();
+    let target = resolve_reset_warmup_target(&storage, &account.id).unwrap();
+    assert_eq!(target.account.id, account.id);
+    for status in ["disabled", " unavailable ", "banned", "inactive"] {
+        account.status = status.to_string();
+        storage.insert_account(&account).unwrap();
+        assert!(resolve_reset_warmup_target(&storage, &account.id).is_err());
+    }
+}
+
+#[test]
+fn successful_warmup_records_request_and_refreshes_only_target_usage() {
+    let (storage, account) = reset_warmup_fixture();
+    let account_id = account.id.clone();
+    let mut refreshed = Vec::new();
+    let result = finish_warmup_attempt(
+        &storage,
+        account,
+        DEFAULT_WARMUP_MODEL,
+        42,
+        Ok("sent".to_string()),
+        |id| {
+            refreshed.push(id.to_string());
+            true
+        },
+    );
+    assert!(result.ok);
+    assert_eq!(refreshed, [account_id.clone()]);
+    let logs = storage.list_request_logs(None, 10).unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].account_id.as_deref(), Some(account_id.as_str()));
+    assert_eq!(logs[0].status_code, Some(200));
+    assert_eq!(logs[0].request_type.as_deref(), Some("account_warmup"));
+}
+
+#[test]
+fn failed_warmup_records_failure_without_usage_refresh() {
+    let _guard = crate::test_env_guard();
+    let (storage, account) = reset_warmup_fixture();
+    let result = finish_warmup_attempt(
+        &storage,
+        account,
+        DEFAULT_WARMUP_MODEL,
+        42,
+        Err("status=429 exhausted".to_string()),
+        |_| panic!("failed send must not report success by refreshing usage"),
+    );
+    assert!(!result.ok);
+    let logs = storage.list_request_logs(None, 10).unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].status_code, Some(429));
+}
 
 #[test]
 fn summarize_warmup_error_redacts_invalid_agent_task_details() {

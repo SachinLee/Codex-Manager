@@ -56,6 +56,7 @@ export interface Account {
   group: string;
   priority: number;
   preferred: boolean;
+  resetWarmupEnabled: boolean;
   label: string;
   groupName: string;
   sort: number;
@@ -116,6 +117,19 @@ export interface AccountListResult {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface AccountFetchedModel {
+  upstreamModel: string;
+  displayName: string | null;
+  existingModelSlug: string | null;
+  alreadyLinked: boolean;
+}
+
+export interface AccountFetchModelsResult {
+  accountId: string;
+  fetchedAt: number;
+  items: AccountFetchedModel[];
 }
 
 export interface UsageAggregateSummary {
