@@ -33,30 +33,19 @@ pub(crate) fn read_request_log_filter_summary_with_storage(
 ) -> Result<RequestLogFilterSummaryResult, String> {
     let params = NormalizedRequestLogParams::from_params(params);
     let filtered = storage
-        .summarize_request_logs_filtered(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
-        )
+        .summarize_request_logs_filtered_with_filters(params.storage_filters())
         .map_err(|err| format!("summarize request logs failed: {err}"))?;
     let model_usage = storage
-        .summarize_request_logs_by_model_filtered(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
-        )
+        .summarize_request_logs_by_model_filtered_with_filters(params.storage_filters())
         .map_err(|err| format!("summarize request log model usage failed: {err}"))?;
     let total_count = match needs_unfiltered_total_count(params.status_filter.as_deref()) {
-        true => storage
-            .count_request_logs(
-                params.query.as_deref(),
-                None,
-                params.start_ts,
-                params.end_ts,
-            )
-            .map_err(|err| format!("count request logs failed: {err}"))?,
+        true => {
+            let mut filters = params.storage_filters();
+            filters.status_filter = None;
+            storage
+                .count_request_logs_with_filters(filters)
+                .map_err(|err| format!("count request logs failed: {err}"))?
+        }
         false => filtered.count,
     };
 
@@ -73,33 +62,22 @@ pub(crate) fn read_request_log_filter_summary_for_key_ids_with_storage(
         return Ok(RequestLogFilterSummaryResult::default());
     }
     let filtered = storage
-        .summarize_request_logs_filtered_for_keys(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
-            key_ids,
-        )
+        .summarize_request_logs_filtered_for_keys_with_filters(params.storage_filters(), key_ids)
         .map_err(|err| format!("summarize request logs failed: {err}"))?;
     let model_usage = storage
-        .summarize_request_logs_by_model_filtered_for_keys(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
+        .summarize_request_logs_by_model_filtered_for_keys_with_filters(
+            params.storage_filters(),
             key_ids,
         )
         .map_err(|err| format!("summarize request log model usage failed: {err}"))?;
     let total_count = match needs_unfiltered_total_count(params.status_filter.as_deref()) {
-        true => storage
-            .count_request_logs_for_keys(
-                params.query.as_deref(),
-                None,
-                params.start_ts,
-                params.end_ts,
-                key_ids,
-            )
-            .map_err(|err| format!("count request logs failed: {err}"))?,
+        true => {
+            let mut filters = params.storage_filters();
+            filters.status_filter = None;
+            storage
+                .count_request_logs_for_keys_with_filters(filters, key_ids)
+                .map_err(|err| format!("count request logs failed: {err}"))?
+        }
         false => filtered.count,
     };
 
@@ -136,6 +114,8 @@ fn map_filter_summary(
         long_context_cost_usd: filtered.long_context_cost_usd.max(0.0),
         long_context_uplift_usd: filtered.long_context_uplift_usd.max(0.0),
         legacy_candidate_count: filtered.legacy_candidate_count.max(0),
+        input_tokens: filtered.input_tokens.max(0),
+        cached_input_tokens: filtered.cached_input_tokens.max(0),
         model_stats: model_usage
             .items
             .into_iter()

@@ -142,6 +142,9 @@ export const serviceClient = {
     pageSize?: number;
     startTs?: number | null;
     endTs?: number | null;
+    sessionIds?: string[];
+    model?: string | null;
+    keyId?: string | null;
   }, options?: RequestOptions): Promise<RequestLogListResult> {
     const result = await invoke<unknown>(
       "service_requestlog_list",
@@ -153,6 +156,9 @@ export const serviceClient = {
         pageSize: params?.pageSize ?? 20,
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
+        sessionIds: params?.sessionIds || [],
+        model: params?.model || null,
+        keyId: params?.keyId || null,
       }),
       options
     );
@@ -173,6 +179,9 @@ export const serviceClient = {
     pageSize?: number;
     startTs?: number | null;
     endTs?: number | null;
+    sessionIds?: string[];
+    model?: string | null;
+    keyId?: string | null;
   }, options?: RequestOptions): Promise<RequestLogListWithSummaryResult> {
     const result = await invoke<unknown>(
       "service_requestlog_list_with_summary",
@@ -184,6 +193,9 @@ export const serviceClient = {
         pageSize: params?.pageSize ?? 20,
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
+        sessionIds: params?.sessionIds || [],
+        model: params?.model || null,
+        keyId: params?.keyId || null,
       }),
       options
     );
@@ -195,6 +207,9 @@ export const serviceClient = {
     pricingBandFilter?: string;
     startTs?: number | null;
     endTs?: number | null;
+    sessionIds?: string[];
+    model?: string | null;
+    keyId?: string | null;
   }): Promise<RequestLogFilterSummary> {
     const result = await invoke<unknown>(
       "service_requestlog_summary",
@@ -204,6 +219,9 @@ export const serviceClient = {
         pricingBandFilter: params?.pricingBandFilter || "all",
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
+        sessionIds: params?.sessionIds || [],
+        model: params?.model || null,
+        keyId: params?.keyId || null,
       })
     );
     return normalizeRequestLogFilterSummary(result);

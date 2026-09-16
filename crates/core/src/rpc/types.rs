@@ -179,6 +179,8 @@ pub struct AccountSummary {
     pub label: String,
     pub group_name: Option<String>,
     pub preferred: bool,
+    #[serde(default = "default_reset_warmup_enabled")]
+    pub reset_warmup_enabled: bool,
     pub sort: i64,
     pub status: String,
     pub status_reason: Option<String>,
@@ -218,6 +220,9 @@ pub struct AccountSummary {
     pub proxy_flag_emoji: Option<String>,
 }
 
+fn default_reset_warmup_enabled() -> bool {
+    true
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountListResult {
@@ -1785,6 +1790,12 @@ pub struct RequestLogListParams {
     pub pricing_band_filter: Option<String>,
     pub start_ts: Option<i64>,
     pub end_ts: Option<i64>,
+    /// 标题筛选：会话 ID 集合，由前端根据会话标题解析得到；空集合表示不筛选。
+    pub session_ids: Vec<String>,
+    /// 模型筛选：日志最终生效模型的精确匹配；空值表示不筛选。
+    pub model: Option<String>,
+    /// 平台密钥筛选：`request_logs.key_id` 精确匹配；空值表示不筛选。
+    pub key_id: Option<String>,
 }
 
 impl Default for RequestLogListParams {
@@ -1808,6 +1819,9 @@ impl Default for RequestLogListParams {
             pricing_band_filter: None,
             start_ts: None,
             end_ts: None,
+            session_ids: Vec::new(),
+            model: None,
+            key_id: None,
         }
     }
 }
@@ -1837,6 +1851,9 @@ impl RequestLogListParams {
             pricing_band_filter: self.pricing_band_filter,
             start_ts: self.start_ts.filter(|value| *value > 0),
             end_ts: self.end_ts.filter(|value| *value > 0),
+            session_ids: self.session_ids,
+            model: self.model,
+            key_id: self.key_id,
         }
     }
 }
@@ -1890,6 +1907,12 @@ pub struct RequestLogFilterSummaryResult {
     pub long_context_cost_usd: f64,
     pub long_context_uplift_usd: f64,
     pub legacy_candidate_count: i64,
+    /// 当前筛选结果的输入 Token 合计，用于计算缓存率分母。
+    #[serde(default)]
+    pub input_tokens: i64,
+    /// 当前筛选结果的缓存输入 Token 合计，用于计算缓存率分子。
+    #[serde(default)]
+    pub cached_input_tokens: i64,
     #[serde(default)]
     pub model_stats: Vec<RequestLogModelUsageStatResult>,
     #[serde(default)]

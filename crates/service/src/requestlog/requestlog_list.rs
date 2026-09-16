@@ -2,7 +2,9 @@ use codexmanager_core::rpc::types::{
     RequestLogFilterSummaryResult, RequestLogListParams, RequestLogListResult,
     RequestLogListWithSummaryResult, RequestLogSummary,
 };
-use codexmanager_core::storage::{RequestLog, RequestPricingSnapshot, Storage};
+use codexmanager_core::storage::{
+    RequestLog, RequestLogQueryFilters, RequestPricingSnapshot, Storage,
+};
 use std::collections::HashMap;
 
 use crate::storage_helpers::open_storage;
@@ -30,6 +32,12 @@ pub(crate) struct NormalizedRequestLogParams {
     pub(crate) end_ts: Option<i64>,
     pub(crate) page: i64,
     pub(crate) page_size: i64,
+    /// 标题筛选解析出的会话 ID；空集合表示不筛选。
+    pub(crate) session_ids: Vec<String>,
+    /// 模型精确匹配；空值表示不筛选。
+    pub(crate) model: Option<String>,
+    /// 平台密钥精确匹配；空值表示不筛选。
+    pub(crate) key_id: Option<String>,
 }
 
 impl NormalizedRequestLogParams {
@@ -43,11 +51,27 @@ impl NormalizedRequestLogParams {
             end_ts,
             page: params.page,
             page_size: normalize_page_size(params.page_size),
+            session_ids: normalize_session_ids(params.session_ids),
+            model: normalize_optional_identifier(params.model),
+            key_id: normalize_optional_identifier(params.key_id),
         }
     }
 
     pub(crate) fn clamped_page(&self, total: i64) -> i64 {
         clamp_page(self.page, total, self.page_size)
+    }
+
+    /// 投影为存储层统一筛选条件，保证列表、计数与汇总同口径。
+    pub(crate) fn storage_filters(&self) -> RequestLogQueryFilters<'_> {
+        RequestLogQueryFilters {
+            query: self.query.as_deref(),
+            status_filter: self.status_filter.as_deref(),
+            start_ts: self.start_ts,
+            end_ts: self.end_ts,
+            session_ids: &self.session_ids,
+            model: self.model.as_deref(),
+            key_id: self.key_id.as_deref(),
+        }
     }
 }
 
@@ -205,12 +229,7 @@ pub(crate) fn read_request_log_page_with_storage(
 ) -> Result<RequestLogListResult, String> {
     let params = NormalizedRequestLogParams::from_params(params);
     let total = storage
-        .count_request_logs(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
-        )
+        .count_request_logs_with_filters(params.storage_filters())
         .map_err(|err| format!("count request logs failed: {err}"))?;
     read_request_log_page_with_normalized_total(storage, params, total)
 }
@@ -241,11 +260,8 @@ fn read_request_log_page_with_normalized_total(
     }
     let offset = (page - 1) * params.page_size;
     let logs = storage
-        .list_request_logs_paginated(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
+        .list_request_logs_paginated_with_filters(
+            params.storage_filters(),
             offset,
             params.page_size,
         )
@@ -280,7 +296,11 @@ pub(crate) fn request_log_list_with_summary_result(
 
 pub(crate) fn request_log_page_total_matches_filter_summary(params: &RequestLogListParams) -> bool {
     let params = NormalizedRequestLogParams::from_params(params.clone());
-    params.query.is_some() || params.status_filter.is_some()
+    params.query.is_some()
+        || params.status_filter.is_some()
+        || !params.session_ids.is_empty()
+        || params.model.is_some()
+        || params.key_id.is_some()
 }
 
 pub(crate) fn read_request_log_page_for_key_ids_with_storage(
@@ -298,13 +318,7 @@ pub(crate) fn read_request_log_page_for_key_ids_with_storage(
         });
     }
     let total = storage
-        .count_request_logs_for_keys(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
-            key_ids,
-        )
+        .count_request_logs_for_keys_with_filters(params.storage_filters(), key_ids)
         .map_err(|err| format!("count request logs failed: {err}"))?;
     read_request_log_page_for_key_ids_with_normalized_total(storage, params, key_ids, total)
 }
@@ -353,11 +367,8 @@ fn read_request_log_page_for_key_ids_with_normalized_total(
     }
     let offset = (page - 1) * params.page_size;
     let logs = storage
-        .list_request_logs_paginated_for_keys(
-            params.query.as_deref(),
-            params.status_filter.as_deref(),
-            params.start_ts,
-            params.end_ts,
+        .list_request_logs_paginated_for_keys_with_filters(
+            params.storage_filters(),
             offset,
             params.page_size,
             key_ids,
@@ -395,6 +406,29 @@ pub(crate) fn normalize_optional_text(value: Option<String>) -> Option<String> {
         return None;
     }
     Some(trimmed)
+}
+
+/// 归一化标识符筛选值：仅去空白并把空串视作不筛选。
+///
+/// 与 `normalize_optional_text` 不同，这里不会把 `"all"` 当成空值，
+/// 因为模型 slug 和平台密钥 ID 都是外部标识符，可能合法地包含该字面量。
+pub(crate) fn normalize_optional_identifier(value: Option<String>) -> Option<String> {
+    let trimmed = value.unwrap_or_default().trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed)
+}
+
+/// 归一化标题筛选解析出的会话 ID 列表：去空白、丢弃空串、按首次出现去重。
+pub(crate) fn normalize_session_ids(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
 }
 
 /// 函数 `normalize_status_filter`

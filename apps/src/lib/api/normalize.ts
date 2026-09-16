@@ -68,6 +68,7 @@ import {
 } from "@/types";
 import {
   DEFAULT_CODEX_ORIGINATOR,
+  DEFAULT_CODEX_USER_AGENT,
   DEFAULT_CODEX_USER_AGENT_VERSION,
 } from "@/lib/constants/codex";
 import {
@@ -596,6 +597,10 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
     label: name,
     groupName,
     sort: asInteger(source.sort ?? source.priority, 0, 0),
+    resetWarmupEnabled:
+      typeof (source.resetWarmupEnabled ?? source.reset_warmup_enabled) === "boolean"
+        ? Boolean(source.resetWarmupEnabled ?? source.reset_warmup_enabled)
+        : true,
     status,
     statusReason,
     hasToken,
@@ -979,6 +984,7 @@ export function normalizeAggregateApi(item: unknown): AggregateApi | null {
     sort: asInteger(source.sort ?? source.priority, 0, 0),
     url: asString(source.url),
     authType: asString(source.authType ?? source.auth_type) || "apikey",
+    userAgent: asString(source.userAgent ?? source.user_agent) || null,
     authParams:
       source.authParams && typeof source.authParams === "object"
         ? asObject(source.authParams)
@@ -2210,6 +2216,12 @@ export function normalizeRequestLogFilterSummary(
       0,
       0
     ),
+    inputTokens: asInteger(source.inputTokens ?? source.input_tokens, 0, 0),
+    cachedInputTokens: asInteger(
+      source.cachedInputTokens ?? source.cached_input_tokens,
+      0,
+      0
+    ),
     modelStats: asArray(source.modelStats ?? source.model_stats).map((item) => {
       const stat = asObject(item);
       return {
@@ -2540,6 +2552,9 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       asString(source.gatewayOriginator) || DEFAULT_CODEX_ORIGINATOR,
     gatewayOriginatorDefault:
       asString(source.gatewayOriginatorDefault) || DEFAULT_CODEX_ORIGINATOR,
+    gatewayUserAgent: asString(source.gatewayUserAgent) || DEFAULT_CODEX_USER_AGENT,
+    gatewayUserAgentDefault:
+      asString(source.gatewayUserAgentDefault) || DEFAULT_CODEX_USER_AGENT,
     gatewayUserAgentVersion:
       asString(source.gatewayUserAgentVersion) || DEFAULT_CODEX_USER_AGENT_VERSION,
     gatewayUserAgentVersionDefault:

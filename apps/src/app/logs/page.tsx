@@ -8,6 +8,11 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { accountClient } from "@/lib/api/account-client";
+import { buildManagedModelSelectorQueryKey } from "@/lib/api/account-query-keys";
+import {
+  managedModelsV2Client,
+  managedModelV2ToModelInfo,
+} from "@/lib/api/managed-models-v2";
 import {
   buildStartupSnapshotQueryKey,
   STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
@@ -31,13 +36,14 @@ import { useAppStore } from "@/lib/store/useAppStore";
 import { RequestLogsTabContent } from "./page-sections";
 import {
   buildFixedTimePreset,
-  buildRequestLogSearchQuery,
+  formatCompactKeyLabel,
+  fromDateTimeLocalValue,
+  isLegacyRequestLogStructuredQuery,
   LogsPageSkeleton,
+  resolveRequestLogTitleSessionIds,
   type LogsTab,
-  type SearchField,
   type StatusFilter,
   type TimeRangePreset,
-  fromDateTimeLocalValue,
 } from "./page-helpers";
 import { buildSummaryPlaceholder } from "./page-cells";
 import {
@@ -80,9 +86,15 @@ function LogsPageContent() {
   const queryClient = useQueryClient();
   const areLogQueriesEnabled = useDeferredDesktopActivation(serviceStatus.connected);
   const routeQuery = searchParams.get("query") || "";
-  const [searchInput, setSearchInput] = useState(routeQuery);
-  const [search, setSearch] = useState(routeQuery);
-  const [searchField, setSearchField] = useState<SearchField>("all");
+  const routeLegacyQuery = isLegacyRequestLogStructuredQuery(routeQuery)
+    ? routeQuery
+    : "";
+  const routeTitleSeed = routeLegacyQuery ? "" : routeQuery;
+  const [titleInput, setTitleInput] = useState(routeTitleSeed);
+  const [titleSearch, setTitleSearch] = useState(routeTitleSeed);
+  const [legacyQuery, setLegacyQuery] = useState(routeLegacyQuery);
+  const [modelFilter, setModelFilter] = useState("all");
+  const [keyIdFilter, setKeyIdFilter] = useState("all");
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [timePreset, setTimePreset] = useState<TimeRangePreset>("all");
   const [startTimeInput, setStartTimeInput] = useState("");
@@ -99,7 +111,12 @@ function LogsPageContent() {
   const endTs = useMemo(() => fromDateTimeLocalValue(endTimeInput), [endTimeInput]);
   const hasActiveTimeRange = startTs != null || endTs != null;
   const hasActiveLogFilter =
-    Boolean(search.trim()) || filter !== "all" || hasActiveTimeRange;
+    Boolean(legacyQuery) ||
+    Boolean(titleSearch.trim()) ||
+    modelFilter !== "all" ||
+    keyIdFilter !== "all" ||
+    filter !== "all" ||
+    hasActiveTimeRange;
   const startupSnapshot = queryClient.getQueryData<StartupSnapshot>(
     buildStartupSnapshotQueryKey(
       serviceStatus.addr,
@@ -111,10 +128,13 @@ function LogsPageContent() {
   const startupAccounts = startupSnapshot?.accounts || [];
   const startupApiKeys = startupSnapshot?.apiKeys || [];
   const startupRequestLogs = startupSnapshot?.requestLogs || [];
+  const startupApiModels = startupSnapshot?.apiModels;
   const canUseStartupLogsPlaceholder =
     !routeQuery.trim() &&
-    !searchInput.trim() &&
-    !search.trim() &&
+    !titleInput.trim() &&
+    !titleSearch.trim() &&
+    modelFilter === "all" &&
+    keyIdFilter === "all" &&
     filter === "all" &&
     page === 1 &&
     !hasActiveTimeRange;
@@ -157,6 +177,20 @@ function LogsPageContent() {
     retry: 1,
   });
 
+
+  // 模型下拉沿用密钥管理页的目录来源：优先实时模型目录，回落到启动快照。
+  const { data: modelCatalogResult } = useQuery({
+    queryKey: buildManagedModelSelectorQueryKey(serviceStatus.addr),
+    queryFn: async () => {
+      const result = await managedModelsV2Client.list(false, serviceStatus.addr);
+      return { models: result.items.map(managedModelV2ToModelInfo) };
+    },
+    enabled: areLogQueriesEnabled && isPageActive && isAdminMode,
+    staleTime: 60_000,
+    retry: 1,
+    placeholderData: () =>
+      startupApiModels?.models?.length ? startupApiModels : undefined,
+  });
   const { data: requestLogSessions = [] } = useQuery({
     queryKey: REQUEST_LOG_SESSION_LOOKUP_QUERY_KEY,
     queryFn: () => serviceClient.listRequestLogSessionTitles({ limit: 2000 }),
@@ -166,22 +200,39 @@ function LogsPageContent() {
     retry: 1,
   });
 
-  const effectiveSearchQuery = useMemo(
-    () => buildRequestLogSearchQuery(searchField, search, requestLogSessions),
-    [searchField, search, requestLogSessions],
+  // 标题没有独立数据库字段，先经会话标题侧车解析成会话 ID 集合再交给服务端过滤。
+  const titleSessionIds = useMemo(
+    () => resolveRequestLogTitleSessionIds(titleSearch, requestLogSessions),
+    [titleSearch, requestLogSessions],
   );
-
+  const modelParam = modelFilter === "all" ? null : modelFilter;
+  const keyIdParam = keyIdFilter === "all" ? null : keyIdFilter;
   const { data: logsResult, isLoading, isError: isLogsError } = useQuery({
-    queryKey: ["logs", "list-with-summary", effectiveSearchQuery, filter, startTs, endTs, page, pageSizeNumber],
+    queryKey: [
+      "logs",
+      "list-with-summary",
+      legacyQuery,
+      titleSessionIds,
+      modelParam,
+      keyIdParam,
+      filter,
+      startTs,
+      endTs,
+      page,
+      pageSizeNumber,
+    ],
     queryFn: ({ signal }) =>
       serviceClient.listRequestLogsWithSummary(
         {
-          query: effectiveSearchQuery,
+          query: legacyQuery,
           statusFilter: filter,
           startTs,
           endTs,
           page,
           pageSize: pageSizeNumber,
+          sessionIds: titleSessionIds,
+          model: modelParam,
+          keyId: keyIdParam,
         },
         { signal },
       ),
@@ -233,6 +284,8 @@ function LogsPageContent() {
                   errorCount: 0,
                   totalTokens: 0,
                   totalCostUsd: 0,
+                  inputTokens: 0,
+                  cachedInputTokens: 0,
                 },
               }
             : previousData,
@@ -279,6 +332,26 @@ function LogsPageContent() {
     );
   }, [requestLogSessions]);
 
+  // 模型下拉取平台模型目录的 slug；日志里的 model 字段就是该 slug。
+  const modelOptions = useMemo(() => {
+    const slugs = (modelCatalogResult?.models || [])
+      .map((model) => String(model.slug || "").trim())
+      .filter(Boolean);
+    return Array.from(new Set(slugs)).sort((left, right) => left.localeCompare(right));
+  }, [modelCatalogResult?.models]);
+
+  // 平台密钥下拉沿用列表里的展示口径：有名称用名称，否则退化成紧凑 ID。
+  const keyOptions = useMemo(
+    () =>
+      (apiKeysResult || [])
+        .map((apiKey) => ({
+          id: apiKey.id,
+          label: String(apiKey.name || "").trim() || formatCompactKeyLabel(apiKey.id),
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [apiKeysResult],
+  );
+
   const logs = logsResult?.items || [];
   const isLogsLoading =
     serviceStatus.connected &&
@@ -303,6 +376,8 @@ function LogsPageContent() {
     longContextCostUsd: 0,
     longContextUpliftUsd: 0,
     legacyCandidateCount: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
     modelStats: [],
     modelStatsTruncated: false,
   };
@@ -320,27 +395,34 @@ function LogsPageContent() {
       return;
     }
     const frameId = window.requestAnimationFrame(() => {
-      setSearchInput((current) => (current === routeQuery ? current : routeQuery));
-      setSearch((current) => (current === routeQuery ? current : routeQuery));
+      setTitleInput((current) =>
+        current === routeTitleSeed ? current : routeTitleSeed,
+      );
+      setTitleSearch((current) =>
+        current === routeTitleSeed ? current : routeTitleSeed,
+      );
+      setLegacyQuery((current) =>
+        current === routeLegacyQuery ? current : routeLegacyQuery,
+      );
       setPage(1);
     });
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [routeQuery]);
+  }, [routeLegacyQuery, routeTitleSeed]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
     const timeoutId = window.setTimeout(() => {
-      setSearch((current) => (current === searchInput ? current : searchInput));
+      setTitleSearch((current) => (current === titleInput ? current : titleInput));
       setPage(1);
     }, LOG_SEARCH_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [searchInput]);
+  }, [titleInput]);
 
   useEffect(() => {
     if (isPageActive) {
@@ -452,8 +534,11 @@ function LogsPageContent() {
             isDirectAccountMode={isDirectAccountMode}
             isAdminMode={isAdminMode}
             serviceConnected={serviceStatus.connected}
-            search={searchInput}
-            searchField={searchField}
+            titleSearch={titleInput}
+            modelFilter={modelFilter}
+            keyIdFilter={keyIdFilter}
+            modelOptions={modelOptions}
+            keyOptions={keyOptions}
             filter={filter}
             timePreset={timePreset}
             startTimeInput={startTimeInput}
@@ -465,6 +550,11 @@ function LogsPageContent() {
             summary={summary}
             logs={logs}
             isLogsLoading={isLogsLoading}
+            onTitleSearchChange={(value) => {
+              setLegacyQuery("");
+              setTitleInput(value);
+              setPage(1);
+            }}
             currentPage={currentPage}
             totalPages={totalPages}
             accountNameMap={accountNameMap}
@@ -472,12 +562,14 @@ function LogsPageContent() {
             aggregateApiMap={aggregateApiMap}
             sessionTitleMap={requestLogSessionMap}
             clearMutationPending={clearMutation.isPending}
-            onSearchChange={(value) => {
-              setSearchInput(value);
+            onModelFilterChange={(value) => {
+              setLegacyQuery("");
+              setModelFilter(value || "all");
               setPage(1);
             }}
-            onSearchFieldChange={(value) => {
-              setSearchField(value);
+            onKeyIdFilterChange={(value) => {
+              setLegacyQuery("");
+              setKeyIdFilter(value || "all");
               setPage(1);
             }}
             onFilterChange={(value) => {

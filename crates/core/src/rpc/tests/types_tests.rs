@@ -356,6 +356,8 @@ fn request_log_filter_summary_serialization_uses_camel_case() {
         long_context_cost_usd: 1.23,
         long_context_uplift_usd: 0.34,
         legacy_candidate_count: 5,
+        input_tokens: 400,
+        cached_input_tokens: 100,
         model_stats: vec![],
         model_stats_truncated: false,
     };
@@ -377,6 +379,8 @@ fn request_log_filter_summary_serialization_uses_camel_case() {
         "longContextCostUsd",
         "longContextUpliftUsd",
         "legacyCandidateCount",
+        "inputTokens",
+        "cachedInputTokens",
         "modelStats",
         "modelStatsTruncated",
     ] {

@@ -164,6 +164,8 @@ fn request_log_query_summary_from_usage(usage: TokenUsageRollup) -> RequestLogQu
         long_context_cost_usd: 0.0,
         long_context_uplift_usd: 0.0,
         legacy_candidate_count: 0,
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
     }
 }
 

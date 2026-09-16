@@ -7,7 +7,6 @@ import { formatCompactNumber } from "@/lib/utils/usage";
 import type { AggregateApi, ApiKey, RequestLog } from "@/types";
 
 export type StatusFilter = "all" | "2xx" | "4xx" | "5xx";
-export type SearchField = "all" | "model" | "session_title";
 export type PricingBandFilter = "all" | "long" | "short" | "single_tier" | "legacy_candidate" | "unknown";
 export type LogsTab = "requests";
 export type TimeRangePreset = "all" | "30m" | "2h" | "24h" | "today" | "custom";
@@ -19,36 +18,36 @@ export type TranslateFn = (
 
 const MAX_SESSION_TITLE_MATCHES = 200;
 
-export function buildRequestLogSearchQuery(
-  field: SearchField,
+// 旧版“全部”搜索框直接把这类表达式传给服务端 query 解析器。新页面不再暴露
+// 复合搜索，但仍需保留 URL 书签的筛选语义，不能误当成会话标题。
+const LEGACY_REQUEST_LOG_QUERY_PREFIX =
+  /^(?:account|account_id|path|request_path|original|original_path|adapted|adapted_path|method|type|request_type|route_strategy|strategy|route_source|route_reason|client_model|original_model|model|model_source|upstream_model|source_model|source_kind|actual_source_kind|source_id|actual_source_id|client_reasoning|client_reasoning_effort|original_reasoning|reasoning|reason|reasoning_source|reason_source|tier|service_tier|effective_tier|effective_service_tier|tier_source|service_tier_source|adapter|error|key|key_id|trace|trace_id|session|session_id|session_in|sessions|anchor|conversation_anchor|conversation|upstream|url|status)\s*:/i;
+
+export function isLegacyRequestLogStructuredQuery(raw: string): boolean {
+  return LEGACY_REQUEST_LOG_QUERY_PREFIX.test(String(raw || "").trim());
+}
+
+/// 标题筛选没有独立的数据库字段：会话标题由 `requestlog/session_titles` 侧车解析，
+/// 因此这里把用户输入的标题转换成一组会话 ID，交给服务端按 `session_id IN (...)` 过滤。
+/// 返回值语义：
+/// - 空数组：标题未填写，服务端不加条件。
+/// - 仅含 `NO_MATCH_SESSION_ID`：填写了标题但没有任何会话命中，服务端必然返回零结果，
+///   不能退化成“未筛选”。
+export const NO_MATCH_SESSION_ID = "__no_match__";
+
+export function resolveRequestLogTitleSessionIds(
   raw: string,
   sessions: Array<{
     sessionId?: string | null;
     title?: string | null;
     parentTitle?: string | null;
   }>,
-): string {
-  const value = String(raw || "").trim();
-  if (!value) {
-    return "";
+): string[] {
+  const needle = String(raw || "").trim().toLowerCase();
+  if (!needle) {
+    return [];
   }
 
-  if (field === "all") {
-    return value;
-  }
-
-  if (field === "model") {
-    if (/^(model|client_model|upstream_model|source_model)\s*:/i.test(value)) {
-      return value;
-    }
-    return `model:${value}`;
-  }
-
-  if (/^(session|session_id|session_in|sessions)\s*:/i.test(value)) {
-    return value;
-  }
-
-  const needle = value.toLowerCase();
   const ids = sessions
     .map((session) => ({
       id: String(session.sessionId || "").trim(),
@@ -66,25 +65,12 @@ export function buildRequestLogSearchQuery(
     .map((session) => session.id);
 
   if (ids.length === 0) {
-    return "session_in:__no_match__";
+    return [NO_MATCH_SESSION_ID];
   }
 
-  const uniqueIds = Array.from(new Set(ids)).slice(0, MAX_SESSION_TITLE_MATCHES);
-  return `session_in:${uniqueIds.join(",")}`;
+  return Array.from(new Set(ids)).slice(0, MAX_SESSION_TITLE_MATCHES);
 }
 
-export function searchFieldPlaceholder(
-  field: SearchField,
-  t: TranslateFn,
-): string {
-  if (field === "model") {
-    return t("搜索模型名称，例如 gpt-5.6...");
-  }
-  if (field === "session_title") {
-    return t("搜索会话标题或会话 ID...");
-  }
-  return t("搜索路径、账号、密钥、模型或会话...");
-}
 
 
 function padDateTimeSegment(value: number): string {

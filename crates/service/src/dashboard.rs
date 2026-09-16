@@ -700,6 +700,7 @@ pub(crate) fn read_member_dashboard_summary(
                 pricing_band_filter: None,
                 start_ts: None,
                 end_ts: None,
+                ..RequestLogListParams::default()
             },
             &key_ids,
         )?

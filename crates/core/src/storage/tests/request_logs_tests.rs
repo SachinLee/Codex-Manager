@@ -1,5 +1,6 @@
 use super::{RequestLog, RequestTokenStat, Storage};
 use crate::storage::request_log_filters;
+use crate::storage::RequestLogQueryFilters;
 use rusqlite::{params_from_iter, types::Value};
 
 /// 函数 `collect_query_plan_details`
@@ -45,10 +46,13 @@ fn request_log_list_plan_for_query(
     end_ts: Option<i64>,
 ) -> Vec<String> {
     let filters = request_log_filters::build_request_log_filters(
-        query,
-        status_filter,
-        start_ts,
-        end_ts,
+        RequestLogQueryFilters {
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            ..Default::default()
+        },
         storage.has_table("accounts").expect("check accounts table"),
         None,
         true,
@@ -74,10 +78,13 @@ fn request_log_count_plan_for_query(
     end_ts: Option<i64>,
 ) -> Vec<String> {
     let filters = request_log_filters::build_request_log_filters(
-        query,
-        status_filter,
-        start_ts,
-        end_ts,
+        RequestLogQueryFilters {
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            ..Default::default()
+        },
         storage.has_table("accounts").expect("check accounts table"),
         None,
         true,
@@ -202,10 +209,12 @@ fn request_log_summary_uses_status_index_and_skips_unused_account_join() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
     let filters = request_log_filters::build_request_log_filters(
-        None,
-        Some("2xx"),
-        Some(1000),
-        Some(2000),
+        RequestLogQueryFilters {
+            status_filter: Some("2xx"),
+            start_ts: Some(1000),
+            end_ts: Some(2000),
+            ..Default::default()
+        },
         storage.has_table("accounts").expect("check accounts table"),
         None,
         true,
@@ -243,10 +252,12 @@ fn request_log_status_count_does_not_join_accounts_when_account_fields_are_unuse
     assert_eq!(count, 0);
 
     let filters = request_log_filters::build_request_log_filters(
-        None,
-        Some("2xx"),
-        Some(1000),
-        Some(2000),
+        RequestLogQueryFilters {
+            status_filter: Some("2xx"),
+            start_ts: Some(1000),
+            end_ts: Some(2000),
+            ..Default::default()
+        },
         storage.has_table("accounts").expect("check accounts table"),
         None,
         true,
@@ -272,10 +283,10 @@ fn paginated_list_filters_logs_before_joining_token_stats() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
     let filters = request_log_filters::build_request_log_filters(
-        Some("method:=POST"),
-        None,
-        None,
-        None,
+        RequestLogQueryFilters {
+            query: Some("method:=POST"),
+            ..Default::default()
+        },
         storage.has_table("accounts").expect("check accounts table"),
         None,
         false,
@@ -1420,4 +1431,146 @@ fn upgraded_db_without_upstream_protocol_column_is_repaired_on_init() {
     );
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// 构造一条带会话、模型、密钥与输入/缓存 Token 的日志，供显式筛选测试复用。
+fn insert_filterable_request_log(
+    storage: &Storage,
+    index: i64,
+    session_id: &str,
+    model: &str,
+    key_id: &str,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+) {
+    let created_at = 10_000 + index;
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some(format!("trc-explicit-{index}")),
+            session_id: Some(session_id.to_string()),
+            key_id: Some(key_id.to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            model: Some(model.to_string()),
+            status_code: Some(200),
+            created_at,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            key_id: Some(key_id.to_string()),
+            model: Some(model.to_string()),
+            input_tokens: Some(input_tokens),
+            cached_input_tokens: Some(cached_input_tokens),
+            output_tokens: Some(5),
+            total_tokens: Some(input_tokens + 5),
+            estimated_cost_usd: Some(0.01),
+            created_at,
+            ..RequestTokenStat::default()
+        })
+        .expect("insert token stat");
+}
+
+#[test]
+fn explicit_session_model_and_key_filters_combine_with_and_semantics() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    insert_filterable_request_log(&storage, 0, "sess-a", "gpt-5-codex", "gk-alpha", 100, 40);
+    insert_filterable_request_log(&storage, 1, "sess-b", "gpt-5-codex", "gk-alpha", 200, 0);
+    insert_filterable_request_log(&storage, 2, "sess-a", "gpt-5", "gk-alpha", 300, 150);
+    insert_filterable_request_log(&storage, 3, "sess-a", "gpt-5-codex", "gk-beta", 400, 100);
+
+    // 单条件：模型
+    let model_only = RequestLogQueryFilters {
+        model: Some("gpt-5-codex"),
+        ..Default::default()
+    };
+    assert_eq!(
+        storage
+            .count_request_logs_with_filters(model_only)
+            .expect("count by model"),
+        3
+    );
+
+    // 单条件：平台密钥
+    let key_only = RequestLogQueryFilters {
+        key_id: Some("gk-beta"),
+        ..Default::default()
+    };
+    let key_logs = storage
+        .list_request_logs_paginated_with_filters(key_only, 0, 20)
+        .expect("list by key");
+    assert_eq!(key_logs.len(), 1);
+    assert_eq!(key_logs[0].trace_id.as_deref(), Some("trc-explicit-3"));
+
+    // 组合条件：会话 + 模型，AND 语义
+    let session_ids = ["sess-a".to_string()];
+    let combined = RequestLogQueryFilters {
+        session_ids: &session_ids,
+        model: Some("gpt-5-codex"),
+        key_id: Some("gk-alpha"),
+        ..Default::default()
+    };
+    let combined_logs = storage
+        .list_request_logs_paginated_with_filters(combined, 0, 20)
+        .expect("list combined");
+    assert_eq!(combined_logs.len(), 1);
+    assert_eq!(combined_logs[0].trace_id.as_deref(), Some("trc-explicit-0"));
+    assert_eq!(
+        storage
+            .count_request_logs_with_filters(RequestLogQueryFilters {
+                session_ids: &session_ids,
+                model: Some("gpt-5-codex"),
+                key_id: Some("gk-alpha"),
+                ..Default::default()
+            })
+            .expect("count combined"),
+        1
+    );
+
+    // 空会话集合表示不筛选，而不是零结果
+    let empty_sessions = storage
+        .count_request_logs_with_filters(RequestLogQueryFilters {
+            session_ids: &[],
+            ..Default::default()
+        })
+        .expect("count with empty session list");
+    assert_eq!(empty_sessions, 4);
+}
+
+#[test]
+fn filtered_summary_aggregates_input_and_cached_tokens_over_same_filters() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    insert_filterable_request_log(&storage, 0, "sess-a", "gpt-5-codex", "gk-alpha", 100, 40);
+    insert_filterable_request_log(&storage, 1, "sess-b", "gpt-5-codex", "gk-alpha", 200, 0);
+    insert_filterable_request_log(&storage, 2, "sess-a", "gpt-5", "gk-alpha", 300, 150);
+
+    let session_ids = ["sess-a".to_string()];
+    let summary = storage
+        .summarize_request_logs_filtered_with_filters(RequestLogQueryFilters {
+            session_ids: &session_ids,
+            ..Default::default()
+        })
+        .expect("summarize by session");
+    assert_eq!(summary.count, 2);
+    assert_eq!(summary.input_tokens, 400);
+    assert_eq!(summary.cached_input_tokens, 190);
+
+    // 同一筛选条件下按密钥再收窄，统计必须跟着变化
+    let narrowed = storage
+        .summarize_request_logs_filtered_with_filters(RequestLogQueryFilters {
+            session_ids: &session_ids,
+            key_id: Some("gk-alpha"),
+            model: Some("gpt-5"),
+            ..Default::default()
+        })
+        .expect("summarize narrowed");
+    assert_eq!(narrowed.count, 1);
+    assert_eq!(narrowed.input_tokens, 300);
+    assert_eq!(narrowed.cached_input_tokens, 150);
 }

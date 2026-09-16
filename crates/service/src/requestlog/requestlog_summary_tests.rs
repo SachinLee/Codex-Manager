@@ -51,6 +51,8 @@ fn filter_summary_mapping_clamps_negative_aggregate_values() {
             long_context_cost_usd: -0.75,
             long_context_uplift_usd: -1.0,
             legacy_candidate_count: -8,
+            input_tokens: -9,
+            cached_input_tokens: -10,
         },
         RequestLogModelUsageQueryResult::default(),
     );
@@ -63,6 +65,8 @@ fn filter_summary_mapping_clamps_negative_aggregate_values() {
     assert_eq!(summary.total_cost_usd, 0.0);
     assert_eq!(summary.guard_retry_total_tokens, 0);
     assert_eq!(summary.guard_retry_estimated_cost_usd, 0.0);
+    assert_eq!(summary.input_tokens, 0);
+    assert_eq!(summary.cached_input_tokens, 0);
 }
 
 #[test]

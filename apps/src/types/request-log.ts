@@ -153,6 +153,10 @@ export interface RequestLogFilterSummary {
   longContextCostUsd: number;
   longContextUpliftUsd: number;
   legacyCandidateCount: number;
+  /** 当前筛选结果的输入 Token 合计，缓存率分母。 */
+  inputTokens: number;
+  /** 当前筛选结果的缓存输入 Token 合计，缓存率分子。 */
+  cachedInputTokens: number;
   modelStats: RequestLogModelUsageStat[];
   modelStatsTruncated: boolean;
 }

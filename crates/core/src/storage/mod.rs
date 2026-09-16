@@ -3360,3 +3360,26 @@ pub fn now_ts() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+/// 请求日志筛选条件。列表、计数与各类汇总共用同一份条件，保证分页总数和统计口径一致。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RequestLogQueryFilters<'a> {
+    pub query: Option<&'a str>,
+    pub status_filter: Option<&'a str>,
+    pub start_ts: Option<i64>,
+    pub end_ts: Option<i64>,
+    /// 标题筛选解析出的会话 ID 集合；空集合表示不按标题筛选。
+    pub session_ids: &'a [String],
+    /// 模型精确匹配；空值表示不筛选。
+    pub model: Option<&'a str>,
+    /// 平台密钥 `key_id` 精确匹配；空值表示不筛选。
+    pub key_id: Option<&'a str>,
+}
+
+impl<'a> RequestLogQueryFilters<'a> {
+    pub fn has_explicit_filters(&self) -> bool {
+        !self.session_ids.is_empty() || self.model.is_some() || self.key_id.is_some()
+    }
+}
+
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,

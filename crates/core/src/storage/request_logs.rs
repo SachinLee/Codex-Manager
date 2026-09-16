@@ -6,12 +6,13 @@ use super::request_log_filters::{
 };
 use super::{
     now_ts, RequestLog, RequestLogModelUsageQueryResult, RequestLogModelUsageSummary,
-    RequestLogQuerySummary, RequestLogTodaySummary, RequestTokenStat, Storage,
+    RequestLogQueryFilters, RequestLogQuerySummary, RequestLogTodaySummary, RequestTokenStat,
+    Storage,
 };
 
 const DEFAULT_REQUEST_LOG_RETENTION_DAYS: i64 = 14;
 const REQUEST_LOG_RETENTION_DAYS_ENV: &str = "CODEXMANAGER_REQUEST_LOG_RETENTION_DAYS";
-const REQUEST_LOG_LIST_SELECT_COLUMNS: &str = "r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
+const REQUEST_LOG_LIST_SELECT_COLUMNS: &str = "r.trace_id, r.session_id, r.conversation_anchor, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json, r.aggregate_api_attempts,
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.request_type, r.gateway_mode, r.route_strategy, r.route_source, r.transparent_mode, r.enhanced_mode, r.client_model, r.model, r.model_source, r.upstream_model, r.actual_source_kind, r.actual_source_id, r.client_reasoning_effort, r.reasoning_effort, r.reasoning_source, r.service_tier, r.effective_service_tier, r.service_tier_source, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms, r.first_response_ms,
                 t.input_tokens, t.cached_input_tokens, t.cache_write_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
@@ -162,10 +163,10 @@ impl Storage {
     pub fn insert_request_log(&self, log: &RequestLog) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO request_logs (
-                trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                trace_id, session_id, conversation_anchor, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json, aggregate_api_attempts,
                 request_path, original_path, adapted_path,
                 method, request_type, gateway_mode, route_strategy, route_source, transparent_mode, enhanced_mode, client_model, model, model_source, upstream_model, actual_source_kind, actual_source_id, client_reasoning_effort, reasoning_effort, reasoning_source, service_tier, effective_service_tier, service_tier_source, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, first_response_ms, error, created_at, upstream_protocol
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)",
             params![
                 &log.trace_id,
                 &log.session_id,
@@ -176,6 +177,7 @@ impl Storage {
                 &log.attempted_account_ids_json,
                 &log.initial_aggregate_api_id,
                 &log.attempted_aggregate_api_ids_json,
+                &log.aggregate_api_attempts,
                 &log.request_path,
                 &log.original_path,
                 &log.adapted_path,
@@ -283,6 +285,12 @@ impl Storage {
             ],
         )?;
         let request_log_id = tx.last_insert_rowid();
+        if let Some(attempts) = log.aggregate_api_attempts.as_deref() {
+            tx.execute(
+                "UPDATE request_logs SET aggregate_api_attempts = ?1 WHERE id = ?2",
+                rusqlite::params![attempts, request_log_id],
+            )?;
+        }
 
         // 中文注释：token 统计写入失败不应阻塞 request log 保留（例如 sqlite busy/锁竞争）。
         // 这里保持“单事务单提交”，但 stat 失败时仍 commit request log。
@@ -376,17 +384,36 @@ impl Storage {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RequestLog>> {
+        self.list_request_logs_paginated_with_filters(
+            RequestLogQueryFilters {
+                query,
+                status_filter,
+                start_ts,
+                end_ts,
+                ..Default::default()
+            },
+            offset,
+            limit,
+        )
+    }
+
+    /// 使用完整筛选条件（含标题会话 ID、模型、平台密钥）分页读取请求日志。
+    pub fn list_request_logs_paginated_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<RequestLog>> {
         let normalized_limit = normalize_request_log_limit(limit);
         if normalized_limit == 0 {
             return Ok(Vec::new());
         }
-        if empty_optional_range(start_ts, end_ts) {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(Vec::new());
         }
         let normalized_offset = offset.max(0);
-        let filters =
-            self.request_log_filters(query, status_filter, start_ts, end_ts, None, true)?;
-        self.list_request_logs_with_filter(filters, normalized_offset, normalized_limit)
+        let sql_filters = self.request_log_filters(filters, None, true)?;
+        self.list_request_logs_with_filter(sql_filters, normalized_offset, normalized_limit)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -400,26 +427,42 @@ impl Storage {
         limit: i64,
         key_ids: &[String],
     ) -> Result<Vec<RequestLog>> {
+        self.list_request_logs_paginated_for_keys_with_filters(
+            RequestLogQueryFilters {
+                query,
+                status_filter,
+                start_ts,
+                end_ts,
+                ..Default::default()
+            },
+            offset,
+            limit,
+            key_ids,
+        )
+    }
+
+    /// 成员视角下使用完整筛选条件分页读取请求日志。
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_request_logs_paginated_for_keys_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+        offset: i64,
+        limit: i64,
+        key_ids: &[String],
+    ) -> Result<Vec<RequestLog>> {
         let normalized_limit = normalize_request_log_limit(limit);
         if normalized_limit == 0 {
             return Ok(Vec::new());
         }
-        if empty_optional_range(start_ts, end_ts) {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(Vec::new());
         }
         let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
             return Ok(Vec::new());
         };
         let normalized_offset = offset.max(0);
-        let filters = self.request_log_filters(
-            query,
-            status_filter,
-            start_ts,
-            end_ts,
-            Some(&key_filter),
-            false,
-        )?;
-        self.list_request_logs_with_filter(filters, normalized_offset, normalized_limit)
+        let sql_filters = self.request_log_filters(filters, Some(&key_filter), false)?;
+        self.list_request_logs_with_filter(sql_filters, normalized_offset, normalized_limit)
     }
 
     fn list_request_logs_with_filter(
@@ -462,16 +505,30 @@ impl Storage {
         start_ts: Option<i64>,
         end_ts: Option<i64>,
     ) -> Result<i64> {
-        if empty_optional_range(start_ts, end_ts) {
+        self.count_request_logs_with_filters(RequestLogQueryFilters {
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            ..Default::default()
+        })
+    }
+
+    /// 使用完整筛选条件统计请求日志条数。
+    pub fn count_request_logs_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+    ) -> Result<i64> {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(0);
         }
-        let filters =
-            self.request_log_filters(query, status_filter, start_ts, end_ts, None, true)?;
-        let sql = request_log_count_sql(&filters);
-        self.conn
-            .query_row(&sql, params_from_iter(filters.params.iter()), |row| {
-                row.get(0)
-            })
+        let sql_filters = self.request_log_filters(filters, None, true)?;
+        let sql = request_log_count_sql(&sql_filters);
+        self.conn.query_row(
+            &sql,
+            params_from_iter(sql_filters.params.iter()),
+            |row| row.get(0),
+        )
     }
 
     pub fn count_request_logs_for_keys(
@@ -482,25 +539,37 @@ impl Storage {
         end_ts: Option<i64>,
         key_ids: &[String],
     ) -> Result<i64> {
-        if empty_optional_range(start_ts, end_ts) {
+        self.count_request_logs_for_keys_with_filters(
+            RequestLogQueryFilters {
+                query,
+                status_filter,
+                start_ts,
+                end_ts,
+                ..Default::default()
+            },
+            key_ids,
+        )
+    }
+
+    /// 成员视角下使用完整筛选条件统计请求日志条数。
+    pub fn count_request_logs_for_keys_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+        key_ids: &[String],
+    ) -> Result<i64> {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(0);
         }
         let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
             return Ok(0);
         };
-        let filters = self.request_log_filters(
-            query,
-            status_filter,
-            start_ts,
-            end_ts,
-            Some(&key_filter),
-            false,
-        )?;
-        let sql = request_log_count_sql(&filters);
-        self.conn
-            .query_row(&sql, params_from_iter(filters.params.iter()), |row| {
-                row.get(0)
-            })
+        let sql_filters = self.request_log_filters(filters, Some(&key_filter), false)?;
+        let sql = request_log_count_sql(&sql_filters);
+        self.conn.query_row(
+            &sql,
+            params_from_iter(sql_filters.params.iter()),
+            |row| row.get(0),
+        )
     }
 
     /// 函数 `summarize_request_logs_filtered`
@@ -523,12 +592,25 @@ impl Storage {
         start_ts: Option<i64>,
         end_ts: Option<i64>,
     ) -> Result<RequestLogQuerySummary> {
-        if empty_optional_range(start_ts, end_ts) {
+        self.summarize_request_logs_filtered_with_filters(RequestLogQueryFilters {
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            ..Default::default()
+        })
+    }
+
+    /// 使用完整筛选条件汇总请求日志，保证统计与列表同口径。
+    pub fn summarize_request_logs_filtered_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+    ) -> Result<RequestLogQuerySummary> {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(empty_request_log_query_summary());
         }
-        let filters =
-            self.request_log_filters(query, status_filter, start_ts, end_ts, None, true)?;
-        self.summarize_request_logs_with_filter(filters)
+        let sql_filters = self.request_log_filters(filters, None, true)?;
+        self.summarize_request_logs_with_filter(sql_filters)
     }
 
     pub fn summarize_request_logs_filtered_for_keys(
@@ -539,21 +621,32 @@ impl Storage {
         end_ts: Option<i64>,
         key_ids: &[String],
     ) -> Result<RequestLogQuerySummary> {
-        if empty_optional_range(start_ts, end_ts) {
+        self.summarize_request_logs_filtered_for_keys_with_filters(
+            RequestLogQueryFilters {
+                query,
+                status_filter,
+                start_ts,
+                end_ts,
+                ..Default::default()
+            },
+            key_ids,
+        )
+    }
+
+    /// 成员视角下使用完整筛选条件汇总请求日志。
+    pub fn summarize_request_logs_filtered_for_keys_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+        key_ids: &[String],
+    ) -> Result<RequestLogQuerySummary> {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(empty_request_log_query_summary());
         }
         let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
             return Ok(empty_request_log_query_summary());
         };
-        let filters = self.request_log_filters(
-            query,
-            status_filter,
-            start_ts,
-            end_ts,
-            Some(&key_filter),
-            false,
-        )?;
-        self.summarize_request_logs_with_filter(filters)
+        let sql_filters = self.request_log_filters(filters, Some(&key_filter), false)?;
+        self.summarize_request_logs_with_filter(sql_filters)
     }
 
     pub fn summarize_request_logs_by_model_filtered(
@@ -563,12 +656,25 @@ impl Storage {
         start_ts: Option<i64>,
         end_ts: Option<i64>,
     ) -> Result<RequestLogModelUsageQueryResult> {
-        if empty_optional_range(start_ts, end_ts) {
+        self.summarize_request_logs_by_model_filtered_with_filters(RequestLogQueryFilters {
+            query,
+            status_filter,
+            start_ts,
+            end_ts,
+            ..Default::default()
+        })
+    }
+
+    /// 使用完整筛选条件按模型汇总请求日志。
+    pub fn summarize_request_logs_by_model_filtered_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+    ) -> Result<RequestLogModelUsageQueryResult> {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(RequestLogModelUsageQueryResult::default());
         }
-        let filters =
-            self.request_log_filters(query, status_filter, start_ts, end_ts, None, true)?;
-        self.summarize_request_logs_by_model_with_filter(filters)
+        let sql_filters = self.request_log_filters(filters, None, true)?;
+        self.summarize_request_logs_by_model_with_filter(sql_filters)
     }
 
     pub fn summarize_request_logs_by_model_filtered_for_keys(
@@ -579,38 +685,43 @@ impl Storage {
         end_ts: Option<i64>,
         key_ids: &[String],
     ) -> Result<RequestLogModelUsageQueryResult> {
-        if empty_optional_range(start_ts, end_ts) {
+        self.summarize_request_logs_by_model_filtered_for_keys_with_filters(
+            RequestLogQueryFilters {
+                query,
+                status_filter,
+                start_ts,
+                end_ts,
+                ..Default::default()
+            },
+            key_ids,
+        )
+    }
+
+    /// 成员视角下使用完整筛选条件按模型汇总请求日志。
+    pub fn summarize_request_logs_by_model_filtered_for_keys_with_filters(
+        &self,
+        filters: RequestLogQueryFilters<'_>,
+        key_ids: &[String],
+    ) -> Result<RequestLogModelUsageQueryResult> {
+        if empty_optional_range(filters.start_ts, filters.end_ts) {
             return Ok(RequestLogModelUsageQueryResult::default());
         }
         let Some(key_filter) = KeyIdSqlFilter::create(self, "r.key_id", key_ids)? else {
             return Ok(RequestLogModelUsageQueryResult::default());
         };
-        let filters = self.request_log_filters(
-            query,
-            status_filter,
-            start_ts,
-            end_ts,
-            Some(&key_filter),
-            false,
-        )?;
-        self.summarize_request_logs_by_model_with_filter(filters)
+        let sql_filters = self.request_log_filters(filters, Some(&key_filter), false)?;
+        self.summarize_request_logs_by_model_with_filter(sql_filters)
     }
 
     fn request_log_filters(
         &self,
-        query: Option<&str>,
-        status_filter: Option<&str>,
-        start_ts: Option<i64>,
-        end_ts: Option<i64>,
+        filters: RequestLogQueryFilters<'_>,
         key_filter: Option<&KeyIdSqlFilter<'_>>,
         include_route_detail_fields: bool,
     ) -> Result<RequestLogSqlFilters> {
         let include_account_lookup = self.has_table("accounts")?;
         Ok(build_request_log_filters(
-            query,
-            status_filter,
-            start_ts,
-            end_ts,
+            filters,
             include_account_lookup,
             key_filter,
             include_route_detail_fields,
@@ -999,6 +1110,10 @@ impl Storage {
         self.ensure_column("request_logs", "attempted_aggregate_api_ids_json", "TEXT")?;
         Ok(())
     }
+    pub(super) fn ensure_request_log_aggregate_api_attempts_column(&self) -> Result<()> {
+        self.ensure_column("request_logs", "aggregate_api_attempts", "TEXT")?;
+        Ok(())
+    }
 
     /// 函数 `ensure_request_log_duration_column`
     ///
@@ -1228,7 +1343,19 @@ fn request_log_summary_sql(filters: &RequestLogSqlFilters) -> String {
                         THEN IFNULL(t.estimated_cost_usd, 0.0)
                     ELSE 0.0
                 END
-            ), 0.0)
+            ), 0.0),
+            IFNULL(SUM(
+                CASE
+                    WHEN t.usage_included = 1 THEN IFNULL(t.input_tokens, 0)
+                    ELSE 0
+                END
+            ), 0),
+            IFNULL(SUM(
+                CASE
+                    WHEN t.usage_included = 1 THEN IFNULL(t.cached_input_tokens, 0)
+                    ELSE 0
+                END
+            ), 0)
          FROM request_logs r
          {account_join}
          LEFT JOIN request_token_stats t ON t.request_log_id = r.id
@@ -1260,45 +1387,46 @@ fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
         attempted_account_ids_json: row.get(6)?,
         initial_aggregate_api_id: row.get(7)?,
         attempted_aggregate_api_ids_json: row.get(8)?,
-        request_path: row.get(9)?,
-        original_path: row.get(10)?,
-        adapted_path: row.get(11)?,
-        method: row.get(12)?,
-        request_type: row.get(13)?,
-        gateway_mode: row.get(14)?,
-        route_strategy: row.get(15)?,
-        route_source: row.get(16)?,
-        transparent_mode: row.get(17)?,
-        enhanced_mode: row.get(18)?,
-        client_model: row.get(19)?,
-        model: row.get(20)?,
-        model_source: row.get(21)?,
-        upstream_model: row.get(22)?,
-        actual_source_kind: row.get(23)?,
-        actual_source_id: row.get(24)?,
-        client_reasoning_effort: row.get(25)?,
-        reasoning_effort: row.get(26)?,
-        reasoning_source: row.get(27)?,
-        service_tier: row.get(28)?,
-        effective_service_tier: row.get(29)?,
-        service_tier_source: row.get(30)?,
-        response_adapter: row.get(31)?,
-        upstream_url: row.get(32)?,
-        aggregate_api_supplier_name: row.get(33)?,
-        aggregate_api_url: row.get(34)?,
-        status_code: row.get(35)?,
-        duration_ms: row.get(36)?,
-        first_response_ms: row.get(37)?,
-        input_tokens: row.get(38)?,
-        cached_input_tokens: row.get(39)?,
-        cache_write_input_tokens: row.get(40)?,
-        output_tokens: row.get(41)?,
-        total_tokens: row.get(42)?,
-        reasoning_output_tokens: row.get(43)?,
-        estimated_cost_usd: row.get(44)?,
-        error: row.get(45)?,
-        created_at: row.get(46)?,
-        upstream_protocol: row.get(47)?,
+        aggregate_api_attempts: row.get(9)?,
+        request_path: row.get(10)?,
+        original_path: row.get(11)?,
+        adapted_path: row.get(12)?,
+        method: row.get(13)?,
+        request_type: row.get(14)?,
+        gateway_mode: row.get(15)?,
+        route_strategy: row.get(16)?,
+        route_source: row.get(17)?,
+        transparent_mode: row.get(18)?,
+        enhanced_mode: row.get(19)?,
+        client_model: row.get(20)?,
+        model: row.get(21)?,
+        model_source: row.get(22)?,
+        upstream_model: row.get(23)?,
+        actual_source_kind: row.get(24)?,
+        actual_source_id: row.get(25)?,
+        client_reasoning_effort: row.get(26)?,
+        reasoning_effort: row.get(27)?,
+        reasoning_source: row.get(28)?,
+        service_tier: row.get(29)?,
+        effective_service_tier: row.get(30)?,
+        service_tier_source: row.get(31)?,
+        response_adapter: row.get(32)?,
+        upstream_url: row.get(33)?,
+        aggregate_api_supplier_name: row.get(34)?,
+        aggregate_api_url: row.get(35)?,
+        status_code: row.get(36)?,
+        duration_ms: row.get(37)?,
+        first_response_ms: row.get(38)?,
+        input_tokens: row.get(39)?,
+        cached_input_tokens: row.get(40)?,
+        cache_write_input_tokens: row.get(41)?,
+        output_tokens: row.get(42)?,
+        total_tokens: row.get(43)?,
+        reasoning_output_tokens: row.get(44)?,
+        estimated_cost_usd: row.get(45)?,
+        error: row.get(46)?,
+        created_at: row.get(47)?,
+        upstream_protocol: row.get(48)?,
     })
 }
 
@@ -1309,6 +1437,8 @@ fn map_request_log_query_summary_row(row: &Row<'_>) -> Result<RequestLogQuerySum
         error_count: row.get(2)?,
         total_tokens: row.get(3)?,
         estimated_cost_usd: row.get(4)?,
+        input_tokens: row.get(5)?,
+        cached_input_tokens: row.get(6)?,
         ..Default::default()
     })
 }

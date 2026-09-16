@@ -5,13 +5,15 @@ use crate::commands::shared::rpc_call_in_background;
 /// 作者: gaohongshun
 ///
 /// 时间: 2026-04-02
-///
 /// # 参数
 /// - addr: 参数 addr
 /// - query: 参数 query
 /// - status_filter: 参数 status_filter
 /// - page: 参数 page
 /// - page_size: 参数 page_size
+/// - session_ids: 标题筛选解析出的会话 ID 列表
+/// - model: 模型精确筛选
+/// - key_id: 平台密钥精确筛选
 ///
 /// # 返回
 /// 返回函数执行结果
@@ -24,6 +26,9 @@ pub async fn service_requestlog_list(
     page_size: Option<i64>,
     start_ts: Option<i64>,
     end_ts: Option<i64>,
+    session_ids: Option<Vec<String>>,
+    model: Option<String>,
+    key_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "query": query,
@@ -31,7 +36,10 @@ pub async fn service_requestlog_list(
         "page": page,
         "pageSize": page_size,
         "startTs": start_ts,
-        "endTs": end_ts
+        "endTs": end_ts,
+        "sessionIds": session_ids.unwrap_or_default(),
+        "model": model,
+        "keyId": key_id
     });
     rpc_call_in_background("requestlog/list", addr, Some(params)).await
 }
@@ -58,6 +66,9 @@ pub async fn service_requestlog_list_with_summary(
     page_size: Option<i64>,
     start_ts: Option<i64>,
     end_ts: Option<i64>,
+    session_ids: Option<Vec<String>>,
+    model: Option<String>,
+    key_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "query": query,
@@ -65,7 +76,10 @@ pub async fn service_requestlog_list_with_summary(
         "page": page,
         "pageSize": page_size,
         "startTs": start_ts,
-        "endTs": end_ts
+        "endTs": end_ts,
+        "sessionIds": session_ids.unwrap_or_default(),
+        "model": model,
+        "keyId": key_id
     });
     rpc_call_in_background("requestlog/list_with_summary", addr, Some(params)).await
 }
@@ -106,12 +120,18 @@ pub async fn service_requestlog_summary(
     status_filter: Option<String>,
     start_ts: Option<i64>,
     end_ts: Option<i64>,
+    session_ids: Option<Vec<String>>,
+    model: Option<String>,
+    key_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "query": query,
         "statusFilter": status_filter,
         "startTs": start_ts,
-        "endTs": end_ts
+        "endTs": end_ts,
+        "sessionIds": session_ids.unwrap_or_default(),
+        "model": model,
+        "keyId": key_id
     });
     rpc_call_in_background("requestlog/summary", addr, Some(params)).await
 }

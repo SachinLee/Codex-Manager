@@ -698,6 +698,14 @@ export function buildSummaryPlaceholder(
     (sum, item) => sum + Math.max(0, item.longContextUpliftUsd || 0),
     0,
   );
+  const inputTokens = logs.reduce(
+    (sum, item) => sum + Math.max(0, item.inputTokens || 0),
+    0,
+  );
+  const cachedInputTokens = logs.reduce(
+    (sum, item) => sum + Math.max(0, item.cachedInputTokens || 0),
+    0,
+  );
 
   const modelMap = new Map<
     string,
@@ -770,6 +778,8 @@ export function buildSummaryPlaceholder(
     legacyCandidateCount: logs.filter(
       (item) => item.pricingContextBand === "legacy_candidate",
     ).length,
+    inputTokens,
+    cachedInputTokens,
     modelStats,
     modelStatsTruncated: false,
   };

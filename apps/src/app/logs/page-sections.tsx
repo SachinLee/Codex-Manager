@@ -6,6 +6,7 @@ import {
   CircleDollarSign,
   Clock3,
   Database,
+  Percent,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -52,8 +53,6 @@ import {
   formatTableTokenAmount,
   getStatusBadge,
   isReasoningGuardConverted502,
-  searchFieldPlaceholder,
-  type SearchField,
   type StatusFilter,
   type TimeRangePreset,
   type TranslateFn,
@@ -69,8 +68,9 @@ export function RequestLogsTabContent({
   isDirectAccountMode,
   isAdminMode,
   serviceConnected,
-  search,
-  searchField,
+  titleSearch,
+  modelFilter,
+  keyIdFilter,
   filter,
   timePreset,
   startTimeInput,
@@ -89,8 +89,11 @@ export function RequestLogsTabContent({
   aggregateApiMap,
   sessionTitleMap,
   clearMutationPending,
-  onSearchChange,
-  onSearchFieldChange,
+  modelOptions,
+  keyOptions,
+  onTitleSearchChange,
+  onModelFilterChange,
+  onKeyIdFilterChange,
   onFilterChange,
   onRefresh,
   onOpenClearConfirm,
@@ -108,8 +111,9 @@ export function RequestLogsTabContent({
   isDirectAccountMode: boolean;
   isAdminMode: boolean;
   serviceConnected: boolean;
-  search: string;
-  searchField: SearchField;
+  titleSearch: string;
+  modelFilter: string;
+  keyIdFilter: string;
   filter: StatusFilter;
   timePreset: TimeRangePreset;
   startTimeInput: string;
@@ -128,8 +132,11 @@ export function RequestLogsTabContent({
   aggregateApiMap: Map<string, AggregateApi>;
   sessionTitleMap: Map<string, RequestLogSessionTitle>;
   clearMutationPending: boolean;
-  onSearchChange: (value: string) => void;
-  onSearchFieldChange: (value: SearchField) => void;
+  modelOptions: string[];
+  keyOptions: Array<{ id: string; label: string }>;
+  onTitleSearchChange: (value: string) => void;
+  onModelFilterChange: (value: string) => void;
+  onKeyIdFilterChange: (value: string) => void;
   onFilterChange: (value: StatusFilter) => void;
   onRefresh: () => void;
   onOpenClearConfirm: () => void;
@@ -230,29 +237,55 @@ export function RequestLogsTabContent({
               </div>
 
               <div className="grid gap-3 2xl:grid-cols-[minmax(320px,1fr)_auto] 2xl:items-center">
-                <div className="flex min-w-0 gap-2">
+                <div className="grid min-w-0 gap-2 sm:grid-cols-3">
+                  <div className="relative min-w-0">
+                    <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      aria-label={t("标题")}
+                      placeholder={t("输入标题")}
+                      className="h-11 rounded-xl border-border/70 bg-background/80 pr-3 pl-10 text-sm shadow-none"
+                      value={titleSearch}
+                      onChange={(event) => onTitleSearchChange(event.target.value)}
+                    />
+                  </div>
                   <Select
-                    value={searchField}
-                    onValueChange={(value) => onSearchFieldChange((value ?? "all") as SearchField)}
+                    value={modelFilter}
+                    onValueChange={(value) => onModelFilterChange(value ?? "all")}
                   >
-                    <SelectTrigger className="h-11 w-[126px] shrink-0 rounded-xl bg-background/80 text-xs">
-                      <SelectValue />
+                    <SelectTrigger
+                      aria-label={t("模型")}
+                      className="h-11 min-w-0 rounded-xl bg-background/80 text-xs"
+                    >
+                      <SelectValue placeholder={t("全部模型")} />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">{t("全部字段")}</SelectItem>
-                      <SelectItem value="model">{t("模型")}</SelectItem>
-                      <SelectItem value="session_title">{t("会话标题")}</SelectItem>
+                      <SelectItem value="all">{t("全部模型")}</SelectItem>
+                      {modelOptions.map((model) => (
+                        <SelectItem key={model} value={model}>
+                          {model}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
-                  <div className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder={searchFieldPlaceholder(searchField, t)}
-                    className="h-11 rounded-xl border-border/70 bg-background/80 pr-3 pl-10 text-sm shadow-none"
-                    value={search}
-                    onChange={(event) => onSearchChange(event.target.value)}
-                  />
-                  </div>
+                  <Select
+                    value={keyIdFilter}
+                    onValueChange={(value) => onKeyIdFilterChange(value ?? "all")}
+                  >
+                    <SelectTrigger
+                      aria-label={t("平台密钥")}
+                      className="h-11 min-w-0 rounded-xl bg-background/80 text-xs"
+                    >
+                      <SelectValue placeholder={t("全部平台密钥")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{t("全部平台密钥")}</SelectItem>
+                      {keyOptions.map((key) => (
+                        <SelectItem key={key.id} value={key.id}>
+                          {key.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 2xl:justify-end">
@@ -435,6 +468,22 @@ export function RequestLogsTabContent({
                   }
                   icon={CircleDollarSign}
                   toneClass="bg-emerald-500/12 text-emerald-500"
+                />
+                <SummaryCard
+                  title={t("缓存率")}
+                  value={formatCacheRate(summary.inputTokens, summary.cachedInputTokens)}
+                  detail={
+                    summary.inputTokens > 0
+                      ? `${t("缓存")} ${formatCompactTokenAmount(summary.cachedInputTokens)} / ${t("输入")} ${formatCompactTokenAmount(summary.inputTokens)}`
+                      : undefined
+                  }
+                  description={
+                    isDirectAccountMode
+                      ? `${t("当前筛选结果中的缓存率")} · ${t("仅网关流量")}`
+                      : t("当前筛选结果中的缓存率")
+                  }
+                  icon={Percent}
+                  toneClass="bg-sky-500/12 text-sky-500"
                 />
               </div>
             ) : null}

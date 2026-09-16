@@ -1,6 +1,6 @@
 use rusqlite::types::Value;
 
-use super::{key_id_filters::KeyIdSqlFilter, request_log_query};
+use super::{key_id_filters::KeyIdSqlFilter, request_log_query, RequestLogQueryFilters};
 
 pub(super) struct RequestLogSqlFilters {
     pub(super) where_clause: String,
@@ -10,10 +10,7 @@ pub(super) struct RequestLogSqlFilters {
 }
 
 pub(super) fn build_request_log_filters(
-    query: Option<&str>,
-    status_filter: Option<&str>,
-    start_ts: Option<i64>,
-    end_ts: Option<i64>,
+    filters: RequestLogQueryFilters<'_>,
     include_account_lookup: bool,
     key_filter: Option<&KeyIdSqlFilter<'_>>,
     include_route_detail_fields: bool,
@@ -21,7 +18,7 @@ pub(super) fn build_request_log_filters(
     let mut clauses = vec!["r.cleared_at IS NULL".to_string()];
     let mut params = Vec::new();
 
-    let query = request_log_query::parse_request_log_query(query);
+    let query = request_log_query::parse_request_log_query(filters.query);
     let uses_account_lookup = request_log_query_uses_account_lookup(&query, include_account_lookup);
     let uses_token_stats = append_request_log_query_clause(
         query,
@@ -30,8 +27,9 @@ pub(super) fn build_request_log_filters(
         &mut clauses,
         &mut params,
     );
-    append_status_filter_clause(status_filter, &mut clauses, &mut params);
-    append_time_range_clause(start_ts, end_ts, &mut clauses, &mut params);
+    append_status_filter_clause(filters.status_filter, &mut clauses, &mut params);
+    append_time_range_clause(filters.start_ts, filters.end_ts, &mut clauses, &mut params);
+    append_explicit_filter_clause(&filters, &mut clauses, &mut params);
     append_key_filter_clause(key_filter, &mut clauses, &mut params);
 
     RequestLogSqlFilters {
@@ -43,6 +41,31 @@ pub(super) fn build_request_log_filters(
         params,
         uses_token_stats,
         uses_account_lookup,
+    }
+}
+
+/// 追加请求日志页面的显式筛选条件：标题解析出的会话 ID、模型、平台密钥。
+///
+/// 三者与 `query`、状态、时间范围一样都是 AND 关系；空值不追加任何条件。
+fn append_explicit_filter_clause(
+    filters: &RequestLogQueryFilters<'_>,
+    clauses: &mut Vec<String>,
+    params: &mut Vec<Value>,
+) {
+    if !filters.session_ids.is_empty() {
+        let placeholders = vec!["?"; filters.session_ids.len()].join(", ");
+        clauses.push(format!("IFNULL(r.session_id, '') IN ({placeholders})"));
+        for session_id in filters.session_ids {
+            params.push(Value::Text(session_id.clone()));
+        }
+    }
+    if let Some(model) = filters.model {
+        clauses.push("r.model = ?".to_string());
+        params.push(Value::Text(model.to_string()));
+    }
+    if let Some(key_id) = filters.key_id {
+        clauses.push("r.key_id = ?".to_string());
+        params.push(Value::Text(key_id.to_string()));
     }
 }
 
