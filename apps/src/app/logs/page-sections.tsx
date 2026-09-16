@@ -192,7 +192,7 @@ export function RequestLogsTabContent({
 
       <Card className="glass-card mission-panel overflow-hidden gap-0 py-0 shadow-sm">
         <CardContent className="p-0">
-          <div className={cn("grid", filtersExpanded ? "xl:grid-cols-[minmax(0,1fr)_390px]" : "")}>
+          <div className={cn("grid", filtersExpanded ? "xl:grid-cols-[minmax(0,1fr)_480px]" : "")}>
             <div
               className={cn(
                 "space-y-4 p-4",
@@ -236,78 +236,41 @@ export function RequestLogsTabContent({
                 </div>
               </div>
 
-              <div className="grid gap-3 2xl:grid-cols-[minmax(320px,1fr)_auto] 2xl:items-center">
-                <div className="grid min-w-0 gap-2 sm:grid-cols-3">
-                  <div className="relative min-w-0">
-                    <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      aria-label={t("标题")}
-                      placeholder={t("输入标题")}
-                      className="h-11 rounded-xl border-border/70 bg-background/80 pr-3 pl-10 text-sm shadow-none"
-                      value={titleSearch}
-                      onChange={(event) => onTitleSearchChange(event.target.value)}
-                    />
+              <div className="grid gap-3 2xl:grid-cols-[minmax(0,1fr)_auto] 2xl:items-end">
+                <div className="grid min-w-0 gap-2.5 lg:grid-cols-[minmax(0,1.35fr)_minmax(168px,0.85fr)_minmax(200px,1fr)]">
+                  <div className="min-w-0 rounded-xl border border-border/60 bg-background/45 p-2.5">
+                    <label htmlFor="request-log-title-filter" className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-foreground">
+                      {t("标题")}
+                      <span className="font-normal text-muted-foreground">{t("匹配会话标题、父标题或会话 ID")}</span>
+                    </label>
+                    <div className="relative min-w-0">
+                      <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input id="request-log-title-filter" aria-label={t("标题")} placeholder={t("输入标题")} className="h-10 rounded-lg border-border/70 bg-background/80 pr-3 pl-9 text-sm shadow-none" value={titleSearch} onChange={(event) => onTitleSearchChange(event.target.value)} />
+                    </div>
                   </div>
-                  <Select
-                    value={modelFilter}
-                    onValueChange={(value) => onModelFilterChange(value ?? "all")}
-                  >
-                    <SelectTrigger
-                      aria-label={t("模型")}
-                      className="h-11 min-w-0 rounded-xl bg-background/80 text-xs"
-                    >
-                      <SelectValue placeholder={t("全部模型")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">{t("全部模型")}</SelectItem>
-                      {modelOptions.map((model) => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={keyIdFilter}
-                    onValueChange={(value) => onKeyIdFilterChange(value ?? "all")}
-                  >
-                    <SelectTrigger
-                      aria-label={t("平台密钥")}
-                      className="h-11 min-w-0 rounded-xl bg-background/80 text-xs"
-                    >
-                      <SelectValue placeholder={t("全部平台密钥")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">{t("全部平台密钥")}</SelectItem>
-                      {keyOptions.map((key) => (
-                        <SelectItem key={key.id} value={key.id}>
-                          {key.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="min-w-0 rounded-xl border border-border/60 bg-background/45 p-2.5">
+                    <div className="mb-1.5 text-xs font-semibold text-foreground">{t("模型")}</div>
+                    <Select value={modelFilter} onValueChange={(value) => onModelFilterChange(value ?? "all")}>
+                      <SelectTrigger aria-label={t("模型")} className="h-10 w-full min-w-0 rounded-lg bg-background/80 text-xs">
+                        <div className="flex min-w-0 flex-1 flex-col text-left leading-tight"><span className="text-[10px] text-muted-foreground">{t("按平台模型筛选请求")}</span><span className="truncate font-medium text-foreground">{modelFilter === "all" ? t("全部模型") : modelFilter}</span></div>
+                      </SelectTrigger>
+                      <SelectContent><SelectItem value="all">{t("全部模型")}</SelectItem>{modelOptions.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="min-w-0 rounded-xl border border-border/60 bg-background/45 p-2.5">
+                    <div className="mb-1.5 text-xs font-semibold text-foreground">{t("平台密钥")}</div>
+                    <Select value={keyIdFilter} onValueChange={(value) => onKeyIdFilterChange(value ?? "all")}>
+                      <SelectTrigger aria-label={t("平台密钥")} className="h-10 w-full min-w-0 rounded-lg bg-background/80 text-xs">
+                        <div className="flex min-w-0 flex-1 flex-col text-left leading-tight"><span className="text-[10px] text-muted-foreground">{t("按平台密钥筛选请求")}</span><span className="truncate font-medium text-foreground">{keyIdFilter === "all" ? t("全部平台密钥") : keyOptions.find((key) => key.id === keyIdFilter)?.label ?? keyIdFilter}</span></div>
+                      </SelectTrigger>
+                      <SelectContent><SelectItem value="all">{t("全部平台密钥")}</SelectItem>{keyOptions.map((key) => <SelectItem key={key.id} value={key.id}>{key.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
                 </div>
-
                 <div className="flex flex-wrap items-center gap-2 2xl:justify-end">
-                  <span className="inline-flex h-9 items-center rounded-xl border border-border/60 bg-background/70 px-3 text-xs font-medium text-muted-foreground">
-                    {currentFilterLabel}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-9 rounded-xl bg-background/70 px-3"
-                    aria-expanded={filtersExpanded}
-                    onClick={() => setFiltersExpanded((current) => !current)}
-                  >
-                    <SlidersHorizontal className="mr-1.5 h-4 w-4" />
-                    {filtersExpanded ? t("收起筛选") : t("展开筛选")}
-                    <ChevronDown
-                      className={cn(
-                        "ml-1.5 h-4 w-4 transition-transform",
-                        filtersExpanded ? "rotate-180" : "rotate-0",
-                      )}
-                    />
+                  <span className="inline-flex h-9 items-center rounded-xl border border-border/60 bg-background/70 px-3 text-xs font-medium text-muted-foreground">{currentFilterLabel}</span>
+                  <Button type="button" variant="outline" size="sm" className="h-9 rounded-xl bg-background/70 px-3" aria-expanded={filtersExpanded} onClick={() => setFiltersExpanded((current) => !current)}>
+                    <SlidersHorizontal className="mr-1.5 h-4 w-4" />{filtersExpanded ? t("收起筛选") : t("展开筛选")}<ChevronDown className={cn("ml-1.5 h-4 w-4 transition-transform", filtersExpanded ? "rotate-180" : "rotate-0")} />
                   </Button>
                 </div>
               </div>
@@ -420,7 +383,7 @@ export function RequestLogsTabContent({
             </div>
 
             {filtersExpanded ? (
-              <div className="grid gap-3 border-t border-border/50 bg-muted/20 p-4 sm:grid-cols-2 xl:border-t-0">
+              <div data-testid="request-log-summary-grid" className="grid grid-cols-2 gap-3 border-t border-border/50 bg-muted/20 p-4 xl:border-t-0">
                 <RequestResultSummaryCard
                   title={t("当前结果")}
                   requestCount={summary.filteredCount}
@@ -445,43 +408,23 @@ export function RequestLogsTabContent({
                         ? `Guard +${formatUsdAmount(summary.guardRetryEstimatedCostUsd)}`
                         : undefined
                   }
-                  description={
-                    isDirectAccountMode
-                      ? `${t("当前筛选结果中的总Token")} · ${t("仅网关流量")}`
-                      : t("当前筛选结果中的总Token")
-                  }
+                  description={isDirectAccountMode ? `${t("当前筛选结果中的总Token")} · ${t("仅网关流量")}` : t("当前筛选结果中的总Token")}
                   icon={Database}
                   toneClass="bg-amber-500/12 text-amber-500"
                 />
                 <SummaryCard
                   title={t("累计费用")}
                   value={formatUsdAmount(summary.totalCostUsd)}
-                  detail={
-                    summary.guardRetryEstimatedCostUsd > 0
-                      ? `Guard +${formatUsdAmount(summary.guardRetryEstimatedCostUsd)}`
-                      : undefined
-                  }
-                  description={
-                    isDirectAccountMode
-                      ? `${t("当前筛选结果中的累计费用")} · ${t("仅网关流量")}`
-                      : t("当前筛选结果中的累计费用")
-                  }
+                  detail={summary.guardRetryEstimatedCostUsd > 0 ? `Guard +${formatUsdAmount(summary.guardRetryEstimatedCostUsd)}` : undefined}
+                  description={isDirectAccountMode ? `${t("当前筛选结果中的累计费用")} · ${t("仅网关流量")}` : t("当前筛选结果中的累计费用")}
                   icon={CircleDollarSign}
                   toneClass="bg-emerald-500/12 text-emerald-500"
                 />
                 <SummaryCard
                   title={t("缓存率")}
                   value={formatCacheRate(summary.inputTokens, summary.cachedInputTokens)}
-                  detail={
-                    summary.inputTokens > 0
-                      ? `${t("缓存")} ${formatCompactTokenAmount(summary.cachedInputTokens)} / ${t("输入")} ${formatCompactTokenAmount(summary.inputTokens)}`
-                      : undefined
-                  }
-                  description={
-                    isDirectAccountMode
-                      ? `${t("当前筛选结果中的缓存率")} · ${t("仅网关流量")}`
-                      : t("当前筛选结果中的缓存率")
-                  }
+                  detail={summary.inputTokens > 0 ? `${t("缓存")} ${formatCompactTokenAmount(summary.cachedInputTokens)} / ${t("输入")} ${formatCompactTokenAmount(summary.inputTokens)}` : undefined}
+                  description={isDirectAccountMode ? `${t("当前筛选结果中的缓存率")} · ${t("仅网关流量")}` : t("当前筛选结果中的缓存率")}
                   icon={Percent}
                   toneClass="bg-sky-500/12 text-sky-500"
                 />

@@ -291,6 +291,10 @@ test("request logs expose independent title, model and api-key filters", async (
   await expect(titleInput).toBeVisible();
   await expect(modelSelect).toBeVisible();
   await expect(keySelect).toBeVisible();
+  await expect(page.getByText("匹配会话标题、父标题或会话 ID")).toBeVisible();
+  await expect(page.getByText("按平台模型筛选请求")).toBeVisible();
+  await expect(page.getByText("按平台密钥筛选请求")).toBeVisible();
+
   await expect(page.getByRole("combobox", { name: "全部字段" })).toHaveCount(0);
 
   // 未设置任何条件时不传显式字段，保持既有结果。
@@ -304,10 +308,15 @@ test("request logs expose independent title, model and api-key filters", async (
   await page.getByRole("option", { name: "gpt-5-codex", exact: true }).click();
   await expect.poll(() => lastListParams(state).model).toBe("gpt-5-codex");
 
-  // 平台密钥下拉展示密钥名称。
+  // 平台密钥下拉及选中态均展示名称，短 ID 仅作辅助识别。
   await keySelect.click();
-  await page.getByRole("option", { name: "Alpha 密钥", exact: true }).click();
+  await page.getByRole("option", { name: /Alpha 密钥 · key-alpha/ }).click();
+  await expect(keySelect).toContainText("Alpha 密钥");
   await expect.poll(() => lastListParams(state).keyId).toBe("key-alpha");
+  const summaryGrid = page.getByTestId("request-log-summary-grid");
+  await expect(summaryGrid).toBeVisible();
+  await expect(summaryGrid.locator(":scope > *")).toHaveCount(4);
+  await expect(summaryGrid).toHaveCSS("grid-template-columns", /.+ .+/);
 
   // 标题经会话标题侧车解析成会话 ID 后交给服务端。
   await titleInput.fill("独立筛选");

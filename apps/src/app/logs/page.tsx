@@ -340,16 +340,24 @@ function LogsPageContent() {
     return Array.from(new Set(slugs)).sort((left, right) => left.localeCompare(right));
   }, [modelCatalogResult?.models]);
 
-  // 平台密钥下拉沿用列表里的展示口径：有名称用名称，否则退化成紧凑 ID。
+  // 名称优先；无名称时回退到供应商或模型上下文，再附短 ID，避免选中后只剩难辨认的原始 ID。
   const keyOptions = useMemo(
     () =>
       (apiKeysResult || [])
-        .map((apiKey) => ({
-          id: apiKey.id,
-          label: String(apiKey.name || "").trim() || formatCompactKeyLabel(apiKey.id),
-        }))
+        .map((apiKey) => {
+          const name = String(apiKey.name || "").trim();
+          const aggregateApi = apiKey.aggregateApiId
+            ? aggregateApiMap.get(apiKey.aggregateApiId)
+            : null;
+          const context =
+            String(aggregateApi?.supplierName || "").trim() ||
+            String(apiKey.modelSlug || apiKey.model || "").trim();
+          const compactId = formatCompactKeyLabel(apiKey.id);
+          const primary = name || context || t("未命名密钥");
+          return { id: apiKey.id, label: `${primary} · ${compactId}` };
+        })
         .sort((left, right) => left.label.localeCompare(right.label)),
-    [apiKeysResult],
+    [aggregateApiMap, apiKeysResult, t],
   );
 
   const logs = logsResult?.items || [];

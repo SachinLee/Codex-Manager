@@ -248,7 +248,7 @@ export function RequestResultSummaryCard({
   ];
 
   return (
-    <div className="group/metric relative flex min-h-[142px] flex-col overflow-hidden rounded-2xl border border-border/55 bg-background/72 p-4 shadow-[0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-border/80 hover:bg-background/86 hover:shadow-md sm:col-span-2">
+    <div className="group/metric relative flex min-h-[142px] flex-col overflow-hidden rounded-2xl border border-border/55 bg-background/72 p-4 shadow-[0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-border/80 hover:bg-background/86 hover:shadow-md">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full bg-primary/12 opacity-45 blur-2xl transition-opacity group-hover/metric:opacity-70"
