@@ -1,84 +1,43 @@
-# 合并修复完成
+# Outcome
 
-## 执行摘要
+## Delivery
+- Status: partial
+- Summary: Fetched `origin/main` and merged commit `a4805dd4b5b6a64312c305c9a35554b7f334102c` into `codex/integrate-main-20260717` as merge commit `7f57e2b48fcb334c601b4ad6b2c7ecf75a4dd19b`. The pre-existing worktree was saved with an include-untracked stash and restored afterward; the stash remains available.
 
-成功将 origin/main 最新代码合并到当前分支，修复所有编译错误，保留当前分支的模型关联和能力探测功能。
+## Acceptance Criteria
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Fetch latest `origin/main` | PASS | `git fetch origin main`; ref advanced from `c4b463606ef0cee266be2a0aa00fe96e1ecf967f` to `a4805dd4b5b6a64312c305c9a35554b7f334102c`. |
+| Merge into current branch | PASS | Branch is `codex/integrate-main-20260717`; `HEAD=7f57e2b48fcb334c601b4ad6b2c7ecf75a4dd19b`; `git merge-base --is-ancestor origin/main HEAD` returned 0; merge parents are `df17b58a291a52345bcc7a0918a0b73399d72656` and `a4805dd4b5b6a64312c305c9a35554b7f334102c`. |
+| No unresolved conflicts | PASS | `git diff --name-only --diff-filter=U` returned no paths; tracked source scan found no conflict markers. |
+| Preserve worktree changes | PASS | `git stash push --include-untracked --message trellis-sync-main-pre-merge-2026-09-13`, followed by `git stash apply --index stash@{0}`. `stash@{0}` remains listed; original Rust, observability, docs, `.scratch`, and Trellis task paths are present after restore. |
+| Product validation | PARTIAL | `cargo check -p codexmanager-core` passed with two existing unused-variable warnings. `pnpm -C apps run build` failed at the merged settings/user-agent shape (`gatewayUserAgentInput` inferred as `{}`). `cargo check -p codexmanager-service` failed with cross-module merge mismatches, including app-settings exports, account reset-warmup summary fields, aggregate API RPC argument counts, and usage snapshot status matching. |
 
-## 修复内容
+## Implementation
+- Used a protected workflow: stash including untracked files, fetch `origin main`, ordinary merge, conflict resolution, merge commit, then stash apply.
+- Did not reset, clean, force-update, push, create a PR, or commit the pre-existing business worktree changes.
+- Kept the merge commit separate from the restored uncommitted worktree changes.
 
-### 前端修复
+## TDD Evidence
+- RED: NOT APPLICABLE; this task is Git integration rather than a behavior change.
+- GREEN: `cargo check -p codexmanager-core` passed.
 
-1. **类型导入补全** (`apps/src/lib/api/`)
-   - `account-client.ts`: 添加 `normalizeAggregateApiFetchModelsResult` 和 `normalizeAggregateApiSecretResult` 导入
-   - `normalize.ts`: 添加 `AggregateApiFetchedModel` 和 `AggregateApiFetchModelsResult` 类型导入
+## Verification
+- `git status --short --untracked-files=all`: restored dirty worktree; no staged changes.
+- `git diff --name-only --diff-filter=U`: empty.
+- `git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- ':!*.md' ':!*.html'`: no tracked source markers.
+- `git merge-base --is-ancestor origin/main HEAD`: passed.
+- `git stash list`: pre-merge stash retained.
+- `pnpm -C apps run build`: failed; see acceptance table.
+- `cargo check -p codexmanager-service`: failed; see acceptance table.
 
-2. **状态声明补全** (`apps/src/app/aggregate-api/page.tsx`)
-   - 添加4个缺失的状态钩子：
-     - `associatingModels`
-     - `probeSettingsOpen`
-     - `probeUserAgentMode`
-     - `probeUserAgent`
+## Independent Review
+- Merge conflict resolution was attempted with bounded workers, but all workers hit the runtime limit before producing a complete review. No independent approval claim is made.
 
-### 后端修复
+## Commits
+- `7f57e2b48fcb334c601b4ad6b2c7ecf75a4dd19b` — merge fetched `origin/main`.
+- Pre-existing worktree changes remain uncommitted.
 
-1. **模块导出补全** (`crates/service/src/`)
-   - `lib.rs`: aggregate_api 模块已包含 `fetch_aggregate_api_models` 和 `associate_aggregate_api_models` 导出
-   - `rpc_dispatch/aggregate_api.rs`: 补充 capability 相关函数导入（`set_aggregate_api_capability_override`, `reset_aggregate_api_capability_override`, `set_aggregate_api_capability_routing_mode`）
-
-2. **枚举重命名与变体更新** (`crates/service/src/gateway/upstream/`)
-   - `protocol/aggregate_api.rs`: `AggregateProxyOutcome` → `AggregateAttemptOutcome`
-   - 变体更新：`Handled` → `Responded`，`Unavailable {request, status_code, message}` → `RequestReleased {request, error}`
-   - `proxy.rs`: 同步更新3处 outcome 匹配逻辑，处理 ReleaseRequest 失败策略
-
-3. **函数签名更新** (`crates/service/src/`)
-   - `account/account_status.rs`:
-     - `AccountStatusContext` 添加 `updated_at: Option<i64>` 字段
-     - `update_account_status` → `update_account_status_if_context_matches`，参数从2个变为4个
-   - `gateway/upstream/proxy.rs`: `proxy_with_aggregate_candidates` 补充 `started_at` 参数（第29个参数）
-
-4. **测试文件同步** (`crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs`)
-   - 导入更新：`AggregateProxyOutcome` → `AggregateAttemptOutcome`，添加 `AggregateFailurePolicy`
-   - 变体替换：`Handled` → `Responded`，`Unavailable` → `RequestReleased`
-   - 修正 `candidate` → `candidates`（函数参数）
-
-## 验证结果
-
-### 编译验证
-- ✅ **Rust**: `cargo build --workspace` 成功（56.58s）
-- ✅ **前端**: `pnpm -C apps run build` 成功（39.52s）
-
-### 测试验证
-- ✅ **Rust单元测试**: `cargo test -p codexmanager-service --lib aggregate_api` 
-  - 通过：88个测试
-  - 失败：8个测试（已存在的余额提取器测试问题，与本次合并无关）
-- ⚠️ **前端i18n测试**: 发现未覆盖的i18n键（模型关联弹窗的21个键），需单独处理
-
-## 未解决问题
-
-1. **i18n覆盖不完整**: `aggregate-api-model-association-modal.tsx` 的21个中文键未添加到 en/ko/ru sections
-2. **已存在测试失败**: 8个余额配置相关测试（非本次合并引入）
-
-## 文件清单
-
-### 修改文件
-- `apps/src/lib/api/account-client.ts`
-- `apps/src/lib/api/normalize.ts`
-- `apps/src/app/aggregate-api/page.tsx`
-- `crates/service/src/lib.rs`
-- `crates/service/src/rpc_dispatch/aggregate_api.rs`
-- `crates/service/src/gateway/upstream/protocol/aggregate_api.rs`
-- `crates/service/src/gateway/upstream/proxy.rs`
-- `crates/service/src/account/account_status.rs`
-- `crates/service/src/gateway/upstream/protocol/aggregate_api_tests.rs`
-
-### 涉及的特性
-- ✅ 聚合API模型拉取与关联（当前分支特性，已保留）
-- ✅ 聚合API能力诊断（当前分支特性，已保留）
-- ✅ 混合轮转（聚合优先）失败策略（main分支特性，已集成）
-- ✅ 账号状态上下文匹配更新（main分支特性，已集成）
-
-## 后续建议
-
-1. 补充 en/ko/ru 的模型关联翻译键
-2. 排查余额提取器测试失败根因
-3. 运行完整集成测试验证网关路由行为
+## Remaining Risk
+- The merge is structurally complete but product-wide validation is not green. The next executable step is to reconcile the reported cross-layer settings/account-reset/aggregate-RPC compile errors in a separate implementation task before treating the branch as build-ready.
+- Do not drop `stash@{0}` until the restored worktree has been independently confirmed and any follow-up fixes are complete.

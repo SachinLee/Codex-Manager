@@ -48,6 +48,8 @@ pub struct ChargeComputationV2 {
 pub struct ChargeSnapshotInputV2 {
     pub request_log_id: i64,
     pub model_slug: String,
+    #[serde(default)]
+    pub pricing_model_slug: Option<String>,
     pub usage_source: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
@@ -426,6 +428,11 @@ impl Storage {
             tx.commit()?;
             return Ok(existing);
         }
+        let pricing_model_slug = input
+            .pricing_model_slug
+            .as_deref()
+            .filter(|slug| !slug.trim().is_empty())
+            .unwrap_or(input.model_slug.as_str());
         let read_catalog_tier = || {
             tx.query_row(
                 "SELECT m.id,t.min_input_tokens,t.input_microusd_per_1m,
@@ -435,7 +442,7 @@ impl Storage {
                     AND (t.min_input_tokens=0 OR (?3<>0 AND t.min_input_tokens<=?2))
                  WHERE m.slug=?1 COLLATE NOCASE ORDER BY t.min_input_tokens DESC LIMIT 1",
                 params![
-                    input.model_slug.trim(),
+                    pricing_model_slug.trim(),
                     input.input_tokens,
                     i64::from(input.long_context_billing_enabled.unwrap_or(true)),
                 ],
@@ -470,7 +477,7 @@ impl Storage {
                     .query_row(
                         "SELECT p.price_status FROM models m JOIN model_prices p ON p.model_id=m.id
                          WHERE m.slug=?1 COLLATE NOCASE",
-                        [input.model_slug.trim()],
+                        [pricing_model_slug.trim()],
                         |row| row.get(0),
                     )
                     .optional()?;

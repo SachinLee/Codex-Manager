@@ -387,3 +387,67 @@ for project in verified_direct_project_directories().take(MAX_OMP_PROJECT_DIRECT
     scan_direct_jsonl(project);
 }
 ```
+
+## Scenario: Aggregate API Zero-Delivery Failover
+
+### 1. Scope / Trigger
+
+- Trigger: changing Aggregate API candidate selection, buffered Responses SSE delivery, candidate trace events, or request-log attempt persistence.
+- Applies to `gateway/observability/http_bridge/delivery.rs`, `gateway/upstream/protocol/aggregate_api.rs`, `gateway/upstream/support/upstream_failure.rs`, and core request-log storage.
+
+### 2. Signatures
+
+- Runtime keys: `CODEXMANAGER_AGGREGATE_ZERO_DELIVERY_FAILOVER` (default `true`) and `CODEXMANAGER_AGGREGATE_TRANSPORT_RETRY_ATTEMPTS` (default `1`).
+- Bridge flag: `allow_zero_delivery_failover`; Aggregate passes `true`, account-pool paths pass `false`.
+- Persisted field: `RequestLogTraceContext.aggregate_api_attempts` -> `request_logs.aggregate_api_attempts`, containing serialized `AggregateApiAttemptRecord[]`.
+- Candidate event: `AGGREGATE_CANDIDATE_DECISION` with trace ID, candidate ID, position, sanitized URL, status, bounded error code, decision, zero-delivery flag, and retry ordinal.
+
+### 3. Contracts
+
+- Only strict-guard buffered Responses SSE may fail over on HTTP 200 terminal error or incomplete read with zero semantic output; realtime passthrough must not claim rollback.
+- `server_error`, `service_unavailable_error`, `gateway_concurrency_limit`, and `rate_limit_exceeded` select the next candidate when no output text, tool call, or output tokens were delivered.
+- Capacity recovery, capability retry, reasoning-guard retry, invalid requests, and 400/422/413 semantics retain their existing precedence and budgets.
+- Every Aggregate candidate attempt, including timeout and final `Responded` outcomes, must be serialized before its request-log write. Do not log body, raw SSE, authorization, tool arguments, or secrets.
+
+### 4. Validation & Error Matrix
+
+- Aggregate opt-in false -> no zero-delivery failover; account-pool behavior remains unchanged.
+- HTTP 200 + terminal error + zero semantic output -> `pending_failover_request` and candidate decision `failover`.
+- Any output text, tool call, or positive output token count -> deliver once; no replay or candidate switch.
+- Invalid request or capacity/reasoning/capability-specialized outcome -> existing terminal or same-candidate action, not ordinary candidate failover.
+- Missing or invalid retry env -> default `1`; zero disables same-candidate transport retries without changing candidate count.
+
+### 5. Good / Base / Bad Cases
+
+- Good: candidate A emits a buffered `response.failed` with `gateway_concurrency_limit`; candidate B succeeds; the client sees only B and the log contains both attempt records.
+- Base: all candidates fail; the final response is terminal and the log retains each candidate's failure category and outcome.
+- Bad: a realtime stream is marked failover-capable after bytes were written, duplicating text or tool calls.
+- Bad: a timeout request-log write omits the timeout attempt, making the persisted chain shorter than the actual candidate execution.
+
+### 6. Tests Required
+
+- Integration tests must cover zero-delivery `gateway_concurrency_limit`, `server_error`/`service_unavailable_error`, and `rate_limit_exceeded` failover to B.
+- Assert delivered-content and tool-call no-replay, invalid-request termination, and capacity/capability/reasoning precedence.
+- Assert candidate trace fields and secret/body exclusion, cooldown threshold behavior, and request-log records for failure, timeout, and success outcomes.
+- Assert SQL placeholder/binding parity and migration behavior on both fresh and existing request-log schemas.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+if collector.terminal_error.is_some() {
+    return pending_failover_request(request);
+}
+```
+
+#### Correct
+
+```rust
+let can_fail_over = allow_zero_delivery_failover
+    && buffered_strict_guard
+    && status == StatusCode::OK
+    && collector.terminal_error.is_some()
+    && collector.usage.output_text.as_deref().is_none_or(str::is_empty)
+    && collector.usage.output_tokens.unwrap_or_default() == 0;
+```

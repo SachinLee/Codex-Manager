@@ -1,0 +1,194 @@
+diff --git a/crates/core/src/storage/mod.rs b/crates/core/src/storage/mod.rs
+index 8703558d..b422aef5 100644
+--- a/crates/core/src/storage/mod.rs
++++ b/crates/core/src/storage/mod.rs
+@@ -55,17 +55,16 @@ pub use aggregate_api_daily_spend::{
+     SPEND_PRICING_PROVIDER_REPORTED, SPEND_PRICING_QUOTED, SPEND_PRICING_UNBOUNDED_OUTPUT,
+     SPEND_PRICING_UNPRICED_MODEL,
+ };
+-pub use account_reset_warmups::AccountResetWarmupTarget;
+ pub use model_billing_v2::{
+     compute_charge_v2, ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2,
+     ModelPriceTierV2,
+ };
+ pub use model_catalog_v2::{
+     ManagedModelAggregateRouteAddV2, ManagedModelAggregateRouteAddV2Result,
+-    ManagedModelBatchStateV2Update, ManagedModelRouteEnsureResultV2, ManagedModelRouteEnsureV2,
+-    ManagedModelStateV2Update, ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats,
+-    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
++    ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
++    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
+ };
++pub use account_reset_warmups::AccountResetWarmupTarget;
+ pub use proxy_profiles::derive_proxy_profile_url_metadata;
+ 
+ #[derive(Debug, Clone)]
+@@ -838,6 +837,7 @@ pub struct RequestLog {
+     pub attempted_account_ids_json: Option<String>,
+     pub initial_aggregate_api_id: Option<String>,
+     pub attempted_aggregate_api_ids_json: Option<String>,
++    pub aggregate_api_attempts: Option<String>,
+     pub request_path: String,
+     pub original_path: Option<String>,
+     pub adapted_path: Option<String>,
+@@ -2602,6 +2602,11 @@ impl Storage {
+         self.apply_model_billing_v2_hardening_migration()?;
+         self.apply_gpt56_pricing_migration()?;
+         self.apply_model_catalog_codex_metadata_migration()?;
++        self.apply_model_catalog_gpt6_astra_migration()?;
++        self.apply_sql_migration(
++            "132_model_catalog_gpt56_metadata_fix",
++            include_str!("../../migrations/132_model_catalog_gpt56_metadata_fix.sql"),
++        )?;
+         self.apply_sql_or_compat_migration(
+             "116_request_logs_visibility",
+             include_str!("../../migrations/116_request_logs_visibility.sql"),
+@@ -2737,6 +2742,15 @@ impl Storage {
+             "130_accounts_subject_identity",
+             include_str!("../../migrations/130_accounts_subject_identity.sql"),
+         )?;
++        self.apply_sql_or_compat_migration(
++            "133_aggregate_api_user_agent",
++            include_str!("../../migrations/133_aggregate_api_user_agent.sql"),
++            |s| s.ensure_aggregate_apis_table(),
++        )?;
++        self.apply_sql_migration(
++            "134_account_reset_warmups",
++            include_str!("../../migrations/134_account_reset_warmups.sql"),
++        )?;
+         self.ensure_api_key_rotation_columns()?;
+         self.ensure_model_fallback_chain_column()?;
+         self.ensure_api_key_account_group_filter_column()?;
+@@ -2765,6 +2779,11 @@ impl Storage {
+         self.ensure_quota_pool_tables()?;
+         self.ensure_account_manager_tables()?;
+         self.seed_missing_builtin_models_v2()?;
++        self.apply_sql_or_compat_migration(
++            "140_request_logs_aggregate_api_attempts",
++            include_str!("../../migrations/140_request_logs_aggregate_api_attempts.sql"),
++            |s| s.ensure_request_log_aggregate_api_attempts_column(),
++        )?;
+         Ok(())
+     }
+ 
+diff --git a/crates/core/src/storage/model_catalog_v2.rs b/crates/core/src/storage/model_catalog_v2.rs
+index dee385fb..6e46848e 100644
+--- a/crates/core/src/storage/model_catalog_v2.rs
++++ b/crates/core/src/storage/model_catalog_v2.rs
+@@ -13,12 +13,16 @@ const CODEX_METADATA_MIGRATION_VERSION: &str = "115_model_catalog_codex_metadata
+ const GPT56_OFFICIAL_PRICING_MIGRATION_VERSION: &str = "121_model_catalog_gpt56_official_prices";
+ const GPT56_PRICE_REDUCTION_MIGRATION_VERSION: &str = "126_model_catalog_gpt56_price_reduction";
+ const GPT56_CURRENT_PRICING_MIGRATION_VERSION: &str = "126_model_catalog_gpt56_current_prices";
++const GPT6_ASTRA_MIGRATION_VERSION: &str = "131_model_catalog_gpt6_astra";
++const GPT6_ASTRA_MIGRATION_REVISION: i64 = 8;
++const GPT6_ASTRA_SLUG: &str = "gpt-6-astra";
++const GPT6_ASTRA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-astra";
+ const GPT56_OFFICIAL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/compare";
+ #[cfg(test)]
+ const GPT_IMAGE_2_PRICE_SOURCE: &str =
+     "https://developers.openai.com/api/docs/pricing#image-generation";
+ const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
+-const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", "grok-4.5"];
++const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", GPT6_ASTRA_SLUG];
+ 
+ #[derive(Debug, Clone, Deserialize)]
+ struct BuiltinCatalogFixture {
+@@ -43,6 +47,15 @@ struct BuiltinModelSeed {
+     price_tiers: Vec<ModelPriceTierV2>,
+ }
+ 
++#[derive(Debug, Clone, Deserialize)]
++struct Gpt6AstraMigrationFixture {
++    revision: i64,
++    source_sha256: String,
++    astra: BuiltinModelSeed,
++    sol_slug: String,
++    sol_capabilities: Value,
++}
++
+ #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+ #[serde(rename_all = "camelCase")]
+ pub struct ModelPriceV2 {
+@@ -213,6 +226,16 @@ fn fixture() -> BuiltinCatalogFixture {
+         .expect("model catalog V2 fixture must be valid")
+ }
+ 
++fn gpt6_astra_migration_fixture() -> Gpt6AstraMigrationFixture {
++    let fixture: Gpt6AstraMigrationFixture =
++        serde_json::from_str(include_str!("../../seeds/model_catalog_gpt6_astra_v8.json"))
++            .expect("GPT-6 Astra migration fixture must be valid");
++    assert_eq!(fixture.revision, GPT6_ASTRA_MIGRATION_REVISION);
++    assert!(fixture.astra.slug.eq_ignore_ascii_case(GPT6_ASTRA_SLUG));
++    assert_eq!(fixture.astra.price_source.as_deref(), Some(GPT6_ASTRA_PRICE_SOURCE));
++    fixture
++}
++
+ fn clean_optional(value: Option<String>) -> Option<String> {
+     value.filter(|value| !value.trim().is_empty())
+ }
+@@ -1766,6 +1789,7 @@ impl Storage {
+                          WHEN 'gpt-5.6-sol' THEN 45000000
+                          WHEN 'gpt-5.6-terra' THEN 18000000
+                          WHEN 'gpt-5.6-luna' THEN 1800000
++
+                        END
+                    )",
+             [GPT56_OFFICIAL_PRICE_SOURCE],
+@@ -1788,6 +1812,57 @@ impl Storage {
+         }
+         Ok(())
+     }
++    pub(super) fn apply_model_catalog_gpt6_astra_migration(&self) -> Result<()> {
++        if self.has_migration(GPT6_ASTRA_MIGRATION_VERSION)? {
++            return Ok(());
++        }
++        let migration_fixture = gpt6_astra_migration_fixture();
++        let scoped_fixture = BuiltinCatalogFixture {
++            revision: migration_fixture.revision,
++            source_sha256: migration_fixture.source_sha256.clone(),
++            models: vec![migration_fixture.astra.clone()],
++        };
++        let now = now_ts();
++        let stored_revision = self
++            .conn
++            .query_row(
++                "SELECT CAST(value AS INTEGER) FROM model_catalog_v2_meta WHERE key='builtin_revision'",
++                [],
++                |row| row.get::<_, i64>(0),
++            )
++            .optional()?
++            .unwrap_or_default();
++        let astra_exists = self
++            .conn
++            .query_row(
++                "SELECT origin,user_edited,builtin_revision FROM models WHERE slug=?1 COLLATE NOCASE",
++                [GPT6_ASTRA_SLUG],
++                |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, Option<i64>>(2)?)),
++            )
++            .optional()?;
++        if astra_exists.is_none() && stored_revision <= GPT6_ASTRA_MIGRATION_REVISION {
++            insert_seed(&self.conn, &scoped_fixture, &migration_fixture.astra, now)?;
++        }
++        self.conn.execute(
++            "UPDATE models SET capabilities_json=?1,updated_at=?2
++             WHERE origin='builtin' AND user_edited=0 AND slug=?3 COLLATE NOCASE",
++            params![
++                serde_json::to_string(&migration_fixture.sol_capabilities)
++                    .expect("serialize GPT-5.6 Sol capabilities"),
++                now,
++                migration_fixture.sol_slug,
++            ],
++        )?;
++        self.conn.execute_batch(include_str!("../../migrations/131_model_catalog_gpt6_astra.sql"))?;
++        self.conn.execute(
++            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
++            params![GPT6_ASTRA_MIGRATION_VERSION, now],
++        )?;
++        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
++            migrations.insert(GPT6_ASTRA_MIGRATION_VERSION.to_string());
++        }
++        Ok(())
++    }
+ 
+     pub fn smoke_check_model_catalog_v2(&self) -> Result<()> {
+         migration_smoke(&self.conn)

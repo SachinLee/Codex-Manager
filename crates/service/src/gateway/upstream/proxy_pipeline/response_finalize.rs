@@ -240,8 +240,8 @@ pub(super) fn finalize_upstream_response(
         path,
         Some(tool_name_restore_map),
         client_is_stream,
-        // Once the bridge starts, tiny_http owns the request and it cannot be retried.
-        // Retryable stream errors are therefore gated before this function is called.
+        // Account-pool responses must not return a request for ordinary zero-delivery failover.
+        false,
         false,
         Some(trace_id),
         model_for_log,

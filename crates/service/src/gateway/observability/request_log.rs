@@ -54,10 +54,10 @@ pub(crate) struct RequestLogTraceContext<'a> {
     pub aggregate_api_supplier_name: Option<&'a str>,
     pub aggregate_api_url: Option<&'a str>,
     pub attempted_aggregate_api_ids: Option<&'a [String]>,
+    pub aggregate_api_attempts: Option<&'a str>,
     pub upstream_model: Option<&'a str>,
     pub actual_source_kind: Option<&'a str>,
     pub actual_source_id: Option<&'a str>,
-    /// Aggregate API 价格倍率只在最终 charge snapshot 中应用一次。
     pub aggregate_api_cost_multiplier: Option<f64>,
     /// Optional daily-spend reservation that must be settled from the final
     /// charge snapshot after a successful response.
@@ -573,6 +573,7 @@ pub(crate) fn write_request_log_with_attempts(
             attempted_account_ids_json,
             initial_aggregate_api_id: initial_aggregate_api_id.map(str::to_string),
             attempted_aggregate_api_ids_json,
+            aggregate_api_attempts: trace_context.aggregate_api_attempts.map(str::to_string),
             request_path: request_path.to_string(),
             original_path: Some(original_path.to_string()),
             adapted_path: Some(adapted_path.to_string()),

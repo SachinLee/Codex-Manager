@@ -13,12 +13,19 @@ const CODEX_METADATA_MIGRATION_VERSION: &str = "115_model_catalog_codex_metadata
 const GPT56_OFFICIAL_PRICING_MIGRATION_VERSION: &str = "121_model_catalog_gpt56_official_prices";
 const GPT56_PRICE_REDUCTION_MIGRATION_VERSION: &str = "126_model_catalog_gpt56_price_reduction";
 const GPT56_CURRENT_PRICING_MIGRATION_VERSION: &str = "126_model_catalog_gpt56_current_prices";
+const GPT6_ASTRA_MIGRATION_VERSION: &str = "131_model_catalog_gpt6_astra";
+const GPT6_ASTRA_MIGRATION_REVISION: i64 = 8;
+const GPT6_ASTRA_SLUG: &str = "gpt-6-astra";
+const GPT6_ASTRA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-astra";
 const GPT56_OFFICIAL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/compare";
 #[cfg(test)]
 const GPT_IMAGE_2_PRICE_SOURCE: &str =
     "https://developers.openai.com/api/docs/pricing#image-generation";
 const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
-const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", "grok-4.5"];
+// Historical persisted catalogs may own these slugs as `custom` rows. Startup seeding
+// tolerates them and leaves the user row untouched; every other custom/builtin slug
+// collision still aborts initialization.
+const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", GPT6_ASTRA_SLUG, "grok-4.5"];
 
 #[derive(Debug, Clone, Deserialize)]
 struct BuiltinCatalogFixture {
@@ -41,6 +48,15 @@ struct BuiltinModelSeed {
     price_status: String,
     price_source: Option<String>,
     price_tiers: Vec<ModelPriceTierV2>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gpt6AstraMigrationFixture {
+    revision: i64,
+    source_sha256: String,
+    astra: BuiltinModelSeed,
+    sol_slug: String,
+    sol_capabilities: Value,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -211,6 +227,16 @@ fn default_weight() -> i64 {
 fn fixture() -> BuiltinCatalogFixture {
     serde_json::from_str(include_str!("../../seeds/model_catalog_v2_2026_07_10.json"))
         .expect("model catalog V2 fixture must be valid")
+}
+
+fn gpt6_astra_migration_fixture() -> Gpt6AstraMigrationFixture {
+    let fixture: Gpt6AstraMigrationFixture =
+        serde_json::from_str(include_str!("../../seeds/model_catalog_gpt6_astra_v8.json"))
+            .expect("GPT-6 Astra migration fixture must be valid");
+    assert_eq!(fixture.revision, GPT6_ASTRA_MIGRATION_REVISION);
+    assert!(fixture.astra.slug.eq_ignore_ascii_case(GPT6_ASTRA_SLUG));
+    assert_eq!(fixture.astra.price_source.as_deref(), Some(GPT6_ASTRA_PRICE_SOURCE));
+    fixture
 }
 
 fn clean_optional(value: Option<String>) -> Option<String> {
@@ -1766,6 +1792,7 @@ impl Storage {
                          WHEN 'gpt-5.6-sol' THEN 45000000
                          WHEN 'gpt-5.6-terra' THEN 18000000
                          WHEN 'gpt-5.6-luna' THEN 1800000
+
                        END
                    )",
             [GPT56_OFFICIAL_PRICE_SOURCE],
@@ -1785,6 +1812,57 @@ impl Storage {
         tx.commit()?;
         if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
             migrations.insert(GPT56_CURRENT_PRICING_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+    pub(super) fn apply_model_catalog_gpt6_astra_migration(&self) -> Result<()> {
+        if self.has_migration(GPT6_ASTRA_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+        let migration_fixture = gpt6_astra_migration_fixture();
+        let scoped_fixture = BuiltinCatalogFixture {
+            revision: migration_fixture.revision,
+            source_sha256: migration_fixture.source_sha256.clone(),
+            models: vec![migration_fixture.astra.clone()],
+        };
+        let now = now_ts();
+        let stored_revision = self
+            .conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM model_catalog_v2_meta WHERE key='builtin_revision'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        let astra_exists = self
+            .conn
+            .query_row(
+                "SELECT origin,user_edited,builtin_revision FROM models WHERE slug=?1 COLLATE NOCASE",
+                [GPT6_ASTRA_SLUG],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, Option<i64>>(2)?)),
+            )
+            .optional()?;
+        if astra_exists.is_none() && stored_revision <= GPT6_ASTRA_MIGRATION_REVISION {
+            insert_seed(&self.conn, &scoped_fixture, &migration_fixture.astra, now)?;
+        }
+        self.conn.execute(
+            "UPDATE models SET capabilities_json=?1,updated_at=?2
+             WHERE origin='builtin' AND user_edited=0 AND slug=?3 COLLATE NOCASE",
+            params![
+                serde_json::to_string(&migration_fixture.sol_capabilities)
+                    .expect("serialize GPT-5.6 Sol capabilities"),
+                now,
+                migration_fixture.sol_slug,
+            ],
+        )?;
+        self.conn.execute_batch(include_str!("../../migrations/131_model_catalog_gpt6_astra.sql"))?;
+        self.conn.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![GPT6_ASTRA_MIGRATION_VERSION, now],
+        )?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(GPT6_ASTRA_MIGRATION_VERSION.to_string());
         }
         Ok(())
     }
@@ -2640,6 +2718,82 @@ mod tests {
         assert_eq!(long.cached_input_microusd_per_1m, 2_000_000);
         assert_eq!(long.cache_write_microusd_per_1m, Some(25_000_000));
         assert_eq!(long.output_microusd_per_1m, 75_000_000);
+    }
+
+    #[test]
+    fn astra_migration_preserves_custom_slug_and_user_edited_sol_metadata() {
+        let storage = storage();
+        let mut custom = storage
+            .get_managed_model_v2(GPT6_ASTRA_SLUG)
+            .unwrap()
+            .unwrap();
+        storage
+            .conn
+            .execute("DELETE FROM models WHERE slug=?1", [GPT6_ASTRA_SLUG])
+            .unwrap();
+        custom.id.clear();
+        custom.slug = "GpT-6-AsTrA".to_string();
+        custom.display_name = "My Existing Astra Route".to_string();
+        custom.origin = "custom".to_string();
+        custom.builtin_revision = None;
+        custom.user_edited = true;
+        custom.price.price_status = "custom".to_string();
+        custom.price.price_source = Some("existing-user-config".to_string());
+        custom.routes[0].id.clear();
+        custom.routes[0].upstream_model = "my-astra-upstream".to_string();
+        let saved = storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                model: custom,
+                ..Default::default()
+            })
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE models
+                 SET capabilities_json=?1,builtin_revision=7,user_edited=1
+                 WHERE slug='gpt-5.6-sol'",
+                [r#"{"custom":true}"#],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT6_ASTRA_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        storage.apply_model_catalog_gpt6_astra_migration().unwrap();
+        storage.apply_model_catalog_gpt6_astra_migration().unwrap();
+        // The ordinary startup seed runs after migrations on every desktop launch and
+        // must tolerate the custom Astra through the shared collision allowlist.
+        storage
+            .seed_missing_builtin_models_v2()
+            .expect("startup seed tolerates custom astra collision");
+
+        let preserved = storage
+            .get_managed_model_v2(GPT6_ASTRA_SLUG)
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved.id, saved.id);
+        assert_eq!(preserved.origin, "custom");
+        assert_eq!(preserved.builtin_revision, None);
+        assert_eq!(preserved.display_name, "My Existing Astra Route");
+        assert_eq!(
+            preserved.price.price_source.as_deref(),
+            Some("existing-user-config")
+        );
+        assert_eq!(preserved.routes.len(), 1);
+        assert_eq!(preserved.routes[0].upstream_model, "my-astra-upstream");
+
+        let sol = storage
+            .get_managed_model_v2("gpt-5.6-sol")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sol.builtin_revision, Some(7));
+        assert_eq!(sol.capabilities["custom"], true);
     }
 
     #[test]

@@ -964,7 +964,7 @@ fn aggregate_sse_rate_limit_fails_over_to_next_candidate() {
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
 
-/// 所有候选都返回 SSE 终态错误：每个候选只使用其有界重试预算后终止。
+/// 所有候选都返回 SSE 终态错误：每个候选失败后直接推进到下一候选。
 #[test]
 fn aggregate_sse_all_candidates_fail_returns_terminal_error() {
     const SSE_SERVER_ERROR: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Internal error\"}}\n\n";
@@ -975,52 +975,86 @@ fn aggregate_sse_all_candidates_fail_returns_terminal_error() {
             test_candidate_with_url("agg-sse-fail-1", "/v1/responses"),
             test_candidate_with_url("agg-sse-fail-2", "/v1/responses"),
         ],
-        vec![
-            (200, SSE_SERVER_ERROR),
-            (200, SSE_SERVER_ERROR),
-            (200, SSE_SERVER_ERROR),
-            (200, SSE_SERVER_ERROR),
-        ],
+        vec![(200, SSE_SERVER_ERROR), (200, SSE_SERVER_ERROR)],
         br#"{"model":"gpt-5.4","input":"hello","stream":true}"#,
         false,
         true,
         false,
     );
 
-    assert_eq!(
-        hits.len(),
-        4,
-        "each candidate receives initial plus one retry"
-    );
+    assert_eq!(hits.len(), 2, "each candidate fails once before terminal response");
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
 
-/// SSE 终态 server_error：同候选重试一次，随后切换到下一候选。
+/// SSE 终态 server_error：零交付时直接切换到下一候选。
 #[test]
-fn aggregate_sse_server_error_retries_same_candidate_once() {
+fn aggregate_sse_server_error_fails_over_to_next_candidate() {
     const SSE_SERVER_ERROR: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"Internal error\"}}\n\n";
     const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
 
     let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
-        "agg-sse-server-error-retry",
+        "agg-sse-server-error-failover",
         vec![
-            test_candidate_with_url("agg-sse-retry", "/v1/responses"),
+            test_candidate_with_url("agg-sse-first", "/v1/responses"),
             test_candidate_with_url("agg-sse-fallback", "/v1/responses"),
         ],
-        vec![
-            (200, SSE_SERVER_ERROR),
-            (200, SSE_SERVER_ERROR),
-            (200, SSE_OK),
-        ],
+        vec![(200, SSE_SERVER_ERROR), (200, SSE_OK)],
         br#"{"model":"gpt-5.4","input":"hello","stream":true}"#,
         false,
         true,
         false,
     );
 
-    assert_eq!(hits.len(), 3, "candidate A retries once before candidate B");
+    assert_eq!(hits.len(), 2, "server_error advances directly to candidate B");
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
+
+/// SSE 终态 gateway_concurrency_limit：零交付时应切换候选。
+#[test]
+fn aggregate_sse_gateway_concurrency_limit_fails_over_to_next_candidate() {
+    const SSE_CONCURRENCY_LIMIT: &str = "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"gateway_concurrency_limit\",\"message\":\"Too many concurrent requests\"}}\n\n";
+    const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
+
+    let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
+        "agg-sse-concurrency-limit-failover",
+        vec![
+            test_candidate_with_url("agg-sse-concurrency-first", "/v1/responses"),
+            test_candidate_with_url("agg-sse-concurrency-fallback", "/v1/responses"),
+        ],
+        vec![(200, SSE_CONCURRENCY_LIMIT), (200, SSE_OK)],
+        br#"{\"model\":\"gpt-5.4\",\"input\":\"hello\",\"stream\":true}"#,
+        false,
+        true,
+        false,
+    );
+
+    assert_eq!(hits.len(), 2, "gateway_concurrency_limit advances to candidate B");
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+}
+
+/// SSE 终态 service_unavailable_error：支持从 error.type 提取候选失败码。
+#[test]
+fn aggregate_sse_service_unavailable_error_fails_over_to_next_candidate() {
+    const SSE_SERVICE_UNAVAILABLE: &str = "data: {\"type\":\"response.failed\",\"error\":{\"type\":\"service_unavailable_error\",\"message\":\"Service unavailable\"}}\n\n";
+    const SSE_OK: &str = "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
+
+    let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
+        "agg-sse-service-unavailable-failover",
+        vec![
+            test_candidate_with_url("agg-sse-service-first", "/v1/responses"),
+            test_candidate_with_url("agg-sse-service-fallback", "/v1/responses"),
+        ],
+        vec![(200, SSE_SERVICE_UNAVAILABLE), (200, SSE_OK)],
+        br#"{\"model\":\"gpt-5.4\",\"input\":\"hello\",\"stream\":true}"#,
+        false,
+        true,
+        false,
+    );
+
+    assert_eq!(hits.len(), 2, "service_unavailable_error advances to candidate B");
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+}
+
 
 /// RED coverage: Blocking SSE capacity errors currently bypass the
 /// `TerminalFailure(CapacityRecovery)` aggregate action arm.
@@ -1099,6 +1133,32 @@ fn aggregate_sse_prefix_format_rate_limit_fails_over() {
         2,
         "SSE prefix-format rate_limit must fail over to next candidate"
     );
+    assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
+}
+
+/// SSE 工具调用已交付后终态失败：不得把请求重放到下一候选。
+#[test]
+fn aggregate_sse_with_delivered_tool_call_does_not_replay() {
+    const SSE_TOOL_THEN_ERROR: &str = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"\"}}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call_1\",\"output_index\":0,\"delta\":\"{}\"}\n\n",
+        "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit\"}}\n\n"
+    );
+
+    let (_storage, outcome, hits) = run_upstream_scenario_with_stream(
+        "agg-sse-tool-delivered-no-replay",
+        vec![
+            test_candidate_with_url("agg-sse-tool-delivered", "/v1/responses"),
+            test_candidate_with_url("agg-sse-tool-never-tried", "/v1/responses"),
+        ],
+        vec![(200, SSE_TOOL_THEN_ERROR)],
+        br#"{\"model\":\"gpt-5.4\",\"input\":\"hello\",\"stream\":true}"#,
+        false,
+        true,
+        false,
+    );
+
+    assert_eq!(hits.len(), 1, "tool-call delivery must prevent candidate replay");
     assert!(matches!(outcome, AggregateAttemptOutcome::Responded { .. }));
 }
 
@@ -1229,6 +1289,7 @@ fn run_upstream_scenario_with_stream(
     is_stream: bool,
     capture_body: bool,
 ) -> (Storage, AggregateAttemptOutcome, Vec<MockUpstreamHit>) {
+    let _guard = crate::test_env_guard();
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let server = Server::http("127.0.0.1:0").expect("start server");
@@ -1236,6 +1297,9 @@ fn run_upstream_scenario_with_stream(
     let mut candidates = candidates;
     for candidate in &mut candidates {
         candidate.url = format!("{addr}{}", candidate.url);
+    }
+    for candidate in &candidates {
+        crate::gateway::gateway_clear_aggregate_api_cooldowns(candidate.id.as_str());
     }
     for candidate in &candidates {
         storage

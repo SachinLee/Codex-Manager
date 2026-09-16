@@ -90,3 +90,16 @@ fn parse_openai_responses_event_collects_terminal_response_reasoning_items() {
         Some("enc-2")
     );
 }
+
+#[test]
+fn parse_openai_responses_event_marks_tool_call_as_semantic_output() {
+    let lines = vec![
+        "event: response.function_call_arguments.delta\n".to_string(),
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"x\"}\n".to_string(),
+        "\n".to_string(),
+    ];
+
+    let event = OpenAIResponsesEvent::parse(&lines).expect("parsed event");
+
+    assert!(event.has_tool_call);
+}

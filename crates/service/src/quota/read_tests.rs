@@ -146,10 +146,10 @@ fn api_available_model_slugs_preserves_catalog_sort_order() {
     storage.init().expect("init storage");
     let models = api_available_model_slugs(&storage).expect("available models");
 
-    assert_eq!(models.len(), 8);
+    assert_eq!(models.len(), 10);
     assert_eq!(
         &models[..4],
-        ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+        ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     );
     assert!(!models.iter().any(|model| model == "codex-auto-review"));
     assert!(models.iter().any(|model| model == "gpt-image-2"));
@@ -161,7 +161,7 @@ fn api_available_model_slugs_does_not_seed_legacy_price_rules() {
     storage.init().expect("init storage");
     let models = api_available_model_slugs(&storage).expect("available models");
 
-    assert_eq!(models.len(), 8);
+    assert_eq!(models.len(), 10);
     assert_eq!(
         storage
             .list_enabled_model_price_rules()

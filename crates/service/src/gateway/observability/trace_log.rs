@@ -1213,6 +1213,37 @@ pub(crate) fn log_attempt_result(
     );
     buffer_trace_line(trace_id, line);
 }
+pub(crate) fn log_aggregate_candidate_decision(
+    trace_id: &str,
+    candidate_id: &str,
+    position: usize,
+    upstream_url: Option<&str>,
+    status_code: u16,
+    error_code: Option<&str>,
+    decision: &str,
+    zero_delivery: bool,
+    retry_ordinal: usize,
+) {
+    if status_code >= 400 || error_code.is_some() {
+        mark_trace_has_error(trace_id);
+    }
+    let line = format!(
+        "ts={} event=AGGREGATE_CANDIDATE_DECISION trace_id={} candidate_id={} position={} upstream_url={} status={} error_code={} decision={} zero_delivery={} retry_ordinal={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(candidate_id),
+        position,
+        sanitize_text(upstream_url.unwrap_or("-")),
+        status_code,
+        sanitize_text(error_code.unwrap_or("-")),
+        sanitize_text(decision),
+        if zero_delivery { "true" } else { "false" },
+        retry_ordinal,
+    );
+    buffer_trace_line(trace_id, line);
+}
+
+ /// 函数 `log_bridge_result`
 
 /// 函数 `log_bridge_result`
 ///

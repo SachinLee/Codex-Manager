@@ -5,10 +5,9 @@
 将远端 `origin/main` 更新到可见的最新提交，并把它合并进当前分支 `codex/integrate-main-20260717`，同时保留当前分支已有提交、未提交修改和未跟踪工作，不因同步操作覆盖当前分支新增功能。
 
 ## Background
-
-- 当前分支为 `codex/integrate-main-20260717`，其 `HEAD` 为 `90dccc48`。
-- 当前工作区存在 18 个已修改文件，包含前端、Tauri 和 Rust 服务代码；另有 `.omp/.runtime/`、多个既有 Trellis 任务目录等未跟踪内容。
-- 本地 `main` 与 `origin/main` 当前指向 `36c48622`；同步前仍需从 `origin` 获取远端最新状态。
+- 当前分支为 `codex/integrate-main-20260717`，合并前 `HEAD` 为 `df17b58a291a52345bcc7a0918a0b73399d72656`。
+- 合并前工作区基线为 24 个未暂存修改文件和 16 个未跟踪文件；合并后通过 `stash@{0}` 恢复，当前工作区显示 26 个未暂存修改文件和 16 个未跟踪文件，其中增加了本任务规划/证据文件。
+- 本次 `git fetch origin main` 将 `origin/main` 从 `c4b463606ef0cee266be2a0aa00fe96e1ecf967f` 更新到 `a4805dd4b5b6a64312c305c9a35554b7f334102c`。
 
 ## Requirements
 
@@ -21,11 +20,11 @@
 
 ## Acceptance Criteria
 
-- [ ] `origin/main` 已在本次操作中成功获取并指向远端最新可用提交。
-- [ ] 当前分支仍为 `codex/integrate-main-20260717`，且其历史包含本次获取的 `origin/main`。
-- [ ] 合并过程无未解决冲突；若发生冲突，解决结果同时保留当前分支功能和 `main` 的有效变更。
-- [ ] 合并前已存在的 18 个已修改文件及未跟踪工作在合并后仍保留，未被静默丢弃或覆盖。
-- [ ] 完成针对Git状态、合并结果和工作区保留情况的事实核验，并记录任何无法自动验证的风险。
+- [x] `origin/main` 已在本次操作中成功获取并指向远端最新可用提交 `a4805dd4b5b6a64312c305c9a35554b7f334102c`。
+- [x] 当前分支仍为 `codex/integrate-main-20260717`，合并提交 `7f57e2b48fcb334c601b4ad6b2c7ecf75a4dd19b` 的父提交包含 `origin/main`，且 `git merge-base --is-ancestor origin/main HEAD` 返回成功。
+- [x] 合并过程已完成且 `git diff --name-only --diff-filter=U` 无输出；`git grep` 未发现受跟踪源文件中的冲突标记。
+- [x] 合并前工作区通过 `git stash push --include-untracked` 保存，并使用 `git stash apply --index stash@{0}` 恢复；原有修改和未跟踪内容仍在，且 stash 保留以便回滚。
+- [ ] 完成产品构建验证；`cargo check -p codexmanager-core` 通过，`pnpm -C apps run build` 仍因当前合并后的既有 settings/user-agent 接口不一致失败，`cargo check -p codexmanager-service` 仍有跨模块合并编译错误，详见 outcome.md。
 
 ## Out of Scope
 

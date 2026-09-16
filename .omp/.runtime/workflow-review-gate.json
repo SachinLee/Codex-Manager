@@ -18,6 +18,33 @@
       "attempts": 1,
       "updatedAt": "2026-09-09T05:51:45.814Z",
       "result": "complete"
+    },
+    "`.trellis/tasks/09-11-aggregate-sse-502-failover`.\u0000final\u0000bdab57901c57e05f841ce7dbbfaa7cbd5b68bb39e81000de449879d7383f30f7": {
+      "taskPath": "`.trellis/tasks/09-11-aggregate-sse-502-failover`.",
+      "profile": "final",
+      "diffHash": "bdab57901c57e05f841ce7dbbfaa7cbd5b68bb39e81000de449879d7383f30f7",
+      "status": "complete",
+      "attempts": 1,
+      "updatedAt": "2026-09-13T09:56:06.926Z",
+      "result": "complete"
+    },
+    ".trellis/tasks/09-14-diagnose-desktop-startup-migration\u0000final\u000018e84673aa41ac0b8a9d0650a1abb854901eeb9abbe3c451de0eff3f9392ed84": {
+      "taskPath": ".trellis/tasks/09-14-diagnose-desktop-startup-migration",
+      "profile": "final",
+      "diffHash": "18e84673aa41ac0b8a9d0650a1abb854901eeb9abbe3c451de0eff3f9392ed84",
+      "status": "complete",
+      "attempts": 1,
+      "updatedAt": "2026-09-14T08:41:30.083Z",
+      "result": "complete"
+    },
+    ".trellis/tasks/09-14-diagnose-desktop-startup-migration\u0000final\u00008eb543eb63fbc1cf71050a26637d68f8505d11bea5e427bd00a804da6feec713": {
+      "taskPath": ".trellis/tasks/09-14-diagnose-desktop-startup-migration",
+      "profile": "final",
+      "diffHash": "8eb543eb63fbc1cf71050a26637d68f8505d11bea5e427bd00a804da6feec713",
+      "status": "complete",
+      "attempts": 1,
+      "updatedAt": "2026-09-14T08:43:05.725Z",
+      "result": "complete"
     }
   }
 }

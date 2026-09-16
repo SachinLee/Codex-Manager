@@ -229,3 +229,64 @@ WHERE bucket_start >= ?1 AND bucket_end <= ?2;
 <!-- Database-related mistakes your team has made -->
 
 (To be filled by the team)
+
+## Scenario: Built-in seed collisions with historical custom models
+
+### 1. Scope / Trigger
+
+- Trigger: `Storage::init()` runs `seed_missing_builtin_models_v2()` against a persisted SQLite database on every service or desktop startup.
+- Scope: a bundled builtin model can share a case-insensitive slug with a user-owned `models.origin = 'custom'` row from an earlier catalog state.
+
+### 2. Signatures
+
+- `Storage::seed_missing_builtin_models_v2() -> rusqlite::Result<()>` performs startup seeding and compatibility backfills.
+- `insert_seed(conn, fixture, seed, now) -> rusqlite::Result<()>` creates a missing builtin seed or resolves a known custom collision.
+- `migration_smoke(conn) -> rusqlite::Result<()>` verifies that every bundled seed is represented by a builtin row or an explicitly tolerated custom collision.
+
+### 3. Contracts
+
+- `TOLERATED_CUSTOM_SEED_COLLISIONS` is the sole allowlist for known historical custom/builtin slug collisions. Both `insert_seed()` and `migration_smoke()` must consume it.
+- Slug matching remains case-insensitive (`COLLATE NOCASE`).
+- A tolerated custom row remains user-owned. Seeding must not rewrite its `origin`, metadata, price/tier rows, or routes.
+- The current tolerated set is `gpt-image-2`, `gpt-6-astra`, and `grok-4.5`.
+
+### 4. Validation & Error Matrix
+
+| Existing row for bundled slug | Policy | Result |
+| --- | --- | --- |
+| No row | Normal builtin seed | Insert builtin metadata, price/tier, and default route. |
+| `origin = 'builtin'` | Normal builtin seed | Leave existing builtin data intact. |
+| `origin = 'custom'`, slug in allowlist | Historical compatibility | Return without changing the custom row; later backfills may fill only missing data. |
+| `origin = 'custom'`, slug absent from allowlist | Unknown ownership conflict | Return `InvalidParameterName("builtin seed slug <slug> is owned by a custom model")`; startup stops. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: startup finds a custom `grok-4.5`; it completes normally, preserves user values, and runs existing missing-Grok price, reasoning-metadata, and aggregate-route backfills.
+- Base: startup finds the existing builtin seed; idempotent seeding succeeds without a duplicate row.
+- Bad: broadening the allowlist to every custom slug hides future ownership conflicts and can leave a required builtin unavailable.
+
+### 6. Tests Required
+
+- Custom `grok-4.5`: run `seed_missing_builtin_models_v2()` twice; assert first-run backfills and second-run preservation of user-edited price and metadata.
+- Custom `gpt-6-astra`: run its catalog migration followed by normal seeding; assert custom identity, price source, route, and user-edited GPT-5.6 Sol metadata remain unchanged.
+- Custom `gpt-image-2`: retain the analogous seed-collision preservation regression.
+- Run `cargo test -p codexmanager-core --lib model_catalog_v2` after changing this policy.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", GPT6_ASTRA_SLUG];
+```
+
+This removes an existing compatibility case during an unrelated model addition and turns a valid persisted custom `grok-4.5` row into a desktop startup failure.
+
+#### Correct
+
+```rust
+const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] =
+    &["gpt-image-2", GPT6_ASTRA_SLUG, "grok-4.5"];
+```
+
+Extend the existing single allowlist; do not add a one-off Tauri catch, SQL migration, or duplicated collision policy.

@@ -133,6 +133,9 @@ pub(in crate::gateway) fn classify_upstream_failure(
         }
         Some(
             "rate_limit_exceeded"
+            | "server_error"
+            | "service_unavailable_error"
+            | "gateway_concurrency_limit"
             | "authentication_error"
             | "invalid_api_key"
             | "permission_denied"
@@ -189,10 +192,12 @@ pub(in crate::gateway) fn extract_error_code_from_terminal(
     }
 
     let normalized = message.trim();
-    normalized
+    let code_prefix = normalized
         .strip_prefix("code=")
+        .or_else(|| normalized.strip_prefix("type="));
+    code_prefix
         .and_then(|rest| rest.split_whitespace().next())
-        .map(str::to_string)
+        .map(|code| code.chars().take(256).collect())
 }
 
 #[cfg(test)]

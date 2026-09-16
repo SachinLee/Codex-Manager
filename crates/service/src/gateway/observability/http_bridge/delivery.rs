@@ -341,7 +341,7 @@ fn respond_passthrough_collector_stream_strict_guard(
     mut headers: Vec<Header>,
     mut response_body: Box<dyn std::io::Read + Send>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
-    _allow_failover: bool,
+    allow_zero_delivery_failover: bool,
     guard_scope: &ReasoningGuardScope,
     reasoning_guard_retry_budget_remaining: usize,
     meta: UpstreamDebugMetaRefs<'_>,
@@ -405,22 +405,29 @@ fn respond_passthrough_collector_stream_strict_guard(
         }
     }
 
-    // FR1: 在消费 request 之前检查是否满足零交付 failover 条件
-    let should_allow_failover = read_error.is_some()
+    let no_semantic_output = !collector.semantic_output_delivered
+        && collector
+            .usage
+            .output_text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+        && collector.usage.output_tokens.unwrap_or(0) == 0;
+    let should_allow_failover = allow_zero_delivery_failover
         && crate::gateway::runtime_config::aggregate_api_zero_delivery_failover_enabled()
         && status.0 == 200
-        && !collector.saw_terminal
-        && collector.usage.output_tokens.unwrap_or(0) == 0;
+        && no_semantic_output
+        && ((read_error.is_some() && !collector.saw_terminal)
+            || (read_error.is_none() && collector.terminal_error.is_some()));
 
     let (delivery_error, pending_request) = if should_allow_failover {
-        log::info!(
-            "event=aggregate_api_zero_delivery_failover_guard status={} saw_terminal={} output_tokens={} read_error={:?}",
+        log::debug!(
+            "event=aggregate_api_zero_delivery_failover_guard status={} saw_terminal={} output_tokens={} terminal_error={} read_error={}",
             status.0,
             collector.saw_terminal,
             collector.usage.output_tokens.unwrap_or(0),
-            read_error
+            collector.terminal_error.is_some(),
+            read_error.is_some(),
         );
-        // 满足 failover 条件，不消费 request
         (read_error, Some(request))
     } else if read_error.is_none() {
         let err = respond_streaming_chunked(request, status, headers, std::io::Cursor::new(body))
@@ -465,34 +472,9 @@ fn respond_passthrough_collector_stream(
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> UpstreamResponseBridgeResult {
-    // FR1: 在消费 request 之前检查是否满足零交付 failover 条件
-    let should_allow_failover = {
-        let collector = usage_collector.lock().unwrap();
-        collector.terminal_error.is_some()
-            && crate::gateway::runtime_config::aggregate_api_zero_delivery_failover_enabled()
-            && status.0 == 200
-            && !collector.saw_terminal
-            && collector.usage.output_tokens.unwrap_or(0) == 0
-    };
-
-    let (delivery_error, pending_request) = if should_allow_failover {
-        let collector = usage_collector.lock().unwrap();
-        log::info!(
-            "event=aggregate_api_zero_delivery_failover status={} saw_terminal={} output_tokens={} terminal_error={:?}",
-            status.0,
-            collector.saw_terminal,
-            collector.usage.output_tokens.unwrap_or(0),
-            collector.terminal_error
-        );
-        // 满足 failover 条件，不消费 request
-        (collector.terminal_error.clone(), Some(request))
-    } else {
-        let err = respond_streaming_chunked(request, status, headers, response_body)
-            .err()
-            .map(|err| err.to_string());
-        (err, None)
-    };
-
+    let delivery_error = respond_streaming_chunked(request, status, headers, response_body)
+        .err()
+        .map(|err| err.to_string());
     let collector = usage_collector
         .lock()
         .map(|guard| guard.clone())
@@ -511,7 +493,7 @@ fn respond_passthrough_collector_stream(
             upstream_identity_error_code: None,
             upstream_content_type: None,
             last_sse_event_type: collector.last_event_type,
-            pending_failover_request: pending_request,
+            pending_failover_request: None,
             reasoning_guard_action: None,
             reasoning_guard_target_token: None,
         },
@@ -523,6 +505,7 @@ fn respond_passthrough_collector_stream(
         None,
     )
 }
+
 
 /// 函数 `respond_with_upstream`
 ///
@@ -546,6 +529,7 @@ pub(crate) fn respond_with_upstream(
     tool_name_restore_map: Option<&ToolNameRestoreMap>,
     is_stream: bool,
     allow_failover_for_deactivation: bool,
+    allow_zero_delivery_failover: bool,
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
     reasoning_guard_source_id: Option<&str>,
@@ -1371,7 +1355,7 @@ pub(crate) fn respond_with_upstream(
                         headers,
                         response_body,
                         usage_collector,
-                        allow_failover_for_deactivation,
+                        allow_zero_delivery_failover,
                         &reasoning_guard_scope,
                         reasoning_guard_retry_budget_remaining,
                         UpstreamDebugMetaRefs {
@@ -1548,6 +1532,7 @@ pub(crate) fn respond_with_stream_upstream(
     tool_name_restore_map: Option<&ToolNameRestoreMap>,
     is_stream: bool,
     _allow_failover_for_deactivation: bool,
+    _allow_zero_delivery_failover: bool,
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
     reasoning_guard_source_id: Option<&str>,
@@ -2372,7 +2357,7 @@ pub(crate) fn respond_with_stream_upstream(
                         headers,
                         response_body,
                         usage_collector,
-                        _allow_failover_for_deactivation,
+                        _allow_zero_delivery_failover,
                         &reasoning_guard_scope,
                         reasoning_guard_retry_budget_remaining,
                         UpstreamDebugMetaRefs {

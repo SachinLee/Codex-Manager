@@ -12,7 +12,7 @@
   "assignee": "sachin",
   "createdAt": "2026-09-03",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/integrate-main-20260717",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,

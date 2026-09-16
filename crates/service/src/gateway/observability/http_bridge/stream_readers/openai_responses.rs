@@ -175,10 +175,19 @@ impl OpenAIResponsesPassthroughSseReader {
             if let Some(event_type) = event.event_type.as_ref() {
                 collector.last_event_type = Some(event_type.clone());
             }
+            collector.semantic_output_delivered |= event.has_tool_call;
             collector
                 .continuation_reasoning_items
                 .extend(event.continuation_reasoning_items.iter().cloned());
             event.merge_usage_into(&mut collector.usage, &mut self.usage_text_state);
+            if collector
+                .usage
+                .output_text
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+            {
+                collector.semantic_output_delivered = true;
+            }
             if let Some(upstream_error_hint) = event.upstream_error_hint.as_ref() {
                 collector.upstream_error_hint = Some(upstream_error_hint.clone());
             }

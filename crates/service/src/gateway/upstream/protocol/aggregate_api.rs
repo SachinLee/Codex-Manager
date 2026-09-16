@@ -664,6 +664,24 @@ fn aggregate_upstream_model_for_log<'a>(
     candidate.model_override.as_deref().or(platform_model)
 }
 
+fn request_model_for_routing(body: &[u8], model_for_log: Option<&str>) -> Option<String> {
+    model_for_log
+        .map(str::to_string)
+        .or_else(|| {
+            serde_json::from_slice::<Value>(body)
+                .ok()
+                .and_then(|value| value.get("model").and_then(Value::as_str).map(str::to_string))
+        })
+        .filter(|model| !model.trim().is_empty())
+}
+
+fn chat_request_requires_response_store(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("store").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
 fn should_bridge_responses_to_anthropic(candidate: &AggregateApi, path: &str) -> bool {
     normalize_provider_type_value(candidate.provider_type.as_str()) == AGGREGATE_API_PROVIDER_CLAUDE
         && (path == "/v1/responses" || path.starts_with("/v1/responses?"))
@@ -1763,14 +1781,15 @@ pub(in super::super) enum AggregateFailurePolicy {
     ReleaseRequest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(in super::super) enum AttemptOutcome {
     Success,
     Failure,
     Skipped,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(in super::super) struct AggregateApiAttemptRecord {
     pub(in super::super) api_id: String,
     pub(in super::super) position: usize,
@@ -1922,6 +1941,8 @@ pub(in super::super) fn proxy_aggregate_request(
         return Ok(AggregateAttemptOutcome::Responded { attempt_records });
     }
 
+    let request_model = request_model_for_routing(body, model_for_log);
+    let request_model_ref = request_model.as_deref();
     let candidate_positions = aggregate_api_candidates
         .iter()
         .enumerate()
@@ -1931,7 +1952,7 @@ pub(in super::super) fn proxy_aggregate_request(
     let aggregate_api_candidates = aggregate_api_candidates
         .into_iter()
         .filter(|candidate| {
-            let upstream_model = aggregate_upstream_model_for_log(candidate, model_for_log);
+            let upstream_model = aggregate_upstream_model_for_log(candidate, request_model_ref);
             let is_cooling_down = super::super::super::gateway_is_aggregate_api_in_cooldown(
                 storage,
                 candidate.id.as_str(),
@@ -2120,7 +2141,7 @@ pub(in super::super) fn proxy_aggregate_request(
             let upstream_model = candidate
                 .model_override
                 .as_deref()
-                .or(model_for_log)
+                .or(request_model_ref)
                 .unwrap_or("*");
             let plan = if capability_mode == CapabilityRoutingMode::Off {
                 CandidatePlan {
@@ -2195,7 +2216,7 @@ pub(in super::super) fn proxy_aggregate_request(
             .get(candidate_id.as_str())
             .unwrap_or(&usize::MAX);
         let candidate_upstream_model =
-            aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
+            aggregate_upstream_model_for_log(&candidate, request_model_ref).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();
         let candidate_url = candidate.url.clone();
         let client = super::super::super::upstream_client_for_aggregate_api_candidate(
@@ -2376,6 +2397,14 @@ pub(in super::super) fn proxy_aggregate_request(
                     Some(message.as_str()),
                     started_at.elapsed().as_millis(),
                 );
+                let timeout_attempt_record = AggregateApiAttemptRecord {
+                    api_id: candidate_id.clone(),
+                    position: candidate_position,
+                    outcome: AttemptOutcome::Failure,
+                    failure_category: Some("timeout".to_string()),
+                };
+                attempt_records.push(timeout_attempt_record);
+                let aggregate_api_attempts_json = serde_json::to_string(&attempt_records).ok();
                 super::super::super::write_request_log(
                     storage,
                     super::super::super::request_log::RequestLogTraceContext {
@@ -2396,6 +2425,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
                         aggregate_api_url: Some(sanitized_candidate_url.as_str()),
                         attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+                        aggregate_api_attempts: aggregate_api_attempts_json.as_deref(),
                         upstream_model: candidate_upstream_model.as_deref(),
                         actual_source_kind: Some("aggregate_api"),
                         actual_source_id: Some(candidate_id.as_str()),
@@ -2418,12 +2448,6 @@ pub(in super::super) fn proxy_aggregate_request(
                     Some(message.as_str()),
                     Some(started_at.elapsed().as_millis()),
                 );
-                attempt_records.push(AggregateApiAttemptRecord {
-                    api_id: candidate_id,
-                    position: candidate_position,
-                    outcome: AttemptOutcome::Failure,
-                    failure_category: Some("timeout".to_string()),
-                });
                 respond_error(request, 502, message.as_str(), Some(trace_id));
                 return Ok(AggregateAttemptOutcome::Responded { attempt_records });
             }
@@ -2482,6 +2506,20 @@ pub(in super::super) fn proxy_aggregate_request(
                     }
                 }
                 crate::gateway::UpstreamProtocol::ChatCompletions => {
+                    // `store=true` is a Responses server-side persistence contract;
+                    // dropping it for Chat would silently change request semantics.
+                    // Treat this as a local candidate incompatibility so a later
+                    // Responses candidate can serve the request.
+                    if chat_request_requires_response_store(candidate_body.as_ref()) {
+                        last_attempt_url = Some(base_upstream_url.to_string());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error = Some(
+                            "aggregate api chat upstream incompatible: store semantics unsupported"
+                                .to_string(),
+                        );
+                        last_failure_status = 502;
+                        continue;
+                    }
                     // 上游仅支持 Chat Completions：本地共享转换器执行
                     // Responses -> Chat 请求映射。`previous_response_id` 续聊
                     // 通过网关上下文缓存查找该响应历史 assistant 消息重建；
@@ -3188,6 +3226,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 None,
                 is_stream,
                 false,
+                true,
                 Some(trace_id),
                 candidate_upstream_model.as_deref(),
                 Some(candidate_id.as_str()),
@@ -3405,8 +3444,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 }
             }
 
-            // NEW: SSE 终态错误的候选决策
-            // 仅当请求可归还（零交付）且 bridge 失败时，分类错误并决策候选切换
+            // 仅记录去除 userinfo/query/fragment 的候选 URL；查询参数可能承载 API key。
             if !bridge_ok && bridge.pending_failover_request.is_some() {
                 let error_message = final_error
                     .as_deref()
@@ -3415,6 +3453,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     super::super::support::upstream_failure::extract_error_code_from_terminal(
                         final_error.as_deref(),
                     );
+                let sanitized_candidate_url = sanitize_url_for_log(candidate_url.as_str());
                 let decision = super::super::support::upstream_failure::classify_upstream_failure(
                     502, // SSE 终态统一视为 502 客户端错误
                     error_message,
@@ -3423,9 +3462,24 @@ pub(in super::super) fn proxy_aggregate_request(
                     false, // 非推理守卫路径
                 );
 
+                super::super::super::trace_log::log_aggregate_candidate_decision(
+                    trace_id,
+                    candidate_id.as_str(),
+                    candidate_position,
+                    Some(sanitized_candidate_url.as_str()),
+                    502,
+                    error_code.as_deref(),
+                    match decision {
+                        super::super::support::upstream_failure::UpstreamFailureDecision::CandidateFailover => "candidate_failover",
+                        super::super::support::upstream_failure::UpstreamFailureDecision::RetrySameCandidate => "retry_same_candidate",
+                        super::super::support::upstream_failure::UpstreamFailureDecision::RequestTerminal => "terminal",
+                        _ => "other",
+                    },
+                    true,
+                    attempt_idx,
+                );
                 match decision {
                     super::super::support::upstream_failure::UpstreamFailureDecision::CandidateFailover => {
-                        // rate_limit_exceeded 等候选级错误：切到下一候选
                         request = bridge.pending_failover_request.take();
                         last_attempt_error = Some(error_message.to_string());
                         last_failure_status = 502;
@@ -3452,7 +3506,9 @@ pub(in super::super) fn proxy_aggregate_request(
                         break;
                     }
                     super::super::support::upstream_failure::UpstreamFailureDecision::RequestTerminal => {
-                        // 400/422 等请求级错误：直接终止
+                        // RequestTerminal still owns the buffered request; restore it before the final response.
+                        request = bridge.pending_failover_request.take();
+                        release_daily_spend_attempt(storage, &mut current_attempt_id, trace_id);
                         terminal_failure = true;
                         last_attempt_error = Some(error_message.to_string());
                         last_failure_status = 502;
@@ -3550,6 +3606,22 @@ pub(in super::super) fn proxy_aggregate_request(
             );
             let sanitized_upstream_url = sanitize_url_for_log(url.as_str());
             let sanitized_candidate_url = sanitize_url_for_log(candidate_url.as_str());
+            let mut request_log_attempt_records = attempt_records.clone();
+            request_log_attempt_records.push(AggregateApiAttemptRecord {
+                api_id: candidate_id.clone(),
+                position: candidate_position,
+                outcome: if bridge_ok && final_error.is_none() {
+                    AttemptOutcome::Success
+                } else {
+                    AttemptOutcome::Failure
+                },
+                failure_category: final_error
+                    .as_deref()
+                    .map(classify_aggregate_api_failure)
+                    .map(str::to_string),
+            });
+            let aggregate_api_attempts_json =
+                serde_json::to_string(&request_log_attempt_records).ok();
             super::super::super::trace_log::log_request_final(
                 trace_id,
                 status_code,
@@ -3579,6 +3651,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
                     aggregate_api_url: Some(sanitized_candidate_url.as_str()),
                     attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+                    aggregate_api_attempts: aggregate_api_attempts_json.as_deref(),
                     upstream_model: candidate_upstream_model.as_deref(),
                     actual_source_kind: Some("aggregate_api"),
                     actual_source_id: Some(candidate_id.as_str()),
@@ -3743,6 +3816,7 @@ pub(in super::super) fn proxy_aggregate_request(
     }
     super::super::super::record_gateway_request_outcome(path, status_code, Some("aggregate_api"));
     let sanitized_last_attempt_url = last_attempt_url.as_deref().map(sanitize_url_for_log);
+    let aggregate_api_attempts_json = serde_json::to_string(&attempt_records).ok();
     super::super::super::trace_log::log_request_final(
         trace_id,
         status_code,
@@ -3772,8 +3846,8 @@ pub(in super::super) fn proxy_aggregate_request(
             aggregate_api_supplier_name: last_attempt_supplier_name.as_deref(),
             aggregate_api_url: sanitized_last_attempt_url.as_deref(),
             attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
+            aggregate_api_attempts: aggregate_api_attempts_json.as_deref(),
             upstream_model: last_attempt_upstream_model.as_deref(),
-            actual_source_kind: last_attempt_id.as_deref().map(|_| "aggregate_api"),
             actual_source_id: last_attempt_id.as_deref(),
             session_id: session_id_for_log,
             conversation_anchor: conversation_anchor_for_log,

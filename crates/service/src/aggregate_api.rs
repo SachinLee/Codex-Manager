@@ -1076,7 +1076,10 @@ fn extract_generic_balance(
         invalid_message: (!is_valid).then(|| "balance query returned invalid account".to_string()),
         remaining,
         unit: Some("USD".to_string()),
-        plan_name: None,
+        plan_name: first_string(
+            value,
+            &[&["plan"], &["plan_name"], &["mode"], &["data", "plan"], &["data", "plan_name"]],
+        ),
         total: first_number(
             value,
             &[
@@ -1119,7 +1122,7 @@ fn extract_new_api_balance(
         invalid_message: (!success).then(|| "balance query returned invalid account".to_string()),
         remaining,
         unit: Some("USD".to_string()),
-        plan_name: None,
+        plan_name: first_string(data, &[&["group"], &["plan"], &["plan_name"]]),
         total,
         used: Some(used),
         extra: None,
@@ -1143,7 +1146,7 @@ fn extract_custom_balance(
         invalid_message: (!is_valid).then(|| "balance query returned invalid account".to_string()),
         remaining,
         unit: config.unit.clone().or_else(|| Some("USD".to_string())),
-        plan_name: None,
+        plan_name: custom_string(value, config.plan_path.as_deref()),
         total: custom_number(value, config.total_path.as_deref(), multiplier),
         used: custom_number(value, config.used_path.as_deref(), multiplier),
         extra: None,

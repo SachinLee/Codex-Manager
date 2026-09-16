@@ -69,6 +69,7 @@ pub(in super::super) struct OpenAIResponsesEvent {
     pub(in super::super) continuation_reasoning_items: Vec<Value>,
     output_text_kind: Option<OpenAIResponsesOutputTextKind>,
     output_text_snapshot_key: Option<String>,
+    pub(in super::super) has_tool_call: bool,
     pub(in super::super) terminal: Option<SseTerminal>,
     pub(in super::super) upstream_error_hint: Option<String>,
 }
@@ -102,13 +103,14 @@ impl OpenAIResponsesEvent {
             },
         );
         let continuation_reasoning_items = collect_continuation_reasoning_items(&value);
-
+        let has_tool_call = event_contains_tool_call(&value, kind, event_type.as_deref());
         Some(Self {
             event_type,
             usage,
             continuation_reasoning_items,
             output_text_kind,
             output_text_snapshot_key,
+            has_tool_call,
             terminal,
             upstream_error_hint,
         })
@@ -284,6 +286,35 @@ fn collect_event_string_field<'a>(value: &'a Value, field: &str) -> Option<&'a s
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
         })
+}
+
+fn is_tool_call_item(candidate: Option<&Value>) -> bool {
+    candidate
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "function_call" | "custom_tool_call"))
+}
+
+fn event_contains_tool_call(
+    value: &Value,
+    kind: OpenAIResponsesEventKind,
+    event_type: Option<&str>,
+) -> bool {
+    if matches!(
+        event_type,
+        Some(
+            "response.function_call_arguments.delta"
+                | "response.function_call_arguments.done"
+                | "response.custom_tool_call_input.delta"
+                | "response.custom_tool_call_input.done"
+        )
+    ) {
+        return true;
+    }
+    matches!(
+        kind,
+        OpenAIResponsesEventKind::OutputItemAdded | OpenAIResponsesEventKind::OutputItemDone
+    ) && (is_tool_call_item(value.get("item")) || is_tool_call_item(value.get("output_item")))
 }
 
 fn snapshot_dedupe_key(value: &Value, text: &str) -> String {

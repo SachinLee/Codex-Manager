@@ -9,7 +9,7 @@ SET context_window = 272000,
 WHERE lower(slug) IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
   AND origin = 'builtin'
   AND user_edited = 0
-  AND COALESCE(builtin_revision, 0) <= 8
+  AND COALESCE(builtin_revision, 0) <= 9
   AND (
     context_window IS NULL
     OR context_window <> 272000

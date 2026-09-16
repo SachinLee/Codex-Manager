@@ -7,6 +7,7 @@ import {
   normalizeAccountList,
   normalizeAccountDailyUsageStats,
   normalizeAccountFetchModelsResult,
+  normalizeAggregateApiFetchModelsResult,
   normalizeAggregateApiBalanceRefreshResult,
   normalizeAggregateApiAssociateModelsResult,
   normalizeAggregateApiCreateResult,
@@ -80,6 +81,7 @@ import {
 import { unwrapUsageSnapshotPayload } from "./usage-response";
 import {
   AccountListResult,
+  AccountUsage,
   AccountDailyUsageStat,
   AccountFetchModelsResult,
   AggregateApi,
@@ -457,9 +459,30 @@ async function importAccountContents(contents: string[]): Promise<AccountImportR
 }
 
 export const accountClient = {
-  async list(): Promise<AccountListResult> {
-    const result = await invoke<unknown>("service_account_list", withAddr());
+  async list(addr?: string | null): Promise<AccountListResult> {
+    const result = await invoke<unknown>(
+      "service_account_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeAccountList(result);
+  },
+  async updateResetWarmup(
+    accountIds: string[],
+    enabled: boolean,
+    addr?: string | null,
+  ): Promise<{ updated: number }> {
+    const result = await invoke<unknown>(
+      "service_account_reset_warmup_update",
+      withAddr({
+        accountIds,
+        enabled,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
+    const source = result && typeof result === "object" ? result as Record<string, unknown> : {};
+    return {
+      updated: typeof source.updated === "number" ? source.updated : 0,
+    };
   },
   async fetchAccountModels(
     accountId: string,
@@ -783,8 +806,11 @@ export const accountClient = {
     const result = await invoke<unknown>("service_usage_read", withAddr());
     return normalizeUsageSnapshot(unwrapUsageSnapshotPayload(result));
   },
-  async listUsage(): Promise<AccountUsage[]> {
-    const result = await invoke<unknown>("service_usage_list", withAddr());
+  async listUsage(addr?: string | null): Promise<AccountUsage[]> {
+    const result = await invoke<unknown>(
+      "service_usage_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeUsageList(result);
   },
   async refreshUsage(accountId?: string): Promise<AccountUsageRefreshResult> {
@@ -1207,7 +1233,7 @@ export const accountClient = {
   async refreshAggregateApiBalance(apiId: string): Promise<AggregateApiBalanceRefreshResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_refresh_balance",
-      withAddr({ id: apiId })
+      withAddr({ id: apiId }),
     );
     return normalizeAggregateApiBalanceRefreshResult(result);
   },
@@ -1229,11 +1255,14 @@ export const accountClient = {
     );
     return normalizeAggregateApiAssociateModelsResult(result);
   },
-  async listApiKeys(): Promise<ApiKey[]> {
-    const result = await invoke<unknown>("service_apikey_list", withAddr());
+  async listApiKeys(addr?: string | null): Promise<ApiKey[]> {
+    const result = await invoke<unknown>(
+      "service_apikey_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeApiKeyList(result);
   },
-  async createApiKey(params: ApiKeyPayload): Promise<ApiKeyCreateResult> {
+  async createApiKey(params: ApiKeyPayload, addr?: string | null): Promise<ApiKeyCreateResult> {
     const result = await invoke<unknown>(
       "service_apikey_create",
       withAddr({
@@ -1250,7 +1279,8 @@ export const accountClient = {
         accountGroupFilter: params.accountGroupFilter || null,
         quotaLimitTokens: params.quotaLimitTokens ?? null,
         customKey: params.customKey || null,
-      })
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return normalizeApiKeyCreateResult(result);
   },
@@ -1261,21 +1291,24 @@ export const accountClient = {
     );
     return normalizeApiKeyUsageStats(result);
   },
-  deleteApiKey: (keyId: string) =>
-    invoke("service_apikey_delete", withAddr({ keyId })),
-  updateApiKey: (keyId: string, params: ApiKeyPayload) =>
+  deleteApiKey: (keyId: string, addr?: string | null) =>
+    invoke("service_apikey_delete", withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) })),
+  updateApiKey: (keyId: string, params: ApiKeyPayload, addr?: string | null) =>
     invoke(
       "service_apikey_update_model",
-      withAddr(buildApiKeyUpdateInvokePayload(keyId, params)),
+      withAddr({
+        ...buildApiKeyUpdateInvokePayload(keyId, params),
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     ),
-  disableApiKey: (keyId: string) =>
-    invoke("service_apikey_disable", withAddr({ keyId })),
-  enableApiKey: (keyId: string) =>
-    invoke("service_apikey_enable", withAddr({ keyId })),
-  async readApiKeySecret(keyId: string): Promise<string> {
+  disableApiKey: (keyId: string, addr?: string | null) =>
+    invoke("service_apikey_disable", withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) })),
+  enableApiKey: (keyId: string, addr?: string | null) =>
+    invoke("service_apikey_enable", withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) })),
+  async readApiKeySecret(keyId: string, addr?: string | null): Promise<string> {
     const result = await invoke<unknown>(
       "service_apikey_read_secret",
-      withAddr({ keyId })
+      withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) }),
     );
     return readApiKeySecret(result);
   },

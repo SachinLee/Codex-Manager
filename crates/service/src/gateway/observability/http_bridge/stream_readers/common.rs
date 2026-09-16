@@ -19,6 +19,7 @@ pub(crate) struct PassthroughSseCollector {
     pub(crate) upstream_error_hint: Option<String>,
     pub(crate) last_event_type: Option<String>,
     pub(crate) continuation_reasoning_items: Vec<Value>,
+    pub(crate) semantic_output_delivered: bool,
 }
 
 fn elapsed_ms_since(started_at: Instant) -> i64 {

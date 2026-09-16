@@ -198,8 +198,10 @@ fn should_fallback_to_aggregate_after_account_exhaustion(
     execution_plan: super::executor::GatewayUpstreamExecutionPlan,
     configured_model: Option<&ManagedModelV2>,
 ) -> bool {
-    is_hybrid_account_first_route(execution_plan)
-        && configured_model.is_none_or(has_enabled_aggregate_api_route)
+    (is_hybrid_account_first_route(execution_plan)
+        && configured_model.is_none_or(has_enabled_aggregate_api_route))
+        || (is_hybrid_aggregate_first_route(execution_plan)
+            && configured_model.is_none_or(has_enabled_default_account_pool_route))
 }
 
 fn low_quota_candidate_mode_for_protocol(

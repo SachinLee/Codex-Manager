@@ -55,17 +55,16 @@ pub use aggregate_api_daily_spend::{
     SPEND_PRICING_PROVIDER_REPORTED, SPEND_PRICING_QUOTED, SPEND_PRICING_UNBOUNDED_OUTPUT,
     SPEND_PRICING_UNPRICED_MODEL,
 };
-pub use account_reset_warmups::AccountResetWarmupTarget;
 pub use model_billing_v2::{
     compute_charge_v2, ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2,
     ModelPriceTierV2,
 };
 pub use model_catalog_v2::{
     ManagedModelAggregateRouteAddV2, ManagedModelAggregateRouteAddV2Result,
-    ManagedModelBatchStateV2Update, ManagedModelRouteEnsureResultV2, ManagedModelRouteEnsureV2,
-    ManagedModelStateV2Update, ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats,
-    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
+    ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
+    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
+pub use account_reset_warmups::AccountResetWarmupTarget;
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
 
 #[derive(Debug, Clone)]
@@ -838,6 +837,7 @@ pub struct RequestLog {
     pub attempted_account_ids_json: Option<String>,
     pub initial_aggregate_api_id: Option<String>,
     pub attempted_aggregate_api_ids_json: Option<String>,
+    pub aggregate_api_attempts: Option<String>,
     pub request_path: String,
     pub original_path: Option<String>,
     pub adapted_path: Option<String>,
@@ -910,6 +910,27 @@ pub struct RequestLogTodaySummary {
     pub estimated_cost_usd: f64,
 }
 
+/// 请求日志筛选条件。列表、计数与各类汇总共用同一份条件，保证分页总数和统计口径一致。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RequestLogQueryFilters<'a> {
+    pub query: Option<&'a str>,
+    pub status_filter: Option<&'a str>,
+    pub start_ts: Option<i64>,
+    pub end_ts: Option<i64>,
+    /// 标题筛选解析出的会话 ID 集合；空集合表示不按标题筛选。
+    pub session_ids: &'a [String],
+    /// 模型精确匹配；空值表示不筛选。
+    pub model: Option<&'a str>,
+    /// 平台密钥 `key_id` 精确匹配；空值表示不筛选。
+    pub key_id: Option<&'a str>,
+}
+
+impl<'a> RequestLogQueryFilters<'a> {
+    pub fn has_explicit_filters(&self) -> bool {
+        !self.session_ids.is_empty() || self.model.is_some() || self.key_id.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RequestLogQuerySummary {
     pub count: i64,
@@ -923,6 +944,8 @@ pub struct RequestLogQuerySummary {
     pub long_context_cost_usd: f64,
     pub long_context_uplift_usd: f64,
     pub legacy_candidate_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2602,6 +2625,11 @@ impl Storage {
         self.apply_model_billing_v2_hardening_migration()?;
         self.apply_gpt56_pricing_migration()?;
         self.apply_model_catalog_codex_metadata_migration()?;
+        self.apply_model_catalog_gpt6_astra_migration()?;
+        self.apply_sql_migration(
+            "132_model_catalog_gpt56_metadata_fix",
+            include_str!("../../migrations/132_model_catalog_gpt56_metadata_fix.sql"),
+        )?;
         self.apply_sql_or_compat_migration(
             "116_request_logs_visibility",
             include_str!("../../migrations/116_request_logs_visibility.sql"),
@@ -2737,6 +2765,15 @@ impl Storage {
             "130_accounts_subject_identity",
             include_str!("../../migrations/130_accounts_subject_identity.sql"),
         )?;
+        self.apply_sql_or_compat_migration(
+            "133_aggregate_api_user_agent",
+            include_str!("../../migrations/133_aggregate_api_user_agent.sql"),
+            |s| s.ensure_aggregate_apis_table(),
+        )?;
+        self.apply_sql_migration(
+            "134_account_reset_warmups",
+            include_str!("../../migrations/134_account_reset_warmups.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_model_fallback_chain_column()?;
         self.ensure_api_key_account_group_filter_column()?;
@@ -2765,6 +2802,11 @@ impl Storage {
         self.ensure_quota_pool_tables()?;
         self.ensure_account_manager_tables()?;
         self.seed_missing_builtin_models_v2()?;
+        self.apply_sql_or_compat_migration(
+            "140_request_logs_aggregate_api_attempts",
+            include_str!("../../migrations/140_request_logs_aggregate_api_attempts.sql"),
+            |s| s.ensure_request_log_aggregate_api_attempts_column(),
+        )?;
         Ok(())
     }
 
@@ -3360,26 +3402,3 @@ pub fn now_ts() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-/// 请求日志筛选条件。列表、计数与各类汇总共用同一份条件，保证分页总数和统计口径一致。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RequestLogQueryFilters<'a> {
-    pub query: Option<&'a str>,
-    pub status_filter: Option<&'a str>,
-    pub start_ts: Option<i64>,
-    pub end_ts: Option<i64>,
-    /// 标题筛选解析出的会话 ID 集合；空集合表示不按标题筛选。
-    pub session_ids: &'a [String],
-    /// 模型精确匹配；空值表示不筛选。
-    pub model: Option<&'a str>,
-    /// 平台密钥 `key_id` 精确匹配；空值表示不筛选。
-    pub key_id: Option<&'a str>,
-}
-
-impl<'a> RequestLogQueryFilters<'a> {
-    pub fn has_explicit_filters(&self) -> bool {
-        !self.session_ids.is_empty() || self.model.is_some() || self.key_id.is_some()
-    }
-}
-
-    pub input_tokens: i64,
-    pub cached_input_tokens: i64,

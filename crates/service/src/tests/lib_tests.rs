@@ -1838,6 +1838,8 @@ fn reserve_alias_uses_luna_access_and_pricing_but_stays_visible_in_snapshot() {
         1_000,
         None,
         true,
+        None,
+        None,
     )
     .expect("charge Reserve alias with Luna pricing");
 

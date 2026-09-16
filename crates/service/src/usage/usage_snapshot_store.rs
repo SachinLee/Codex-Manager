@@ -301,13 +301,16 @@ fn apply_status_from_snapshot_with_change(
     }
 
     let changed = match availability {
-        Availability::Available => set_account_status_with_context(
-            storage,
-            &record.account_id,
-            "active",
-            "usage_ok",
-            Some(&context),
-        ),
+        Availability::Available => {
+            set_account_status_with_context(
+                storage,
+                &record.account_id,
+                "active",
+                "usage_ok",
+                Some(&context),
+            );
+            true
+        }
         Availability::Unavailable("usage_exhausted_primary" | "usage_exhausted_secondary") => {
             set_account_status_with_context(
                 storage,
@@ -315,7 +318,8 @@ fn apply_status_from_snapshot_with_change(
                 "limited",
                 "usage_limit_exhausted",
                 Some(&context),
-            )
+            );
+            true
         }
         Availability::Unavailable(_) => false,
     };

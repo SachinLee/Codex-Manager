@@ -88,6 +88,8 @@ export interface AppSettings extends GatewayTransportValues {
   quotaGuard: QuotaGuardSettings;
   gatewayOriginator: string;
   gatewayOriginatorDefault: string;
+  gatewayUserAgent: string;
+  gatewayUserAgentDefault: string;
   gatewayUserAgentVersion: string;
   gatewayUserAgentVersionDefault: string;
   gatewayResidencyRequirement: string;

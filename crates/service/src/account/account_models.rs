@@ -289,13 +289,13 @@ pub(crate) fn associate_account_models(
     {
         return Err("account not found".to_string());
     }
-    associate_account_models_with_storage(&storage, upstream_models, display_names)
+    associate_account_models_with_storage(&storage, &upstream_models, &display_names)
 }
 
 fn associate_account_models_with_storage(
     storage: &Storage,
     upstream_models: &[String],
-    display_names: &[(String, String)],
+    display_names: &BTreeMap<String, String>,
 ) -> Result<AggregateApiAssociateModelsResult, String> {
     let mut requested = Vec::new();
     let mut seen = HashSet::new();
@@ -327,7 +327,8 @@ fn associate_account_models_with_storage(
                 .iter()
                 .find(|(key, _)| key.eq_ignore_ascii_case(upstream_model.as_str()))
                 .or_else(|| display_names.iter().find(|(key, _)| key.eq_ignore_ascii_case(catalog_model.as_str())))
-                .and_then(|(_, value)| model_display_name_from_value(&json!({ "name": value })))
+                .map(|(_, value)| value.clone())
+                .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| catalog_model.clone());
             ManagedModelV2 {
                 slug: catalog_model.clone(),
@@ -534,17 +535,19 @@ mod tests {
             }])
             .expect("seed existing model");
 
+        let upstream_models = vec![
+            "account-model-existing-test".to_string(),
+            "account-model-new-test".to_string(),
+            "ACCOUNT-MODEL-NEW-TEST".to_string(),
+        ];
+        let display_names = BTreeMap::from([(
+            "account-model-new-test".to_string(),
+            "Account Model New".to_string(),
+        )]);
         let result = associate_account_models_with_storage(
             &storage,
-            vec![
-                "account-model-existing-test".to_string(),
-                "account-model-new-test".to_string(),
-                "ACCOUNT-MODEL-NEW-TEST".to_string(),
-            ],
-            BTreeMap::from([(
-                "account-model-new-test".to_string(),
-                "Account Model New".to_string(),
-            )]),
+            &upstream_models,
+            &display_names,
         )
         .expect("associate models");
         assert_eq!(result.created_models, ["account-model-new-test"]);
@@ -573,13 +576,15 @@ mod tests {
             "Account Model New"
         );
 
+        let repeated_models = vec![
+            "account-model-existing-test".to_string(),
+            "account-model-new-test".to_string(),
+        ];
+        let repeated_names = BTreeMap::new();
         let repeated = associate_account_models_with_storage(
             &storage,
-            vec![
-                "account-model-existing-test".to_string(),
-                "account-model-new-test".to_string(),
-            ],
-            BTreeMap::new(),
+            &repeated_models,
+            &repeated_names,
         )
         .expect("repeat association");
         assert!(repeated.created_models.is_empty());
@@ -595,13 +600,15 @@ mod tests {
         let storage = Storage::open_in_memory().expect("open storage");
         storage.init().expect("init storage");
 
+        let reserve_models = vec![
+            codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG.to_string(),
+            codexmanager_core::usage::LUNA_MODEL_SLUG.to_string(),
+        ];
+        let reserve_names = BTreeMap::new();
         let result = associate_account_models_with_storage(
             &storage,
-            vec![
-                codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG.to_string(),
-                codexmanager_core::usage::LUNA_MODEL_SLUG.to_string(),
-            ],
-            BTreeMap::new(),
+            &reserve_models,
+            &reserve_names,
         )
         .expect("associate reserve alias");
 
@@ -627,4 +634,5 @@ mod tests {
                     .eq_ignore_ascii_case(codexmanager_core::usage::LUNA_MODEL_SLUG)
         }));
     }
+
 }
